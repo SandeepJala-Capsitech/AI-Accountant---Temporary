@@ -159,6 +159,13 @@ Travel every time, and LinkedIn Ads went to Subscriptions and Software in one of
 rule kept (`unseen-mixed`). The chart has no account for either cost (fines, advertising), which is
 also why Google Ads goes astray.
 
+`receipt-split-guard` (2026-10-01) measured one transaction per account on a receipt, with the guard
+that keeps a single VAT total whole: correct rows 99.4%, VAT 100%, every trial balance balanced. The
+expense note split into Subsistence and Travel, and the receipt with one VAT total stayed one row.
+Accounts fell to 92.2% (154 of 167). The 60-row statement's eight Tesco lines went to Suspense, as
+under the dropped `accounts-order` wording, and so did a customer's payment. The Sainsbury's photo
+came back as its £4.20 of cleaning supplies alone; the totals check flags that in the app.
+
 To measure real documents, put anonymised copies in `eval/private/<case>/` (the input file plus an
 `expected.json` in the same format) and add `--private`; that folder is never committed. After
 editing `eval/eval_cases.py`, regenerate the fixtures with `.venv/bin/python eval/make_fixtures.py`.
