@@ -30,6 +30,29 @@ const issueSummary = (tx: Transaction) => {
            title: tx.issues.map(i => i.message).join('\n') }
 }
 
+// ─── Several files in one upload ──────────────────────────────────────────────
+
+const MAX_BATCH_FILES = 20
+
+type FileStatus = 'waiting' | 'reading' | 'done' | 'failed' | 'skipped' | 'cancelled'
+
+interface BatchItem {
+  id: number
+  file: File
+  status: FileStatus
+  detail: string
+}
+
+const STATUS_MARK: Record<FileStatus, string> = {
+  waiting: '○', reading: '', done: '✓', failed: '✖', skipped: '–', cancelled: '■',
+}
+
+// A row of the table and where it came from: a file name, "Pasted text" or "Manual entry".
+interface LedgerRow {
+  tx: Transaction
+  origin: string
+}
+
 // ─── Main Page Component ──────────────────────────────────────────────────────
 
 export default function Home() {
@@ -52,7 +75,9 @@ export default function Home() {
   const [analyzeError, setAnalyzeError] = useState('')
   const [warnings, setWarnings] = useState<string[]>([])
   const [modelName, setModelName] = useState<string | null>(null)
-  const [transactions, setTransactions] = useState<Transaction[]>([])
+  const [rows, setRows] = useState<LedgerRow[]>([])      // every input adds to these
+  const [batch, setBatch] = useState<BatchItem[]>([])    // the files of the latest upload
+  const nextFileId = useRef(1)
   const cancelRef = useRef(false)
 
   // Step 3 state
@@ -79,33 +104,81 @@ export default function Home() {
 
   // ── Step 1 → Step 2: run an analysis job ───────────────────────────────────
 
+  // New rows join the table; a trial balance made before them no longer covers every row.
+  const addRows = useCallback((txs: Transaction[], origin: string, warningsFound: string[]) => {
+    setRows(prev => [...prev, ...txs.map(tx => ({ tx, origin }))])
+    setWarnings(prev => [...prev, ...warningsFound.map(w => `${origin}: ${w}`)])
+    setTbResult(null)
+    setTbError('')
+  }, [])
+
   const runAnalysis = useCallback(async (
     formData: FormData,
+    origin: string,
     toTransactions: (result: AnalyzeResult) => Transaction[] | Promise<Transaction[]> = result => result.transactions,
   ) => {
     cancelRef.current = false
     setAnalyzing(true)
     setProgress('Uploading…')
     setAnalyzeError('')
-    setWarnings([])
-    setModelName(null)
-    setTransactions([])
-    setTbResult(null)
-    setTbError('')
     try {
       const result = await runAnalysisJob(formData, setProgress, () => cancelRef.current)
-      setWarnings(result.warnings)
       setModelName(result.model)
-      const rows = await toTransactions(result)
-      if (!rows.length) throw new ApiError('No transactions were found in this input.', 'empty')
-      setTransactions(rows)
+      const txs = await toTransactions(result)
+      if (!txs.length) throw new ApiError('No transactions were found in this input.', 'empty')
+      addRows(txs, origin, result.warnings)
     } catch (e: unknown) {
       setAnalyzeError(e instanceof Error ? e.message : String(e))
     } finally {
       setAnalyzing(false)
       setProgress('')
     }
+  }, [addRows])
+
+  const updateFile = useCallback((id: number, patch: Partial<BatchItem>) => {
+    setBatch(prev => prev.map(item => (item.id === id ? { ...item, ...patch } : item)))
   }, [])
+
+  // Reads the waiting files one after another, through the same job API as a single upload.
+  // A file that fails is marked and the next one is read; Cancel stops the batch.
+  const runBatch = useCallback(async (items: BatchItem[]) => {
+    const todo = items.filter(item => item.status === 'waiting')
+    if (!todo.length) return
+    cancelRef.current = false
+    setAnalyzing(true)
+    const cancelRest = (from: number) =>
+      todo.slice(from).forEach(rest => updateFile(rest.id, { status: 'cancelled', detail: 'Not read: cancelled' }))
+    for (let n = 0; n < todo.length; n++) {
+      const item = todo[n]
+      if (cancelRef.current) {
+        cancelRest(n)
+        break
+      }
+      setProgress(`File ${n + 1} of ${todo.length}: ${item.file.name}`)
+      updateFile(item.id, { status: 'reading', detail: 'Uploading…' })
+      try {
+        const formData = new FormData()
+        formData.append('file', item.file)
+        const result = await runAnalysisJob(formData, p => updateFile(item.id, { detail: p }),
+                                            () => cancelRef.current)
+        const count = result.transactions.length
+        if (!count) throw new ApiError('No transactions were found in this file.', 'empty')
+        setModelName(result.model)
+        addRows(result.transactions, item.file.name, result.warnings)
+        updateFile(item.id, { status: 'done', detail: `${count} row${count === 1 ? '' : 's'}` })
+      } catch (e: unknown) {
+        const cancelled = e instanceof ApiError && e.code === 'cancelled'
+        updateFile(item.id, { status: cancelled ? 'cancelled' : 'failed',
+                              detail: e instanceof Error ? e.message : String(e) })
+        if (cancelled) {
+          cancelRest(n + 1)
+          break
+        }
+      }
+    }
+    setAnalyzing(false)
+    setProgress('')
+  }, [addRows, updateFile])
 
   const cancelAnalysis = () => {
     cancelRef.current = true
@@ -116,7 +189,7 @@ export default function Home() {
     if (!pasteText.trim()) return
     const fd = new FormData()
     fd.append('text', pasteText.trim())
-    runAnalysis(fd)
+    runAnalysis(fd, 'Pasted text')
   }
 
   const handleManual = () => {
@@ -129,7 +202,7 @@ export default function Home() {
     const fd = new FormData()
     fd.append('text', `${description} - ${verb} GBP ${amount}`)
     // The model only suggests the account; the backend splits the VAT like any other row.
-    runAnalysis(fd, async result => {
+    runAnalysis(fd, 'Manual entry', async result => {
       const suggested = result.transactions[0]
       const row: Transaction = {
         date: null, description, direction: type === 'revenue' ? 'in' : 'out', gross: amount.toFixed(2),
@@ -145,39 +218,65 @@ export default function Home() {
   }
 
   const handleFiles = (files: FileList | null) => {
-    if (!files || !files.length) return
-    const file = files[0]
-    if (fileInputRef.current) fileInputRef.current.value = '' // lets the same file be chosen again
+    const picked = Array.from(files ?? [])
+    if (fileInputRef.current) fileInputRef.current.value = '' // lets the same files be chosen again
+    if (!picked.length) return
     const limitMb = health?.max_upload_mb ?? 20
-    if (file.size > limitMb * 1024 * 1024) {
+    const items: BatchItem[] = picked.slice(0, MAX_BATCH_FILES).map(file => {
       // Checked here because the Next proxy cuts oversized bodies instead of rejecting them.
-      setAnalyzeError(`'${file.name}' is larger than the ${limitMb} MB limit. Split it and upload the parts.`)
-      return
-    }
-    const fd = new FormData()
-    fd.append('file', file)
-    runAnalysis(fd)
+      const tooBig = file.size > limitMb * 1024 * 1024
+      return {
+        id: nextFileId.current++, file, status: tooBig ? 'skipped' : 'waiting',
+        detail: tooBig ? `Larger than the ${limitMb} MB limit: split it and upload the parts` : 'Waiting',
+      }
+    })
+    setBatch(items)
+    setAnalyzeError(picked.length > MAX_BATCH_FILES
+      ? `Only the first ${MAX_BATCH_FILES} files were added; upload the other ${picked.length - MAX_BATCH_FILES} next.`
+      : '')
+    runBatch(items)
+  }
+
+  const retryFailed = () => {
+    const again = batch.map(item => (item.status === 'failed' || item.status === 'cancelled'
+      ? { ...item, status: 'waiting' as const, detail: 'Waiting' }
+      : item))
+    setBatch(again)
+    setAnalyzeError('')
+    runBatch(again)
+  }
+
+  const clearTable = () => {
+    setRows([])
+    setBatch([])
+    setWarnings([])
+    setAnalyzeError('')
+    setModelName(null)
+    setTbResult(null)
+    setTbError('')
   }
 
   // ── Step 2 → Step 3: call /api/trial-balance ───────────────────────────────
 
   const generateTrialBalance = useCallback(async () => {
-    if (!transactions.length) return
+    if (!rows.length) return
     setGenerating(true)
     setTbError('')
     setTbResult(null)
     try {
-      setTbResult(await trialBalance(transactions))
+      setTbResult(await trialBalance(rows.map(row => row.tx)))
     } catch (e: unknown) {
       setTbError(e instanceof Error ? e.message : String(e))
     } finally {
       setGenerating(false)
     }
-  }, [transactions])
+  }, [rows])
 
   // ── Pipeline step state ────────────────────────────────────────────────────
-  const step1Done = transactions.length > 0
+  const step1Done = rows.length > 0
   const step2Active = analyzing || step1Done
+  const showStep2 = analyzing || rows.length > 0 || batch.length > 0 || !!analyzeError
+  const canRetry = !analyzing && batch.some(item => item.status === 'failed' || item.status === 'cancelled')
   const step3Active = tbResult !== null || generating
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -265,6 +364,7 @@ export default function Home() {
           <div className={`tab-panel ${activeTab === 'upload' ? 'active' : ''}`}>
             <input
               type="file"
+              multiple
               ref={fileInputRef}
               style={{ display: 'none' }}
               accept=".csv,.tsv,.txt,.xlsx,.xls,.pdf,.png,.jpg,.jpeg,.webp,.bmp,.tiff"
@@ -279,8 +379,8 @@ export default function Home() {
               onDrop={e => { e.preventDefault(); setDragOver(false); if (!analyzing) handleFiles(e.dataTransfer.files) }}
             >
               <div className="dropzone-icon">📥</div>
-              <h3>Drop a file here or click to browse</h3>
-              <p>Bank statements, VAT receipts, invoices, spreadsheets</p>
+              <h3>Drop files here or click to browse</h3>
+              <p>Up to {MAX_BATCH_FILES} at a time: bank statements, VAT receipts, invoices, spreadsheets</p>
               <div className="file-tags">
                 {['.CSV', '.XLSX', '.PDF', '.PNG / .JPG'].map(t => (
                   <span key={t} className="file-tag">{t}</span>
@@ -342,19 +442,19 @@ export default function Home() {
       </div>
 
       {/* Connector */}
-      {(analyzing || transactions.length > 0 || analyzeError) && (
+      {showStep2 && (
         <div className="connector">↓</div>
       )}
 
       {/* ── STEP 2 — Structured Data ────────────────────────────────────────── */}
-      {(analyzing || transactions.length > 0 || analyzeError) && (
+      {showStep2 && (
         <div className="section">
           <div className="section-header">
             <span className="step-badge badge-2">Step 2</span>
             <span className="section-title">Qwen AI — Structured Output</span>
-            {transactions.length > 0 && (
+            {rows.length > 0 && (
               <span className="section-sub">
-                {transactions.length} transaction{transactions.length !== 1 ? 's' : ''} extracted
+                {rows.length} transaction{rows.length !== 1 ? 's' : ''} extracted
                 {modelName ? ` · ${modelName}` : ''}
               </span>
             )}
@@ -377,6 +477,25 @@ export default function Home() {
               </div>
             )}
 
+            {batch.length > 0 && (
+              <div className="batch-list">
+                {batch.map(item => (
+                  <div key={item.id} className={`batch-item batch-${item.status}`}>
+                    <span className="batch-mark">
+                      {item.status === 'reading' ? <span className="spinner" /> : STATUS_MARK[item.status]}
+                    </span>
+                    <span className="batch-name" title={item.file.name}>{item.file.name}</span>
+                    <span className="batch-detail" title={item.detail}>{item.detail}</span>
+                  </div>
+                ))}
+                {canRetry && (
+                  <div className="row-end">
+                    <button className="btn btn-ghost" onClick={retryFailed}>↻ Retry failed files</button>
+                  </div>
+                )}
+              </div>
+            )}
+
             {warnings.length > 0 && (
               <div className="status-msg status-warning">
                 <div>
@@ -385,7 +504,7 @@ export default function Home() {
               </div>
             )}
 
-            {transactions.length > 0 && (
+            {rows.length > 0 && (
               <>
                 <div className="data-table-wrap">
                   <table className="data-table">
@@ -401,12 +520,15 @@ export default function Home() {
                       </tr>
                     </thead>
                     <tbody>
-                      {transactions.map((tx, i) => {
+                      {rows.map(({ tx, origin }, i) => {
                         const check = issueSummary(tx)
                         return (
                           <tr key={i}>
                             <td>{tx.date ?? '—'}</td>
-                            <td>{tx.description}</td>
+                            <td>
+                              {tx.description}
+                              <div className="row-origin" title={origin}>{origin}</div>
+                            </td>
                             <td>
                               <span className={`badge-type ${tx.direction === 'out' ? 'badge-expense' : 'badge-revenue'}`}>
                                 {tx.direction === 'out' ? 'money out' : 'money in'}
@@ -423,7 +545,15 @@ export default function Home() {
                   </table>
                 </div>
 
-                <div className="row-end" style={{ marginTop: '1.25rem' }}>
+                <div className="table-actions">
+                  <button
+                    id="clearTableBtn"
+                    className="btn btn-ghost"
+                    onClick={clearTable}
+                    disabled={analyzing}
+                  >
+                    Clear table
+                  </button>
                   <button
                     id="generateTbBtn"
                     className="btn btn-green"
