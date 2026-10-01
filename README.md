@@ -57,8 +57,11 @@ none, because VAT can only be reclaimed when it was charged.
 
 Pasted text, spreadsheets and PDFs with a text layer go to the model as text; photos and scanned
 pages go as images (turned upright, at most 1600 px, one page per request). The model answers in a
-strict JSON schema: one transaction per receipt or invoice, the direction of the money, an account
-chosen from the chart, and the VAT printed on the document.
+strict JSON schema: the direction of the money, an account chosen from the chart, and the VAT
+printed on the document. A receipt or invoice gives one transaction per account: one row when its
+items are all of one kind, one row per kind otherwise (e.g. a meal and a taxi fare). It stays one
+row, flagged "mixed items", when it shows a single VAT total that cannot be divided between the
+kinds. Rows that do not add up to the document's printed total are flagged.
 
 - Groq's free plan for this model allows about 30 requests and 8,000 tokens a minute and 200,000
   tokens a day (checked 2026-09-29); each image counts as 2,048 tokens. At the limit the app waits
@@ -81,7 +84,7 @@ Settings come from environment variables or `.env` (environment variables win).
 | `GROQ_MODEL` | `qwen/qwen3.8-27b` | Groq model; it must read images |
 | `GROQ_BASE_URL` | `https://api.groq.com/openai/v1` | Groq's OpenAI-compatible API |
 | `GROQ_TIMEOUT` | `60` | Seconds to wait for one model call |
-| `GROQ_MAX_OUTPUT_TOKENS` | `4096` | Longest answer; raise it on a paid plan for very long statements |
+| `GROQ_MAX_OUTPUT_TOKENS` | `8192` | Longest answer; a 60-row statement needs over 4,000 tokens |
 | `GROQ_REASONING_EFFORT` | `none` | The model's "thinking" (`none`, `low`, …); off saves tokens |
 | `GROQ_MAX_IMAGES` | `1` | Scanned pages per request; Groq allows 3, but 3 overflow the free plan's 8K tokens a minute |
 | `LEDGERSYNC_BUSINESS_NAME` | — | Whose books these are; tells sales invoices from purchases |
@@ -103,9 +106,10 @@ Settings come from environment variables or `.env` (environment variables win).
 
 ## Measuring accuracy
 
-`eval/` holds 29 synthetic UK documents (receipts including a mixed-VAT one, invoices including
-one already paid, bank statements in several bank formats including two of payees used nowhere
-else, spreadsheets and pasted text), each with the transactions a bookkeeper would record
+`eval/` holds 31 synthetic UK documents (receipts including a mixed-VAT one and two with items of
+different kinds, invoices including one already paid, bank statements in several bank formats
+including two of payees used nowhere else, spreadsheets and pasted text), each with the
+transactions a bookkeeper would record
 (`eval/fixtures/*/expected.json`), and a harness that runs them through a running API:
 
 ```bash

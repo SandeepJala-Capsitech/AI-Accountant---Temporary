@@ -20,7 +20,8 @@ class AccountingTransaction(BaseModel):
     """One row as the model returns it; its JSON schema holds the model's answer to this shape."""
     # Every field is listed as required so structured output always emits it (null when unknown).
     model_config = ConfigDict(json_schema_extra={
-        "required": ["description", "date", "amount", "direction", "account", "vat", "currency"]
+        "required": ["description", "date", "amount", "direction", "account", "vat", "currency",
+                     "document_total", "document_vat", "mixed_items"]
     })
 
     description: str = Field(..., description="Who was paid or who paid, and what for")
@@ -34,6 +35,22 @@ class AccountingTransaction(BaseModel):
                          json_schema_extra={"enum": list(ACCOUNT_CHOICES)})
     vat: Optional[float] = Field(None, description="The VAT amount printed on the document, or null")
     currency: Optional[str] = Field("GBP", description="Currency code, e.g. GBP")
+    # Per receipt or invoice: lets the ledger flag rows that do not add up to the document's total,
+    # and a document kept as one row because its VAT could not be divided between accounts.
+    document_total: Optional[float] = Field(
+        None, description="The printed total of the receipt or invoice this transaction comes from, the same "
+                          "on every transaction from that document; null for bank statement or spreadsheet rows")
+    document_vat: Optional[float] = Field(
+        None, description="The total VAT printed on that receipt or invoice, the same on every transaction from "
+                          "it; null when it shows no VAT, and for bank statement or spreadsheet rows")
+    mixed_items: bool = Field(False, description="true when this one transaction covers items of different "
+                                                 "accounts because the document shows one VAT total that "
+                                                 "cannot be divided between them")
+
+    @field_validator("mixed_items", mode="before")
+    @classmethod
+    def _mixed_items_flag(cls, v):
+        return v.strip().lower() == "true" if isinstance(v, str) else bool(v)
 
     @field_validator("direction", mode="before")
     @classmethod
@@ -88,8 +105,8 @@ class TransactionExtractor:
 
 Rules:
 1. Direction: "in" is money the business received (sales, refunds from suppliers, loans received, capital paid in); "out" is money it paid (purchases, expenses, bills, wages, taxes to HMRC, refunds to customers, the owner's drawings, transfers to savings).{invoices}
-2. A receipt or an invoice is ONE transaction: the total paid or charged, including VAT, whether it is still to be paid or already paid (an amount due of 0.00 means it has been paid, not that there is nothing to record). Item lines, subtotals, discounts, cash tendered, change, card-payment, amount-paid and amount-due lines, and payment instructions, are not transactions.
-3. A bank statement or spreadsheet has one transaction per payment row. The amount is the money that moved, as a positive number; take the direction from the paid in / paid out columns or the sign. Balances and totals are not transactions.
+2. A receipt or an invoice is recorded whether it is still to be paid or already paid (an amount due of 0.00 means it has been paid, not that there is nothing to record). Give one transaction per account, not per item: add together the items that belong to the same account, so a receipt or invoice whose items all belong to one account is ONE transaction for its total, including VAT. When its items belong to different accounts, give one transaction per account for that account's share of the total, including its VAT, but only if the VAT can be divided between them (it is shown per item or per rate, or no VAT is shown). If the document shows a single VAT total that cannot be divided, give ONE transaction for the total on the account of the biggest items and set mixed_items to true. The transactions from one document add up to its total: give that printed total as document_total, and its printed VAT total as document_vat (null when none is shown), on each of them. Subtotals, discounts, cash tendered, change, card-payment, amount-paid and amount-due lines, and payment instructions, are not transactions.
+3. A bank statement or spreadsheet has one transaction per payment row. The amount is the money that moved, as a positive number; take the direction from the paid in / paid out columns or the sign. Balances and totals are not transactions, and document_total and document_vat are null.
 4. Account: choose by what was bought and why, not by the shop, because most shops sell many kinds of things. On a receipt or invoice, go by the items listed. On a bank line that names only the payee, go by what that kind of business usually sells to a business like this one. Use "9998 Suspense" when the payee could be selling almost anything (such as an online marketplace or a department store) and nothing says what was bought, or when no account below fits.
 5. VAT: the VAT amount printed on the document for that transaction, or null when none is printed. Never calculate VAT.
 6. Dates are UK format (DD/MM/YYYY): "03/09/2026" is 3 September 2026, written "2026-09-03". Use null when there is no date.
@@ -99,7 +116,7 @@ Chart of accounts:
 {chart}
 
 Answer with JSON only, in this shape (one object per transaction):
-{{"transactions": [{{"description": "who was paid or who paid, and what for", "date": "YYYY-MM-DD" or null, "amount": 12.50, "direction": "in" or "out", "account": "<code> <name> from the chart, e.g. 7502 Telephone and Internet", "vat": 2.08 or null, "currency": "GBP"}}]}}"""
+{{"transactions": [{{"description": "who was paid or who paid, and what for", "date": "YYYY-MM-DD" or null, "amount": 12.50, "direction": "in" or "out", "account": "<code> <name> from the chart, e.g. 7502 Telephone and Internet", "vat": 2.08 or null, "currency": "GBP", "document_total": 12.50 or null, "document_vat": 2.08 or null, "mixed_items": false}}]}}"""
 
     @staticmethod
     def _document(text_input: Optional[str], images: Optional[List[str]]) -> str:

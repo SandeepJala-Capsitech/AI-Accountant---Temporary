@@ -47,9 +47,9 @@ class Settings:
     groq_model: str = "qwen/qwen3.8-27b"
     groq_base_url: str = "https://api.groq.com/openai/v1"
     groq_timeout: float = 60.0
-    # 4096 keeps a one-photo request under the free plan's 8K tokens/min even if Groq counts the
-    # requested maximum; a 60-row statement's answer is about 3.5K tokens.
-    groq_max_output_tokens: int = 4096
+    # Room for long statements: a 60-row statement's answer, with document_total, document_vat and
+    # mixed_items on every row, is over 4K tokens.
+    groq_max_output_tokens: int = 8192
     groq_reasoning_effort: str = "none"   # the model's "thinking" would spend the free plan's tokens
     groq_max_images: int = 1              # pages per request: 3 pages overflow the free plan's 8K tokens/min
     health_ttl: float = 300.0             # the UI polls health every 30 s; the free plan counts requests

@@ -25,13 +25,50 @@ def parse_date(text) -> Optional[dt.date]:
     return None
 
 
+def _documents(rows: list[dict]) -> dict:
+    """The rows of each receipt or invoice, keyed by its printed total (statement rows have none)."""
+    documents: dict = {}
+    for row in rows:
+        total = to_money(row.get("document_total"))
+        if total and to_money(row.get("amount")):
+            documents.setdefault(abs(total), []).append(row)
+    return documents
+
+
+def _keep_unsplittable_whole(rows: list[dict]) -> list[dict]:
+    """A receipt or invoice split by account whose rows do not carry the VAT printed on it is put back
+    together as one row: one VAT total cannot be divided without guessing, so the document stays whole
+    (its total and VAT as printed, on the biggest row's account) and is flagged as mixed items."""
+    merged: dict = {}
+    for total, parts in _documents(rows).items():
+        printed_vat = to_money(parts[0].get("document_vat"))
+        carried = sum(abs(to_money(part.get("vat")) or 0) for part in parts)
+        if len(parts) > 1 and printed_vat and carried != abs(printed_vat):
+            biggest = max(parts, key=lambda part: abs(to_money(part.get("amount"))))
+            merged[id(parts[0])] = dict(biggest, amount=float(total), vat=float(abs(printed_vat)), mixed_items=True)
+            merged.update({id(part): None for part in parts[1:]})
+    return [merged.get(id(row), row) for row in rows if merged.get(id(row), row) is not None]
+
+
 def to_transactions(rows: list[dict], source: str, settings: BusinessSettings) -> list[Transaction]:
     result = []
+    rows = _keep_unsplittable_whole(rows)
+    sums = {total: sum(abs(to_money(row.get("amount"))) for row in parts)
+            for total, parts in _documents(rows).items()}
     for row in rows:
         amount = to_money(row.get("amount"))
         if not amount:
             continue
         issues = []
+        total = to_money(row.get("document_total"))
+        if total and sums.get(abs(total)) != abs(total):
+            issues.append(Issue(code="total_mismatch", severity="warning",
+                                message=f"The rows from this document add up to £{sums[abs(total)]} but its total "
+                                        f"is £{abs(total)}; check the amounts against the document."))
+        if row.get("mixed_items"):
+            issues.append(Issue(code="mixed_items", severity="warning",
+                                message="This document mixes items of different kinds but shows one VAT total, so "
+                                        "it was kept as one row; split it by hand if each kind needs its own account."))
         said_in = row.get("direction") == "in"
         if said_in and amount < 0:
             issues.append(Issue(code="direction_conflict", severity="warning",

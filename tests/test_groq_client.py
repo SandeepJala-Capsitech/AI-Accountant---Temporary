@@ -33,7 +33,7 @@ def test_chat_asks_the_configured_model_for_strict_json():
     assert req.get_header("Authorization") == f"Bearer {KEY}"
     assert req.get_header("User-agent").startswith("LedgerSync")   # urllib's default agent can be blocked
     assert (body["model"], body["temperature"], body["max_completion_tokens"], body["reasoning_effort"]) == (
-        "qwen/qwen3.8-27b", 0, 4096, "none")
+        "qwen/qwen3.8-27b", 0, 8192, "none")
     fmt = body["response_format"]
     assert fmt["type"] == "json_schema" and fmt["json_schema"]["strict"] is True
     assert fmt["json_schema"]["schema"]["additionalProperties"] is False

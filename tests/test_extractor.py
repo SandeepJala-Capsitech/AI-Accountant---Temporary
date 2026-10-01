@@ -107,6 +107,23 @@ def test_a_paid_invoice_is_still_one_transaction():
     assert "an amount due of 0.00 means it has been paid, not that there is nothing to record" in system
 
 
+def test_a_receipt_gives_one_transaction_per_account():
+    # A note "Breakfast £20 / Travelling charges £50" holds two kinds of expense: one row per account.
+    # Splitting must not lose or guess VAT, so a single VAT total that cannot be divided keeps one row.
+    _, client = extract(transactions_json(ROW), "BT Broadband 72.00")
+    system = client.calls[0]["messages"][0]["content"]
+    assert "one transaction per account, not per item" in system
+    assert "a single VAT total that cannot be divided" in system and "set mixed_items to true" in system
+    assert "give that printed total as document_total" in system
+    assert "and its printed VAT total as document_vat" in system
+
+
+def test_rows_carry_the_document_totals_and_the_mixed_items_flag():
+    result, _ = extract(transactions_json(dict(ROW, document_total=72.0, document_vat=12.0, mixed_items=None)))
+    row = result.data[0]
+    assert (row.document_total, row.document_vat, row.mixed_items) == (72.0, 12.0, False)
+
+
 def test_the_prompt_defines_every_account_it_offers():
     _, client = extract(transactions_json(ROW), "BT Broadband 72.00")
     system = client.calls[0]["messages"][0]["content"]

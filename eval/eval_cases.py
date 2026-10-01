@@ -434,9 +434,20 @@ CASES: tuple[Case, ...] = (
          (Tx("2026-09-16", "Shell Westway fuel", "-68.39", "7300", vat="11.40"),)),
     Case("img-train-ticket", "image", "input.png", lambda: _receipt_png(TRAIN),
          (Tx("2026-09-17", "Trainline London Euston to Manchester Piccadilly", "-87.50", "7400"),)),
-    # Zero-rated food plus standard-rated household goods: only 0.70 of the 7.95 is VAT.
+    # Zero-rated food plus standard-rated household goods: only 0.70 of the 7.95 is VAT. Two accounts
+    # (groceries, cleaning supplies) and a VAT summary that divides by rate give two rows.
     Case("img-supermarket-mixed-vat", "image", "input.png", lambda: _receipt_png(MIXED_VAT),
-         (Tx("2026-09-18", "Sainsbury's Local", "-7.95", "8205", vat="0.70"),)),
+         (Tx("2026-09-18", "Sainsbury's Local groceries", "-3.75", "8205", vat="0.00"),
+          Tx("2026-09-18", "Sainsbury's Local cleaning supplies", "-4.20", "7801", vat="0.70"))),
+    # Two kinds of expense and no VAT shown: one row per account.
+    Case("text-expense-note-mixed", "text", "input.txt",
+         _text("Expenses 12/09/2026\nBreakfast £18.00\nTaxi to client £32.00\nTotal £50.00"),
+         (Tx("2026-09-12", "Breakfast", "-18.00", "7406"), Tx("2026-09-12", "Taxi to client", "-32.00", "7400"))),
+    # Two kinds of item but one VAT total that cannot be divided: one row, on the biggest item's account.
+    Case("text-mixed-receipt-one-vat", "text", "input.txt",
+         _text("WHSMITH\nKings Cross Station\nVAT No 238 5548 36\n15/09/2026 08:12\nCoffee to go     3.00\n"
+               "A4 notebook      9.00\nVAT              2.00\nTOTAL           12.00\nCARD            12.00"),
+         (Tx("2026-09-15", "WHSmith", "-12.00", "7504", vat="2.00"),)),
     # PDFs
     Case("pdf-purchase-invoice", "pdf", "input.pdf", lambda: _text_pdf(PURCHASE_INVOICE),
          (Tx("2026-09-08", "Clearway Office Supplies Ltd", "-300.00", "7504", vat="50.00"),)),

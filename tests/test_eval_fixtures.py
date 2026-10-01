@@ -35,8 +35,8 @@ def intake_of(case_dir, spec):
     return load_upload(spec["input"], data, max_pdf_pages=30)
 
 
-def test_there_are_29_cases_covering_every_input_kind():
-    assert len(CASE_DIRS) == 29
+def test_there_are_31_cases_covering_every_input_kind():
+    assert len(CASE_DIRS) == 31
     assert {spec_of(d)["kind"] for d in CASE_DIRS} == {"text", "table", "pdf", "image"}
 
 
@@ -83,8 +83,21 @@ def test_a_paid_invoice_is_covered():
 
 def test_mixed_vat_receipt_is_covered():
     # Spec: receipts including mixed VAT, where "document VAT wins" and a gross/6 estimate differ.
+    # Groceries and cleaning supplies are two accounts, and the VAT summary divides by rate: two rows.
     rows = spec_of(FIXTURES / "img-supermarket-mixed-vat")["rows"]
-    assert [(r["gross"], r["vat"]) for r in rows] == [("7.95", "0.70")]
+    assert [(r["gross"], r["vat"], r["account_code"]) for r in rows] == [("3.75", "0.00", "8205"),
+                                                                        ("4.20", "0.70", "7801")]
+
+
+def test_a_note_of_mixed_expenses_is_split_by_account():
+    rows = spec_of(FIXTURES / "text-expense-note-mixed")["rows"]
+    assert [(r["gross"], r["account_code"]) for r in rows] == [("18.00", "7406"), ("32.00", "7400")]
+
+
+def test_a_mixed_receipt_with_one_vat_total_stays_one_row():
+    # Its VAT cannot be divided between the coffee and the notebook, so it stays whole.
+    rows = spec_of(FIXTURES / "text-mixed-receipt-one-vat")["rows"]
+    assert [(r["gross"], r["vat"], r["account_code"]) for r in rows] == [("12.00", "2.00", "7504")]
 
 
 def test_receipt_renderer_refuses_characters_its_font_lacks():
