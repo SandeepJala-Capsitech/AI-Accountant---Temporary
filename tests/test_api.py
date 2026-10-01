@@ -156,9 +156,16 @@ def test_accounts_are_listed(make_client):
     assert {"code": "7502", "name": "Telephone and Internet", "type": "expense", "vat": "standard"} in accounts
 
 
-def test_validate_splits_vat_and_flags_the_estimate(make_client):
+def test_validate_books_no_vat_when_the_document_shows_none(make_client):
     [t] = make_client().post("/api/transactions/validate", json={"transactions": [BT]}).json()["transactions"]
-    assert (t["vat"], t["vat_posted"], t["net"], t["contra_account_code"]) == (None, "12.00", "60.00", "1200")
+    assert (t["vat"], t["vat_posted"], t["net"], t["contra_account_code"]) == (None, "0.00", "72.00", "1200")
+    assert t["issues"] == []
+
+
+def test_validate_splits_vat_at_a_rate_a_person_chose(make_client):
+    row = {**BT, "vat_treatment": "standard"}
+    [t] = make_client().post("/api/transactions/validate", json={"transactions": [row]}).json()["transactions"]
+    assert (t["vat_posted"], t["net"]) == ("12.00", "60.00")
     assert [i["code"] for i in t["issues"]] == ["vat_estimated"]
 
 
@@ -169,7 +176,7 @@ def test_absurd_amounts_get_a_422_not_a_server_error(make_client):
 
 def test_trial_balance_balances_with_bank_and_vat_legs(make_client):
     sale = {**BT, "direction": "in", "gross": "240.00", "account_code": "4000", "vat": "40.00"}
-    tb = make_client().post("/api/trial-balance", json={"transactions": [BT, sale]}).json()
+    tb = make_client().post("/api/trial-balance", json={"transactions": [{**BT, "vat": "12.00"}, sale]}).json()
     assert tb["is_balanced"] is True and tb["total_debits"] == tb["total_credits"] == "240.00"
     assert [(l["code"], l["debit"], l["credit"]) for l in tb["lines"]] == [
         ("1200", "168.00", "0.00"), ("2200", "0.00", "40.00"), ("2201", "12.00", "0.00"),

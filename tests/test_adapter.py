@@ -22,7 +22,7 @@ def issues_of(t):
 def test_model_rows_become_ledger_transactions():
     [t] = adapt(ROW)
     assert (t.direction.value, t.gross, t.account_code, t.date) == ("out", Decimal("72.00"), "7502", dt.date(2026, 9, 1))
-    assert (t.vat_posted, t.source, t.method) == (Decimal("12.00"), "table", "llm")
+    assert (t.vat_posted, t.source, t.method) == (Decimal("0.00"), "table", "llm")   # no VAT shown, none booked
 
 
 def test_vat_printed_on_the_document_is_booked_as_printed():

@@ -48,8 +48,10 @@ codes), `POST /api/transactions/validate` splits VAT and lists issues, and
 `POST /api/trial-balance` takes `{"transactions": [...], "settings": {"vat_registered": true}}`
 and always balances; rows with errors (unknown account, non-GBP, impossible VAT) get a 422.
 Money is sent and returned as strings, e.g. `"12.50"`. Send `vat` only when the document shows
-it; the API never changes it, and fills in `vat_posted` (the VAT booked: shown, estimated from the
-account, or none) and `net` afresh on every call, so an edited row can simply be sent back.
+it; the API never changes it, and fills in `vat_posted` and `net` afresh on every call, so an
+edited row can simply be sent back. `vat_posted` is the VAT booked: the amount shown; or, when a
+person picked a rate in `vat_treatment`, the VAT inside the gross at that rate (flagged); otherwise
+none, because VAT can only be reclaimed when it was charged.
 
 ## The AI model (Groq)
 

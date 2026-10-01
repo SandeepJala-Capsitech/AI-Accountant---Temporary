@@ -23,9 +23,17 @@ def codes(t):
     return [(i.code, i.severity) for i in t.issues]
 
 
-def test_vat_is_estimated_from_the_account_default_and_flagged():
+def test_no_vat_is_claimed_unless_the_document_shows_it():
+    # A handwritten note "Breakfast £20" was booked with £3.33 VAT worked out from the account's
+    # usual rate. VAT can only be reclaimed when it was charged, so nothing shown means none booked.
     t = normalise(tx(), REGISTERED)
-    assert (t.vat_posted, t.net, t.contra_account_code) == (Decimal("20.00"), Decimal("100.00"), "1200")
+    assert (t.vat_posted, t.net, t.contra_account_code) == (Decimal("0.00"), Decimal("120.00"), "1200")
+    assert codes(t) == []
+
+
+def test_a_vat_rate_chosen_by_a_person_is_applied_and_flagged():
+    t = normalise(tx(vat_treatment="standard"), REGISTERED)
+    assert (t.vat_posted, t.net) == (Decimal("20.00"), Decimal("100.00"))
     assert codes(t) == [("vat_estimated", "warning")]
 
 
@@ -81,7 +89,7 @@ def test_odd_vat_on_a_standard_rated_account_is_flagged():
 
 
 def test_renormalising_keeps_the_estimate_flag_without_duplicates():
-    once = normalise(tx(), REGISTERED)
+    once = normalise(tx(vat_treatment="standard"), REGISTERED)
     twice = normalise(Transaction.model_validate(once.model_dump(mode="json")), REGISTERED)
     assert codes(twice) == [("vat_estimated", "warning")] and twice.vat_posted == Decimal("20.00")
 
@@ -118,11 +126,11 @@ def vat_booked(t, settings=REGISTERED):
 
 
 def test_recoding_a_suspense_row_books_the_new_accounts_vat():
-    first = normalise(tx(account="9998"), REGISTERED)
+    first = normalise(tx(account="9998", vat="20.00"), REGISTERED)
     assert vat_booked(revalidated(first, account_code="7502")) == Decimal("20.00")
 
 
-def test_vat_typed_over_an_estimate_is_kept():
+def test_vat_typed_in_later_is_booked():
     first = normalise(tx(), REGISTERED)
     assert vat_booked(revalidated(first, vat="11.50")) == Decimal("11.50")
 
@@ -133,7 +141,7 @@ def test_the_new_accounts_vat_treatment_replaces_the_old_default():
 
 
 def test_registering_for_vat_later_books_vat():
-    first = normalise(tx(), NOT_REGISTERED)
+    first = normalise(tx(vat="20.00"), NOT_REGISTERED)
     assert vat_booked(revalidated(first)) == Decimal("20.00")
 
 

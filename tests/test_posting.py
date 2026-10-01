@@ -22,13 +22,13 @@ def lines(t, settings=REGISTERED):
 
 
 @pytest.mark.parametrize("name, t, expected", [
-    ("expense with VAT", tx("out", "120.00", "7502"),
+    ("expense with VAT", tx("out", "120.00", "7502", vat="20.00"),
      [("7502", "100.00", "0.00"), ("2201", "20.00", "0.00"), ("1200", "0.00", "120.00")]),
     ("sale with document VAT", tx("in", "2400.00", "4000", vat="400.00"),
      [("4000", "0.00", "2000.00"), ("2200", "0.00", "400.00"), ("1200", "2400.00", "0.00")]),
-    ("supplier refund", tx("in", "89.99", "0030"),
+    ("supplier refund", tx("in", "89.99", "0030", vat="15.00"),
      [("0030", "0.00", "74.99"), ("2201", "0.00", "15.00"), ("1200", "89.99", "0.00")]),
-    ("customer refund", tx("out", "120.00", "4000"),
+    ("customer refund", tx("out", "120.00", "4000", vat="20.00"),
      [("4000", "100.00", "0.00"), ("2200", "20.00", "0.00"), ("1200", "0.00", "120.00")]),
     ("HMRC VAT payment", tx("out", "1450.00", "2202"), [("2202", "1450.00", "0.00"), ("1200", "0.00", "1450.00")]),
     ("PAYE and NIC", tx("out", "2140.37", "2210"), [("2210", "2140.37", "0.00"), ("1200", "0.00", "2140.37")]),
@@ -48,7 +48,7 @@ def test_not_vat_registered_posts_the_gross():
 
 
 def test_trial_balance_shows_net_balances_by_code():
-    tb = trial_balance([tx("out", "120.00", "7502"), tx("in", "2400.00", "4000", vat="400.00")], REGISTERED)
+    tb = trial_balance([tx("out", "120.00", "7502", vat="20.00"), tx("in", "2400.00", "4000", vat="400.00")], REGISTERED)
     assert [(l.code, l.name, str(l.debit), str(l.credit)) for l in tb.lines] == [
         ("1200", "Bank Current Account", "2280.00", "0.00"),
         ("2200", "Sales VAT", "0.00", "400.00"),
@@ -60,7 +60,7 @@ def test_trial_balance_shows_net_balances_by_code():
 
 
 def test_cancelling_transactions_leave_no_zero_lines():
-    tb = trial_balance([tx("out", "120.00", "7502"), tx("in", "120.00", "7502")], REGISTERED)
+    tb = trial_balance([tx("out", "120.00", "7502", vat="20.00"), tx("in", "120.00", "7502", vat="20.00")], REGISTERED)
     assert tb.lines == [] and tb.is_balanced and len(tb.journal) == 6
 
 

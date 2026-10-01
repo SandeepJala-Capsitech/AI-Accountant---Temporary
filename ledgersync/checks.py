@@ -49,7 +49,9 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
         if vat:
             issues.append(_issue("vat_not_applicable", f"VAT does not apply to {account.name}; it was ignored."))
         posted = ZERO
-    elif vat is None:
+    elif vat is None and tx.vat_treatment is None:
+        posted = ZERO   # VAT is reclaimable only when charged: none shown, none booked
+    elif vat is None:   # a person chose the rate: split the VAT out of the gross at that rate
         posted = vat_in_gross(tx.gross, treatment)
         if posted > 0:
             issues.append(_issue("vat_estimated", f"VAT of £{posted} estimated at the {treatment.value} rate; "
