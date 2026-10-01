@@ -314,3 +314,19 @@ label { font-size: 0.75rem; color: var(--text-secondary); display: block; margin
   display: flex; align-items: center; justify-content: center;
   height: 36px; color: var(--text-muted); font-size: 1.25rem;
 }
+
+/* ── Job progress, warnings and AI status ───────────── */
+.btn-ghost {
+  margin-left: auto; padding: 0.3rem 0.8rem;
+  background: transparent; color: inherit; border: 1px solid currentColor;
+}
+.btn-ghost:hover:not(:disabled) { background: rgba(255,255,255,0.06); }
+.btn-ghost:disabled { opacity: 0.5; cursor: not-allowed; }
+.status-warning { background: rgba(245,158,11,0.1); color: var(--amber); border: 1px solid rgba(245,158,11,0.25); }
+.health-ok  { color: var(--green); }
+.health-off { color: var(--amber); }
+
+.issue-ok    { color: var(--green); text-align: center; }
+.issue-info  { color: var(--text-secondary); text-align: center; cursor: help; }
+.issue-warn  { color: var(--amber); text-align: center; cursor: help; }
+.issue-error { color: var(--red); text-align: center; cursor: help; }

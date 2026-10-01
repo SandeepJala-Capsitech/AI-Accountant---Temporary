@@ -1,0 +1,110 @@
+import base64
+import io
+import logging
+
+import pymupdf
+import pytest
+from PIL import Image
+
+from ledgersync.extractor import TransactionExtractionResult
+from ledgersync.intake import Intake
+from ledgersync.jobs import Job, JobCancelled, JobContext
+from ledgersync.pipeline import analyze, prepare_image
+
+
+class RecordingExtractor:
+    """Records what reaches the model; like Groq, its client reads at most three images per request."""
+
+    def __init__(self):
+        self.calls = []
+        self.client = type("Client", (), {"model": "fake-model", "max_images": 3})()
+
+    def extract_accounting_data(self, text_input=None, images=None):
+        self.calls.append({"text": text_input, "images": images})
+        return TransactionExtractionResult(success=True, count=0, data=[], model="fake-model",
+                                           warnings=[f"Row 1 skipped (call {len(self.calls)})."])
+
+
+def ctx():
+    return JobContext(Job(id="test"))
+
+
+def png():
+    buf = io.BytesIO()
+    Image.new("RGB", (60, 30), "white").save(buf, "PNG")
+    return buf.getvalue()
+
+
+def photo(size=(3000, 1000), orientation=None):
+    buf = io.BytesIO()
+    exif = Image.Exif()
+    if orientation:
+        exif[0x0112] = orientation
+    Image.new("RGB", size, "white").save(buf, "JPEG", exif=exif)
+    return buf.getvalue()
+
+
+def text_pdf(text="Invoice total 120.00"):
+    doc = pymupdf.open()
+    doc.new_page().insert_text((72, 72), text)
+    return doc.tobytes()
+
+
+def scanned_pdf(pages):
+    doc = pymupdf.open()
+    for _ in range(pages):
+        page = doc.new_page()
+        page.insert_image(page.rect, stream=png())
+    return doc.tobytes()
+
+
+def test_text_goes_straight_to_the_model():
+    ex = RecordingExtractor()
+    analyze(Intake("text", text="BT 72.00"), ex, ctx())
+    assert ex.calls == [{"text": "BT 72.00", "images": None}]
+
+
+def test_a_pdf_with_a_text_layer_goes_as_text():
+    ex = RecordingExtractor()
+    analyze(Intake("pdf", data=text_pdf()), ex, ctx())
+    assert "Invoice total 120.00" in ex.calls[0]["text"] and ex.calls[0]["images"] is None
+
+
+def test_photos_go_to_the_model_as_images():
+    ex = RecordingExtractor()
+    analyze(Intake("image", data=photo()), ex, ctx())
+    assert ex.calls[0]["text"] is None and len(ex.calls[0]["images"]) == 1
+
+
+def test_a_sideways_phone_photo_is_sent_upright_small_and_as_jpeg():
+    # EXIF orientation 6: the phone was turned 90 degrees; the pixels are stored sideways.
+    sent = Image.open(io.BytesIO(base64.b64decode(prepare_image(photo((3000, 1000), orientation=6)))))
+    assert sent.format == "JPEG" and max(sent.size) == 1600 and sent.size[0] < sent.size[1]
+
+
+def test_scanned_pages_go_three_per_request_and_warnings_name_their_pages():
+    ex = RecordingExtractor()
+    result = analyze(Intake("pdf", data=scanned_pdf(5)), ex, ctx())
+    assert [len(c["images"]) for c in ex.calls] == [3, 2]
+    assert result.warnings == ["Pages 1-3: Row 1 skipped (call 1).", "Pages 4-5: Row 1 skipped (call 2)."]
+
+
+def test_a_single_scanned_page_needs_no_page_labels():
+    ex = RecordingExtractor()
+    result = analyze(Intake("pdf", data=scanned_pdf(1)), ex, ctx())
+    assert len(ex.calls) == 1 and result.warnings == ["Row 1 skipped (call 1)."]
+
+
+def test_cancel_before_model_call_skips_it():
+    ex, job = RecordingExtractor(), Job(id="test")
+    job.cancel_requested.set()
+    with pytest.raises(JobCancelled):
+        analyze(Intake("text", text="x"), ex, JobContext(job))
+    assert ex.calls == []
+
+
+def test_document_text_is_never_logged(caplog):
+    # Our own code at DEBUG; third-party loggers (pdfminer) stay at WARNING, see test_logging.
+    caplog.set_level(logging.DEBUG, logger="ledgersync")
+    analyze(Intake("pdf", data=text_pdf("MRS CLIENT SECRET 12.50")), RecordingExtractor(), ctx())
+    assert "CLIENT SECRET" not in caplog.text

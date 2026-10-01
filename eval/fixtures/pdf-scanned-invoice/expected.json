@@ -1,0 +1,15 @@
+{
+  "case": "pdf-scanned-invoice",
+  "kind": "pdf",
+  "input": "input.pdf",
+  "rows": [
+    {
+      "date": "2026-09-25",
+      "direction": "out",
+      "gross": "540.00",
+      "vat": "90.00",
+      "account_code": "7601",
+      "description": "Hartley & Co Chartered Accountants"
+    }
+  ]
+}

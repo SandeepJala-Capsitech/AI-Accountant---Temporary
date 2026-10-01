@@ -6,8 +6,15 @@ __pycache__/
 venv/
 ENV/
 env/
-models/
 .next/
 node_modules/
 .DS_Store
 *.log
+
+# Real client documents for accuracy evaluation (never commit)
+eval/private/
+*.tsbuildinfo
+
+.superpowers
+.claude
+.gitignore_add_on

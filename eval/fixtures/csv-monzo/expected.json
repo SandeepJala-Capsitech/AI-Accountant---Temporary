@@ -1,0 +1,39 @@
+{
+  "case": "csv-monzo",
+  "kind": "table",
+  "input": "input.csv",
+  "rows": [
+    {
+      "date": "2026-09-05",
+      "direction": "out",
+      "gross": "6.45",
+      "vat": null,
+      "account_code": "7406",
+      "description": "PRET A MANGER LONDON"
+    },
+    {
+      "date": "2026-09-09",
+      "direction": "in",
+      "gross": "1450.00",
+      "vat": null,
+      "account_code": "4000",
+      "description": "OAKRIDGE DESIGN INV 2026-14"
+    },
+    {
+      "date": "2026-09-21",
+      "direction": "out",
+      "gross": "18.20",
+      "vat": null,
+      "account_code": "7400",
+      "description": "UBER *TRIP"
+    },
+    {
+      "date": "2026-09-26",
+      "direction": "out",
+      "gross": "11.50",
+      "vat": null,
+      "account_code": "8201",
+      "description": "GOOGLE WORKSPACE"
+    }
+  ]
+}

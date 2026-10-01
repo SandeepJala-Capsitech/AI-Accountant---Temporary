@@ -1,0 +1,15 @@
+{
+  "case": "text-supplier-refund",
+  "kind": "text",
+  "input": "input.txt",
+  "rows": [
+    {
+      "date": "2026-09-05",
+      "direction": "in",
+      "gross": "89.99",
+      "vat": null,
+      "account_code": "0030",
+      "description": "Refund from Amazon for returned printer"
+    }
+  ]
+}

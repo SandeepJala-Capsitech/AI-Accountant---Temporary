@@ -1,0 +1,5 @@
+Transaction ID,Date,Time,Type,Name,Emoji,Category,Amount,Currency,Local amount,Local currency,Notes and #tags,Address,Receipt,Description,Category split
+tx_0000A1,05/09/2026,09:12:44,Card payment,Pret A Manger,,Eating out,-6.45,GBP,-6.45,GBP,,,,PRET A MANGER LONDON,
+tx_0000A2,09/09/2026,14:03:10,Faster payment,Oakridge Design Ltd,,Income,1450.00,GBP,1450.00,GBP,,,,OAKRIDGE DESIGN INV 2026-14,
+tx_0000A3,21/09/2026,11:47:02,Card payment,Uber,,Transport,-18.20,GBP,-18.20,GBP,,,,UBER *TRIP,
+tx_0000A4,26/09/2026,08:00:00,Direct Debit,Google Workspace,,Bills,-11.50,GBP,-11.50,GBP,,,,GOOGLE WORKSPACE,

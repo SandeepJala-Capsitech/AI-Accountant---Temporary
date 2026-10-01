@@ -1,0 +1,15 @@
+{
+  "case": "img-train-ticket",
+  "kind": "image",
+  "input": "input.png",
+  "rows": [
+    {
+      "date": "2026-09-17",
+      "direction": "out",
+      "gross": "87.50",
+      "vat": null,
+      "account_code": "7400",
+      "description": "Trainline London Euston to Manchester Piccadilly"
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "case": "csv-starling",
+  "kind": "table",
+  "input": "input.csv",
+  "rows": [
+    {
+      "date": "2026-09-03",
+      "direction": "out",
+      "gross": "295.00",
+      "vat": null,
+      "account_code": "7100",
+      "description": "WeWork Desk rental September"
+    },
+    {
+      "date": "2026-09-07",
+      "direction": "out",
+      "gross": "360.00",
+      "vat": null,
+      "account_code": "7601",
+      "description": "Hartley & Co Invoice 2026-288"
+    },
+    {
+      "date": "2026-09-15",
+      "direction": "in",
+      "gross": "2100.00",
+      "vat": null,
+      "account_code": "4000",
+      "description": "Brightwell Ltd INV NB-0112"
+    },
+    {
+      "date": "2026-09-23",
+      "direction": "out",
+      "gross": "64.30",
+      "vat": null,
+      "account_code": "7400",
+      "description": "Avanti West Coast Rail"
+    }
+  ]
+}

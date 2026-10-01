@@ -1,0 +1,31 @@
+{
+  "case": "csv-barclays-probe",
+  "kind": "table",
+  "input": "input.csv",
+  "rows": [
+    {
+      "date": "2026-09-01",
+      "direction": "out",
+      "gross": "72.00",
+      "vat": null,
+      "account_code": "7502",
+      "description": "BT BUSINESS BROADBAND"
+    },
+    {
+      "date": "2026-09-02",
+      "direction": "in",
+      "gross": "3600.00",
+      "vat": null,
+      "account_code": "4000",
+      "description": "ACME LTD BACS"
+    },
+    {
+      "date": "2026-09-04",
+      "direction": "out",
+      "gross": "24.50",
+      "vat": null,
+      "account_code": "8205",
+      "description": "SAINSBURYS"
+    }
+  ]
+}

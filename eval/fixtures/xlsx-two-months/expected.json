@@ -1,0 +1,55 @@
+{
+  "case": "xlsx-two-months",
+  "kind": "table",
+  "input": "input.xlsx",
+  "rows": [
+    {
+      "date": "2026-09-04",
+      "direction": "out",
+      "gross": "26.40",
+      "vat": null,
+      "account_code": "8201",
+      "description": "SAGE SUBSCRIPTION"
+    },
+    {
+      "date": "2026-09-17",
+      "direction": "in",
+      "gross": "980.00",
+      "vat": null,
+      "account_code": "4000",
+      "description": "RIVERSIDE DENTAL"
+    },
+    {
+      "date": "2026-09-25",
+      "direction": "out",
+      "gross": "41.25",
+      "vat": null,
+      "account_code": "8204",
+      "description": "HISCOX INSURANCE"
+    },
+    {
+      "date": "2026-10-02",
+      "direction": "out",
+      "gross": "72.00",
+      "vat": null,
+      "account_code": "7502",
+      "description": "BT BUSINESS BROADBAND"
+    },
+    {
+      "date": "2026-10-09",
+      "direction": "in",
+      "gross": "980.00",
+      "vat": null,
+      "account_code": "4000",
+      "description": "RIVERSIDE DENTAL"
+    },
+    {
+      "date": "2026-10-20",
+      "direction": "out",
+      "gross": "7.85",
+      "vat": null,
+      "account_code": "7501",
+      "description": "ROYAL MAIL"
+    }
+  ]
+}

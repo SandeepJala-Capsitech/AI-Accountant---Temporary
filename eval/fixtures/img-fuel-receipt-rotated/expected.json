@@ -1,0 +1,15 @@
+{
+  "case": "img-fuel-receipt-rotated",
+  "kind": "image",
+  "input": "input.png",
+  "rows": [
+    {
+      "date": "2026-09-16",
+      "direction": "out",
+      "gross": "68.39",
+      "vat": "11.40",
+      "account_code": "7300",
+      "description": "Shell Westway fuel"
+    }
+  ]
+}

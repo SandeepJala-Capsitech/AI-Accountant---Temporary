@@ -1,0 +1,167 @@
+{
+  "case": "csv-unseen-mixed",
+  "kind": "table",
+  "input": "input.csv",
+  "rows": [
+    {
+      "date": "2026-10-01",
+      "direction": "out",
+      "gross": "32.40",
+      "vat": null,
+      "account_code": "7504",
+      "description": "ONBUY.COM - A4 COPIER PAPER"
+    },
+    {
+      "date": "2026-10-01",
+      "direction": "in",
+      "gross": "3150.00",
+      "vat": null,
+      "account_code": "4000",
+      "description": "BRIGHTWATER DESIGN LTD INV 3107"
+    },
+    {
+      "date": "2026-10-02",
+      "direction": "out",
+      "gross": "86.30",
+      "vat": null,
+      "account_code": "7800",
+      "description": "TRAVIS PERKINS"
+    },
+    {
+      "date": "2026-10-03",
+      "direction": "out",
+      "gross": "5.60",
+      "vat": null,
+      "account_code": "7406",
+      "description": "GREGGS"
+    },
+    {
+      "date": "2026-10-05",
+      "direction": "out",
+      "gross": "120.00",
+      "vat": null,
+      "account_code": "0040",
+      "description": "GUMTREE - SECOND-HAND OFFICE DESK"
+    },
+    {
+      "date": "2026-10-06",
+      "direction": "out",
+      "gross": "30.00",
+      "vat": null,
+      "account_code": "7502",
+      "description": "PLUSNET"
+    },
+    {
+      "date": "2026-10-07",
+      "direction": "out",
+      "gross": "24.50",
+      "vat": null,
+      "account_code": "9998",
+      "description": "ETSY"
+    },
+    {
+      "date": "2026-10-08",
+      "direction": "out",
+      "gross": "549.00",
+      "vat": null,
+      "account_code": "0030",
+      "description": "ARGOS - LAPTOP FOR NEW STARTER"
+    },
+    {
+      "date": "2026-10-09",
+      "direction": "out",
+      "gross": "94.00",
+      "vat": null,
+      "account_code": "7402",
+      "description": "IBIS LONDON"
+    },
+    {
+      "date": "2026-10-12",
+      "direction": "out",
+      "gross": "200.00",
+      "vat": null,
+      "account_code": "9998",
+      "description": "LINKEDIN ADS"
+    },
+    {
+      "date": "2026-10-13",
+      "direction": "out",
+      "gross": "21.75",
+      "vat": null,
+      "account_code": "8205",
+      "description": "MORRISONS"
+    },
+    {
+      "date": "2026-10-14",
+      "direction": "out",
+      "gross": "38.20",
+      "vat": null,
+      "account_code": "7403",
+      "description": "MARKS & SPENCER - SANDWICHES FOR CLIENT MEETING"
+    },
+    {
+      "date": "2026-10-15",
+      "direction": "out",
+      "gross": "10.99",
+      "vat": null,
+      "account_code": "8201",
+      "description": "CANVA"
+    },
+    {
+      "date": "2026-10-16",
+      "direction": "out",
+      "gross": "18.00",
+      "vat": null,
+      "account_code": "7400",
+      "description": "NCP CAR PARKS"
+    },
+    {
+      "date": "2026-10-19",
+      "direction": "out",
+      "gross": "210.00",
+      "vat": null,
+      "account_code": "9998",
+      "description": "SELFRIDGES"
+    },
+    {
+      "date": "2026-10-20",
+      "direction": "out",
+      "gross": "12.49",
+      "vat": null,
+      "account_code": "7501",
+      "description": "DPD UK"
+    },
+    {
+      "date": "2026-10-21",
+      "direction": "out",
+      "gross": "46.80",
+      "vat": null,
+      "account_code": "8205",
+      "description": "COSTCO - MILK AND COFFEE FOR THE OFFICE"
+    },
+    {
+      "date": "2026-10-22",
+      "direction": "out",
+      "gross": "61.05",
+      "vat": null,
+      "account_code": "7300",
+      "description": "BP CONNECT"
+    },
+    {
+      "date": "2026-10-26",
+      "direction": "out",
+      "gross": "65.00",
+      "vat": null,
+      "account_code": "9998",
+      "description": "CAMDEN COUNCIL PENALTY CHARGE"
+    },
+    {
+      "date": "2026-10-28",
+      "direction": "out",
+      "gross": "27.99",
+      "vat": null,
+      "account_code": "7504",
+      "description": "OFFICE DEPOT"
+    }
+  ]
+}

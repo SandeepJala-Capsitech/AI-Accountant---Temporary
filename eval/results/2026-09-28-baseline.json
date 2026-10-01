@@ -1,0 +1,1832 @@
+{
+  "date": "2026-09-28",
+  "label": "baseline",
+  "api": "http://127.0.0.1:8085",
+  "model": "qwen2.5vl:3b",
+  "note": "Phase 1 API on an 8 GB Apple M2 with OLLAMA_TIMEOUT=300 (at the 120 s default every case timed out on this machine); qwen2.5vl:3b, num_ctx 4096, num_predict 2048; harness --timeout 600. Image cases re-run after the mixed-VAT/glyph fixture fix.",
+  "timeout_s": 600,
+  "summary": {
+    "cases": 26,
+    "expected": 123,
+    "predicted": 75,
+    "matched": 43,
+    "row_precision": 0.573,
+    "row_recall": 0.35,
+    "correct_rows": 0.26,
+    "field_accuracy": {
+      "amount": 0.953,
+      "date": 0.93,
+      "direction": 0.86,
+      "account": null,
+      "vat": null
+    },
+    "exact_cases": 0.231,
+    "tb_balanced": 0.0,
+    "latency_p50_s": 23.0,
+    "latency_p95_s": 138.3,
+    "errors": {
+      "ai_output_truncated": 1
+    }
+  },
+  "by_kind": {
+    "image": {
+      "cases": 5,
+      "expected": 5,
+      "predicted": 27,
+      "matched": 5,
+      "row_precision": 0.185,
+      "row_recall": 1.0,
+      "correct_rows": 0.0,
+      "field_accuracy": {
+        "amount": 1.0,
+        "date": 0.6,
+        "direction": 0.4,
+        "account": null,
+        "vat": null
+      },
+      "exact_cases": 0.0,
+      "tb_balanced": 0.0,
+      "latency_p50_s": 28.6,
+      "latency_p95_s": 138.3,
+      "errors": {}
+    },
+    "pdf": {
+      "cases": 4,
+      "expected": 8,
+      "predicted": 13,
+      "matched": 8,
+      "row_precision": 0.615,
+      "row_recall": 1.0,
+      "correct_rows": 0.625,
+      "field_accuracy": {
+        "amount": 0.75,
+        "date": 1.0,
+        "direction": 0.875,
+        "account": null,
+        "vat": null
+      },
+      "exact_cases": 0.0,
+      "tb_balanced": 0.0,
+      "latency_p50_s": 20.4,
+      "latency_p95_s": 34.7,
+      "errors": {}
+    },
+    "table": {
+      "cases": 10,
+      "expected": 98,
+      "predicted": 21,
+      "matched": 21,
+      "row_precision": 1.0,
+      "row_recall": 0.214,
+      "correct_rows": 0.204,
+      "field_accuracy": {
+        "amount": 1.0,
+        "date": 0.952,
+        "direction": 1.0,
+        "account": null,
+        "vat": null
+      },
+      "exact_cases": 0.2,
+      "tb_balanced": 0.0,
+      "latency_p50_s": 23.2,
+      "latency_p95_s": 191.8,
+      "errors": {
+        "ai_output_truncated": 1
+      }
+    },
+    "text": {
+      "cases": 7,
+      "expected": 12,
+      "predicted": 14,
+      "matched": 9,
+      "row_precision": 0.643,
+      "row_recall": 0.75,
+      "correct_rows": 0.583,
+      "field_accuracy": {
+        "amount": 1.0,
+        "date": 1.0,
+        "direction": 0.778,
+        "account": null,
+        "vat": null
+      },
+      "exact_cases": 0.571,
+      "tb_balanced": 0.0,
+      "latency_p50_s": 6.4,
+      "latency_p95_s": 33.3,
+      "errors": {}
+    }
+  },
+  "cases": [
+    {
+      "case": "csv-barclays-export",
+      "kind": "table",
+      "error": null,
+      "latency_s": 99.4,
+      "model": "qwen2.5vl:3b",
+      "tb_balanced": false,
+      "expected": 6,
+      "predicted": 1,
+      "matched": 1,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          0,
+          0
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": false,
+      "predicted_rows": [
+        {
+          "date": "2026-09-13",
+          "direction": "in",
+          "gross": "950.00",
+          "vat": null,
+          "account_code": null,
+          "description": "BRIGHTWELL LTD Bank Credit",
+          "has_account": false,
+          "has_vat": false
+        }
+      ],
+      "correct": 1
+    },
+    {
+      "case": "csv-barclays-probe",
+      "kind": "table",
+      "error": null,
+      "latency_s": 46.4,
+      "model": "qwen2.5vl:3b",
+      "tb_balanced": false,
+      "expected": 3,
+      "predicted": 1,
+      "matched": 1,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          0,
+          0
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": false,
+      "predicted_rows": [
+        {
+          "date": "2026-09-02",
+          "direction": "in",
+          "gross": "3600.00",
+          "vat": null,
+          "account_code": null,
+          "description": "ACME LTD BACS",
+          "has_account": false,
+          "has_vat": false
+        }
+      ],
+      "correct": 1
+    },
+    {
+      "case": "csv-hsbc-no-header",
+      "kind": "table",
+      "error": null,
+      "latency_s": 23.2,
+      "model": "qwen2.5vl:3b",
+      "tb_balanced": false,
+      "expected": 4,
+      "predicted": 1,
+      "matched": 1,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          0,
+          0
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": false,
+      "predicted_rows": [
+        {
+          "date": "2026-09-15",
+          "direction": "in",
+          "gross": "1800.00",
+          "vat": null,
+          "account_code": null,
+          "description": "NORTHWIND TRADING PAYMENT",
+          "has_account": false,
+          "has_vat": false
+        }
+      ],
+      "correct": 1
+    },
+    {
+      "case": "csv-lloyds-debit-credit",
+      "kind": "table",
+      "error": null,
+      "latency_s": 23.0,
+      "model": "qwen2.5vl:3b",
+      "tb_balanced": false,
+      "expected": 4,
+      "predicted": 4,
+      "matched": 4,
+      "checks": {
+        "amount": [
+          4,
+          4
+        ],
+        "date": [
+          4,
+          4
+        ],
+        "direction": [
+          4,
+          4
+        ],
+        "account": [
+          0,
+          0
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-04",
+          "direction": "out",
+          "gross": "54.00",
+          "vat": null,
+          "account_code": null,
+          "description": "SCREWFIX DIRECT",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-08",
+          "direction": "in",
+          "gross": "2750.00",
+          "vat": null,
+          "account_code": null,
+          "description": "QUAYSIDE MEDIA LTD",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-12",
+          "direction": "out",
+          "gross": "12.80",
+          "vat": null,
+          "account_code": null,
+          "description": "TFL TRAVEL CH",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-19",
+          "direction": "out",
+          "gross": "33.00",
+          "vat": null,
+          "account_code": null,
+          "description": "XERO UK LTD",
+          "has_account": false,
+          "has_vat": false
+        }
+      ],
+      "correct": 4
+    },
+    {
+      "case": "csv-long-statement-60-rows",
+      "kind": "table",
+      "error": "ai_output_truncated",
+      "latency_s": 191.8,
+      "model": null,
+      "tb_balanced": null,
+      "expected": 60,
+      "predicted": 0,
+      "matched": 0,
+      "checks": {
+        "amount": [
+          0,
+          0
+        ],
+        "date": [
+          0,
+          0
+        ],
+        "direction": [
+          0,
+          0
+        ],
+        "account": [
+          0,
+          0
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": false,
+      "predicted_rows": [],
+      "correct": 0
+    },
+    {
+      "case": "csv-monzo",
+      "kind": "table",
+      "error": null,
+      "latency_s": 25.8,
+      "model": "qwen2.5vl:3b",
+      "tb_balanced": false,
+      "expected": 4,
+      "predicted": 1,
+      "matched": 1,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          0,
+          0
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": false,
+      "predicted_rows": [
+        {
+          "date": "2026-09-09",
+          "direction": "in",
+          "gross": "1450.00",
+          "vat": null,
+          "account_code": null,
+          "description": "OAKRIDGE DESIGN INV 2026-14",
+          "has_account": false,
+          "has_vat": false
+        }
+      ],
+      "correct": 1
+    },
+    {
+      "case": "csv-preamble-cp1252-brackets",
+      "kind": "table",
+      "error": null,
+      "latency_s": 19.4,
+      "model": "qwen2.5vl:3b",
+      "tb_balanced": false,
+      "expected": 4,
+      "predicted": 4,
+      "matched": 4,
+      "checks": {
+        "amount": [
+          4,
+          4
+        ],
+        "date": [
+          4,
+          4
+        ],
+        "direction": [
+          4,
+          4
+        ],
+        "account": [
+          0,
+          0
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-02",
+          "direction": "out",
+          "gross": "19.97",
+          "vat": null,
+          "account_code": null,
+          "description": "ADOBE SYSTEMS",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-06",
+          "direction": "in",
+          "gross": "1200.00",
+          "vat": null,
+          "account_code": null,
+          "description": "CLIENT PAYMENT - FIELDHOUSE LTD",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-14",
+          "direction": "out",
+          "gross": "8.40",
+          "vat": null,
+          "account_code": null,
+          "description": "COSTA COFFEE",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-29",
+          "direction": "out",
+          "gross": "12.00",
+          "vat": null,
+          "account_code": null,
+          "description": "BARCLAYCARD COMMERCIAL FEES",
+          "has_account": false,
+          "has_vat": false
+        }
+      ],
+      "correct": 4
+    },
+    {
+      "case": "csv-starling",
+      "kind": "table",
+      "error": null,
+      "latency_s": 16.6,
+      "model": "qwen2.5vl:3b",
+      "tb_balanced": false,
+      "expected": 4,
+      "predicted": 1,
+      "matched": 1,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          0,
+          0
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": false,
+      "predicted_rows": [
+        {
+          "date": "2026-09-15",
+          "direction": "in",
+          "gross": "2100.00",
+          "vat": null,
+          "account_code": null,
+          "description": "INV NB-0112",
+          "has_account": false,
+          "has_vat": false
+        }
+      ],
+      "correct": 1
+    },
+    {
+      "case": "img-cafe-receipt-vat",
+      "kind": "image",
+      "error": null,
+      "latency_s": 138.3,
+      "model": "qwen2.5vl:3b",
+      "tb_balanced": false,
+      "expected": 1,
+      "predicted": 7,
+      "matched": 1,
+      "correct": 0,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          0,
+          1
+        ],
+        "account": [
+          0,
+          0
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": false,
+      "predicted_rows": [
+        {
+          "date": "2026-09-12",
+          "direction": "in",
+          "gross": "3.40",
+          "vat": null,
+          "account_code": null,
+          "description": "Flat White",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-12",
+          "direction": "in",
+          "gross": "2.95",
+          "vat": null,
+          "account_code": null,
+          "description": "Almond Croissant",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-12",
+          "direction": "in",
+          "gross": "1.15",
+          "vat": null,
+          "account_code": null,
+          "description": "Bottled Water",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-12",
+          "direction": "in",
+          "gross": "7.50",
+          "vat": null,
+          "account_code": null,
+          "description": "SUBTOTAL",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-12",
+          "direction": "out",
+          "gross": "1.25",
+          "vat": null,
+          "account_code": null,
+          "description": "VAT @ 20%",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-12",
+          "direction": "in",
+          "gross": "7.50",
+          "vat": null,
+          "account_code": null,
+          "description": "TOTAL",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-12",
+          "direction": "in",
+          "gross": "7.50",
+          "vat": null,
+          "account_code": null,
+          "description": "CARD",
+          "has_account": false,
+          "has_vat": false
+        }
+      ]
+    },
+    {
+      "case": "img-fuel-receipt-rotated",
+      "kind": "image",
+      "error": null,
+      "latency_s": 28.6,
+      "model": "qwen2.5vl:3b",
+      "tb_balanced": false,
+      "expected": 1,
+      "predicted": 4,
+      "matched": 1,
+      "correct": 0,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          0,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          0,
+          0
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": false,
+      "predicted_rows": [
+        {
+          "date": "2026-09-16",
+          "direction": "out",
+          "gross": "45.20",
+          "vat": null,
+          "account_code": null,
+          "description": "Pump 4 Unleaded",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": null,
+          "direction": "out",
+          "gross": "11.40",
+          "vat": null,
+          "account_code": null,
+          "description": "VAT 20%",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": null,
+          "direction": "out",
+          "gross": "68.39",
+          "vat": null,
+          "account_code": null,
+          "description": "FUEL TOTAL",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": null,
+          "direction": "out",
+          "gross": "68.39",
+          "vat": null,
+          "account_code": null,
+          "description": "PAID BY VISA",
+          "has_account": false,
+          "has_vat": false
+        }
+      ]
+    },
+    {
+      "case": "img-supermarket-mixed-vat",
+      "kind": "image",
+      "error": null,
+      "latency_s": 40.5,
+      "model": "qwen2.5vl:3b",
+      "tb_balanced": false,
+      "expected": 1,
+      "predicted": 9,
+      "matched": 1,
+      "correct": 0,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          0,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          0,
+          0
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": false,
+      "predicted_rows": [
+        {
+          "date": "2026-09-18",
+          "direction": "out",
+          "gross": "1.45",
+          "vat": null,
+          "account_code": null,
+          "description": "Semi skimmed milk 2pt",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-18",
+          "direction": "out",
+          "gross": "1.35",
+          "vat": null,
+          "account_code": null,
+          "description": "Wholemeal bread",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-18",
+          "direction": "out",
+          "gross": "0.95",
+          "vat": null,
+          "account_code": null,
+          "description": "Bananas",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-18",
+          "direction": "out",
+          "gross": "2.40",
+          "vat": null,
+          "account_code": null,
+          "description": "Kitchen roll",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-18",
+          "direction": "out",
+          "gross": "1.80",
+          "vat": null,
+          "account_code": null,
+          "description": "Washing up liquid",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": null,
+          "direction": "out",
+          "gross": "7.95",
+          "vat": null,
+          "account_code": null,
+          "description": "TOTAL",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": null,
+          "direction": "out",
+          "gross": "7.95",
+          "vat": null,
+          "account_code": null,
+          "description": "VISA",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": null,
+          "direction": "out",
+          "gross": "3.50",
+          "vat": null,
+          "account_code": null,
+          "description": "VAT SUMMARY",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": null,
+          "direction": "out",
+          "gross": "3.75",
+          "vat": null,
+          "account_code": null,
+          "description": "0% NET",
+          "has_account": false,
+          "has_vat": false
+        }
+      ]
+    },
+    {
+      "case": "img-tesco-receipt",
+      "kind": "image",
+      "error": null,
+      "latency_s": 26.1,
+      "model": "qwen2.5vl:3b",
+      "tb_balanced": false,
+      "expected": 1,
+      "predicted": 6,
+      "matched": 1,
+      "correct": 0,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          0,
+          1
+        ],
+        "account": [
+          0,
+          0
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": false,
+      "predicted_rows": [
+        {
+          "date": "2026-09-03",
+          "direction": "in",
+          "gross": "3.50",
+          "vat": null,
+          "account_code": null,
+          "description": "Meal Deal",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-03",
+          "direction": "in",
+          "gross": "2.80",
+          "vat": null,
+          "account_code": null,
+          "description": "Coffee",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-03",
+          "direction": "in",
+          "gross": "6.20",
+          "vat": null,
+          "account_code": null,
+          "description": "Sandwich",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-03",
+          "direction": "in",
+          "gross": "12.50",
+          "vat": null,
+          "account_code": null,
+          "description": "TOTAL",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-03",
+          "direction": "out",
+          "gross": "20.00",
+          "vat": null,
+          "account_code": null,
+          "description": "CASH",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-03",
+          "direction": "out",
+          "gross": "7.50",
+          "vat": null,
+          "account_code": null,
+          "description": "CHANGE",
+          "has_account": false,
+          "has_vat": false
+        }
+      ]
+    },
+    {
+      "case": "img-train-ticket",
+      "kind": "image",
+      "error": null,
+      "latency_s": 17.9,
+      "model": "qwen2.5vl:3b",
+      "tb_balanced": false,
+      "expected": 1,
+      "predicted": 1,
+      "matched": 1,
+      "correct": 0,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          0,
+          1
+        ],
+        "account": [
+          0,
+          0
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": false,
+      "predicted_rows": [
+        {
+          "date": "2026-09-17",
+          "direction": "in",
+          "gross": "87.50",
+          "vat": null,
+          "account_code": null,
+          "description": "Train ticket",
+          "has_account": false,
+          "has_vat": false
+        }
+      ]
+    },
+    {
+      "case": "pdf-bank-statement",
+      "kind": "pdf",
+      "error": null,
+      "latency_s": 34.7,
+      "model": "qwen2.5vl:3b",
+      "tb_balanced": false,
+      "expected": 5,
+      "predicted": 5,
+      "matched": 5,
+      "checks": {
+        "amount": [
+          5,
+          5
+        ],
+        "date": [
+          5,
+          5
+        ],
+        "direction": [
+          4,
+          5
+        ],
+        "account": [
+          0,
+          0
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": false,
+      "predicted_rows": [
+        {
+          "date": "2026-09-03",
+          "direction": "out",
+          "gross": "86.40",
+          "vat": null,
+          "account_code": null,
+          "description": "BRITISH GAS BUSINESS",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-05",
+          "direction": "out",
+          "gross": "1250.00",
+          "vat": null,
+          "account_code": null,
+          "description": "LANDMARK PROPERTIES RENT",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-09",
+          "direction": "out",
+          "gross": "3600.00",
+          "vat": null,
+          "account_code": null,
+          "description": "HARBOUR & LANE ARCHITECTS",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-20",
+          "direction": "out",
+          "gross": "8.50",
+          "vat": null,
+          "account_code": null,
+          "description": "BARCLAYS BANK CHARGES",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-28",
+          "direction": "out",
+          "gross": "142.18",
+          "vat": null,
+          "account_code": null,
+          "description": "OCTOPUS ENERGY",
+          "has_account": false,
+          "has_vat": false
+        }
+      ],
+      "correct": 4
+    },
+    {
+      "case": "pdf-purchase-invoice",
+      "kind": "pdf",
+      "error": null,
+      "latency_s": 20.4,
+      "model": "qwen2.5vl:3b",
+      "tb_balanced": false,
+      "expected": 1,
+      "predicted": 6,
+      "matched": 1,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          0,
+          0
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": false,
+      "predicted_rows": [
+        {
+          "date": "2026-09-08",
+          "direction": "out",
+          "gross": "45.00",
+          "vat": null,
+          "account_code": null,
+          "description": "A4 copier paper (10 reams)",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-08",
+          "direction": "out",
+          "gross": "165.00",
+          "vat": null,
+          "account_code": null,
+          "description": "Toner cartridge HP 410X",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-08",
+          "direction": "out",
+          "gross": "40.00",
+          "vat": null,
+          "account_code": null,
+          "description": "Desk organisers x4",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-08",
+          "direction": "out",
+          "gross": "250.00",
+          "vat": null,
+          "account_code": null,
+          "description": "Net amount",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-08",
+          "direction": "out",
+          "gross": "50.00",
+          "vat": null,
+          "account_code": null,
+          "description": "VAT at 20%",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-08",
+          "direction": "out",
+          "gross": "300.00",
+          "vat": null,
+          "account_code": null,
+          "description": "Total due",
+          "has_account": false,
+          "has_vat": false
+        }
+      ],
+      "correct": 1
+    },
+    {
+      "case": "pdf-sales-invoice",
+      "kind": "pdf",
+      "error": null,
+      "latency_s": 6.4,
+      "model": "qwen2.5vl:3b",
+      "tb_balanced": false,
+      "expected": 1,
+      "predicted": 1,
+      "matched": 1,
+      "checks": {
+        "amount": [
+          0,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          0,
+          0
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": false,
+      "predicted_rows": [
+        {
+          "date": "2026-09-30",
+          "direction": "in",
+          "gross": "2000.00",
+          "vat": null,
+          "account_code": null,
+          "description": "Strategy consultancy",
+          "has_account": false,
+          "has_vat": false
+        }
+      ],
+      "correct": 0
+    },
+    {
+      "case": "pdf-scanned-invoice",
+      "kind": "pdf",
+      "error": null,
+      "latency_s": 26.0,
+      "model": "qwen2.5vl:3b",
+      "tb_balanced": false,
+      "expected": 1,
+      "predicted": 1,
+      "matched": 1,
+      "checks": {
+        "amount": [
+          0,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          0,
+          0
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": false,
+      "predicted_rows": [
+        {
+          "date": "2026-09-25",
+          "direction": "out",
+          "gross": "450.00",
+          "vat": null,
+          "account_code": null,
+          "description": "Management accounts",
+          "has_account": false,
+          "has_vat": false
+        }
+      ],
+      "correct": 0
+    },
+    {
+      "case": "text-hmrc-vat-payment",
+      "kind": "text",
+      "error": null,
+      "latency_s": 5.9,
+      "model": "qwen2.5vl:3b",
+      "tb_balanced": false,
+      "expected": 1,
+      "predicted": 1,
+      "matched": 1,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          0,
+          0
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-07",
+          "direction": "out",
+          "gross": "1450.00",
+          "vat": null,
+          "account_code": null,
+          "description": "HMRC VAT settlement payment",
+          "has_account": false,
+          "has_vat": false
+        }
+      ],
+      "correct": 1
+    },
+    {
+      "case": "text-notes",
+      "kind": "text",
+      "error": null,
+      "latency_s": 16.8,
+      "model": "qwen2.5vl:3b",
+      "tb_balanced": false,
+      "expected": 3,
+      "predicted": 3,
+      "matched": 3,
+      "checks": {
+        "amount": [
+          3,
+          3
+        ],
+        "date": [
+          3,
+          3
+        ],
+        "direction": [
+          3,
+          3
+        ],
+        "account": [
+          0,
+          0
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-02",
+          "direction": "in",
+          "gross": "2400.00",
+          "vat": null,
+          "account_code": null,
+          "description": "Consulting services sold to ACME Corp",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-01",
+          "direction": "out",
+          "gross": "72.00",
+          "vat": null,
+          "account_code": null,
+          "description": "BT Business Broadband monthly bill",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-10",
+          "direction": "out",
+          "gross": "149.99",
+          "vat": null,
+          "account_code": null,
+          "description": "Office chair from IKEA",
+          "has_account": false,
+          "has_vat": false
+        }
+      ],
+      "correct": 3
+    },
+    {
+      "case": "text-pasted-csv",
+      "kind": "text",
+      "error": null,
+      "latency_s": 21.1,
+      "model": "qwen2.5vl:3b",
+      "tb_balanced": false,
+      "expected": 4,
+      "predicted": 1,
+      "matched": 1,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          0,
+          0
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": false,
+      "predicted_rows": [
+        {
+          "date": "2026-09-12",
+          "direction": "in",
+          "gross": "1250.00",
+          "vat": null,
+          "account_code": null,
+          "description": "CLIENT PAYMENT BRIGHTWELL LTD",
+          "has_account": false,
+          "has_vat": false
+        }
+      ],
+      "correct": 1
+    },
+    {
+      "case": "text-paye",
+      "kind": "text",
+      "error": null,
+      "latency_s": 6.4,
+      "model": "qwen2.5vl:3b",
+      "tb_balanced": false,
+      "expected": 1,
+      "predicted": 1,
+      "matched": 1,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          0,
+          0
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-19",
+          "direction": "out",
+          "gross": "2140.37",
+          "vat": null,
+          "account_code": null,
+          "description": "HMRC PAYE and National Insurance",
+          "has_account": false,
+          "has_vat": false
+        }
+      ],
+      "correct": 1
+    },
+    {
+      "case": "text-savings-transfer",
+      "kind": "text",
+      "error": null,
+      "latency_s": 6.3,
+      "model": "qwen2.5vl:3b",
+      "tb_balanced": false,
+      "expected": 1,
+      "predicted": 1,
+      "matched": 1,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          0,
+          0
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-15",
+          "direction": "out",
+          "gross": "5000.00",
+          "vat": null,
+          "account_code": null,
+          "description": "Moved funds from current account to business savings account",
+          "has_account": false,
+          "has_vat": false
+        }
+      ],
+      "correct": 1
+    },
+    {
+      "case": "text-supplier-refund",
+      "kind": "text",
+      "error": null,
+      "latency_s": 5.8,
+      "model": "qwen2.5vl:3b",
+      "tb_balanced": false,
+      "expected": 1,
+      "predicted": 1,
+      "matched": 1,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          0,
+          1
+        ],
+        "account": [
+          0,
+          0
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": false,
+      "predicted_rows": [
+        {
+          "date": "2026-09-05",
+          "direction": "out",
+          "gross": "89.99",
+          "vat": null,
+          "account_code": null,
+          "description": "Refund from Amazon for returned printer",
+          "has_account": false,
+          "has_vat": false
+        }
+      ],
+      "correct": 0
+    },
+    {
+      "case": "text-tesco-receipt",
+      "kind": "text",
+      "error": null,
+      "latency_s": 33.3,
+      "model": "qwen2.5vl:3b",
+      "tb_balanced": false,
+      "expected": 1,
+      "predicted": 6,
+      "matched": 1,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          0,
+          1
+        ],
+        "account": [
+          0,
+          0
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": false,
+      "predicted_rows": [
+        {
+          "date": "2026-09-03",
+          "direction": "in",
+          "gross": "3.50",
+          "vat": null,
+          "account_code": null,
+          "description": "Meal Deal",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-03",
+          "direction": "in",
+          "gross": "2.80",
+          "vat": null,
+          "account_code": null,
+          "description": "Coffee",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-03",
+          "direction": "in",
+          "gross": "6.20",
+          "vat": null,
+          "account_code": null,
+          "description": "Sandwich",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-03",
+          "direction": "in",
+          "gross": "12.50",
+          "vat": null,
+          "account_code": null,
+          "description": "TOTAL",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-03",
+          "direction": "out",
+          "gross": "20.00",
+          "vat": null,
+          "account_code": null,
+          "description": "CASH",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-03",
+          "direction": "out",
+          "gross": "7.50",
+          "vat": null,
+          "account_code": null,
+          "description": "CHANGE",
+          "has_account": false,
+          "has_vat": false
+        }
+      ],
+      "correct": 0
+    },
+    {
+      "case": "tsv-utf16-unicode-text",
+      "kind": "table",
+      "error": null,
+      "latency_s": 12.6,
+      "model": "qwen2.5vl:3b",
+      "tb_balanced": false,
+      "expected": 3,
+      "predicted": 3,
+      "matched": 3,
+      "checks": {
+        "amount": [
+          3,
+          3
+        ],
+        "date": [
+          2,
+          3
+        ],
+        "direction": [
+          3,
+          3
+        ],
+        "account": [
+          0,
+          0
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": false,
+      "predicted_rows": [
+        {
+          "date": "2026-09-03",
+          "direction": "out",
+          "gross": "23.99",
+          "vat": null,
+          "account_code": null,
+          "description": "VIKING DIRECT STATIONERY",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": null,
+          "direction": "in",
+          "gross": "640.00",
+          "vat": null,
+          "account_code": null,
+          "description": "KINGSTON CATERING LTD",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-18",
+          "direction": "out",
+          "gross": "190.00",
+          "vat": null,
+          "account_code": null,
+          "description": "DVLA VEHICLE TAX",
+          "has_account": false,
+          "has_vat": false
+        }
+      ],
+      "correct": 2
+    },
+    {
+      "case": "xlsx-two-months",
+      "kind": "table",
+      "error": null,
+      "latency_s": 33.8,
+      "model": "qwen2.5vl:3b",
+      "tb_balanced": false,
+      "expected": 6,
+      "predicted": 5,
+      "matched": 5,
+      "checks": {
+        "amount": [
+          5,
+          5
+        ],
+        "date": [
+          5,
+          5
+        ],
+        "direction": [
+          5,
+          5
+        ],
+        "account": [
+          0,
+          0
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": false,
+      "predicted_rows": [
+        {
+          "date": "2026-09-04",
+          "direction": "out",
+          "gross": "26.40",
+          "vat": null,
+          "account_code": null,
+          "description": "SAGE SUBSCRIPTION",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-17",
+          "direction": "in",
+          "gross": "980.00",
+          "vat": null,
+          "account_code": null,
+          "description": "RIVERSIDE DENTAL",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-09-25",
+          "direction": "out",
+          "gross": "41.25",
+          "vat": null,
+          "account_code": null,
+          "description": "HISCOX INSURANCE",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-10-02",
+          "direction": "out",
+          "gross": "72.00",
+          "vat": null,
+          "account_code": null,
+          "description": "BT BUSINESS BROADBAND",
+          "has_account": false,
+          "has_vat": false
+        },
+        {
+          "date": "2026-10-20",
+          "direction": "out",
+          "gross": "7.85",
+          "vat": null,
+          "account_code": null,
+          "description": "ROYAL MAIL",
+          "has_account": false,
+          "has_vat": false
+        }
+      ],
+      "correct": 5
+    }
+  ]
+}

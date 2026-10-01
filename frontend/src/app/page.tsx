@@ -1,38 +1,17 @@
 'use client'
 
-import { useState, useRef, useCallback } from 'react'
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-interface AccountingTransaction {
-  description: string
-  date: string | null
-  amount: number
-  currency: string
-  type: 'expense' | 'revenue'
-  account: string
-}
-
-interface AnalyzeResult {
-  success: boolean
-  count: number
-  data: AccountingTransaction[]
-  raw_model_output?: string
-  validation_error?: string
-}
-
-interface TrialBalanceLine {
-  account: string
-  debit: number
-  credit: number
-}
-
-interface TrialBalanceResult {
-  lines: TrialBalanceLine[]
-  total_debits: number
-  total_credits: number
-  is_balanced: boolean
-}
+import { useState, useRef, useCallback, useEffect } from 'react'
+import {
+  analyze as runAnalysisJob,
+  ApiError,
+  getHealth,
+  trialBalance,
+  validateTransactions,
+  type Transaction,
+  type AnalyzeResult,
+  type Health,
+  type TrialBalanceResult,
+} from '@/lib/api'
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
@@ -40,6 +19,16 @@ const fmt = (n: number) =>
   n === 0
     ? ''
     : `£${Math.abs(n).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+
+const money = (value: string | null) => (value == null ? '—' : fmt(Number(value)) || '£0.00')
+
+const issueSummary = (tx: Transaction) => {
+  if (!tx.issues.length) return { mark: '✓', cls: 'issue-ok', title: 'No issues' }
+  const worst = tx.issues.some(i => i.severity === 'error') ? 'issue-error'
+    : tx.issues.some(i => i.severity === 'warning') ? 'issue-warn' : 'issue-info'
+  return { mark: `${worst === 'issue-error' ? '✖' : '⚠'} ${tx.issues.length}`, cls: worst,
+           title: tx.issues.map(i => i.message).join('\n') }
+}
 
 // ─── Main Page Component ──────────────────────────────────────────────────────
 
@@ -53,63 +42,121 @@ export default function Home() {
   const [dragOver, setDragOver] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  // API / model status
+  const [health, setHealth] = useState<Health | null>(null)
+  const [healthError, setHealthError] = useState('')
+
   // Step 2 state
   const [analyzing, setAnalyzing] = useState(false)
+  const [progress, setProgress] = useState('')
   const [analyzeError, setAnalyzeError] = useState('')
-  const [transactions, setTransactions] = useState<AccountingTransaction[]>([])
+  const [warnings, setWarnings] = useState<string[]>([])
+  const [modelName, setModelName] = useState<string | null>(null)
+  const [transactions, setTransactions] = useState<Transaction[]>([])
+  const cancelRef = useRef(false)
 
   // Step 3 state
   const [generating, setGenerating] = useState(false)
   const [tbResult, setTbResult] = useState<TrialBalanceResult | null>(null)
   const [tbError, setTbError] = useState('')
 
-  // ── Step 1 → Step 2: call /api/analyze ─────────────────────────────────────
+  // ── AI online / offline indicator ──────────────────────────────────────────
 
-  const analyze = useCallback(async (formData: FormData) => {
+  useEffect(() => {
+    let alive = true
+    const check = () =>
+      getHealth()
+        .then(h => {
+          if (alive) { setHealth(h); setHealthError('') }
+        })
+        .catch((e: unknown) => {
+          if (alive) { setHealth(null); setHealthError(e instanceof Error ? e.message : String(e)) }
+        })
+    check()
+    const timer = setInterval(check, 30_000)
+    return () => { alive = false; clearInterval(timer) }
+  }, [])
+
+  // ── Step 1 → Step 2: run an analysis job ───────────────────────────────────
+
+  const runAnalysis = useCallback(async (
+    formData: FormData,
+    toTransactions: (result: AnalyzeResult) => Transaction[] | Promise<Transaction[]> = result => result.transactions,
+  ) => {
+    cancelRef.current = false
     setAnalyzing(true)
+    setProgress('Uploading…')
     setAnalyzeError('')
+    setWarnings([])
+    setModelName(null)
     setTransactions([])
     setTbResult(null)
     setTbError('')
     try {
-      const res = await fetch('http://localhost:8085/api/analyze', { method: 'POST', body: formData })
-      if (!res.ok) {
-        const detail = await res.text()
-        throw new Error(`API ${res.status}: ${detail}`)
-      }
-      const result: AnalyzeResult = await res.json()
-      if (!result.success || !result.data.length) {
-        throw new Error(result.validation_error || 'No transactions extracted.')
-      }
-      setTransactions(result.data)
+      const result = await runAnalysisJob(formData, setProgress, () => cancelRef.current)
+      setWarnings(result.warnings)
+      setModelName(result.model)
+      const rows = await toTransactions(result)
+      if (!rows.length) throw new ApiError('No transactions were found in this input.', 'empty')
+      setTransactions(rows)
     } catch (e: unknown) {
       setAnalyzeError(e instanceof Error ? e.message : String(e))
     } finally {
       setAnalyzing(false)
+      setProgress('')
     }
   }, [])
+
+  const cancelAnalysis = () => {
+    cancelRef.current = true
+    setProgress('Cancelling…')
+  }
 
   const handlePaste = () => {
     if (!pasteText.trim()) return
     const fd = new FormData()
     fd.append('text', pasteText.trim())
-    analyze(fd)
+    runAnalysis(fd)
   }
 
   const handleManual = () => {
     const amt = parseFloat(manualAmount)
     if (!manualDesc.trim() || isNaN(amt)) return
-    const verb = manualType === 'revenue' ? 'received' : 'paid'
+    const description = manualDesc.trim()
+    const amount = Math.abs(amt)
+    const type = manualType
+    const verb = type === 'revenue' ? 'received' : 'paid'
     const fd = new FormData()
-    fd.append('text', `${manualDesc.trim()} - ${verb} GBP ${Math.abs(amt)}`)
-    analyze(fd)
+    fd.append('text', `${description} - ${verb} GBP ${amount}`)
+    // The model only suggests the account; the backend splits the VAT like any other row.
+    runAnalysis(fd, async result => {
+      const suggested = result.transactions[0]
+      const row: Transaction = {
+        date: null, description, direction: type === 'revenue' ? 'in' : 'out', gross: amount.toFixed(2),
+        vat: null, vat_treatment: null, vat_posted: null, net: null,
+        account_code: suggested?.account_code ?? '9998',
+        contra_account_code: null, currency: 'GBP', source: 'manual', method: 'user', evidence: null,
+        issues: suggested
+          ? suggested.issues.filter(i => i.code === 'account_not_recognised')
+          : [{ code: 'account_not_recognised', severity: 'warning', message: 'No account suggested; posted to Suspense.' }],
+      }
+      return (await validateTransactions([row])).transactions
+    })
   }
 
   const handleFiles = (files: FileList | null) => {
     if (!files || !files.length) return
+    const file = files[0]
+    if (fileInputRef.current) fileInputRef.current.value = '' // lets the same file be chosen again
+    const limitMb = health?.max_upload_mb ?? 20
+    if (file.size > limitMb * 1024 * 1024) {
+      // Checked here because the Next proxy cuts oversized bodies instead of rejecting them.
+      setAnalyzeError(`'${file.name}' is larger than the ${limitMb} MB limit. Split it and upload the parts.`)
+      return
+    }
     const fd = new FormData()
-    fd.append('file', files[0])
-    analyze(fd)
+    fd.append('file', file)
+    runAnalysis(fd)
   }
 
   // ── Step 2 → Step 3: call /api/trial-balance ───────────────────────────────
@@ -120,14 +167,7 @@ export default function Home() {
     setTbError('')
     setTbResult(null)
     try {
-      const res = await fetch('http://localhost:8085/api/trial-balance', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(transactions),
-      })
-      if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`)
-      const result: TrialBalanceResult = await res.json()
-      setTbResult(result)
+      setTbResult(await trialBalance(transactions))
     } catch (e: unknown) {
       setTbError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -150,7 +190,13 @@ export default function Home() {
         <div className="header-icon">£</div>
         <div>
           <div className="header-title">UK LedgerSync</div>
-          <div className="header-sub">Local Qwen AI · Trial Balance Prototype</div>
+          <div className="header-sub">
+            {health
+              ? health.model_available
+                ? <span className="health-ok">● AI online · {health.model}</span>
+                : <span className="health-off">● AI offline · {health.ai_error}</span>
+              : <span className="health-off">● {healthError || 'Checking API…'}</span>}
+          </div>
         </div>
       </header>
 
@@ -221,16 +267,16 @@ export default function Home() {
               type="file"
               ref={fileInputRef}
               style={{ display: 'none' }}
-              accept=".csv,.xlsx,.xls,.txt,.pdf,.png,.jpg,.jpeg"
+              accept=".csv,.tsv,.txt,.xlsx,.xls,.pdf,.png,.jpg,.jpeg,.webp,.bmp,.tiff"
               onChange={e => handleFiles(e.target.files)}
             />
             <div
               id="dropzone"
               className={`dropzone ${dragOver ? 'drag-over' : ''}`}
-              onClick={() => fileInputRef.current?.click()}
+              onClick={() => !analyzing && fileInputRef.current?.click()}
               onDragOver={e => { e.preventDefault(); setDragOver(true) }}
               onDragLeave={() => setDragOver(false)}
-              onDrop={e => { e.preventDefault(); setDragOver(false); handleFiles(e.dataTransfer.files) }}
+              onDrop={e => { e.preventDefault(); setDragOver(false); if (!analyzing) handleFiles(e.dataTransfer.files) }}
             >
               <div className="dropzone-icon">📥</div>
               <h3>Drop a file here or click to browse</h3>
@@ -307,7 +353,10 @@ export default function Home() {
             <span className="step-badge badge-2">Step 2</span>
             <span className="section-title">Qwen AI — Structured Output</span>
             {transactions.length > 0 && (
-              <span className="section-sub">{transactions.length} transaction{transactions.length !== 1 ? 's' : ''} extracted</span>
+              <span className="section-sub">
+                {transactions.length} transaction{transactions.length !== 1 ? 's' : ''} extracted
+                {modelName ? ` · ${modelName}` : ''}
+              </span>
             )}
           </div>
           <div className="section-body">
@@ -315,7 +364,10 @@ export default function Home() {
             {analyzing && (
               <div className="status-msg status-processing">
                 <span className="spinner" />
-                Local Qwen model is analysing your input…
+                <span>{progress || 'Working…'}</span>
+                <button className="btn btn-ghost" onClick={cancelAnalysis} disabled={progress === 'Cancelling…'}>
+                  Cancel
+                </button>
               </div>
             )}
 
@@ -325,35 +377,48 @@ export default function Home() {
               </div>
             )}
 
+            {warnings.length > 0 && (
+              <div className="status-msg status-warning">
+                <div>
+                  {warnings.map((w, i) => <div key={i}>⚠ {w}</div>)}
+                </div>
+              </div>
+            )}
+
             {transactions.length > 0 && (
               <>
                 <div className="data-table-wrap">
                   <table className="data-table">
                     <thead>
                       <tr>
+                        <th>Date</th>
                         <th>Description</th>
+                        <th>In / Out</th>
                         <th>Amount</th>
-                        <th>Type</th>
-                        <th>Account / Category</th>
-                        <th>Currency</th>
+                        <th>VAT</th>
+                        <th>Account</th>
+                        <th>Check</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {transactions.map((tx, i) => (
-                        <tr key={i}>
-                          <td>{tx.description}</td>
-                          <td className="amount-cell">
-                            £{tx.amount.toLocaleString('en-GB', { minimumFractionDigits: 2 })}
-                          </td>
-                          <td>
-                            <span className={`badge-type ${tx.type === 'expense' ? 'badge-expense' : 'badge-revenue'}`}>
-                              {tx.type}
-                            </span>
-                          </td>
-                          <td>{tx.account}</td>
-                          <td style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>{tx.currency || 'GBP'}</td>
-                        </tr>
-                      ))}
+                      {transactions.map((tx, i) => {
+                        const check = issueSummary(tx)
+                        return (
+                          <tr key={i}>
+                            <td>{tx.date ?? '—'}</td>
+                            <td>{tx.description}</td>
+                            <td>
+                              <span className={`badge-type ${tx.direction === 'out' ? 'badge-expense' : 'badge-revenue'}`}>
+                                {tx.direction === 'out' ? 'money out' : 'money in'}
+                              </span>
+                            </td>
+                            <td className="amount-cell">{money(tx.gross)}</td>
+                            <td className="amount-cell">{money(tx.vat_posted)}</td>
+                            <td>{tx.account_code} {tx.account_name ?? ''}</td>
+                            <td className={check.cls} title={check.title}>{check.mark}</td>
+                          </tr>
+                        )
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -418,14 +483,14 @@ export default function Home() {
                       </tr>
                     </thead>
                     <tbody>
-                      {tbResult.lines.map((line, i) => (
-                        <tr key={i}>
-                          <td className="tb-account">{line.account}</td>
-                          <td className={line.debit > 0 ? 'debit-val' : 'empty-cell'}>
-                            {line.debit > 0 ? fmt(line.debit) : '—'}
+                      {tbResult.lines.map(line => (
+                        <tr key={line.code}>
+                          <td className="tb-account">{line.code} {line.name}</td>
+                          <td className={Number(line.debit) > 0 ? 'debit-val' : 'empty-cell'}>
+                            {Number(line.debit) > 0 ? money(line.debit) : '—'}
                           </td>
-                          <td className={line.credit > 0 ? 'credit-val' : 'empty-cell'}>
-                            {line.credit > 0 ? fmt(line.credit) : '—'}
+                          <td className={Number(line.credit) > 0 ? 'credit-val' : 'empty-cell'}>
+                            {Number(line.credit) > 0 ? money(line.credit) : '—'}
                           </td>
                         </tr>
                       ))}
@@ -433,8 +498,8 @@ export default function Home() {
                     <tfoot>
                       <tr className="tb-total-row">
                         <td>Totals</td>
-                        <td className="debit-val">{fmt(tbResult.total_debits) || '£0.00'}</td>
-                        <td className="credit-val">{fmt(tbResult.total_credits) || '£0.00'}</td>
+                        <td className="debit-val">{money(tbResult.total_debits)}</td>
+                        <td className="credit-val">{money(tbResult.total_credits)}</td>
                       </tr>
                     </tfoot>
                   </table>
@@ -444,7 +509,7 @@ export default function Home() {
                   <span className={`balance-pill ${tbResult.is_balanced ? 'pill-balanced' : 'pill-unbalanced'}`}>
                     {tbResult.is_balanced
                       ? '✓ Trial Balance Balances'
-                      : `⚠ Out of Balance by £${Math.abs(tbResult.total_debits - tbResult.total_credits).toFixed(2)}`}
+                      : `⚠ Out of Balance by £${Math.abs(Number(tbResult.total_debits) - Number(tbResult.total_credits)).toFixed(2)}`}
                   </span>
                 </div>
               </>

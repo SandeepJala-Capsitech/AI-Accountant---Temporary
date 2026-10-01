@@ -1,0 +1,39 @@
+{
+  "case": "text-pasted-csv",
+  "kind": "text",
+  "input": "input.txt",
+  "rows": [
+    {
+      "date": "2026-09-08",
+      "direction": "out",
+      "gross": "9.60",
+      "vat": null,
+      "account_code": "8201",
+      "description": "MICROSOFT 365 BUSINESS"
+    },
+    {
+      "date": "2026-09-11",
+      "direction": "out",
+      "gross": "19.97",
+      "vat": null,
+      "account_code": "8201",
+      "description": "ADOBE CREATIVE CLOUD"
+    },
+    {
+      "date": "2026-09-12",
+      "direction": "in",
+      "gross": "1250.00",
+      "vat": null,
+      "account_code": "4000",
+      "description": "CLIENT PAYMENT BRIGHTWELL LTD"
+    },
+    {
+      "date": "2026-09-14",
+      "direction": "out",
+      "gross": "38.12",
+      "vat": null,
+      "account_code": "8204",
+      "description": "DIRECT LINE BUSINESS INSURANCE"
+    }
+  ]
+}

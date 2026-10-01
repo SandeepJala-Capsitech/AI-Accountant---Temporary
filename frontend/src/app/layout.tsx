@@ -3,7 +3,7 @@ import './globals.css'
 
 export const metadata: Metadata = {
   title: 'UK LedgerSync — Trial Balance Prototype',
-  description: 'User Input → Local Qwen AI → Structured Data → Trial Balance',
+  description: 'User input → Qwen vision model on Groq → structured data → trial balance',
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

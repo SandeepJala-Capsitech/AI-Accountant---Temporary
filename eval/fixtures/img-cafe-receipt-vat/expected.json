@@ -1,0 +1,15 @@
+{
+  "case": "img-cafe-receipt-vat",
+  "kind": "image",
+  "input": "input.png",
+  "rows": [
+    {
+      "date": "2026-09-12",
+      "direction": "out",
+      "gross": "7.50",
+      "vat": "1.25",
+      "account_code": "7406",
+      "description": "The Daily Grind Cafe"
+    }
+  ]
+}

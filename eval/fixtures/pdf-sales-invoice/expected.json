@@ -1,0 +1,15 @@
+{
+  "case": "pdf-sales-invoice",
+  "kind": "pdf",
+  "input": "input.pdf",
+  "rows": [
+    {
+      "date": "2026-09-30",
+      "direction": "in",
+      "gross": "2400.00",
+      "vat": "400.00",
+      "account_code": "4000",
+      "description": "Harbour & Lane Architects LLP"
+    }
+  ]
+}

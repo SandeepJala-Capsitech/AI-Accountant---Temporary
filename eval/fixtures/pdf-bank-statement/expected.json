@@ -1,0 +1,47 @@
+{
+  "case": "pdf-bank-statement",
+  "kind": "pdf",
+  "input": "input.pdf",
+  "rows": [
+    {
+      "date": "2026-09-03",
+      "direction": "out",
+      "gross": "86.40",
+      "vat": null,
+      "account_code": "7201",
+      "description": "BRITISH GAS BUSINESS"
+    },
+    {
+      "date": "2026-09-05",
+      "direction": "out",
+      "gross": "1250.00",
+      "vat": null,
+      "account_code": "7100",
+      "description": "LANDMARK PROPERTIES RENT"
+    },
+    {
+      "date": "2026-09-09",
+      "direction": "in",
+      "gross": "3600.00",
+      "vat": null,
+      "account_code": "4000",
+      "description": "HARBOUR & LANE ARCHITECTS"
+    },
+    {
+      "date": "2026-09-20",
+      "direction": "out",
+      "gross": "8.50",
+      "vat": null,
+      "account_code": "7901",
+      "description": "BARCLAYS BANK CHARGES"
+    },
+    {
+      "date": "2026-09-28",
+      "direction": "out",
+      "gross": "142.18",
+      "vat": null,
+      "account_code": "7200",
+      "description": "OCTOPUS ENERGY"
+    }
+  ]
+}

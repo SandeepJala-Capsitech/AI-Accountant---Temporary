@@ -1,0 +1,487 @@
+{
+  "case": "csv-long-statement-60-rows",
+  "kind": "table",
+  "input": "input.csv",
+  "rows": [
+    {
+      "date": "2026-09-01",
+      "direction": "out",
+      "gross": "21.01",
+      "vat": null,
+      "account_code": "8205",
+      "description": "TESCO STORES 001"
+    },
+    {
+      "date": "2026-09-01",
+      "direction": "out",
+      "gross": "53.84",
+      "vat": null,
+      "account_code": "7300",
+      "description": "SHELL 002"
+    },
+    {
+      "date": "2026-09-02",
+      "direction": "out",
+      "gross": "83.83",
+      "vat": null,
+      "account_code": "9998",
+      "description": "AMAZON MARKETPLACE 003"
+    },
+    {
+      "date": "2026-09-02",
+      "direction": "in",
+      "gross": "1741.71",
+      "vat": null,
+      "account_code": "4000",
+      "description": "CLIENT RECEIPT 004"
+    },
+    {
+      "date": "2026-09-03",
+      "direction": "out",
+      "gross": "18.31",
+      "vat": null,
+      "account_code": "7400",
+      "description": "UBER 005"
+    },
+    {
+      "date": "2026-09-03",
+      "direction": "out",
+      "gross": "38.08",
+      "vat": null,
+      "account_code": "7502",
+      "description": "VODAFONE 006"
+    },
+    {
+      "date": "2026-09-04",
+      "direction": "out",
+      "gross": "70.41",
+      "vat": null,
+      "account_code": "7501",
+      "description": "ROYAL MAIL 007"
+    },
+    {
+      "date": "2026-09-04",
+      "direction": "out",
+      "gross": "81.92",
+      "vat": null,
+      "account_code": "7406",
+      "description": "PRET A MANGER 008"
+    },
+    {
+      "date": "2026-09-05",
+      "direction": "out",
+      "gross": "73.76",
+      "vat": null,
+      "account_code": "8205",
+      "description": "TESCO STORES 009"
+    },
+    {
+      "date": "2026-09-05",
+      "direction": "out",
+      "gross": "40.81",
+      "vat": null,
+      "account_code": "7300",
+      "description": "SHELL 010"
+    },
+    {
+      "date": "2026-09-06",
+      "direction": "out",
+      "gross": "1.91",
+      "vat": null,
+      "account_code": "9998",
+      "description": "AMAZON MARKETPLACE 011"
+    },
+    {
+      "date": "2026-09-06",
+      "direction": "in",
+      "gross": "2010.09",
+      "vat": null,
+      "account_code": "4000",
+      "description": "CLIENT RECEIPT 012"
+    },
+    {
+      "date": "2026-09-07",
+      "direction": "out",
+      "gross": "14.72",
+      "vat": null,
+      "account_code": "7400",
+      "description": "UBER 013"
+    },
+    {
+      "date": "2026-09-07",
+      "direction": "out",
+      "gross": "19.64",
+      "vat": null,
+      "account_code": "7502",
+      "description": "VODAFONE 014"
+    },
+    {
+      "date": "2026-09-08",
+      "direction": "out",
+      "gross": "48.56",
+      "vat": null,
+      "account_code": "7501",
+      "description": "ROYAL MAIL 015"
+    },
+    {
+      "date": "2026-09-08",
+      "direction": "out",
+      "gross": "17.56",
+      "vat": null,
+      "account_code": "7406",
+      "description": "PRET A MANGER 016"
+    },
+    {
+      "date": "2026-09-09",
+      "direction": "out",
+      "gross": "75.17",
+      "vat": null,
+      "account_code": "8205",
+      "description": "TESCO STORES 017"
+    },
+    {
+      "date": "2026-09-09",
+      "direction": "out",
+      "gross": "3.38",
+      "vat": null,
+      "account_code": "7300",
+      "description": "SHELL 018"
+    },
+    {
+      "date": "2026-09-10",
+      "direction": "out",
+      "gross": "81.82",
+      "vat": null,
+      "account_code": "9998",
+      "description": "AMAZON MARKETPLACE 019"
+    },
+    {
+      "date": "2026-09-10",
+      "direction": "in",
+      "gross": "2180.97",
+      "vat": null,
+      "account_code": "4000",
+      "description": "CLIENT RECEIPT 020"
+    },
+    {
+      "date": "2026-09-11",
+      "direction": "out",
+      "gross": "52.98",
+      "vat": null,
+      "account_code": "7400",
+      "description": "UBER 021"
+    },
+    {
+      "date": "2026-09-11",
+      "direction": "out",
+      "gross": "35.94",
+      "vat": null,
+      "account_code": "7502",
+      "description": "VODAFONE 022"
+    },
+    {
+      "date": "2026-09-12",
+      "direction": "out",
+      "gross": "66.58",
+      "vat": null,
+      "account_code": "7501",
+      "description": "ROYAL MAIL 023"
+    },
+    {
+      "date": "2026-09-12",
+      "direction": "out",
+      "gross": "42.70",
+      "vat": null,
+      "account_code": "7406",
+      "description": "PRET A MANGER 024"
+    },
+    {
+      "date": "2026-09-13",
+      "direction": "out",
+      "gross": "58.46",
+      "vat": null,
+      "account_code": "8205",
+      "description": "TESCO STORES 025"
+    },
+    {
+      "date": "2026-09-13",
+      "direction": "out",
+      "gross": "59.93",
+      "vat": null,
+      "account_code": "7300",
+      "description": "SHELL 026"
+    },
+    {
+      "date": "2026-09-14",
+      "direction": "out",
+      "gross": "63.16",
+      "vat": null,
+      "account_code": "9998",
+      "description": "AMAZON MARKETPLACE 027"
+    },
+    {
+      "date": "2026-09-14",
+      "direction": "in",
+      "gross": "2355.51",
+      "vat": null,
+      "account_code": "4000",
+      "description": "CLIENT RECEIPT 028"
+    },
+    {
+      "date": "2026-09-15",
+      "direction": "out",
+      "gross": "85.64",
+      "vat": null,
+      "account_code": "7400",
+      "description": "UBER 029"
+    },
+    {
+      "date": "2026-09-15",
+      "direction": "out",
+      "gross": "14.00",
+      "vat": null,
+      "account_code": "7502",
+      "description": "VODAFONE 030"
+    },
+    {
+      "date": "2026-09-16",
+      "direction": "out",
+      "gross": "57.27",
+      "vat": null,
+      "account_code": "7501",
+      "description": "ROYAL MAIL 031"
+    },
+    {
+      "date": "2026-09-16",
+      "direction": "out",
+      "gross": "16.19",
+      "vat": null,
+      "account_code": "7406",
+      "description": "PRET A MANGER 032"
+    },
+    {
+      "date": "2026-09-17",
+      "direction": "out",
+      "gross": "89.65",
+      "vat": null,
+      "account_code": "8205",
+      "description": "TESCO STORES 033"
+    },
+    {
+      "date": "2026-09-17",
+      "direction": "out",
+      "gross": "49.36",
+      "vat": null,
+      "account_code": "7300",
+      "description": "SHELL 034"
+    },
+    {
+      "date": "2026-09-18",
+      "direction": "out",
+      "gross": "48.62",
+      "vat": null,
+      "account_code": "9998",
+      "description": "AMAZON MARKETPLACE 035"
+    },
+    {
+      "date": "2026-09-18",
+      "direction": "in",
+      "gross": "1599.17",
+      "vat": null,
+      "account_code": "4000",
+      "description": "CLIENT RECEIPT 036"
+    },
+    {
+      "date": "2026-09-19",
+      "direction": "out",
+      "gross": "24.58",
+      "vat": null,
+      "account_code": "7400",
+      "description": "UBER 037"
+    },
+    {
+      "date": "2026-09-19",
+      "direction": "out",
+      "gross": "52.12",
+      "vat": null,
+      "account_code": "7502",
+      "description": "VODAFONE 038"
+    },
+    {
+      "date": "2026-09-20",
+      "direction": "out",
+      "gross": "5.55",
+      "vat": null,
+      "account_code": "7501",
+      "description": "ROYAL MAIL 039"
+    },
+    {
+      "date": "2026-09-20",
+      "direction": "out",
+      "gross": "61.93",
+      "vat": null,
+      "account_code": "7406",
+      "description": "PRET A MANGER 040"
+    },
+    {
+      "date": "2026-09-21",
+      "direction": "out",
+      "gross": "61.06",
+      "vat": null,
+      "account_code": "8205",
+      "description": "TESCO STORES 041"
+    },
+    {
+      "date": "2026-09-21",
+      "direction": "out",
+      "gross": "77.04",
+      "vat": null,
+      "account_code": "7300",
+      "description": "SHELL 042"
+    },
+    {
+      "date": "2026-09-22",
+      "direction": "out",
+      "gross": "70.67",
+      "vat": null,
+      "account_code": "9998",
+      "description": "AMAZON MARKETPLACE 043"
+    },
+    {
+      "date": "2026-09-22",
+      "direction": "in",
+      "gross": "637.72",
+      "vat": null,
+      "account_code": "4000",
+      "description": "CLIENT RECEIPT 044"
+    },
+    {
+      "date": "2026-09-23",
+      "direction": "out",
+      "gross": "66.83",
+      "vat": null,
+      "account_code": "7400",
+      "description": "UBER 045"
+    },
+    {
+      "date": "2026-09-23",
+      "direction": "out",
+      "gross": "83.16",
+      "vat": null,
+      "account_code": "7502",
+      "description": "VODAFONE 046"
+    },
+    {
+      "date": "2026-09-24",
+      "direction": "out",
+      "gross": "20.57",
+      "vat": null,
+      "account_code": "7501",
+      "description": "ROYAL MAIL 047"
+    },
+    {
+      "date": "2026-09-24",
+      "direction": "out",
+      "gross": "71.20",
+      "vat": null,
+      "account_code": "7406",
+      "description": "PRET A MANGER 048"
+    },
+    {
+      "date": "2026-09-25",
+      "direction": "out",
+      "gross": "84.46",
+      "vat": null,
+      "account_code": "8205",
+      "description": "TESCO STORES 049"
+    },
+    {
+      "date": "2026-09-25",
+      "direction": "out",
+      "gross": "81.95",
+      "vat": null,
+      "account_code": "7300",
+      "description": "SHELL 050"
+    },
+    {
+      "date": "2026-09-26",
+      "direction": "out",
+      "gross": "66.73",
+      "vat": null,
+      "account_code": "9998",
+      "description": "AMAZON MARKETPLACE 051"
+    },
+    {
+      "date": "2026-09-26",
+      "direction": "in",
+      "gross": "1775.34",
+      "vat": null,
+      "account_code": "4000",
+      "description": "CLIENT RECEIPT 052"
+    },
+    {
+      "date": "2026-09-27",
+      "direction": "out",
+      "gross": "43.87",
+      "vat": null,
+      "account_code": "7400",
+      "description": "UBER 053"
+    },
+    {
+      "date": "2026-09-27",
+      "direction": "out",
+      "gross": "70.30",
+      "vat": null,
+      "account_code": "7502",
+      "description": "VODAFONE 054"
+    },
+    {
+      "date": "2026-09-28",
+      "direction": "out",
+      "gross": "80.01",
+      "vat": null,
+      "account_code": "7501",
+      "description": "ROYAL MAIL 055"
+    },
+    {
+      "date": "2026-09-28",
+      "direction": "out",
+      "gross": "85.54",
+      "vat": null,
+      "account_code": "7406",
+      "description": "PRET A MANGER 056"
+    },
+    {
+      "date": "2026-09-29",
+      "direction": "out",
+      "gross": "86.36",
+      "vat": null,
+      "account_code": "8205",
+      "description": "TESCO STORES 057"
+    },
+    {
+      "date": "2026-09-29",
+      "direction": "out",
+      "gross": "5.65",
+      "vat": null,
+      "account_code": "7300",
+      "description": "SHELL 058"
+    },
+    {
+      "date": "2026-09-30",
+      "direction": "out",
+      "gross": "38.28",
+      "vat": null,
+      "account_code": "9998",
+      "description": "AMAZON MARKETPLACE 059"
+    },
+    {
+      "date": "2026-09-30",
+      "direction": "in",
+      "gross": "2407.56",
+      "vat": null,
+      "account_code": "4000",
+      "description": "CLIENT RECEIPT 060"
+    }
+  ]
+}
