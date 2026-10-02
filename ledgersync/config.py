@@ -50,7 +50,7 @@ class Settings:
     # Room for long statements: a 60-row statement's answer, with document_total, document_vat and
     # mixed_items on every row, is over 4K tokens.
     groq_max_output_tokens: int = 8192
-    groq_reasoning_effort: str = "none"   # the model's "thinking" would spend the free plan's tokens
+    groq_reasoning_effort: str = "low"    # thinking keeps the model to the receipt rules; "none" is ~10x faster
     groq_max_images: int = 1              # pages per request: 3 pages overflow the free plan's 8K tokens/min
     health_ttl: float = 300.0             # the UI polls health every 30 s; the free plan counts requests
     business_name: str = ""               # whose books these are: tells sales invoices from purchases

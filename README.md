@@ -85,7 +85,7 @@ Settings come from environment variables or `.env` (environment variables win).
 | `GROQ_BASE_URL` | `https://api.groq.com/openai/v1` | Groq's OpenAI-compatible API |
 | `GROQ_TIMEOUT` | `60` | Seconds to wait for one model call |
 | `GROQ_MAX_OUTPUT_TOKENS` | `8192` | Longest answer; a 60-row statement needs over 4,000 tokens |
-| `GROQ_REASONING_EFFORT` | `none` | The model's "thinking" (`none`, `low`, …); off saves tokens |
+| `GROQ_REASONING_EFFORT` | `low` | The model's "thinking" (`none`, `low`, `high`); `low` keeps it to the receipt rules, `none` is about 10x faster |
 | `GROQ_MAX_IMAGES` | `1` | Scanned pages per request; Groq allows 3, but 3 overflow the free plan's 8K tokens a minute |
 | `LEDGERSYNC_BUSINESS_NAME` | — | Whose books these are; tells sales invoices from purchases |
 | `LEDGERSYNC_HOST` / `LEDGERSYNC_PORT` | `127.0.0.1` / `8085` | API bind address |

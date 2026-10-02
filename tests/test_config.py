@@ -26,7 +26,7 @@ def test_groq_settings_have_working_defaults():
     s = Settings.from_env({})
     assert (s.groq_base_url, s.groq_model) == ("https://api.groq.com/openai/v1", "qwen/qwen3.8-27b")
     assert (s.groq_timeout, s.groq_max_output_tokens, s.groq_reasoning_effort, s.groq_max_images) == (
-        60.0, 8192, "none", 1)
+        60.0, 8192, "low", 1)
     assert (s.groq_api_key, s.business_name, s.health_ttl) == ("", "", 300.0)
 
 
