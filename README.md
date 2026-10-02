@@ -43,6 +43,11 @@ Analyses run as background jobs: `POST /api/analyze` returns `{job_id}`, then
 `GET /api/jobs/{job_id}` reports progress and the result; `DELETE` cancels. Up to four jobs run at
 once (`LEDGERSYNC_MAX_PARALLEL_JOBS`), and the UI sends that many files of an upload at a time; on
 Groq's free plan they mostly wait on its per-minute limits, so the gain shows on a paid plan.
+
+The UI keeps one table across uploads and catches what was entered twice. A file whose content is
+already in the table, or picked twice, is skipped without being read. A row with the same amount
+and direction as a row from another input, dated within three days of it (a receipt and its bank
+line, say), is flagged "possible duplicate" and left for a person to decide.
 Without a key or an internet connection the API answers 503 with how to fix it; it never guesses.
 
 The ledger endpoints use double entry: `GET /api/accounts` lists the chart (Sage 50-style

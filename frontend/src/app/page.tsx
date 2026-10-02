@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import {
   analyze as runAnalysisJob,
   ApiError,
@@ -12,6 +12,7 @@ import {
   type Health,
   type TrialBalanceResult,
 } from '@/lib/api'
+import { DUPLICATE_WINDOW_DAYS, fingerprint, possibleDuplicates } from '@/lib/duplicates'
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
@@ -39,6 +40,7 @@ type FileStatus = 'waiting' | 'reading' | 'done' | 'failed' | 'skipped' | 'cance
 interface BatchItem {
   id: number
   file: File
+  hash: string | null      // fingerprint of the file's content (null if the browser cannot hash)
   status: FileStatus
   detail: string
 }
@@ -48,9 +50,11 @@ const STATUS_MARK: Record<FileStatus, string> = {
 }
 
 // A row of the table and where it came from: a file name, "Pasted text" or "Manual entry".
+// sourceId tells inputs apart even when their names match (two pastes are both "Pasted text").
 interface LedgerRow {
   tx: Transaction
   origin: string
+  sourceId: number
 }
 
 // ─── Main Page Component ──────────────────────────────────────────────────────
@@ -77,7 +81,8 @@ export default function Home() {
   const [modelName, setModelName] = useState<string | null>(null)
   const [rows, setRows] = useState<LedgerRow[]>([])      // every input adds to these
   const [batch, setBatch] = useState<BatchItem[]>([])    // the files of the latest upload
-  const nextFileId = useRef(1)
+  const nextFileId = useRef(1)                          // ids for files, pastes and manual entries
+  const filesInTable = useRef(new Map<string, string>())  // fingerprint -> name of each file read
   const cancelRef = useRef(false)
 
   // Step 3 state
@@ -105,8 +110,8 @@ export default function Home() {
   // ── Step 1 → Step 2: run an analysis job ───────────────────────────────────
 
   // New rows join the table; a trial balance made before them no longer covers every row.
-  const addRows = useCallback((txs: Transaction[], origin: string, warningsFound: string[]) => {
-    setRows(prev => [...prev, ...txs.map(tx => ({ tx, origin }))])
+  const addRows = useCallback((txs: Transaction[], origin: string, sourceId: number, warningsFound: string[]) => {
+    setRows(prev => [...prev, ...txs.map(tx => ({ tx, origin, sourceId }))])
     setWarnings(prev => [...prev, ...warningsFound.map(w => `${origin}: ${w}`)])
     setTbResult(null)
     setTbError('')
@@ -126,7 +131,7 @@ export default function Home() {
       setModelName(result.model)
       const txs = await toTransactions(result)
       if (!txs.length) throw new ApiError('No transactions were found in this input.', 'empty')
-      addRows(txs, origin, result.warnings)
+      addRows(txs, origin, nextFileId.current++, result.warnings)
     } catch (e: unknown) {
       setAnalyzeError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -154,9 +159,11 @@ export default function Home() {
     const addInOrder = () => {
       for (; added < todo.length && results[added] !== undefined; added++) {
         const result = results[added]
+        const item = todo[added]
         if (result) {
           setModelName(result.model)
-          addRows(result.transactions, todo[added].file.name, result.warnings)
+          addRows(result.transactions, item.file.name, item.id, result.warnings)
+          if (item.hash) filesInTable.current.set(item.hash, item.file.name)
         }
       }
     }
@@ -236,18 +243,24 @@ export default function Home() {
   // How many files the API reads at once (older APIs do not say: one).
   const parallelFiles = Math.max(1, health?.max_parallel_jobs ?? 1)
 
-  const handleFiles = (files: FileList | null) => {
+  const handleFiles = async (files: FileList | null) => {
     const picked = Array.from(files ?? [])
     if (fileInputRef.current) fileInputRef.current.value = '' // lets the same files be chosen again
     if (!picked.length) return
     const limitMb = health?.max_upload_mb ?? 20
-    const items: BatchItem[] = picked.slice(0, MAX_BATCH_FILES).map(file => {
-      // Checked here because the Next proxy cuts oversized bodies instead of rejecting them.
+    const hashes = await Promise.all(picked.slice(0, MAX_BATCH_FILES).map(fingerprint))
+    const items: BatchItem[] = []
+    hashes.forEach((hash, n) => {
+      const file = picked[n]
+      // A file already read, or picked twice, is not read again: its rows would be booked twice.
+      const sameAs = hash && (filesInTable.current.get(hash)
+                              ?? items.find(item => item.hash === hash)?.file.name)
+      // Size is checked here because the Next proxy cuts oversized bodies instead of rejecting them.
       const tooBig = file.size > limitMb * 1024 * 1024
-      return {
-        id: nextFileId.current++, file, status: tooBig ? 'skipped' : 'waiting',
-        detail: tooBig ? `Larger than the ${limitMb} MB limit: split it and upload the parts` : 'Waiting',
-      }
+      const detail = sameAs
+        ? `Skipped: same file as ${sameAs}${filesInTable.current.has(hash) ? ', already in the table' : ' in this upload'}`
+        : tooBig ? `Larger than the ${limitMb} MB limit: split it and upload the parts` : 'Waiting'
+      items.push({ id: nextFileId.current++, file, hash, status: sameAs || tooBig ? 'skipped' : 'waiting', detail })
     })
     setBatch(items)
     setAnalyzeError(picked.length > MAX_BATCH_FILES
@@ -266,6 +279,7 @@ export default function Home() {
   }
 
   const clearTable = () => {
+    filesInTable.current.clear()
     setRows([])
     setBatch([])
     setWarnings([])
@@ -292,6 +306,12 @@ export default function Home() {
   }, [rows])
 
   // ── Pipeline step state ────────────────────────────────────────────────────
+  // For each row, an earlier row from another input that may be the same payment (or null).
+  const duplicateOf = useMemo(() => possibleDuplicates(rows.map(row => ({
+    sourceId: row.sourceId, gross: row.tx.gross, direction: row.tx.direction, date: row.tx.date,
+  }))), [rows])
+  const duplicateCount = duplicateOf.filter(of => of !== null).length
+
   const step1Done = rows.length > 0
   const step2Active = analyzing || step1Done
   const showStep2 = analyzing || rows.length > 0 || batch.length > 0 || !!analyzeError
@@ -474,6 +494,7 @@ export default function Home() {
             {rows.length > 0 && (
               <span className="section-sub">
                 {rows.length} transaction{rows.length !== 1 ? 's' : ''} extracted
+                {duplicateCount ? ` · ${duplicateCount} possible duplicate${duplicateCount !== 1 ? 's' : ''}` : ''}
                 {modelName ? ` · ${modelName}` : ''}
               </span>
             )}
@@ -540,7 +561,14 @@ export default function Home() {
                     </thead>
                     <tbody>
                       {rows.map(({ tx, origin }, i) => {
-                        const check = issueSummary(tx)
+                        const of = duplicateOf[i]
+                        const check = issueSummary(of === null ? tx : {
+                          ...tx, issues: [...tx.issues, {
+                            code: 'possible_duplicate', severity: 'warning',
+                            message: `Possible duplicate of "${rows[of].tx.description}" (${rows[of].origin}): `
+                                     + `same amount and direction, dated within ${DUPLICATE_WINDOW_DAYS} days.`,
+                          }],
+                        })
                         return (
                           <tr key={i}>
                             <td>{tx.date ?? '—'}</td>
