@@ -166,6 +166,14 @@ Accounts fell to 92.2% (154 of 167). The 60-row statement's eight Tesco lines we
 under the dropped `accounts-order` wording, and so did a customer's payment. The Sainsbury's photo
 came back as its £4.20 of cleaning supplies alone; the totals check flags that in the app.
 
+`thinking-low` (2026-10-02) ran the same code with the model's thinking on
+(`GROQ_REASONING_EFFORT=low`). On the 27 documents every run finished, accounts were 97.9% (141 of
+144), against 99.3% before the split and 92.3% after it with thinking off, and every row had the
+right amount, both Sainsbury's rows included. The Tesco lines, the customer's payment and the Amazon
+refund came back right. Costa Coffee, an accountant's invoice and Google Ads did not. A receipt or
+invoice took a median 11.5 seconds instead of 1.1, partly waiting on the free plan's per-minute
+limits.
+
 To measure real documents, put anonymised copies in `eval/private/<case>/` (the input file plus an
 `expected.json` in the same format) and add `--private`; that folder is never committed. After
 editing `eval/eval_cases.py`, regenerate the fixtures with `.venv/bin/python eval/make_fixtures.py`.
