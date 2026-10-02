@@ -1,4 +1,5 @@
-"""In-memory background jobs: one worker thread, progress, cancel and expiry.
+"""In-memory background jobs: worker threads (several files are read side by side), progress,
+cancel and expiry.
 
 Good enough for a single local user; jobs are lost when the server restarts."""
 from __future__ import annotations
@@ -56,12 +57,13 @@ class JobContext:
 
 
 class JobStore:
-    def __init__(self, ttl_seconds: float = 3600.0, clock: Callable[[], float] = time.monotonic):
+    def __init__(self, ttl_seconds: float = 3600.0, clock: Callable[[], float] = time.monotonic,
+                 max_workers: int = 1):
         self._ttl = ttl_seconds
         self._clock = clock
         self._jobs: dict[str, Job] = {}
         self._lock = threading.Lock()
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ledgersync-job")
+        self._executor = ThreadPoolExecutor(max_workers=max(1, max_workers), thread_name_prefix="ledgersync-job")
 
     def submit(self, work: Callable[[JobContext], Any]) -> Job:
         job = Job(id=uuid.uuid4().hex)

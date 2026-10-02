@@ -8,7 +8,7 @@ import io
 import logging
 from typing import Optional
 
-from .intake import Intake
+from .intake import PYMUPDF_LOCK, Intake
 from .jobs import JobContext
 
 logger = logging.getLogger(__name__)
@@ -61,7 +61,7 @@ def _read_pages(pages: list[bytes], extractor, ctx: JobContext):
 
 def _pdf_pages(data: bytes) -> list[bytes]:
     import pymupdf
-    with pymupdf.open(stream=data, filetype="pdf") as doc:
+    with PYMUPDF_LOCK, pymupdf.open(stream=data, filetype="pdf") as doc:
         return [page.get_pixmap(dpi=150).tobytes("png") for page in doc]
 
 

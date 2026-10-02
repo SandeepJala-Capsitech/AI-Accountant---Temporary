@@ -41,6 +41,7 @@ class Settings:
     max_upload_mb: int = 20
     max_pdf_pages: int = 30
     job_ttl_seconds: float = 3600.0
+    max_parallel_jobs: int = 4            # files of one upload read side by side; 1 reads them one at a time
     log_level: str = "INFO"
     # Groq's hosted vision model, through its OpenAI-compatible API. The key lives in .env.
     groq_api_key: str = field(default="", repr=False)   # never printed or logged
@@ -75,6 +76,7 @@ class Settings:
                           if origins else d.cors_origins),
             max_upload_mb=int(env.get("LEDGERSYNC_MAX_UPLOAD_MB", d.max_upload_mb)),
             max_pdf_pages=int(env.get("LEDGERSYNC_MAX_PDF_PAGES", d.max_pdf_pages)),
+            max_parallel_jobs=max(1, int(env.get("LEDGERSYNC_MAX_PARALLEL_JOBS", d.max_parallel_jobs))),
             log_level=env.get("LEDGERSYNC_LOG_LEVEL", d.log_level).upper(),
             groq_api_key=env.get("GROQ_API_KEY", "").strip(),
             groq_model=env.get("GROQ_MODEL", d.groq_model).strip(),

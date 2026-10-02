@@ -53,6 +53,7 @@ export interface Health {
   model_available: boolean
   ai_error: string | null
   max_upload_mb: number
+  max_parallel_jobs?: number    // files the API reads at once; missing from older APIs
 }
 
 interface Job {

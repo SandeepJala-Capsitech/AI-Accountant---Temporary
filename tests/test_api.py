@@ -237,3 +237,7 @@ def test_an_account_the_ledger_cannot_post_to_lands_in_suspense(make_client, acc
     job = run_text_job(make_client(FakeModel([transactions_json(dict(ROW, account=account))])))
     [t] = job["result"]["transactions"]
     assert t["account_code"] == "9998" and "account_not_recognised" in [i["code"] for i in t["issues"]]
+
+
+def test_health_tells_the_ui_how_many_files_to_send_at_once(make_client):
+    assert make_client().get("/api/health").json()["max_parallel_jobs"] == 4

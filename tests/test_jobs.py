@@ -125,3 +125,34 @@ def test_finished_jobs_expire_after_ttl():
             store.get(job.id)
     finally:
         store.shutdown()
+
+
+def test_four_jobs_can_run_at_the_same_time():
+    # Files of one upload are read side by side: with four workers, four jobs must overlap.
+    store = JobStore(max_workers=4)
+    together = threading.Barrier(4, timeout=5)
+    try:
+        jobs = [store.submit(lambda ctx: together.wait()) for _ in range(4)]
+        assert [finished(store, job).status for job in jobs] == ["succeeded"] * 4
+    finally:
+        store.shutdown()
+
+
+def test_one_worker_runs_jobs_one_after_another():
+    store = JobStore(max_workers=1)
+    lock, running, most = threading.Lock(), [0], [0]
+
+    def work(ctx):
+        with lock:
+            running[0] += 1
+            most[0] = max(most[0], running[0])
+        time.sleep(0.05)
+        with lock:
+            running[0] -= 1
+
+    try:
+        for job in [store.submit(work) for _ in range(3)]:
+            finished(store, job)
+        assert most[0] == 1
+    finally:
+        store.shutdown()

@@ -55,3 +55,9 @@ def test_env_file_values_are_used_but_real_environment_variables_win(tmp_path, m
 
 def test_a_missing_env_file_gives_no_values(tmp_path):
     assert read_env_file(tmp_path / "absent.env") == {}
+
+
+def test_four_files_are_read_at_once_unless_set_otherwise():
+    assert Settings.from_env({}).max_parallel_jobs == 4
+    assert Settings.from_env({"LEDGERSYNC_MAX_PARALLEL_JOBS": "1"}).max_parallel_jobs == 1
+    assert Settings.from_env({"LEDGERSYNC_MAX_PARALLEL_JOBS": "0"}).max_parallel_jobs == 1   # never below one

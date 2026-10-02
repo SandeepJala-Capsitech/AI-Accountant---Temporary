@@ -139,43 +139,59 @@ export default function Home() {
     setBatch(prev => prev.map(item => (item.id === id ? { ...item, ...patch } : item)))
   }, [])
 
-  // Reads the waiting files one after another, through the same job API as a single upload.
-  // A file that fails is marked and the next one is read; Cancel stops the batch.
-  const runBatch = useCallback(async (items: BatchItem[]) => {
+  // Reads the waiting files through the same job API as a single upload, up to `parallel` at a
+  // time (the API's max_parallel_jobs). Rows join the table in the order the files were picked,
+  // whichever finishes first. A file that fails is marked and the others go on; Cancel stops all.
+  const runBatch = useCallback(async (items: BatchItem[], parallel: number) => {
     const todo = items.filter(item => item.status === 'waiting')
     if (!todo.length) return
     cancelRef.current = false
     setAnalyzing(true)
-    const cancelRest = (from: number) =>
-      todo.slice(from).forEach(rest => updateFile(rest.id, { status: 'cancelled', detail: 'Not read: cancelled' }))
-    for (let n = 0; n < todo.length; n++) {
-      const item = todo[n]
-      if (cancelRef.current) {
-        cancelRest(n)
-        break
-      }
-      setProgress(`File ${n + 1} of ${todo.length}: ${item.file.name}`)
-      updateFile(item.id, { status: 'reading', detail: 'Uploading…' })
-      try {
-        const formData = new FormData()
-        formData.append('file', item.file)
-        const result = await runAnalysisJob(formData, p => updateFile(item.id, { detail: p }),
-                                            () => cancelRef.current)
-        const count = result.transactions.length
-        if (!count) throw new ApiError('No transactions were found in this file.', 'empty')
-        setModelName(result.model)
-        addRows(result.transactions, item.file.name, result.warnings)
-        updateFile(item.id, { status: 'done', detail: `${count} row${count === 1 ? '' : 's'}` })
-      } catch (e: unknown) {
-        const cancelled = e instanceof ApiError && e.code === 'cancelled'
-        updateFile(item.id, { status: cancelled ? 'cancelled' : 'failed',
-                              detail: e instanceof Error ? e.message : String(e) })
-        if (cancelled) {
-          cancelRest(n + 1)
-          break
+    const results: (AnalyzeResult | null | undefined)[] = todo.map(() => undefined)   // null: no rows
+    let next = 0
+    let read = 0
+    let added = 0
+    const addInOrder = () => {
+      for (; added < todo.length && results[added] !== undefined; added++) {
+        const result = results[added]
+        if (result) {
+          setModelName(result.model)
+          addRows(result.transactions, todo[added].file.name, result.warnings)
         }
       }
     }
+    const readFiles = async () => {
+      while (next < todo.length) {
+        const n = next++
+        const item = todo[n]
+        if (cancelRef.current) {
+          updateFile(item.id, { status: 'cancelled', detail: 'Not read: cancelled' })
+          results[n] = null
+        } else {
+          updateFile(item.id, { status: 'reading', detail: 'Uploading…' })
+          try {
+            const formData = new FormData()
+            formData.append('file', item.file)
+            const result = await runAnalysisJob(formData, p => updateFile(item.id, { detail: p }),
+                                                () => cancelRef.current)
+            const count = result.transactions.length
+            if (!count) throw new ApiError('No transactions were found in this file.', 'empty')
+            results[n] = result
+            updateFile(item.id, { status: 'done', detail: `${count} row${count === 1 ? '' : 's'}` })
+          } catch (e: unknown) {
+            results[n] = null
+            const cancelled = e instanceof ApiError && e.code === 'cancelled'
+            updateFile(item.id, { status: cancelled ? 'cancelled' : 'failed',
+                                  detail: e instanceof Error ? e.message : String(e) })
+          }
+          read++
+          setProgress(`${read} of ${todo.length} files read, up to ${parallel} at a time`)
+        }
+        addInOrder()
+      }
+    }
+    setProgress(`Reading ${todo.length} file${todo.length === 1 ? '' : 's'}, up to ${parallel} at a time…`)
+    await Promise.all(Array.from({ length: Math.min(parallel, todo.length) }, readFiles))
     setAnalyzing(false)
     setProgress('')
   }, [addRows, updateFile])
@@ -217,6 +233,9 @@ export default function Home() {
     })
   }
 
+  // How many files the API reads at once (older APIs do not say: one).
+  const parallelFiles = Math.max(1, health?.max_parallel_jobs ?? 1)
+
   const handleFiles = (files: FileList | null) => {
     const picked = Array.from(files ?? [])
     if (fileInputRef.current) fileInputRef.current.value = '' // lets the same files be chosen again
@@ -234,7 +253,7 @@ export default function Home() {
     setAnalyzeError(picked.length > MAX_BATCH_FILES
       ? `Only the first ${MAX_BATCH_FILES} files were added; upload the other ${picked.length - MAX_BATCH_FILES} next.`
       : '')
-    runBatch(items)
+    runBatch(items, parallelFiles)
   }
 
   const retryFailed = () => {
@@ -243,7 +262,7 @@ export default function Home() {
       : item))
     setBatch(again)
     setAnalyzeError('')
-    runBatch(again)
+    runBatch(again, parallelFiles)
   }
 
   const clearTable = () => {

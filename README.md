@@ -40,7 +40,9 @@ cp .env.example .env                      # then paste your key after GROQ_API_K
 ```
 
 Analyses run as background jobs: `POST /api/analyze` returns `{job_id}`, then
-`GET /api/jobs/{job_id}` reports progress and the result; `DELETE` cancels.
+`GET /api/jobs/{job_id}` reports progress and the result; `DELETE` cancels. Up to four jobs run at
+once (`LEDGERSYNC_MAX_PARALLEL_JOBS`), and the UI sends that many files of an upload at a time; on
+Groq's free plan they mostly wait on its per-minute limits, so the gain shows on a paid plan.
 Without a key or an internet connection the API answers 503 with how to fix it; it never guesses.
 
 The ledger endpoints use double entry: `GET /api/accounts` lists the chart (Sage 50-style
@@ -94,6 +96,7 @@ Settings come from environment variables or `.env` (environment variables win).
 | `LEDGERSYNC_CORS_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | Allowed browser origins |
 | `LEDGERSYNC_MAX_UPLOAD_MB` | `20` | Largest accepted upload |
 | `LEDGERSYNC_MAX_PDF_PAGES` | `30` | Most pages accepted in one PDF |
+| `LEDGERSYNC_MAX_PARALLEL_JOBS` | `4` | Documents read at once; `1` reads them one at a time |
 | `LEDGERSYNC_LOG_LEVEL` | `INFO` | Log level (document contents are never logged) |
 | `API_URL` (frontend) | `http://127.0.0.1:8085` | Where the Next.js `/api` rewrite sends requests |
 

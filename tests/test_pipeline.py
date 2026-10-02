@@ -108,3 +108,16 @@ def test_document_text_is_never_logged(caplog):
     caplog.set_level(logging.DEBUG, logger="ledgersync")
     analyze(Intake("pdf", data=text_pdf("MRS CLIENT SECRET 12.50")), RecordingExtractor(), ctx())
     assert "CLIENT SECRET" not in caplog.text
+
+
+def test_rendering_pdf_pages_waits_for_the_pymupdf_lock():
+    import threading
+    from ledgersync.intake import PYMUPDF_LOCK
+    from ledgersync.pipeline import _pdf_pages
+    doc = pymupdf.open()
+    doc.new_page()
+    pdf, done = doc.tobytes(), threading.Event()
+    with PYMUPDF_LOCK:
+        threading.Thread(target=lambda: (_pdf_pages(pdf), done.set())).start()
+        assert not done.wait(0.3)
+    assert done.wait(5)

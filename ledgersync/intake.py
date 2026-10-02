@@ -3,11 +3,15 @@ the name) and readability. Nothing unreadable ever reaches the model."""
 from __future__ import annotations
 
 import io
+import threading
 from dataclasses import dataclass
 from pathlib import PurePath
 from typing import BinaryIO, Literal, Optional
 
 from .errors import FileTooLarge, UnreadableFile, UnsupportedFile
+
+# PyMuPDF is not thread-safe: uploads are checked while several jobs run, so every use takes this lock.
+PYMUPDF_LOCK = threading.Lock()
 
 Kind = Literal["text", "table", "pdf", "image"]
 
@@ -73,19 +77,20 @@ def _is_image(data: bytes) -> bool:
 
 def _check_pdf(data: bytes, filename: str, max_pages: int) -> bytes:
     import pymupdf
-    try:
-        doc = pymupdf.open(stream=data, filetype="pdf")
-    except Exception:
-        raise UnreadableFile(f"'{filename}' is not a valid PDF. It may be corrupt.") from None
-    with doc:
-        if doc.needs_pass:
-            raise UnreadableFile(f"'{filename}' is password-protected. Save a copy without the "
-                                 "password and upload that.")
-        if doc.page_count == 0:
-            raise UnreadableFile(f"'{filename}' has no pages.")
-        if doc.page_count > max_pages:
-            raise FileTooLarge(f"'{filename}' has {doc.page_count} pages; the limit is {max_pages}. "
-                               "Split it and upload the parts.")
+    with PYMUPDF_LOCK:
+        try:
+            doc = pymupdf.open(stream=data, filetype="pdf")
+        except Exception:
+            raise UnreadableFile(f"'{filename}' is not a valid PDF. It may be corrupt.") from None
+        with doc:
+            if doc.needs_pass:
+                raise UnreadableFile(f"'{filename}' is password-protected. Save a copy without the "
+                                     "password and upload that.")
+            if doc.page_count == 0:
+                raise UnreadableFile(f"'{filename}' has no pages.")
+            if doc.page_count > max_pages:
+                raise FileTooLarge(f"'{filename}' has {doc.page_count} pages; the limit is {max_pages}. "
+                                   "Split it and upload the parts.")
     return data
 
 

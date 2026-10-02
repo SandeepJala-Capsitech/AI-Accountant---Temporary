@@ -34,7 +34,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None) -> Fas
     configure_logging(settings.log_level)
     model_client = model_client or GroqClient(settings)
     extractor = TransactionExtractor(model_client, business_name=settings.business_name)
-    jobs = JobStore(ttl_seconds=settings.job_ttl_seconds)
+    jobs = JobStore(ttl_seconds=settings.job_ttl_seconds, max_workers=settings.max_parallel_jobs)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -68,6 +68,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None) -> Fas
             "model_available": health.model_available,
             "ai_error": health.error,
             "max_upload_mb": settings.max_upload_mb,
+            "max_parallel_jobs": settings.max_parallel_jobs,   # the UI sends this many files at once
         }
 
     # ─── Step 2 — Analyze (background job) ─────────────────────────────────────

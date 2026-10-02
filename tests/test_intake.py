@@ -148,3 +148,20 @@ def test_whitespace_text_is_rejected():
 def test_oversized_text_is_rejected():
     with pytest.raises(FileTooLarge):
         from_text("x" * 2000, max_bytes=1000)
+
+
+def _blank_pdf() -> bytes:
+    doc = pymupdf.open()
+    doc.new_page()
+    return doc.tobytes()
+
+
+def test_checking_a_pdf_waits_for_the_pymupdf_lock():
+    # PyMuPDF is not thread-safe, and uploads are checked while jobs run side by side.
+    import threading
+    from ledgersync.intake import PYMUPDF_LOCK
+    pdf, done = _blank_pdf(), threading.Event()
+    with PYMUPDF_LOCK:
+        threading.Thread(target=lambda: (load_upload("a.pdf", pdf, max_pdf_pages=30), done.set())).start()
+        assert not done.wait(0.3)
+    assert done.wait(5)
