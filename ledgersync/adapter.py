@@ -7,8 +7,8 @@ import datetime as dt
 from typing import Optional
 
 from .accounts import BY_CODE, SUSPENSE
-from .checks import normalise
-from .models import BusinessSettings, Direction, Issue, Transaction
+from .checks import issue, normalise
+from .models import BusinessSettings, Direction, Transaction
 from .money import to_money
 
 
@@ -47,7 +47,7 @@ def _keep_unsplittable_whole(rows: list[dict]) -> list[dict]:
             biggest = max(parts, key=lambda part: abs(to_money(part.get("amount"))))
             merged[id(parts[0])] = dict(biggest, amount=float(total), vat=float(abs(printed_vat)), mixed_items=True)
             merged.update({id(part): None for part in parts[1:]})
-    return [merged.get(id(row), row) for row in rows if merged.get(id(row), row) is not None]
+    return [kept for kept in (merged.get(id(row), row) for row in rows) if kept is not None]
 
 
 def to_transactions(rows: list[dict], source: str, settings: BusinessSettings) -> list[Transaction]:
@@ -62,31 +62,29 @@ def to_transactions(rows: list[dict], source: str, settings: BusinessSettings) -
         issues = []
         total = to_money(row.get("document_total"))
         if total and sums.get(abs(total)) != abs(total):
-            issues.append(Issue(code="total_mismatch", severity="warning",
-                                message=f"The rows from this document add up to £{sums[abs(total)]} but its total "
-                                        f"is £{abs(total)}; check the amounts against the document."))
+            issues.append(issue("total_mismatch", f"The rows from this document add up to £{sums[abs(total)]} but "
+                                                  f"its total is £{abs(total)}; check the amounts against the document."))
         if row.get("mixed_items"):
-            issues.append(Issue(code="mixed_items", severity="warning",
-                                message="This document mixes items of different kinds but shows one VAT total, so "
-                                        "it was kept as one row; split it by hand if each kind needs its own account."))
+            issues.append(issue("mixed_items", "This document mixes items of different kinds but shows one VAT total, "
+                                               "so it was kept as one row; split it by hand if each kind needs its own "
+                                               "account."))
         said_in = row.get("direction") == "in"
         if said_in and amount < 0:
-            issues.append(Issue(code="direction_conflict", severity="warning",
-                                message="The model said money in but the amount was negative; recorded as money out."))
+            issues.append(issue("direction_conflict",
+                                "The model said money in but the amount was negative; recorded as money out."))
         code = str(row.get("account") or "")[:4]
         if code not in BY_CODE or code == settings.bank_account:
-            issues.append(Issue(code="account_not_recognised", severity="warning",
-                                message=f"'{row.get('account')}' is not an account to post to; "
-                                        "it went to Suspense for review."))
+            issues.append(issue("account_not_recognised", f"'{row.get('account')}' is not an account to post to; "
+                                                          "it went to Suspense for review."))
             code = SUSPENSE
         elif code == SUSPENSE:
-            issues.append(Issue(code="account_not_recognised", severity="warning",
-                                message="The model was not sure which account this is; it went to Suspense for review."))
+            issues.append(issue("account_not_recognised",
+                                "The model was not sure which account this is; it went to Suspense for review."))
         vat = to_money(row.get("vat"))
         tx = Transaction(date=parse_date(row.get("date")), description=str(row.get("description") or ""),
                          direction=Direction.IN if said_in and amount > 0 else Direction.OUT,
                          gross=abs(amount), vat=abs(vat) if vat is not None else None,   # sign: direction
-                         account_code=code, currency=row.get("currency") or "GBP", source=source,
+                         account_code=code, currency=row.get("currency"), source=source,
                          method="llm", issues=issues)
         result.append(normalise(tx, settings))
     return result

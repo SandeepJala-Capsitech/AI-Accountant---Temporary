@@ -13,7 +13,7 @@ from .money import ZERO
 
 
 def journal_for(tx: Transaction, index: int) -> list[JournalLine]:
-    """Journal lines for one normalised transaction: account and VAT legs, then the bank leg."""
+    """Journal lines for one normalised transaction: account and VAT legs, then the bank (or contra) leg."""
     account = BY_CODE[tx.account_code]
     vat_account = SALES_VAT if account.type == AccountType.INCOME else PURCHASE_VAT
     out = tx.direction == Direction.OUT

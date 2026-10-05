@@ -21,7 +21,7 @@ class RecordingExtractor:
 
     def extract_accounting_data(self, text_input=None, images=None):
         self.calls.append({"text": text_input, "images": images})
-        return TransactionExtractionResult(success=True, count=0, data=[], model="fake-model",
+        return TransactionExtractionResult(data=[], model="fake-model",
                                            warnings=[f"Row 1 skipped (call {len(self.calls)})."])
 
 

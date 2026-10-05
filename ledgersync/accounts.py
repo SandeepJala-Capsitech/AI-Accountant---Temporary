@@ -21,7 +21,7 @@ class Account:
     code: str
     name: str
     type: AccountType
-    vat: V              # default VAT when the document does not show it
+    vat: V              # usual rate, to check VAT a document shows; none is booked when none is shown
     definition: str     # what belongs here, in plain words: the model chooses by it
 
 

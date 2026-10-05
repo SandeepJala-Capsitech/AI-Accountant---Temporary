@@ -39,7 +39,7 @@ class Transaction(BaseModel):
     # Inputs keep what the document (or the user) said; checks.normalise never changes them,
     # so an edited row validated again is worked out afresh (new account, new settings).
     vat: Optional[Decimal] = None                  # VAT shown on the document; None = not shown
-    vat_treatment: Optional[VatTreatment] = None   # None = the account's default
+    vat_treatment: Optional[VatTreatment] = None   # rate a person picked, to estimate VAT not shown; None = none picked
     # Outputs, recomputed by checks.normalise on every pass:
     vat_posted: Optional[Decimal] = None           # the VAT the ledger books (shown, estimated or none)
     net: Optional[Decimal] = None                  # gross minus vat_posted

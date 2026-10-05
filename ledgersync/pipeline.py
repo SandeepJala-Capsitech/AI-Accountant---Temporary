@@ -54,8 +54,7 @@ def _read_pages(pages: list[bytes], extractor, ctx: JobContext):
         if several:
             part = part.model_copy(update={"warnings": [f"{label}: {w}" for w in part.warnings]})
         result = part if result is None else result.model_copy(update={
-            "count": result.count + part.count, "data": result.data + part.data,
-            "warnings": result.warnings + part.warnings})
+            "data": result.data + part.data, "warnings": result.warnings + part.warnings})
     return result
 
 

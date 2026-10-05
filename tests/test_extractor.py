@@ -15,7 +15,7 @@ def extract(reply, text="x", images=None):
 
 def test_valid_rows_are_returned_with_model_name():
     result, _ = extract(transactions_json(ROW), "BT Broadband 72.00")
-    assert result.success and result.count == 1 and result.model == "fake-model"
+    assert result.count == 1 and result.model == "fake-model"
     assert result.data[0].amount == 72.0 and result.warnings == []
 
 

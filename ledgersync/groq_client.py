@@ -6,6 +6,7 @@ import http.client
 import json
 import logging
 import math
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -68,6 +69,8 @@ class GroqClient:
         self._sleep = sleep
         self._health: Optional[ModelHealth] = None
         self._health_at = 0.0
+        # Uploads sent side by side all ask for health at once: one checks, the others use its answer.
+        self._health_lock = threading.Lock()
 
     @property
     def model(self) -> str:
@@ -78,12 +81,13 @@ class GroqClient:
         return self._s.groq_max_images
 
     def health(self, force: bool = False) -> ModelHealth:
-        now = self._clock()
-        ttl = self._s.health_ttl if self._health is not None and self._health.model_available else RECHECK_FAILURE
-        if not force and self._health is not None and now - self._health_at < ttl:
+        with self._health_lock:
+            now = self._clock()
+            ttl = self._s.health_ttl if self._health is not None and self._health.model_available else RECHECK_FAILURE
+            if not force and self._health is not None and now - self._health_at < ttl:
+                return self._health
+            self._health, self._health_at = self._check(), now
             return self._health
-        self._health, self._health_at = self._check(), now
-        return self._health
 
     def ensure_available(self) -> None:
         health = self.health()

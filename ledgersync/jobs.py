@@ -97,8 +97,9 @@ class JobStore:
                 return
             job.status, job.progress = RUNNING, "Starting"
         try:
-            result = work(JobContext(job))
-            JobContext(job).check_cancelled()  # cancelled during the last step: discard the result
+            ctx = JobContext(job)
+            result = work(ctx)
+            ctx.check_cancelled()              # cancelled during the last step: discard the result
             outcome = {"status": SUCCEEDED, "progress": "Done", "result": result}
         except JobCancelled:
             outcome = {"status": CANCELLED, "progress": "Cancelled"}
@@ -107,9 +108,8 @@ class JobStore:
             outcome = {"status": FAILED, "progress": "Failed", "error": exc.to_dict()}
         except Exception:
             logger.exception("Job %s crashed", job.id)
-            outcome = {"status": FAILED, "progress": "Failed", "error": {
-                "code": "internal_error", "status_code": 500,
-                "message": "Something went wrong while analysing. Details are in the server log."}}
+            outcome = {"status": FAILED, "progress": "Failed", "error": LedgerSyncError(
+                "Something went wrong while analysing. Details are in the server log.").to_dict()}
         with self._lock:
             self._finish_locked(job, **outcome)
 

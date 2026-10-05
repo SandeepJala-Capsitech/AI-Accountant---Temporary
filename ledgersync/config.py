@@ -41,7 +41,7 @@ class Settings:
     max_upload_mb: int = 20
     max_pdf_pages: int = 30
     job_ttl_seconds: float = 3600.0
-    max_parallel_jobs: int = 4            # files of one upload read side by side; 1 reads them one at a time
+    max_parallel_jobs: int = 2            # documents read at once, from any input; 1 reads them one at a time
     log_level: str = "INFO"
     # Groq's hosted vision model, through its OpenAI-compatible API. The key lives in .env.
     groq_api_key: str = field(default="", repr=False)   # never printed or logged
@@ -51,8 +51,8 @@ class Settings:
     # Room for long statements: a 60-row statement's answer, with document_total, document_vat and
     # mixed_items on every row, is over 4K tokens.
     groq_max_output_tokens: int = 8192
-    groq_reasoning_effort: str = "low"    # thinking keeps the model to the receipt rules; "none" is ~10x faster
-    groq_max_images: int = 1              # pages per request: 3 pages overflow the free plan's 8K tokens/min
+    groq_reasoning_effort: str = "high"   # thinking keeps the model to the receipt rules; "none" is ~10x faster than "low"
+    groq_max_images: int = 3              # pages per request: 3 pages overflow the free plan's 8K tokens/min
     health_ttl: float = 300.0             # the UI polls health every 30 s; the free plan counts requests
     business_name: str = ""               # whose books these are: tells sales invoices from purchases
 

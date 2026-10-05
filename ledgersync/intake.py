@@ -27,7 +27,6 @@ _UTF16_BOMS = (b"\xff\xfe", b"\xfe\xff")
 @dataclass(frozen=True)
 class Intake:
     kind: Kind
-    filename: Optional[str] = None
     text: Optional[str] = None     # "text" and "table" kinds
     data: Optional[bytes] = None   # "pdf" and "image" kinds
 
@@ -53,19 +52,19 @@ def load_upload(filename: str, data: bytes, max_pdf_pages: int) -> Intake:
         raise UnreadableFile(f"'{filename}' is empty.")
     ext = PurePath(filename).suffix.lower()
     if b"%PDF-" in data[:1024]:
-        return Intake("pdf", filename, data=_check_pdf(data, filename, max_pdf_pages))
+        return Intake("pdf", data=_check_pdf(data, filename, max_pdf_pages))
     if _is_image(data):
-        return Intake("image", filename, data=_check_image(data, filename))
+        return Intake("image", data=_check_image(data, filename))
     if ext in EXCEL_EXTENSIONS:
         if data.startswith(_ZIP):
-            return Intake("table", filename, text=_excel_to_text(data, filename, engine="openpyxl"))
+            return Intake("table", text=_excel_to_text(data, filename, engine="openpyxl"))
         if data.startswith(_OLE):
-            return Intake("table", filename, text=_excel_to_text(data, filename, engine="xlrd"))
+            return Intake("table", text=_excel_to_text(data, filename, engine="xlrd"))
         if _looks_like_text(data):    # some banks export tab-separated text or HTML named .xls
-            return Intake("table", filename, text=_decode_text(data, filename))
+            return Intake("table", text=_decode_text(data, filename))
         raise UnreadableFile(f"'{filename}' is not a valid Excel file.")
     if ext in TEXT_KINDS:
-        return Intake(TEXT_KINDS[ext], filename, text=_decode_text(data, filename))
+        return Intake(TEXT_KINDS[ext], text=_decode_text(data, filename))
     raise UnsupportedFile(f"'{filename}' is not a supported file type. Use {SUPPORTED}.")
 
 
@@ -128,10 +127,10 @@ def _looks_like_text(data: bytes) -> bool:
 
 
 def _decode_text(data: bytes, filename: str) -> str:
+    if not _looks_like_text(data):
+        raise UnreadableFile(f"'{filename}' is not a text file.")
     if data.startswith(_UTF16_BOMS):                 # Excel "Unicode Text" exports
         text = data.decode("utf-16", errors="replace")
-    elif b"\x00" in data[:8192]:
-        raise UnreadableFile(f"'{filename}' is not a text file.")
     else:
         for encoding in ("utf-8-sig", "cp1252", "latin-1"):   # latin-1 accepts any byte
             try:

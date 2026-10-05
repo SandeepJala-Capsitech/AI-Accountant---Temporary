@@ -13,7 +13,7 @@ export interface Transaction {
   direction: 'in' | 'out'
   gross: string
   vat: string | null            // VAT shown on the document; null = not shown (the API then books none)
-  vat_treatment: string | null  // null = the account's default
+  vat_treatment: string | null  // rate a person picked, to estimate VAT not shown; null = none picked
   vat_posted: string | null     // set by the API: the VAT the ledger books
   net: string | null            // set by the API: gross minus vat_posted
   account_code: string

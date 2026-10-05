@@ -5,7 +5,7 @@ import logging
 import re
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from .accounts import choosable
 from .errors import ModelError
@@ -18,11 +18,8 @@ ACCOUNT_CHOICES: tuple[str, ...] = tuple(f"{a.code} {a.name}" for a in choosable
 
 class AccountingTransaction(BaseModel):
     """One row as the model returns it; its JSON schema holds the model's answer to this shape."""
-    # Every field is listed as required so structured output always emits it (null when unknown).
-    model_config = ConfigDict(json_schema_extra={
-        "required": ["description", "date", "amount", "direction", "account", "vat", "currency",
-                     "document_total", "document_vat", "mixed_items"]
-    })
+    # The docstring above is sent to the model in the schema. groq_client.strict_schema makes every
+    # field required, so structured output always emits it (null when unknown).
 
     description: str = Field(..., description="Who was paid or who paid, and what for")
     date: Optional[str] = Field(None, description="YYYY-MM-DD, or null when the document shows no date")
@@ -69,12 +66,13 @@ class ExtractedTransactions(BaseModel):
 
 
 class TransactionExtractionResult(BaseModel):
-    success: bool
-    count: int
     data: List[AccountingTransaction]
     warnings: List[str] = []
     model: Optional[str] = None
-    raw_model_output: Optional[str] = None
+
+    @property
+    def count(self) -> int:
+        return len(self.data)
 
 
 class TransactionExtractor:
@@ -149,5 +147,4 @@ Answer with JSON only, in this shape (one object per transaction):
                 warnings.append(f"Row {number} skipped ({reasons}).")
         if warnings:
             logger.info("Skipped %d invalid row(s) from the model", len(warnings))
-        return TransactionExtractionResult(success=True, count=len(valid), data=valid, warnings=warnings,
-                                           model=self.client.model, raw_model_output=raw_text)
+        return TransactionExtractionResult(data=valid, warnings=warnings, model=self.client.model)
