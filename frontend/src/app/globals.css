@@ -314,3 +314,43 @@ label { font-size: 0.75rem; color: var(--text-secondary); display: block; margin
   display: flex; align-items: center; justify-content: center;
   height: 36px; color: var(--text-muted); font-size: 1.25rem;
 }
+
+/* ── Job progress, warnings and AI status ───────────── */
+.btn-ghost {
+  margin-left: auto; padding: 0.3rem 0.8rem;
+  background: transparent; color: inherit; border: 1px solid currentColor;
+}
+.btn-ghost:hover:not(:disabled) { background: rgba(255,255,255,0.06); }
+.btn-ghost:disabled { opacity: 0.5; cursor: not-allowed; }
+.status-warning { background: rgba(245,158,11,0.1); color: var(--amber); border: 1px solid rgba(245,158,11,0.25); }
+.health-ok  { color: var(--green); }
+.health-off { color: var(--amber); }
+
+.issue-ok    { color: var(--green); text-align: center; }
+.issue-info  { color: var(--text-secondary); text-align: center; cursor: help; }
+.issue-warn  { color: var(--amber); text-align: center; cursor: help; }
+.issue-error { color: var(--red); text-align: center; cursor: help; }
+
+/* ── Several files in one upload ────────────────────── */
+.batch-list { display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 1rem; font-size: 0.82rem; }
+.batch-item {
+  display: flex; align-items: center; gap: 0.6rem; min-width: 0;
+  padding: 0.45rem 0.8rem; border-radius: var(--radius-sm);
+  background: var(--bg-input); border: 1px solid var(--border);
+}
+.batch-mark { width: 1rem; display: flex; justify-content: center; flex-shrink: 0; color: var(--text-secondary); }
+.batch-name { color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.batch-detail {
+  margin-left: auto; padding-left: 0.75rem; color: var(--text-secondary); text-align: right;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; max-width: 55%;
+}
+.batch-reading .batch-mark { color: var(--accent); }
+.batch-done .batch-mark    { color: var(--green); }
+.batch-failed .batch-mark, .batch-failed .batch-detail { color: var(--red); }
+.batch-skipped, .batch-cancelled { opacity: 0.7; }
+.row-origin {
+  margin-top: 0.15rem; font-size: 0.72rem; color: var(--text-secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 22rem;
+}
+.table-actions { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; margin-top: 1.25rem; }
+.table-actions .btn-ghost { margin-left: 0; color: var(--text-secondary); }

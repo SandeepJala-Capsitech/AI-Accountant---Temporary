@@ -1,0 +1,15 @@
+{
+  "case": "text-paye",
+  "kind": "text",
+  "input": "input.txt",
+  "rows": [
+    {
+      "date": "2026-09-19",
+      "direction": "out",
+      "gross": "2140.37",
+      "vat": null,
+      "account_code": "2210",
+      "description": "HMRC PAYE and National Insurance"
+    }
+  ]
+}

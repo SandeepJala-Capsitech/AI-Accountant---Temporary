@@ -1,0 +1,15 @@
+{
+  "case": "text-hmrc-vat-payment",
+  "kind": "text",
+  "input": "input.txt",
+  "rows": [
+    {
+      "date": "2026-09-07",
+      "direction": "out",
+      "gross": "1450.00",
+      "vat": null,
+      "account_code": "2202",
+      "description": "HMRC VAT settlement payment"
+    }
+  ]
+}

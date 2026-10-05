@@ -1,0 +1,167 @@
+{
+  "case": "csv-unseen-payees",
+  "kind": "table",
+  "input": "input.csv",
+  "rows": [
+    {
+      "date": "2026-09-01",
+      "direction": "out",
+      "gross": "1850.00",
+      "vat": null,
+      "account_code": "7100",
+      "description": "KNIGHT FRANK RENT SEP"
+    },
+    {
+      "date": "2026-09-02",
+      "direction": "in",
+      "gross": "4200.00",
+      "vat": null,
+      "account_code": "4000",
+      "description": "HALCYON STUDIOS LTD INV 2051"
+    },
+    {
+      "date": "2026-09-03",
+      "direction": "out",
+      "gross": "64.20",
+      "vat": null,
+      "account_code": "7800",
+      "description": "WICKES"
+    },
+    {
+      "date": "2026-09-04",
+      "direction": "out",
+      "gross": "6.85",
+      "vat": null,
+      "account_code": "7406",
+      "description": "CAFFE NERO"
+    },
+    {
+      "date": "2026-09-05",
+      "direction": "out",
+      "gross": "23.97",
+      "vat": null,
+      "account_code": "7504",
+      "description": "RYMAN"
+    },
+    {
+      "date": "2026-09-08",
+      "direction": "out",
+      "gross": "118.40",
+      "vat": null,
+      "account_code": "7400",
+      "description": "LNER"
+    },
+    {
+      "date": "2026-09-09",
+      "direction": "out",
+      "gross": "58.12",
+      "vat": null,
+      "account_code": "7300",
+      "description": "ESSO"
+    },
+    {
+      "date": "2026-09-10",
+      "direction": "out",
+      "gross": "17.95",
+      "vat": null,
+      "account_code": "7501",
+      "description": "PARCELFORCE"
+    },
+    {
+      "date": "2026-09-11",
+      "direction": "out",
+      "gross": "36.00",
+      "vat": null,
+      "account_code": "7502",
+      "description": "O2 UK"
+    },
+    {
+      "date": "2026-09-12",
+      "direction": "out",
+      "gross": "15.99",
+      "vat": null,
+      "account_code": "8201",
+      "description": "DROPBOX"
+    },
+    {
+      "date": "2026-09-15",
+      "direction": "out",
+      "gross": "72.50",
+      "vat": null,
+      "account_code": "7402",
+      "description": "TRAVELODGE"
+    },
+    {
+      "date": "2026-09-16",
+      "direction": "out",
+      "gross": "34.60",
+      "vat": null,
+      "account_code": "7400",
+      "description": "ADDISON LEE"
+    },
+    {
+      "date": "2026-09-17",
+      "direction": "out",
+      "gross": "18.35",
+      "vat": null,
+      "account_code": "8205",
+      "description": "WAITROSE"
+    },
+    {
+      "date": "2026-09-18",
+      "direction": "out",
+      "gross": "42.99",
+      "vat": null,
+      "account_code": "9998",
+      "description": "EBAY"
+    },
+    {
+      "date": "2026-09-19",
+      "direction": "out",
+      "gross": "129.00",
+      "vat": null,
+      "account_code": "9998",
+      "description": "JOHN LEWIS"
+    },
+    {
+      "date": "2026-09-22",
+      "direction": "out",
+      "gross": "48.75",
+      "vat": null,
+      "account_code": "8204",
+      "description": "HISCOX"
+    },
+    {
+      "date": "2026-09-24",
+      "direction": "out",
+      "gross": "150.00",
+      "vat": null,
+      "account_code": "9998",
+      "description": "GOOGLE ADS"
+    },
+    {
+      "date": "2026-09-25",
+      "direction": "out",
+      "gross": "2310.00",
+      "vat": null,
+      "account_code": "7000",
+      "description": "J MORGAN SALARY"
+    },
+    {
+      "date": "2026-09-29",
+      "direction": "out",
+      "gross": "8.50",
+      "vat": null,
+      "account_code": "7901",
+      "description": "MONTHLY ACCOUNT FEE"
+    },
+    {
+      "date": "2026-09-30",
+      "direction": "in",
+      "gross": "1.26",
+      "vat": null,
+      "account_code": "4900",
+      "description": "GROSS INTEREST"
+    }
+  ]
+}

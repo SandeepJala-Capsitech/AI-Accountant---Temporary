@@ -1,0 +1,15 @@
+{
+  "case": "img-tesco-receipt",
+  "kind": "image",
+  "input": "input.png",
+  "rows": [
+    {
+      "date": "2026-09-03",
+      "direction": "out",
+      "gross": "12.50",
+      "vat": null,
+      "account_code": "7406",
+      "description": "Tesco Express"
+    }
+  ]
+}

@@ -1,38 +1,18 @@
 'use client'
 
-import { useState, useRef, useCallback } from 'react'
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-interface AccountingTransaction {
-  description: string
-  date: string | null
-  amount: number
-  currency: string
-  type: 'expense' | 'revenue'
-  account: string
-}
-
-interface AnalyzeResult {
-  success: boolean
-  count: number
-  data: AccountingTransaction[]
-  raw_model_output?: string
-  validation_error?: string
-}
-
-interface TrialBalanceLine {
-  account: string
-  debit: number
-  credit: number
-}
-
-interface TrialBalanceResult {
-  lines: TrialBalanceLine[]
-  total_debits: number
-  total_credits: number
-  is_balanced: boolean
-}
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
+import {
+  analyze as runAnalysisJob,
+  ApiError,
+  getHealth,
+  trialBalance,
+  validateTransactions,
+  type Transaction,
+  type AnalyzeResult,
+  type Health,
+  type TrialBalanceResult,
+} from '@/lib/api'
+import { DUPLICATE_WINDOW_DAYS, fingerprint, possibleDuplicates } from '@/lib/duplicates'
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
@@ -40,6 +20,42 @@ const fmt = (n: number) =>
   n === 0
     ? ''
     : `£${Math.abs(n).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+
+const money = (value: string | null) => (value == null ? '—' : fmt(Number(value)) || '£0.00')
+
+const issueSummary = (tx: Transaction) => {
+  if (!tx.issues.length) return { mark: '✓', cls: 'issue-ok', title: 'No issues' }
+  const worst = tx.issues.some(i => i.severity === 'error') ? 'issue-error'
+    : tx.issues.some(i => i.severity === 'warning') ? 'issue-warn' : 'issue-info'
+  return { mark: `${worst === 'issue-error' ? '✖' : '⚠'} ${tx.issues.length}`, cls: worst,
+           title: tx.issues.map(i => i.message).join('\n') }
+}
+
+// ─── Several files in one upload ──────────────────────────────────────────────
+
+const MAX_BATCH_FILES = 20
+
+type FileStatus = 'waiting' | 'reading' | 'done' | 'failed' | 'skipped' | 'cancelled'
+
+interface BatchItem {
+  id: number
+  file: File
+  hash: string | null      // fingerprint of the file's content (null if the browser cannot hash)
+  status: FileStatus
+  detail: string
+}
+
+const STATUS_MARK: Record<FileStatus, string> = {
+  waiting: '○', reading: '', done: '✓', failed: '✖', skipped: '–', cancelled: '■',
+}
+
+// A row of the table and where it came from: a file name, "Pasted text" or "Manual entry".
+// sourceId tells inputs apart even when their names match (two pastes are both "Pasted text").
+interface LedgerRow {
+  tx: Transaction
+  origin: string
+  sourceId: number
+}
 
 // ─── Main Page Component ──────────────────────────────────────────────────────
 
@@ -53,91 +69,253 @@ export default function Home() {
   const [dragOver, setDragOver] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  // API / model status
+  const [health, setHealth] = useState<Health | null>(null)
+  const [healthError, setHealthError] = useState('')
+
   // Step 2 state
   const [analyzing, setAnalyzing] = useState(false)
+  const [progress, setProgress] = useState('')
   const [analyzeError, setAnalyzeError] = useState('')
-  const [transactions, setTransactions] = useState<AccountingTransaction[]>([])
+  const [warnings, setWarnings] = useState<string[]>([])
+  const [modelName, setModelName] = useState<string | null>(null)
+  const [rows, setRows] = useState<LedgerRow[]>([])      // every input adds to these
+  const [batch, setBatch] = useState<BatchItem[]>([])    // the files of the latest upload
+  const nextFileId = useRef(1)                          // ids for files, pastes and manual entries
+  const filesInTable = useRef(new Map<string, string>())  // fingerprint -> name of each file read
+  const cancelRef = useRef(false)
 
   // Step 3 state
   const [generating, setGenerating] = useState(false)
   const [tbResult, setTbResult] = useState<TrialBalanceResult | null>(null)
   const [tbError, setTbError] = useState('')
 
-  // ── Step 1 → Step 2: call /api/analyze ─────────────────────────────────────
+  // ── AI online / offline indicator ──────────────────────────────────────────
 
-  const analyze = useCallback(async (formData: FormData) => {
-    setAnalyzing(true)
-    setAnalyzeError('')
-    setTransactions([])
+  useEffect(() => {
+    let alive = true
+    const check = () =>
+      getHealth()
+        .then(h => {
+          if (alive) { setHealth(h); setHealthError('') }
+        })
+        .catch((e: unknown) => {
+          if (alive) { setHealth(null); setHealthError(e instanceof Error ? e.message : String(e)) }
+        })
+    check()
+    const timer = setInterval(check, 30_000)
+    return () => { alive = false; clearInterval(timer) }
+  }, [])
+
+  // ── Step 1 → Step 2: run an analysis job ───────────────────────────────────
+
+  // New rows join the table; a trial balance made before them no longer covers every row.
+  const addRows = useCallback((txs: Transaction[], origin: string, sourceId: number, warningsFound: string[]) => {
+    setRows(prev => [...prev, ...txs.map(tx => ({ tx, origin, sourceId }))])
+    setWarnings(prev => [...prev, ...warningsFound.map(w => `${origin}: ${w}`)])
     setTbResult(null)
     setTbError('')
+  }, [])
+
+  const runAnalysis = useCallback(async (
+    formData: FormData,
+    origin: string,
+    toTransactions: (result: AnalyzeResult) => Transaction[] | Promise<Transaction[]> = result => result.transactions,
+  ) => {
+    cancelRef.current = false
+    setAnalyzing(true)
+    setProgress('Uploading…')
+    setAnalyzeError('')
     try {
-      const res = await fetch('http://localhost:8085/api/analyze', { method: 'POST', body: formData })
-      if (!res.ok) {
-        const detail = await res.text()
-        throw new Error(`API ${res.status}: ${detail}`)
-      }
-      const result: AnalyzeResult = await res.json()
-      if (!result.success || !result.data.length) {
-        throw new Error(result.validation_error || 'No transactions extracted.')
-      }
-      setTransactions(result.data)
+      const result = await runAnalysisJob(formData, setProgress, () => cancelRef.current)
+      setModelName(result.model)
+      const txs = await toTransactions(result)
+      if (!txs.length) throw new ApiError('No transactions were found in this input.', 'empty')
+      addRows(txs, origin, nextFileId.current++, result.warnings)
     } catch (e: unknown) {
       setAnalyzeError(e instanceof Error ? e.message : String(e))
     } finally {
       setAnalyzing(false)
+      setProgress('')
     }
+  }, [addRows])
+
+  const updateFile = useCallback((id: number, patch: Partial<BatchItem>) => {
+    setBatch(prev => prev.map(item => (item.id === id ? { ...item, ...patch } : item)))
   }, [])
+
+  // Reads the waiting files through the same job API as a single upload, up to `parallel` at a
+  // time (the API's max_parallel_jobs). Rows join the table in the order the files were picked,
+  // whichever finishes first. A file that fails is marked and the others go on; Cancel stops all.
+  const runBatch = useCallback(async (items: BatchItem[], parallel: number) => {
+    const todo = items.filter(item => item.status === 'waiting')
+    if (!todo.length) return
+    cancelRef.current = false
+    setAnalyzing(true)
+    const results: (AnalyzeResult | null | undefined)[] = todo.map(() => undefined)   // null: no rows
+    let next = 0
+    let read = 0
+    let added = 0
+    const addInOrder = () => {
+      for (; added < todo.length && results[added] !== undefined; added++) {
+        const result = results[added]
+        const item = todo[added]
+        if (result) {
+          setModelName(result.model)
+          addRows(result.transactions, item.file.name, item.id, result.warnings)
+          if (item.hash) filesInTable.current.set(item.hash, item.file.name)
+        }
+      }
+    }
+    const readFiles = async () => {
+      while (next < todo.length) {
+        const n = next++
+        const item = todo[n]
+        if (cancelRef.current) {
+          updateFile(item.id, { status: 'cancelled', detail: 'Not read: cancelled' })
+          results[n] = null
+        } else {
+          updateFile(item.id, { status: 'reading', detail: 'Uploading…' })
+          try {
+            const formData = new FormData()
+            formData.append('file', item.file)
+            const result = await runAnalysisJob(formData, p => updateFile(item.id, { detail: p }),
+                                                () => cancelRef.current)
+            const count = result.transactions.length
+            if (!count) throw new ApiError('No transactions were found in this file.', 'empty')
+            results[n] = result
+            updateFile(item.id, { status: 'done', detail: `${count} row${count === 1 ? '' : 's'}` })
+          } catch (e: unknown) {
+            results[n] = null
+            const cancelled = e instanceof ApiError && e.code === 'cancelled'
+            updateFile(item.id, { status: cancelled ? 'cancelled' : 'failed',
+                                  detail: e instanceof Error ? e.message : String(e) })
+          }
+          read++
+          setProgress(`${read} of ${todo.length} files read, up to ${parallel} at a time`)
+        }
+        addInOrder()
+      }
+    }
+    setProgress(`Reading ${todo.length} file${todo.length === 1 ? '' : 's'}, up to ${parallel} at a time…`)
+    await Promise.all(Array.from({ length: Math.min(parallel, todo.length) }, readFiles))
+    setAnalyzing(false)
+    setProgress('')
+  }, [addRows, updateFile])
+
+  const cancelAnalysis = () => {
+    cancelRef.current = true
+    setProgress('Cancelling…')
+  }
 
   const handlePaste = () => {
     if (!pasteText.trim()) return
     const fd = new FormData()
     fd.append('text', pasteText.trim())
-    analyze(fd)
+    runAnalysis(fd, 'Pasted text')
   }
 
   const handleManual = () => {
     const amt = parseFloat(manualAmount)
     if (!manualDesc.trim() || isNaN(amt)) return
-    const verb = manualType === 'revenue' ? 'received' : 'paid'
+    const description = manualDesc.trim()
+    const amount = Math.abs(amt)
+    const type = manualType
+    const verb = type === 'revenue' ? 'received' : 'paid'
     const fd = new FormData()
-    fd.append('text', `${manualDesc.trim()} - ${verb} GBP ${Math.abs(amt)}`)
-    analyze(fd)
+    fd.append('text', `${description} - ${verb} GBP ${amount}`)
+    // The model only suggests the account; the backend splits the VAT like any other row.
+    runAnalysis(fd, 'Manual entry', async result => {
+      const suggested = result.transactions[0]
+      const row: Transaction = {
+        date: null, description, direction: type === 'revenue' ? 'in' : 'out', gross: amount.toFixed(2),
+        vat: null, vat_treatment: null, vat_posted: null, net: null,
+        account_code: suggested?.account_code ?? '9998',
+        contra_account_code: null, currency: 'GBP', source: 'manual', method: 'user', evidence: null,
+        issues: suggested
+          ? suggested.issues.filter(i => i.code === 'account_not_recognised')
+          : [{ code: 'account_not_recognised', severity: 'warning', message: 'No account suggested; posted to Suspense.' }],
+      }
+      return (await validateTransactions([row])).transactions
+    })
   }
 
-  const handleFiles = (files: FileList | null) => {
-    if (!files || !files.length) return
-    const fd = new FormData()
-    fd.append('file', files[0])
-    analyze(fd)
+  // How many files the API reads at once (older APIs do not say: one).
+  const parallelFiles = Math.max(1, health?.max_parallel_jobs ?? 1)
+
+  const handleFiles = async (files: FileList | null) => {
+    const picked = Array.from(files ?? [])
+    if (fileInputRef.current) fileInputRef.current.value = '' // lets the same files be chosen again
+    if (!picked.length) return
+    const limitMb = health?.max_upload_mb ?? 20
+    const hashes = await Promise.all(picked.slice(0, MAX_BATCH_FILES).map(fingerprint))
+    const items: BatchItem[] = []
+    hashes.forEach((hash, n) => {
+      const file = picked[n]
+      // A file already read, or picked twice, is not read again: its rows would be booked twice.
+      const sameAs = hash && (filesInTable.current.get(hash)
+                              ?? items.find(item => item.hash === hash)?.file.name)
+      // Size is checked here because the Next proxy cuts oversized bodies instead of rejecting them.
+      const tooBig = file.size > limitMb * 1024 * 1024
+      const detail = sameAs
+        ? `Skipped: same file as ${sameAs}${filesInTable.current.has(hash) ? ', already in the table' : ' in this upload'}`
+        : tooBig ? `Larger than the ${limitMb} MB limit: split it and upload the parts` : 'Waiting'
+      items.push({ id: nextFileId.current++, file, hash, status: sameAs || tooBig ? 'skipped' : 'waiting', detail })
+    })
+    setBatch(items)
+    setAnalyzeError(picked.length > MAX_BATCH_FILES
+      ? `Only the first ${MAX_BATCH_FILES} files were added; upload the other ${picked.length - MAX_BATCH_FILES} next.`
+      : '')
+    runBatch(items, parallelFiles)
+  }
+
+  const retryFailed = () => {
+    const again = batch.map(item => (item.status === 'failed' || item.status === 'cancelled'
+      ? { ...item, status: 'waiting' as const, detail: 'Waiting' }
+      : item))
+    setBatch(again)
+    setAnalyzeError('')
+    runBatch(again, parallelFiles)
+  }
+
+  const clearTable = () => {
+    filesInTable.current.clear()
+    setRows([])
+    setBatch([])
+    setWarnings([])
+    setAnalyzeError('')
+    setModelName(null)
+    setTbResult(null)
+    setTbError('')
   }
 
   // ── Step 2 → Step 3: call /api/trial-balance ───────────────────────────────
 
   const generateTrialBalance = useCallback(async () => {
-    if (!transactions.length) return
+    if (!rows.length) return
     setGenerating(true)
     setTbError('')
     setTbResult(null)
     try {
-      const res = await fetch('http://localhost:8085/api/trial-balance', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(transactions),
-      })
-      if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`)
-      const result: TrialBalanceResult = await res.json()
-      setTbResult(result)
+      setTbResult(await trialBalance(rows.map(row => row.tx)))
     } catch (e: unknown) {
       setTbError(e instanceof Error ? e.message : String(e))
     } finally {
       setGenerating(false)
     }
-  }, [transactions])
+  }, [rows])
 
   // ── Pipeline step state ────────────────────────────────────────────────────
-  const step1Done = transactions.length > 0
+  // For each row, an earlier row from another input that may be the same payment (or null).
+  const duplicateOf = useMemo(() => possibleDuplicates(rows.map(row => ({
+    sourceId: row.sourceId, gross: row.tx.gross, direction: row.tx.direction, date: row.tx.date,
+  }))), [rows])
+  const duplicateCount = duplicateOf.filter(of => of !== null).length
+
+  const step1Done = rows.length > 0
   const step2Active = analyzing || step1Done
+  const showStep2 = analyzing || rows.length > 0 || batch.length > 0 || !!analyzeError
+  const canRetry = !analyzing && batch.some(item => item.status === 'failed' || item.status === 'cancelled')
   const step3Active = tbResult !== null || generating
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -150,7 +328,13 @@ export default function Home() {
         <div className="header-icon">£</div>
         <div>
           <div className="header-title">UK LedgerSync</div>
-          <div className="header-sub">Local Qwen AI · Trial Balance Prototype</div>
+          <div className="header-sub">
+            {health
+              ? health.model_available
+                ? <span className="health-ok">● AI online · {health.model}</span>
+                : <span className="health-off">● AI offline · {health.ai_error}</span>
+              : <span className="health-off">● {healthError || 'Checking API…'}</span>}
+          </div>
         </div>
       </header>
 
@@ -219,22 +403,23 @@ export default function Home() {
           <div className={`tab-panel ${activeTab === 'upload' ? 'active' : ''}`}>
             <input
               type="file"
+              multiple
               ref={fileInputRef}
               style={{ display: 'none' }}
-              accept=".csv,.xlsx,.xls,.txt,.pdf,.png,.jpg,.jpeg"
+              accept=".csv,.tsv,.txt,.xlsx,.xls,.pdf,.png,.jpg,.jpeg,.webp,.bmp,.tiff"
               onChange={e => handleFiles(e.target.files)}
             />
             <div
               id="dropzone"
               className={`dropzone ${dragOver ? 'drag-over' : ''}`}
-              onClick={() => fileInputRef.current?.click()}
+              onClick={() => !analyzing && fileInputRef.current?.click()}
               onDragOver={e => { e.preventDefault(); setDragOver(true) }}
               onDragLeave={() => setDragOver(false)}
-              onDrop={e => { e.preventDefault(); setDragOver(false); handleFiles(e.dataTransfer.files) }}
+              onDrop={e => { e.preventDefault(); setDragOver(false); if (!analyzing) handleFiles(e.dataTransfer.files) }}
             >
               <div className="dropzone-icon">📥</div>
-              <h3>Drop a file here or click to browse</h3>
-              <p>Bank statements, VAT receipts, invoices, spreadsheets</p>
+              <h3>Drop files here or click to browse</h3>
+              <p>Up to {MAX_BATCH_FILES} at a time: bank statements, VAT receipts, invoices, spreadsheets</p>
               <div className="file-tags">
                 {['.CSV', '.XLSX', '.PDF', '.PNG / .JPG'].map(t => (
                   <span key={t} className="file-tag">{t}</span>
@@ -296,18 +481,22 @@ export default function Home() {
       </div>
 
       {/* Connector */}
-      {(analyzing || transactions.length > 0 || analyzeError) && (
+      {showStep2 && (
         <div className="connector">↓</div>
       )}
 
       {/* ── STEP 2 — Structured Data ────────────────────────────────────────── */}
-      {(analyzing || transactions.length > 0 || analyzeError) && (
+      {showStep2 && (
         <div className="section">
           <div className="section-header">
             <span className="step-badge badge-2">Step 2</span>
             <span className="section-title">Qwen AI — Structured Output</span>
-            {transactions.length > 0 && (
-              <span className="section-sub">{transactions.length} transaction{transactions.length !== 1 ? 's' : ''} extracted</span>
+            {rows.length > 0 && (
+              <span className="section-sub">
+                {rows.length} transaction{rows.length !== 1 ? 's' : ''} extracted
+                {duplicateCount ? ` · ${duplicateCount} possible duplicate${duplicateCount !== 1 ? 's' : ''}` : ''}
+                {modelName ? ` · ${modelName}` : ''}
+              </span>
             )}
           </div>
           <div className="section-body">
@@ -315,7 +504,10 @@ export default function Home() {
             {analyzing && (
               <div className="status-msg status-processing">
                 <span className="spinner" />
-                Local Qwen model is analysing your input…
+                <span>{progress || 'Working…'}</span>
+                <button className="btn btn-ghost" onClick={cancelAnalysis} disabled={progress === 'Cancelling…'}>
+                  Cancel
+                </button>
               </div>
             )}
 
@@ -325,40 +517,90 @@ export default function Home() {
               </div>
             )}
 
-            {transactions.length > 0 && (
+            {batch.length > 0 && (
+              <div className="batch-list">
+                {batch.map(item => (
+                  <div key={item.id} className={`batch-item batch-${item.status}`}>
+                    <span className="batch-mark">
+                      {item.status === 'reading' ? <span className="spinner" /> : STATUS_MARK[item.status]}
+                    </span>
+                    <span className="batch-name" title={item.file.name}>{item.file.name}</span>
+                    <span className="batch-detail" title={item.detail}>{item.detail}</span>
+                  </div>
+                ))}
+                {canRetry && (
+                  <div className="row-end">
+                    <button className="btn btn-ghost" onClick={retryFailed}>↻ Retry failed files</button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {warnings.length > 0 && (
+              <div className="status-msg status-warning">
+                <div>
+                  {warnings.map((w, i) => <div key={i}>⚠ {w}</div>)}
+                </div>
+              </div>
+            )}
+
+            {rows.length > 0 && (
               <>
                 <div className="data-table-wrap">
                   <table className="data-table">
                     <thead>
                       <tr>
+                        <th>Date</th>
                         <th>Description</th>
+                        <th>In / Out</th>
                         <th>Amount</th>
-                        <th>Type</th>
-                        <th>Account / Category</th>
-                        <th>Currency</th>
+                        <th>VAT</th>
+                        <th>Account</th>
+                        <th>Check</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {transactions.map((tx, i) => (
-                        <tr key={i}>
-                          <td>{tx.description}</td>
-                          <td className="amount-cell">
-                            £{tx.amount.toLocaleString('en-GB', { minimumFractionDigits: 2 })}
-                          </td>
-                          <td>
-                            <span className={`badge-type ${tx.type === 'expense' ? 'badge-expense' : 'badge-revenue'}`}>
-                              {tx.type}
-                            </span>
-                          </td>
-                          <td>{tx.account}</td>
-                          <td style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>{tx.currency || 'GBP'}</td>
-                        </tr>
-                      ))}
+                      {rows.map(({ tx, origin }, i) => {
+                        const of = duplicateOf[i]
+                        const check = issueSummary(of === null ? tx : {
+                          ...tx, issues: [...tx.issues, {
+                            code: 'possible_duplicate', severity: 'warning',
+                            message: `Possible duplicate of "${rows[of].tx.description}" (${rows[of].origin}): `
+                                     + `same amount and direction, dated within ${DUPLICATE_WINDOW_DAYS} days.`,
+                          }],
+                        })
+                        return (
+                          <tr key={i}>
+                            <td>{tx.date ?? '—'}</td>
+                            <td>
+                              {tx.description}
+                              <div className="row-origin" title={origin}>{origin}</div>
+                            </td>
+                            <td>
+                              <span className={`badge-type ${tx.direction === 'out' ? 'badge-expense' : 'badge-revenue'}`}>
+                                {tx.direction === 'out' ? 'money out' : 'money in'}
+                              </span>
+                            </td>
+                            <td className="amount-cell">{money(tx.gross)}</td>
+                            <td className="amount-cell">{money(tx.vat_posted)}</td>
+                            <td>{tx.account_code} {tx.account_name ?? ''}</td>
+                            <td className={check.cls} title={check.title}>{check.mark}</td>
+                          </tr>
+                        )
+                      })}
                     </tbody>
                   </table>
                 </div>
 
-                <div className="row-end" style={{ marginTop: '1.25rem' }}>
+                <div className="table-actions">
+                  <button
+                    id="clearTableBtn"
+                    className="btn btn-ghost"
+                    onClick={clearTable}
+                    disabled={analyzing}
+                  >
+                    Clear table
+                  </button>
                   <button
                     id="generateTbBtn"
                     className="btn btn-green"
@@ -418,14 +660,14 @@ export default function Home() {
                       </tr>
                     </thead>
                     <tbody>
-                      {tbResult.lines.map((line, i) => (
-                        <tr key={i}>
-                          <td className="tb-account">{line.account}</td>
-                          <td className={line.debit > 0 ? 'debit-val' : 'empty-cell'}>
-                            {line.debit > 0 ? fmt(line.debit) : '—'}
+                      {tbResult.lines.map(line => (
+                        <tr key={line.code}>
+                          <td className="tb-account">{line.code} {line.name}</td>
+                          <td className={Number(line.debit) > 0 ? 'debit-val' : 'empty-cell'}>
+                            {Number(line.debit) > 0 ? money(line.debit) : '—'}
                           </td>
-                          <td className={line.credit > 0 ? 'credit-val' : 'empty-cell'}>
-                            {line.credit > 0 ? fmt(line.credit) : '—'}
+                          <td className={Number(line.credit) > 0 ? 'credit-val' : 'empty-cell'}>
+                            {Number(line.credit) > 0 ? money(line.credit) : '—'}
                           </td>
                         </tr>
                       ))}
@@ -433,8 +675,8 @@ export default function Home() {
                     <tfoot>
                       <tr className="tb-total-row">
                         <td>Totals</td>
-                        <td className="debit-val">{fmt(tbResult.total_debits) || '£0.00'}</td>
-                        <td className="credit-val">{fmt(tbResult.total_credits) || '£0.00'}</td>
+                        <td className="debit-val">{money(tbResult.total_debits)}</td>
+                        <td className="credit-val">{money(tbResult.total_credits)}</td>
                       </tr>
                     </tfoot>
                   </table>
@@ -444,7 +686,7 @@ export default function Home() {
                   <span className={`balance-pill ${tbResult.is_balanced ? 'pill-balanced' : 'pill-unbalanced'}`}>
                     {tbResult.is_balanced
                       ? '✓ Trial Balance Balances'
-                      : `⚠ Out of Balance by £${Math.abs(tbResult.total_debits - tbResult.total_credits).toFixed(2)}`}
+                      : `⚠ Out of Balance by £${Math.abs(Number(tbResult.total_debits) - Number(tbResult.total_credits)).toFixed(2)}`}
                   </span>
                 </div>
               </>

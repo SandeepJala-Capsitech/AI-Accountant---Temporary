@@ -1,0 +1,15 @@
+{
+  "case": "text-mixed-receipt-one-vat",
+  "kind": "text",
+  "input": "input.txt",
+  "rows": [
+    {
+      "date": "2026-09-15",
+      "direction": "out",
+      "gross": "12.00",
+      "vat": "2.00",
+      "account_code": "7504",
+      "description": "WHSmith"
+    }
+  ]
+}

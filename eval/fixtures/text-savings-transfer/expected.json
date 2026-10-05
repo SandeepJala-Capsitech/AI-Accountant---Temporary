@@ -1,0 +1,15 @@
+{
+  "case": "text-savings-transfer",
+  "kind": "text",
+  "input": "input.txt",
+  "rows": [
+    {
+      "date": "2026-09-15",
+      "direction": "out",
+      "gross": "5000.00",
+      "vat": null,
+      "account_code": "1210",
+      "description": "Transfer to business savings account"
+    }
+  ]
+}

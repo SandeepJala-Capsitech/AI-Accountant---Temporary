@@ -1,0 +1,23 @@
+{
+  "case": "img-supermarket-mixed-vat",
+  "kind": "image",
+  "input": "input.png",
+  "rows": [
+    {
+      "date": "2026-09-18",
+      "direction": "out",
+      "gross": "3.75",
+      "vat": "0.00",
+      "account_code": "8205",
+      "description": "Sainsbury's Local groceries"
+    },
+    {
+      "date": "2026-09-18",
+      "direction": "out",
+      "gross": "4.20",
+      "vat": "0.70",
+      "account_code": "7801",
+      "description": "Sainsbury's Local cleaning supplies"
+    }
+  ]
+}

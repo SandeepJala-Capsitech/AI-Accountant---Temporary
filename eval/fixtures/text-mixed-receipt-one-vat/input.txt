@@ -1,0 +1,9 @@
+WHSMITH
+Kings Cross Station
+VAT No 238 5548 36
+15/09/2026 08:12
+Coffee to go     3.00
+A4 notebook      9.00
+VAT              2.00
+TOTAL           12.00
+CARD            12.00

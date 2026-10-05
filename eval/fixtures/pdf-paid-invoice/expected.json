@@ -1,0 +1,15 @@
+{
+  "case": "pdf-paid-invoice",
+  "kind": "pdf",
+  "input": "input.pdf",
+  "rows": [
+    {
+      "date": "2026-09-14",
+      "direction": "out",
+      "gross": "1260.00",
+      "vat": "210.00",
+      "account_code": "0030",
+      "description": "Brightline IT Supplies Ltd"
+    }
+  ]
+}

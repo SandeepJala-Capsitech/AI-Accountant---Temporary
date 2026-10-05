@@ -1,0 +1,291 @@
+{
+  "date": "2026-09-29",
+  "label": "unseen-mixed",
+  "api": "http://127.0.0.1:8085",
+  "model": "qwen/qwen3.8-27b",
+  "note": "Groq qwen/qwen3.8-27b free plan; the account rule of 55a8c28, restored in 2a9a3d7; LEDGERSYNC_BUSINESS_NAME=Northbridge Consulting Ltd",
+  "timeout_s": 600,
+  "summary": {
+    "cases": 1,
+    "expected": 20,
+    "predicted": 20,
+    "matched": 20,
+    "row_precision": 1.0,
+    "row_recall": 1.0,
+    "correct_rows": 1.0,
+    "field_accuracy": {
+      "amount": 1.0,
+      "date": 1.0,
+      "direction": 1.0,
+      "account": 0.9,
+      "vat": null
+    },
+    "exact_cases": 0.0,
+    "tb_balanced": 1.0,
+    "latency_p50_s": 13.7,
+    "latency_p95_s": 13.7,
+    "errors": {}
+  },
+  "by_kind": {
+    "table": {
+      "cases": 1,
+      "expected": 20,
+      "predicted": 20,
+      "matched": 20,
+      "row_precision": 1.0,
+      "row_recall": 1.0,
+      "correct_rows": 1.0,
+      "field_accuracy": {
+        "amount": 1.0,
+        "date": 1.0,
+        "direction": 1.0,
+        "account": 0.9,
+        "vat": null
+      },
+      "exact_cases": 0.0,
+      "tb_balanced": 1.0,
+      "latency_p50_s": 13.7,
+      "latency_p95_s": 13.7,
+      "errors": {}
+    }
+  },
+  "cases": [
+    {
+      "case": "csv-unseen-mixed",
+      "kind": "table",
+      "error": null,
+      "latency_s": 13.7,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 20,
+      "predicted": 20,
+      "matched": 20,
+      "correct": 20,
+      "checks": {
+        "amount": [
+          20,
+          20
+        ],
+        "date": [
+          20,
+          20
+        ],
+        "direction": [
+          20,
+          20
+        ],
+        "account": [
+          18,
+          20
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": false,
+      "predicted_rows": [
+        {
+          "date": "2026-10-01",
+          "direction": "out",
+          "gross": "32.40",
+          "vat": "5.40",
+          "account_code": "7504",
+          "description": "ONBUY.COM - A4 COPIER PAPER",
+          "has_account": true,
+          "has_vat": true
+        },
+        {
+          "date": "2026-10-01",
+          "direction": "in",
+          "gross": "3150.00",
+          "vat": "525.00",
+          "account_code": "4000",
+          "description": "BRIGHTWATER DESIGN LTD INV 3107",
+          "has_account": true,
+          "has_vat": true
+        },
+        {
+          "date": "2026-10-02",
+          "direction": "out",
+          "gross": "86.30",
+          "vat": "14.38",
+          "account_code": "7800",
+          "description": "TRAVIS PERKINS",
+          "has_account": true,
+          "has_vat": true
+        },
+        {
+          "date": "2026-10-03",
+          "direction": "out",
+          "gross": "5.60",
+          "vat": "0.93",
+          "account_code": "7406",
+          "description": "GREGGS",
+          "has_account": true,
+          "has_vat": true
+        },
+        {
+          "date": "2026-10-05",
+          "direction": "out",
+          "gross": "120.00",
+          "vat": "20.00",
+          "account_code": "0040",
+          "description": "GUMTREE - SECOND-HAND OFFICE DESK",
+          "has_account": true,
+          "has_vat": true
+        },
+        {
+          "date": "2026-10-06",
+          "direction": "out",
+          "gross": "30.00",
+          "vat": "5.00",
+          "account_code": "7502",
+          "description": "PLUSNET",
+          "has_account": true,
+          "has_vat": true
+        },
+        {
+          "date": "2026-10-07",
+          "direction": "out",
+          "gross": "24.50",
+          "vat": "0.00",
+          "account_code": "9998",
+          "description": "ETSY",
+          "has_account": true,
+          "has_vat": true
+        },
+        {
+          "date": "2026-10-08",
+          "direction": "out",
+          "gross": "549.00",
+          "vat": "91.50",
+          "account_code": "0030",
+          "description": "ARGOS - LAPTOP FOR NEW STARTER",
+          "has_account": true,
+          "has_vat": true
+        },
+        {
+          "date": "2026-10-09",
+          "direction": "out",
+          "gross": "94.00",
+          "vat": "15.67",
+          "account_code": "7402",
+          "description": "IBIS LONDON",
+          "has_account": true,
+          "has_vat": true
+        },
+        {
+          "date": "2026-10-12",
+          "direction": "out",
+          "gross": "200.00",
+          "vat": "33.33",
+          "account_code": "8201",
+          "description": "LINKEDIN ADS",
+          "has_account": true,
+          "has_vat": true
+        },
+        {
+          "date": "2026-10-13",
+          "direction": "out",
+          "gross": "21.75",
+          "vat": "0.00",
+          "account_code": "8205",
+          "description": "MORRISONS",
+          "has_account": true,
+          "has_vat": true
+        },
+        {
+          "date": "2026-10-14",
+          "direction": "out",
+          "gross": "38.20",
+          "vat": "6.37",
+          "account_code": "7403",
+          "description": "MARKS & SPENCER - SANDWICHES FOR CLIENT MEETING",
+          "has_account": true,
+          "has_vat": true
+        },
+        {
+          "date": "2026-10-15",
+          "direction": "out",
+          "gross": "10.99",
+          "vat": "1.83",
+          "account_code": "8201",
+          "description": "CANVA",
+          "has_account": true,
+          "has_vat": true
+        },
+        {
+          "date": "2026-10-16",
+          "direction": "out",
+          "gross": "18.00",
+          "vat": "0.00",
+          "account_code": "7400",
+          "description": "NCP CAR PARKS",
+          "has_account": true,
+          "has_vat": true
+        },
+        {
+          "date": "2026-10-19",
+          "direction": "out",
+          "gross": "210.00",
+          "vat": "0.00",
+          "account_code": "9998",
+          "description": "SELFRIDGES",
+          "has_account": true,
+          "has_vat": true
+        },
+        {
+          "date": "2026-10-20",
+          "direction": "out",
+          "gross": "12.49",
+          "vat": "0.00",
+          "account_code": "7501",
+          "description": "DPD UK",
+          "has_account": true,
+          "has_vat": true
+        },
+        {
+          "date": "2026-10-21",
+          "direction": "out",
+          "gross": "46.80",
+          "vat": "0.00",
+          "account_code": "8205",
+          "description": "COSTCO - MILK AND COFFEE FOR THE OFFICE",
+          "has_account": true,
+          "has_vat": true
+        },
+        {
+          "date": "2026-10-22",
+          "direction": "out",
+          "gross": "61.05",
+          "vat": "10.18",
+          "account_code": "7300",
+          "description": "BP CONNECT",
+          "has_account": true,
+          "has_vat": true
+        },
+        {
+          "date": "2026-10-26",
+          "direction": "out",
+          "gross": "65.00",
+          "vat": "0.00",
+          "account_code": "7400",
+          "description": "CAMDEN COUNCIL PENALTY CHARGE",
+          "has_account": true,
+          "has_vat": true
+        },
+        {
+          "date": "2026-10-28",
+          "direction": "out",
+          "gross": "27.99",
+          "vat": "4.67",
+          "account_code": "7504",
+          "description": "OFFICE DEPOT",
+          "has_account": true,
+          "has_vat": true
+        }
+      ]
+    }
+  ]
+}

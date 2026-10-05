@@ -1,0 +1,39 @@
+{
+  "case": "csv-hsbc-no-header",
+  "kind": "table",
+  "input": "input.csv",
+  "rows": [
+    {
+      "date": "2026-09-03",
+      "direction": "out",
+      "gross": "86.40",
+      "vat": null,
+      "account_code": "7201",
+      "description": "BRITISH GAS"
+    },
+    {
+      "date": "2026-09-11",
+      "direction": "out",
+      "gross": "28.00",
+      "vat": null,
+      "account_code": "7502",
+      "description": "EE LIMITED"
+    },
+    {
+      "date": "2026-09-15",
+      "direction": "in",
+      "gross": "1800.00",
+      "vat": null,
+      "account_code": "4000",
+      "description": "NORTHWIND TRADING PAYMENT"
+    },
+    {
+      "date": "2026-09-24",
+      "direction": "out",
+      "gross": "2140.37",
+      "vat": null,
+      "account_code": "2210",
+      "description": "HMRC PAYE"
+    }
+  ]
+}

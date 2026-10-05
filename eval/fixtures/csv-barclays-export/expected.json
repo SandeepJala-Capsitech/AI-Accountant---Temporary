@@ -1,0 +1,55 @@
+{
+  "case": "csv-barclays-export",
+  "kind": "table",
+  "input": "input.csv",
+  "rows": [
+    {
+      "date": "2026-09-02",
+      "direction": "out",
+      "gross": "45.99",
+      "vat": null,
+      "account_code": "7502",
+      "description": "VODAFONE LTD"
+    },
+    {
+      "date": "2026-09-10",
+      "direction": "out",
+      "gross": "32.40",
+      "vat": null,
+      "account_code": "7504",
+      "description": "STAPLES UK"
+    },
+    {
+      "date": "2026-09-13",
+      "direction": "in",
+      "gross": "950.00",
+      "vat": null,
+      "account_code": "4000",
+      "description": "BRIGHTWELL LTD"
+    },
+    {
+      "date": "2026-09-18",
+      "direction": "out",
+      "gross": "15.60",
+      "vat": null,
+      "account_code": "7501",
+      "description": "ROYAL MAIL"
+    },
+    {
+      "date": "2026-09-22",
+      "direction": "out",
+      "gross": "89.00",
+      "vat": null,
+      "account_code": "7402",
+      "description": "PREMIER INN"
+    },
+    {
+      "date": "2026-09-27",
+      "direction": "out",
+      "gross": "1210.33",
+      "vat": null,
+      "account_code": "2202",
+      "description": "HMRC VAT"
+    }
+  ]
+}

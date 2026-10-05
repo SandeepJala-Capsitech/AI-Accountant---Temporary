@@ -1,0 +1,397 @@
+{
+  "date": "2026-09-30",
+  "label": "paid-invoice-fix",
+  "api": "http://127.0.0.1:8087",
+  "model": "qwen/qwen3.8-27b",
+  "note": "Groq qwen/qwen3.8-27b free plan; rule 2 counts an invoice whether due or already paid (uncommitted, on 7bfe413); LEDGERSYNC_BUSINESS_NAME=Northbridge Consulting Ltd; --pause 20",
+  "timeout_s": 600,
+  "summary": {
+    "cases": 6,
+    "expected": 10,
+    "predicted": 10,
+    "matched": 10,
+    "row_precision": 1.0,
+    "row_recall": 1.0,
+    "correct_rows": 1.0,
+    "field_accuracy": {
+      "amount": 1.0,
+      "date": 1.0,
+      "direction": 1.0,
+      "account": 1.0,
+      "vat": 1.0
+    },
+    "exact_cases": 1.0,
+    "tb_balanced": 1.0,
+    "latency_p50_s": 1.1,
+    "latency_p95_s": 2.6,
+    "errors": {}
+  },
+  "by_kind": {
+    "pdf": {
+      "cases": 5,
+      "expected": 9,
+      "predicted": 9,
+      "matched": 9,
+      "row_precision": 1.0,
+      "row_recall": 1.0,
+      "correct_rows": 1.0,
+      "field_accuracy": {
+        "amount": 1.0,
+        "date": 1.0,
+        "direction": 1.0,
+        "account": 1.0,
+        "vat": 1.0
+      },
+      "exact_cases": 1.0,
+      "tb_balanced": 1.0,
+      "latency_p50_s": 1.1,
+      "latency_p95_s": 2.6,
+      "errors": {}
+    },
+    "text": {
+      "cases": 1,
+      "expected": 1,
+      "predicted": 1,
+      "matched": 1,
+      "row_precision": 1.0,
+      "row_recall": 1.0,
+      "correct_rows": 1.0,
+      "field_accuracy": {
+        "amount": 1.0,
+        "date": 1.0,
+        "direction": 1.0,
+        "account": 1.0,
+        "vat": null
+      },
+      "exact_cases": 1.0,
+      "tb_balanced": 1.0,
+      "latency_p50_s": 0.5,
+      "latency_p95_s": 0.5,
+      "errors": {}
+    }
+  },
+  "cases": [
+    {
+      "case": "pdf-bank-statement",
+      "kind": "pdf",
+      "error": null,
+      "latency_s": 2.6,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 5,
+      "predicted": 5,
+      "matched": 5,
+      "correct": 5,
+      "checks": {
+        "amount": [
+          5,
+          5
+        ],
+        "date": [
+          5,
+          5
+        ],
+        "direction": [
+          5,
+          5
+        ],
+        "account": [
+          5,
+          5
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-03",
+          "direction": "out",
+          "gross": "86.40",
+          "vat": "14.40",
+          "account_code": "7201",
+          "description": "BRITISH GAS BUSINESS",
+          "has_account": true,
+          "has_vat": true
+        },
+        {
+          "date": "2026-09-05",
+          "direction": "out",
+          "gross": "1250.00",
+          "vat": "208.33",
+          "account_code": "7100",
+          "description": "LANDMARK PROPERTIES RENT",
+          "has_account": true,
+          "has_vat": true
+        },
+        {
+          "date": "2026-09-09",
+          "direction": "in",
+          "gross": "3600.00",
+          "vat": "600.00",
+          "account_code": "4000",
+          "description": "HARBOUR & LANE ARCHITECTS",
+          "has_account": true,
+          "has_vat": true
+        },
+        {
+          "date": "2026-09-20",
+          "direction": "out",
+          "gross": "8.50",
+          "vat": "0.00",
+          "account_code": "7901",
+          "description": "BARCLAYS BANK CHARGES",
+          "has_account": true,
+          "has_vat": true
+        },
+        {
+          "date": "2026-09-28",
+          "direction": "out",
+          "gross": "142.18",
+          "vat": "23.70",
+          "account_code": "7200",
+          "description": "OCTOPUS ENERGY",
+          "has_account": true,
+          "has_vat": true
+        }
+      ]
+    },
+    {
+      "case": "pdf-paid-invoice",
+      "kind": "pdf",
+      "error": null,
+      "latency_s": 1.1,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 1,
+      "predicted": 1,
+      "matched": 1,
+      "correct": 1,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          1,
+          1
+        ],
+        "vat": [
+          1,
+          1
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-14",
+          "direction": "out",
+          "gross": "1260.00",
+          "vat": "210.00",
+          "account_code": "0030",
+          "description": "Brightline IT Supplies Ltd for Dell Latitude 5450 laptop",
+          "has_account": true,
+          "has_vat": true
+        }
+      ]
+    },
+    {
+      "case": "pdf-purchase-invoice",
+      "kind": "pdf",
+      "error": null,
+      "latency_s": 1.0,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 1,
+      "predicted": 1,
+      "matched": 1,
+      "correct": 1,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          1,
+          1
+        ],
+        "vat": [
+          1,
+          1
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-08",
+          "direction": "out",
+          "gross": "300.00",
+          "vat": "50.00",
+          "account_code": "7504",
+          "description": "Clearway Office Supplies Ltd for A4 copier paper, toner cartridge and desk organisers",
+          "has_account": true,
+          "has_vat": true
+        }
+      ]
+    },
+    {
+      "case": "pdf-sales-invoice",
+      "kind": "pdf",
+      "error": null,
+      "latency_s": 1.1,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 1,
+      "predicted": 1,
+      "matched": 1,
+      "correct": 1,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          1,
+          1
+        ],
+        "vat": [
+          1,
+          1
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-30",
+          "direction": "in",
+          "gross": "2400.00",
+          "vat": "400.00",
+          "account_code": "4000",
+          "description": "Harbour & Lane Architects LLP - Strategy consultancy, September 2026",
+          "has_account": true,
+          "has_vat": true
+        }
+      ]
+    },
+    {
+      "case": "pdf-scanned-invoice",
+      "kind": "pdf",
+      "error": null,
+      "latency_s": 1.6,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 1,
+      "predicted": 1,
+      "matched": 1,
+      "correct": 1,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          1,
+          1
+        ],
+        "vat": [
+          1,
+          1
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-25",
+          "direction": "out",
+          "gross": "540.00",
+          "vat": "90.00",
+          "account_code": "7601",
+          "description": "Hartley & Co Chartered Accountants - Management accounts",
+          "has_account": true,
+          "has_vat": true
+        }
+      ]
+    },
+    {
+      "case": "text-tesco-receipt",
+      "kind": "text",
+      "error": null,
+      "latency_s": 0.5,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 1,
+      "predicted": 1,
+      "matched": 1,
+      "correct": 1,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          1,
+          1
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-03",
+          "direction": "out",
+          "gross": "12.50",
+          "vat": "2.08",
+          "account_code": "7406",
+          "description": "Meal Deal, Coffee and Sandwich from Tesco Express",
+          "has_account": true,
+          "has_vat": true
+        }
+      ]
+    }
+  ]
+}

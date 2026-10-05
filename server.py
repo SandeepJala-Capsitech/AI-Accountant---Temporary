@@ -1,251 +1,130 @@
-import os
-import shutil
-import tempfile
-from typing import Optional, List, Dict
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+"""FastAPI entry point: a thin HTTP layer over the ledgersync package."""
+import logging
+import threading
+from contextlib import asynccontextmanager
+from typing import Optional
+
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse
 
-from qwen_service import QwenAccountingExtractor, TransactionExtractionResult, AccountingTransaction
+from ledgersync import accounts, adapter, intake, pipeline, posting
+from ledgersync.checks import normalise
+from ledgersync.config import Settings
+from ledgersync.errors import LedgerSyncError, UnreadableFile
+from ledgersync.extractor import TransactionExtractor
+from ledgersync.groq_client import GroqClient
+from ledgersync.jobs import JobStore
+from ledgersync.models import AnalysisResult, BusinessSettings, LedgerRequest, TransactionList, TrialBalance
 
-app = FastAPI(
-    title="UK LedgerSync API",
-    description="Steps 1-3: Local Qwen AI → Structured Accounting Data → Trial Balance"
-)
-
-# Enable CORS (allows Next.js on port 3000 to call this API)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-extractor_service = QwenAccountingExtractor(model_path_or_name="./models/qwen")
+logger = logging.getLogger("ledgersync.server")
 
 
-# ─── Step 3 — Trial Balance Models ────────────────────────────────────────────
-
-class TrialBalanceLine(BaseModel):
-    account: str
-    debit: float   # positive value when this account has a debit balance
-    credit: float  # positive value when this account has a credit balance
-
-class TrialBalanceResult(BaseModel):
-    lines: List[TrialBalanceLine]
-    total_debits: float
-    total_credits: float
-    is_balanced: bool
+def configure_logging(level: str) -> None:
+    """LEDGERSYNC_LOG_LEVEL applies to our own loggers only. Third-party libraries stay at
+    WARNING because some log document text at DEBUG (pdfminer logs every parsed token)."""
+    logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.getLogger().setLevel(logging.WARNING)
+    logging.getLogger("ledgersync").setLevel(level)
 
 
-# ─── Health ────────────────────────────────────────────────────────────────────
+def create_app(settings: Optional[Settings] = None, *, model_client=None) -> FastAPI:
+    """The API; tests pass a stand-in for the Groq client as model_client."""
+    settings = settings or Settings.from_env()
+    configure_logging(settings.log_level)
+    model_client = model_client or GroqClient(settings)
+    extractor = TransactionExtractor(model_client, business_name=settings.business_name)
+    jobs = JobStore(ttl_seconds=settings.job_ttl_seconds, max_workers=settings.max_parallel_jobs)
 
-@app.get("/api/health")
-def health_check():
-    return {
-        "status": "online",
-        "model_path": extractor_service.model_path,
-        "is_model_loaded": extractor_service.is_loaded
-    }
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        if settings.warmup:
+            threading.Thread(target=model_client.warm_up, name="model-warmup", daemon=True).start()
+        yield
+        jobs.shutdown()
 
-
-# ─── Step 2 — Analyze (Qwen) ──────────────────────────────────────────────────
-
-import io
-def _extract_pdf_text(contents: bytes) -> Optional[str]:
-    try:
-        from pdfminer.high_level import extract_text
-        text = extract_text(io.BytesIO(contents))
-        if text and text.strip():
-            return text.strip()
-            
-        # If pdfminer finds no text, it's likely an image-only (scanned) PDF.
-        # Render the PDF pages to images using fitz, then OCR them.
-        import fitz
-        doc = fitz.open(stream=contents, filetype="pdf")
-        ocr_texts = []
-        for page in doc:
-            pix = page.get_pixmap(dpi=200)
-            img_bytes = pix.tobytes("png")
-            page_text = _extract_image_text(img_bytes)
-            if page_text:
-                ocr_texts.append(page_text)
-                
-        full_text = "\n".join(ocr_texts)
-        return full_text.strip() if full_text.strip() else None
-        
-    except Exception as e:
-        print(f"PDF extraction error: {e}")
-        return None
-
-ocr_engine = None
-def get_ocr_engine():
-    global ocr_engine
-    if ocr_engine is None:
-        try:
-            import easyocr
-            # EasyOCR will automatically use CUDA if available, else CPU.
-            ocr_engine = easyocr.Reader(['en'], verbose=False)
-        except Exception as e:
-            print(f"EasyOCR load error: {e}")
-            return None
-    return ocr_engine
-
-def _extract_image_text(contents: bytes) -> Optional[str]:
-    try:
-        engine = get_ocr_engine()
-        if not engine:
-            return None
-        
-        # EasyOCR can read bytes directly
-        result = engine.readtext(contents)
-        print(f"DEBUG - EasyOCR Raw Result: {result}")
-        text_lines = []
-        for line in result:
-            # Format is [([box_coords], 'text', confidence), ...]
-            text_lines.append(line[1])
-            
-        text = "\n".join(text_lines)
-        print(f"DEBUG - EasyOCR Joined Text: {text}")
-        return text.strip() if text and text.strip() else None
-    except Exception as e:
-        print(f"Image extraction error: {e}")
-        return None
-
-
-@app.post("/api/analyze", response_model=TransactionExtractionResult)
-async def analyze_transaction(
-    text: Optional[str] = Form(None),
-    file: Optional[UploadFile] = File(None)
-):
-    """
-    Step 2 Smart Router Endpoint:
-    1. CSV / Excel / Text  -> parsed to plain text -> Qwen fallback / model
-    2. PDF                 -> pdfminer text extraction -> Qwen fallback / model
-    3. Image (PNG/JPG/etc) -> pytesseract OCR -> Qwen fallback / model
-                          OR -> Qwen-VL vision model if loaded
-    """
-    temp_file_path = None
-    extracted_text_from_file = None
-
-    try:
-        if file:
-            ext = os.path.splitext(file.filename)[1].lower()
-            contents = await file.read()
-
-            # ── Tabular text files ──────────────────────────────────────────
-            if ext in ['.csv', '.txt', '.tsv']:
-                extracted_text_from_file = contents.decode('utf-8', errors='ignore')
-
-            # ── Excel ───────────────────────────────────────────────────────
-            elif ext in ['.xlsx', '.xls']:
-                try:
-                    import pandas as pd
-                    import io as _io
-                    df = pd.read_excel(_io.BytesIO(contents))
-                    extracted_text_from_file = df.to_string(index=False)
-                except Exception:
-                    extracted_text_from_file = contents.decode('utf-8', errors='ignore')
-
-            # ── PDF — extract text first ─────────────────────────────────
-            elif ext == '.pdf':
-                extracted_text_from_file = _extract_pdf_text(contents)
-                if not extracted_text_from_file:
-                    # Save for Qwen-VL if model is loaded
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-                        tmp.write(contents)
-                        temp_file_path = tmp.name
-
-            # ── Images — OCR first, then Qwen-VL ────────────────────────
-            elif ext in ['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff']:
-                extracted_text_from_file = _extract_image_text(contents)
-                if not extracted_text_from_file:
-                    # Save for Qwen-VL if model is loaded
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-                        tmp.write(contents)
-                        temp_file_path = tmp.name
-
-            else:
-                raise HTTPException(status_code=415, detail=f"Unsupported file type: {ext}")
-
-        combined_text = text or extracted_text_from_file
-
-        # If we have no text AND no image for the model, return a clear error
-        if not combined_text and not temp_file_path:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    "Could not extract text from the uploaded file. "
-                    "For image receipts, please ensure Tesseract OCR is installed, "
-                    "or paste the receipt text manually in Quick Paste."
-                )
-            )
-
-        result = extractor_service.extract_accounting_data(
-            text_input=combined_text,
-            image_path=temp_file_path
-        )
-
-        if not result.success:
-            raise HTTPException(status_code=422, detail=f"Failed to produce valid JSON: {result.validation_error}")
-
-        return result
-
-    finally:
-        if temp_file_path and os.path.exists(temp_file_path):
-            try:
-                os.remove(temp_file_path)
-            except Exception:
-                pass
-
-
-# ─── Step 3 — Trial Balance ───────────────────────────────────────────────────
-
-@app.post("/api/trial-balance", response_model=TrialBalanceResult)
-def generate_trial_balance(transactions: List[AccountingTransaction]):
-    """
-    Step 3 — Trial Balance Generator.
-
-    Debit/Credit treatment (basic double-entry):
-      - expense transactions → Debit side
-      - revenue transactions → Credit side
-
-    Groups by account name, sums amounts, checks if trial balance balances.
-    """
-    account_map: Dict[str, Dict[str, float]] = {}
-
-    for tx in transactions:
-        acc = tx.account or "Uncategorised"
-        if acc not in account_map:
-            account_map[acc] = {"debit": 0.0, "credit": 0.0}
-
-        if tx.type.lower() == "expense":
-            account_map[acc]["debit"] += tx.amount
-        else:
-            account_map[acc]["credit"] += tx.amount
-
-    lines = [
-        TrialBalanceLine(account=acc, debit=round(v["debit"], 2), credit=round(v["credit"], 2))
-        for acc, v in sorted(account_map.items())
-    ]
-
-    total_debits = round(sum(l.debit for l in lines), 2)
-    total_credits = round(sum(l.credit for l in lines), 2)
-
-    return TrialBalanceResult(
-        lines=lines,
-        total_debits=total_debits,
-        total_credits=total_credits,
-        is_balanced=abs(total_debits - total_credits) < 0.01
+    app = FastAPI(
+        title="UK LedgerSync API",
+        description="Qwen vision model on Groq → structured accounting data → trial balance",
+        lifespan=lifespan,
     )
+    app.add_middleware(CORSMiddleware, allow_origins=list(settings.cors_origins),
+                       allow_methods=["GET", "POST", "DELETE"], allow_headers=["*"])
+
+    @app.exception_handler(LedgerSyncError)
+    async def ledgersync_error(request: Request, exc: LedgerSyncError):
+        return JSONResponse(status_code=exc.status_code,
+                            content={"detail": {"code": exc.code, "message": exc.message}})
+
+    # ─── Health ────────────────────────────────────────────────────────────────
+
+    @app.get("/api/health")
+    def health_check():
+        health = model_client.health()
+        return {
+            "status": "online",
+            "model": model_client.model,
+            "ai_reachable": health.reachable,
+            "model_available": health.model_available,
+            "ai_error": health.error,
+            "max_upload_mb": settings.max_upload_mb,
+            "max_parallel_jobs": settings.max_parallel_jobs,   # the UI sends this many files at once
+        }
+
+    # ─── Step 2 — Analyze (background job) ─────────────────────────────────────
+
+    def run_analysis(item, ctx) -> dict:
+        extraction = pipeline.analyze(item, extractor, ctx)
+        transactions = adapter.to_transactions([row.model_dump() for row in extraction.data],
+                                               source=item.kind, settings=BusinessSettings(business_name=settings.business_name))
+        return AnalysisResult(transactions=transactions, warnings=extraction.warnings,
+                              model=extraction.model).model_dump(mode="json")
+
+    @app.post("/api/analyze", status_code=202)
+    def analyze_transaction(text: Optional[str] = Form(None), file: Optional[UploadFile] = File(None)):
+        """Validates the input now (413/415/422), then analyses it in a background job."""
+        if file is not None and file.filename:
+            data = intake.read_limited(file.file, settings.max_upload_bytes)
+            item = intake.load_upload(file.filename, data, settings.max_pdf_pages)
+        elif text is not None:
+            item = intake.from_text(text, settings.max_upload_bytes)
+        else:
+            raise UnreadableFile("Provide text or a file to analyse.")
+        model_client.ensure_available()   # fail fast with 503 instead of queueing doomed work
+        job = jobs.submit(lambda ctx: run_analysis(item, ctx))
+        return {"job_id": job.id, "status": job.status}
+
+    @app.get("/api/jobs/{job_id}")
+    def get_job(job_id: str):
+        return jobs.get(job_id).to_dict()
+
+    @app.delete("/api/jobs/{job_id}")
+    def cancel_job(job_id: str):
+        return jobs.cancel(job_id).to_dict()
+
+    # ─── Ledger ─────────────────────────────────────────────────────────────────
+
+    @app.get("/api/accounts")
+    def list_accounts():
+        return [{"code": a.code, "name": a.name, "type": a.type.value, "vat": a.vat.value} for a in accounts.CHART]
+
+    @app.post("/api/transactions/validate", response_model=TransactionList)
+    def validate_transactions(request: LedgerRequest):
+        """Splits VAT, fills in the bank account and lists issues; no posting."""
+        return TransactionList(transactions=[normalise(tx, request.settings) for tx in request.transactions])
+
+    @app.post("/api/trial-balance", response_model=TrialBalance)
+    def generate_trial_balance(request: LedgerRequest):
+        """Double-entry trial balance; 422 when a transaction cannot be posted."""
+        return posting.trial_balance(request.transactions, request.settings)
+
+    return app
 
 
-# ─── Static Frontend (legacy HTML) ────────────────────────────────────────────
-current_dir = os.path.dirname(os.path.abspath(__file__))
-app.mount("/", StaticFiles(directory=current_dir, html=True), name="static")
+app = create_app()
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("server:app", host="0.0.0.0", port=8085, reload=True)
+
+    s = Settings.from_env()
+    uvicorn.run("server:app", host=s.host, port=s.port, reload=s.reload)

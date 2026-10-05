@@ -1,0 +1,31 @@
+{
+  "case": "tsv-utf16-unicode-text",
+  "kind": "table",
+  "input": "input.tsv",
+  "rows": [
+    {
+      "date": "2026-09-03",
+      "direction": "out",
+      "gross": "23.99",
+      "vat": null,
+      "account_code": "7504",
+      "description": "VIKING DIRECT STATIONERY"
+    },
+    {
+      "date": "2026-09-10",
+      "direction": "in",
+      "gross": "640.00",
+      "vat": null,
+      "account_code": "4000",
+      "description": "KINGSTON CATERING LTD"
+    },
+    {
+      "date": "2026-09-18",
+      "direction": "out",
+      "gross": "190.00",
+      "vat": null,
+      "account_code": "7302",
+      "description": "DVLA VEHICLE TAX"
+    }
+  ]
+}

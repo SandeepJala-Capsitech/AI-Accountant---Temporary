@@ -1,0 +1,23 @@
+{
+  "case": "text-expense-note-mixed",
+  "kind": "text",
+  "input": "input.txt",
+  "rows": [
+    {
+      "date": "2026-09-12",
+      "direction": "out",
+      "gross": "18.00",
+      "vat": null,
+      "account_code": "7406",
+      "description": "Breakfast"
+    },
+    {
+      "date": "2026-09-12",
+      "direction": "out",
+      "gross": "32.00",
+      "vat": null,
+      "account_code": "7400",
+      "description": "Taxi to client"
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "case": "text-notes",
+  "kind": "text",
+  "input": "input.txt",
+  "rows": [
+    {
+      "date": "2026-09-02",
+      "direction": "in",
+      "gross": "2400.00",
+      "vat": null,
+      "account_code": "4000",
+      "description": "Consulting services sold to ACME Corp"
+    },
+    {
+      "date": "2026-09-01",
+      "direction": "out",
+      "gross": "72.00",
+      "vat": null,
+      "account_code": "7502",
+      "description": "BT Business Broadband monthly bill"
+    },
+    {
+      "date": "2026-09-10",
+      "direction": "out",
+      "gross": "149.99",
+      "vat": null,
+      "account_code": "0040",
+      "description": "Office chair from IKEA"
+    }
+  ]
+}
