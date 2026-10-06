@@ -190,3 +190,40 @@ def test_the_worked_out_side_follows_an_edit():
 
 def test_an_other_side_sent_by_a_client_is_kept():
     assert normalise(tx(contra_account_code="1230"), REGISTERED).contra_account_code == "1230"
+
+
+LIMITED = BusinessSettings(business_type="limited_company")
+TRADER = BusinessSettings(business_type="sole_trader")
+
+
+def test_vat_on_business_entertainment_stays_in_the_cost():
+    # Client sandwiches with £6.37 VAT on the receipt: UK rules block that VAT, so it is part of the cost.
+    t = normalise(tx(account="7403", gross="38.20", vat="6.37"), REGISTERED)
+    assert (t.vat_posted, t.net) == (Decimal("0.00"), Decimal("38.20"))
+    assert codes(t) == [("vat_blocked", "info")]
+    assert t.issues[0].message == "VAT on Entertainment can't be reclaimed, so the £6.37 stays in the cost."
+    assert codes(normalise(t, REGISTERED)) == [("vat_blocked", "info")]   # validating again doesn't repeat it
+
+
+def test_a_cars_vat_stays_in_its_cost_but_a_vans_is_reclaimed():
+    car = normalise(tx(account="0050", gross="24000.00", vat="4000.00"), REGISTERED)
+    van = normalise(tx(account="0055", gross="24000.00", vat="4000.00"), REGISTERED)
+    assert (car.vat_posted, car.net) == (Decimal("0.00"), Decimal("24000.00"))
+    assert (van.vat_posted, van.net) == (Decimal("4000.00"), Decimal("20000.00"))
+
+
+def test_a_limited_companys_owners_go_through_the_directors_loan_account():
+    drawings = normalise(tx(account="3260", gross="500.00"), LIMITED)
+    assert codes(drawings) == [("director_loan", "warning")]
+    assert drawings.issues[0].message == "For a limited company, use 2250 Director's Loan Account instead of Drawings."
+    assert codes(normalise(tx(account="2250", gross="500.00"), LIMITED)) == []
+
+
+def test_a_sole_trader_has_no_directors_loan_account():
+    assert codes(normalise(tx(account="2250", gross="500.00"), TRADER)) == [("director_loan", "warning")]
+    assert codes(normalise(tx(account="3260", gross="500.00"), TRADER)) == []
+
+
+def test_without_a_business_type_the_owners_accounts_are_not_questioned():
+    assert codes(normalise(tx(account="3260", gross="500.00"), REGISTERED)) == []
+    assert codes(normalise(tx(account="2250", gross="500.00"), REGISTERED)) == []

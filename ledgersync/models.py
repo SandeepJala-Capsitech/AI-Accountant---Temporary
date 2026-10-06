@@ -24,6 +24,11 @@ DocumentType = Literal["receipt", "invoice", "expense_claim", "statement", "quot
 DOCUMENT_TYPES: tuple[str, ...] = get_args(DocumentType)
 NOT_TRANSACTIONS = frozenset(DOCUMENT_TYPES[4:])
 
+# The kind of business a client is: a limited company's owners go through 2250 Director's Loan Account,
+# anyone else's through 3260 Drawings and 3000 Capital Introduced.
+BusinessType = Literal["limited_company", "sole_trader", "partnership", "llp"]
+BUSINESS_TYPES: tuple[str, ...] = get_args(BusinessType)
+
 
 class Issue(BaseModel):
     code: str
@@ -34,6 +39,7 @@ class Issue(BaseModel):
 class BusinessSettings(BaseModel):
     business_name: str = ""
     vat_registered: bool = True
+    business_type: Optional[BusinessType] = None   # None: not known, as for an analysis without a client
     period_start: Optional[dt.date] = None
     period_end: Optional[dt.date] = None
     bank_account: str = BANK

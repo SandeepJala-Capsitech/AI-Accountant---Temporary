@@ -5,7 +5,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Optional
 
-from .accounts import BY_CODE, CREDITORS, DEBTORS, STAFF_EXPENSES, AccountType
+from .accounts import BY_CODE, CAPITAL, CREDITORS, DEBTORS, DIRECTORS_LOAN, DRAWINGS, STAFF_EXPENSES, AccountType
 from .models import NOT_TRANSACTIONS, BusinessSettings, Direction, Issue, Transaction
 from .money import PENNY, ZERO, VatTreatment, vat_in_gross
 
@@ -15,11 +15,16 @@ MATCHING_ISSUES = {"choose_payment", "part_payment", "overpayment", "possible_pa
                    "mixed_link"}
 _DERIVED = {"unknown_account", "same_account", "non_gbp_currency", "vat_not_applicable", "vat_estimated",
             "vat_arithmetic", "vat_rate_mismatch", "date_missing", "date_out_of_period", "unusual_direction",
-            "not_booked"} | MATCHING_ISSUES
+            "not_booked", "vat_blocked", "director_loan"} | MATCHING_ISSUES
 
 
 def issue(code: str, message: str, severity: str = "warning") -> Issue:
     return Issue(code=code, message=message, severity=severity)
+
+
+def is_derived(found: Issue) -> bool:
+    """An issue the ledger works out afresh on every pass; such issues are never saved."""
+    return found.code in _DERIVED
 
 
 _NOT_TRANSACTION_NAMES = {
@@ -81,6 +86,12 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
         if vat:
             issues.append(issue("vat_not_applicable", f"VAT does not apply to {account.name}; it was ignored."))
         posted = ZERO
+    elif account is not None and not account.reclaim_vat and tx.direction == Direction.OUT:
+        # Business entertainment, or a car: the VAT can't be reclaimed, so it stays in the cost.
+        if vat:
+            issues.append(issue("vat_blocked", f"VAT on {account.name} can't be reclaimed, so the £{vat} stays "
+                                                "in the cost.", "info"))
+        posted = ZERO
     elif vat is None and tx.vat_treatment is None:
         posted = ZERO   # VAT is reclaimable only when charged: none shown, none booked
     elif vat is None:   # a person chose the rate: split the VAT out of the gross at that rate
@@ -107,6 +118,12 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
     if account is not None and tx.direction == Direction.OUT and account.type == AccountType.INCOME:
         issues.append(issue("unusual_direction", f"Money out on {account.name} is usually a customer refund; "
                                                   "check it.", "info"))
+    if settings.business_type == "limited_company" and account is not None and tx.account_code in (CAPITAL, DRAWINGS):
+        issues.append(issue("director_loan", f"For a limited company, use 2250 Director's Loan Account instead of "
+                                             f"{account.name}."))
+    elif settings.business_type not in (None, "limited_company") and tx.account_code == DIRECTORS_LOAN:
+        issues.append(issue("director_loan", "Director's Loan Account is for limited companies; use 3260 Drawings "
+                                             "or 3000 Capital Introduced."))
     if not booked(tx):
         issues.append(issue("not_booked", f"Looks like {_NOT_TRANSACTION_NAMES[tx.document_type]}: not booked. "
                                           "Tick Include to book it as an invoice.", "info"))
