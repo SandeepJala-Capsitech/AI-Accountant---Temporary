@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from ledgersync.accounts import BANK, BY_CODE, CHART, AccountType, choosable
+from ledgersync.accounts import BANK, BY_CODE, CHART, AccountType, choosable, model_accounts
 
 FIXTURES = Path(__file__).parent.parent / "eval" / "fixtures"
 
@@ -36,7 +36,10 @@ def test_debtors_and_creditors_have_their_own_codes():
 def test_a_model_may_choose_any_account_but_the_bank_and_the_control_accounts():
     # The bank is the other side of every posting, and the ledger splits VAT itself. What is owed
     # (Debtors, Creditors, Expenses Owed to Staff) is picked by the ledger from the document type.
-    assert {a.code for a in choosable()} == set(BY_CODE) - {"1200", "2200", "2201", "1100", "2100", "2110"}
+    ledger_only = {"1200", "2200", "2201", "1100", "2100", "2110"}
+    assert {a.code for a in model_accounts()} == set(BY_CODE) - ledger_only
+    # Without a business type (an analysis with no client) the director's loan account is left out.
+    assert {a.code for a in choosable()} == set(BY_CODE) - ledger_only - {"2250"}
 
 
 def test_expenses_owed_to_staff_is_a_liability_of_its_own():
@@ -47,3 +50,18 @@ def test_expenses_owed_to_staff_is_a_liability_of_its_own():
 def test_every_account_has_a_short_definition():
     # The model is told what belongs in each account; short keeps the prompt within the free plan.
     assert [a.code for a in CHART if not a.definition.strip() or len(a.definition) > 110] == []
+
+
+def test_vat_on_entertainment_and_cars_is_blocked_but_vans_reclaim_it():
+    # UK VAT: business entertainment, and cars not used only for business, can't have their VAT reclaimed.
+    assert [code for code, a in BY_CODE.items() if not a.reclaim_vat] == ["0050", "7403"]
+    assert (BY_CODE["0050"].name, BY_CODE["0055"].name, BY_CODE["0055"].type) == ("Cars", "Vans", AccountType.ASSET)
+
+
+def test_a_limited_company_books_its_owners_through_the_directors_loan_account():
+    company = {a.code for a in choosable("limited_company")}
+    assert "2250" in company and not {"3000", "3260"} & company
+    for kind in ("sole_trader", "partnership", "llp"):
+        others = {a.code for a in choosable(kind)}
+        assert {"3000", "3260"} <= others and "2250" not in others
+    assert (BY_CODE["2250"].name, BY_CODE["2250"].type) == ("Director's Loan Account", AccountType.LIABILITY)

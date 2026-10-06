@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Optional
 
 from .money import VatTreatment as V
 
@@ -23,6 +24,7 @@ class Account:
     type: AccountType
     vat: V              # usual rate, to check VAT a document shows; none is booked when none is shown
     definition: str     # what belongs here, in plain words: the model chooses by it
+    reclaim_vat: bool = True   # False: VAT on a purchase here can't be reclaimed, so it stays in the cost
 
 
 _A, _L, _E, _I, _X = (AccountType.ASSET, AccountType.LIABILITY, AccountType.EQUITY,
@@ -31,7 +33,10 @@ _A, _L, _E, _I, _X = (AccountType.ASSET, AccountType.LIABILITY, AccountType.EQUI
 CHART: tuple[Account, ...] = (
     Account("0030", "Office Equipment", _A, V.STANDARD, "Computers, printers and other equipment kept for over a year."),
     Account("0040", "Furniture and Fixtures", _A, V.STANDARD, "Desks, chairs, shelving and fittings for the premises."),
-    Account("0050", "Motor Vehicles", _A, V.STANDARD, "Cars and vans bought for the business."),
+    Account("0050", "Cars", _A, V.STANDARD,
+            "Cars bought for the business; VAT on a car can't be reclaimed unless it is used only for business.",
+            reclaim_vat=False),
+    Account("0055", "Vans", _A, V.STANDARD, "Vans and other commercial vehicles bought for the business."),
     Account("1100", "Debtors", _A, V.OUTSIDE_SCOPE, "Money customers owe for invoices the business has sent and not yet been paid."),
     Account("1200", "Bank Current Account", _A, V.OUTSIDE_SCOPE, "The business's main bank account."),
     Account("1210", "Bank Deposit Account", _A, V.OUTSIDE_SCOPE, "A savings account; moving money into it is a transfer, not spending."),
@@ -42,6 +47,8 @@ CHART: tuple[Account, ...] = (
     Account("2201", "Purchase VAT", _L, V.OUTSIDE_SCOPE, "VAT paid to suppliers."),
     Account("2202", "VAT Liability", _L, V.OUTSIDE_SCOPE, "VAT paid to, or refunded by, HMRC for VAT returns."),
     Account("2210", "PAYE and National Insurance", _L, V.OUTSIDE_SCOPE, "Employees' income tax and National Insurance paid to HMRC."),
+    Account("2250", "Director's Loan Account", _L, V.OUTSIDE_SCOPE,
+            "Money a director has lent the company, or taken from it for personal use. Limited companies only."),
     Account("2300", "Loans", _L, V.OUTSIDE_SCOPE, "Money borrowed on a business loan, or repaid (not the interest)."),
     Account("3000", "Capital Introduced", _E, V.OUTSIDE_SCOPE, "Money the owners put into the business."),
     Account("3260", "Drawings", _E, V.OUTSIDE_SCOPE, "Money the owner takes out for personal use."),
@@ -57,7 +64,8 @@ CHART: tuple[Account, ...] = (
     Account("7302", "Vehicle Licences", _X, V.OUTSIDE_SCOPE, "Vehicle tax for business vehicles."),
     Account("7400", "Travel", _X, V.ZERO, "Train, bus, air and taxi fares, and parking, when travelling for work."),
     Account("7402", "Hotels", _X, V.STANDARD, "Places to stay when travelling for work."),
-    Account("7403", "Entertainment", _X, V.STANDARD, "Meals and hospitality for clients or other guests."),
+    Account("7403", "Entertainment", _X, V.STANDARD,
+            "Meals and hospitality for clients or other guests; VAT on it can't be reclaimed.", reclaim_vat=False),
     Account("7406", "Subsistence", _X, V.STANDARD, "Meals, snacks and drinks bought while working, from cafés, restaurants or takeaways."),
     Account("7500", "Printing", _X, V.STANDARD, "Printing and copying done by others."),
     Account("7501", "Postage and Carriage", _X, V.EXEMPT, "Stamps, parcels, couriers and delivery charges."),
@@ -83,12 +91,20 @@ CHART: tuple[Account, ...] = (
 BY_CODE: dict[str, Account] = {a.code: a for a in CHART}
 BANK, SALES_VAT, PURCHASE_VAT, SUSPENSE = "1200", "2200", "2201", "9998"
 DEBTORS, CREDITORS, STAFF_EXPENSES = "1100", "2100", "2110"
+DIRECTORS_LOAN, CAPITAL, DRAWINGS = "2250", "3000", "3260"
+# Picked by the ledger, never chosen for a row: the bank (the other side of each posting), the VAT control
+# accounts (the ledger splits VAT itself) and the accounts for what is owed (from the document type).
+_LEDGER_ONLY = frozenset({BANK, SALES_VAT, PURCHASE_VAT, DEBTORS, CREDITORS, STAFF_EXPENSES})
 
 
-def choosable() -> tuple[Account, ...]:
-    """Accounts a model may pick for a transaction: every account except the bank (the other
-    side of each posting), the VAT control accounts (the ledger splits VAT itself), and the
-    accounts for what is owed (Debtors, Creditors, Expenses Owed to Staff), which the ledger
-    picks from the document type."""
-    return tuple(a for a in CHART
-                 if a.code not in (BANK, SALES_VAT, PURCHASE_VAT, DEBTORS, CREDITORS, STAFF_EXPENSES))
+def model_accounts() -> tuple[Account, ...]:
+    """Every account a row can be coded to, whatever the kind of business."""
+    return tuple(a for a in CHART if a.code not in _LEDGER_ONLY)
+
+
+def choosable(business_type: Optional[str] = None) -> tuple[Account, ...]:
+    """The accounts offered for one business. A limited company's owners go through the director's loan
+    account; anyone else's through Drawings and Capital Introduced, as when the kind of business isn't
+    known (an analysis without a client)."""
+    hidden = {CAPITAL, DRAWINGS} if business_type == "limited_company" else {DIRECTORS_LOAN}
+    return tuple(a for a in model_accounts() if a.code not in hidden)
