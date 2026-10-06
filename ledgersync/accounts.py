@@ -37,6 +37,7 @@ CHART: tuple[Account, ...] = (
     Account("1210", "Bank Deposit Account", _A, V.OUTSIDE_SCOPE, "A savings account; moving money into it is a transfer, not spending."),
     Account("1230", "Petty Cash", _A, V.OUTSIDE_SCOPE, "Cash withdrawn to keep for small purchases."),
     Account("2100", "Creditors", _L, V.OUTSIDE_SCOPE, "Money the business owes suppliers for bills it has received and not yet paid."),
+    Account("2110", "Expenses Owed to Staff", _L, V.OUTSIDE_SCOPE, "Expense claims approved for staff and not yet reimbursed."),
     Account("2200", "Sales VAT", _L, V.OUTSIDE_SCOPE, "VAT charged to customers."),
     Account("2201", "Purchase VAT", _L, V.OUTSIDE_SCOPE, "VAT paid to suppliers."),
     Account("2202", "VAT Liability", _L, V.OUTSIDE_SCOPE, "VAT paid to, or refunded by, HMRC for VAT returns."),
@@ -81,11 +82,13 @@ CHART: tuple[Account, ...] = (
 
 BY_CODE: dict[str, Account] = {a.code: a for a in CHART}
 BANK, SALES_VAT, PURCHASE_VAT, SUSPENSE = "1200", "2200", "2201", "9998"
-DEBTORS, CREDITORS = "1100", "2100"
+DEBTORS, CREDITORS, STAFF_EXPENSES = "1100", "2100", "2110"
 
 
 def choosable() -> tuple[Account, ...]:
     """Accounts a model may pick for a transaction: every account except the bank (the other
-    side of each posting), the VAT control accounts (the ledger splits VAT itself), and Debtors
-    and Creditors (every document is booked as paid through the bank, so nothing is left owing)."""
-    return tuple(a for a in CHART if a.code not in (BANK, SALES_VAT, PURCHASE_VAT, DEBTORS, CREDITORS))
+    side of each posting), the VAT control accounts (the ledger splits VAT itself), and the
+    accounts for what is owed (Debtors, Creditors, Expenses Owed to Staff), which the ledger
+    picks from the document type."""
+    return tuple(a for a in CHART
+                 if a.code not in (BANK, SALES_VAT, PURCHASE_VAT, DEBTORS, CREDITORS, STAFF_EXPENSES))

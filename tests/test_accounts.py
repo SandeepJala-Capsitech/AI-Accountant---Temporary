@@ -34,9 +34,14 @@ def test_debtors_and_creditors_have_their_own_codes():
 
 
 def test_a_model_may_choose_any_account_but_the_bank_and_the_control_accounts():
-    # The bank is the other side of every posting, and the ledger splits VAT itself. Every document is
-    # booked as paid through the bank, so a bill or a sale must not stop at Debtors or Creditors.
-    assert {a.code for a in choosable()} == set(BY_CODE) - {"1200", "2200", "2201", "1100", "2100"}
+    # The bank is the other side of every posting, and the ledger splits VAT itself. What is owed
+    # (Debtors, Creditors, Expenses Owed to Staff) is picked by the ledger from the document type.
+    assert {a.code for a in choosable()} == set(BY_CODE) - {"1200", "2200", "2201", "1100", "2100", "2110"}
+
+
+def test_expenses_owed_to_staff_is_a_liability_of_its_own():
+    # A claim is owed to the employee, not to a trade supplier, so it stays out of 2100 Creditors.
+    assert (BY_CODE["2110"].name, BY_CODE["2110"].type) == ("Expenses Owed to Staff", AccountType.LIABILITY)
 
 
 def test_every_account_has_a_short_definition():
