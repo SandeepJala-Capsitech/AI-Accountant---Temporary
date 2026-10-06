@@ -54,6 +54,13 @@ class Settlement(BaseModel):
     description: str = ""
 
 
+class StatementCheck(BaseModel):
+    """Whether a bank statement's rows agree with the balances it prints: ok, a gap of `difference`, or none
+    when it prints no balances to compare."""
+    status: Literal["ok", "gap", "none"]
+    difference: Optional[Decimal] = None
+
+
 class Transaction(BaseModel):
     date: Optional[dt.date] = None
     description: str = ""

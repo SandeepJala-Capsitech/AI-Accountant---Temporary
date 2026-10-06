@@ -13,9 +13,11 @@ _NO_VAT = {AccountType.LIABILITY, AccountType.EQUITY}
 # Issues matching.match adds; listed here so validating again replaces them instead of adding copies.
 MATCHING_ISSUES = {"choose_payment", "part_payment", "overpayment", "possible_payment", "stale_link",
                    "mixed_link"}
+# Issues statements.check_statement adds to bank lines; derived too, so checking again replaces them.
+STATEMENT_ISSUES = {"statement_gap", "statement_total"}
 _DERIVED = {"unknown_account", "same_account", "non_gbp_currency", "vat_not_applicable", "vat_estimated",
             "vat_arithmetic", "vat_rate_mismatch", "date_missing", "date_out_of_period", "unusual_direction",
-            "not_booked", "vat_blocked", "director_loan"} | MATCHING_ISSUES
+            "not_booked", "vat_blocked", "director_loan"} | MATCHING_ISSUES | STATEMENT_ISSUES
 
 
 def issue(code: str, message: str, severity: str = "warning") -> Issue:
