@@ -4,11 +4,12 @@ money out, whatever the model said."""
 from __future__ import annotations
 
 import datetime as dt
+import uuid
 from typing import Optional
 
 from .accounts import BY_CODE, SUSPENSE
 from .checks import issue, normalise
-from .models import BusinessSettings, Direction, Transaction
+from .models import DOCUMENT_TYPES, BusinessSettings, Direction, Transaction
 from .money import to_money
 
 
@@ -25,13 +26,30 @@ def parse_date(text) -> Optional[dt.date]:
     return None
 
 
+def _document_type(row: dict) -> str:
+    """The model's document type; one the ledger does not know is left for a person to check."""
+    kind = str(row.get("document_type") or "receipt").strip().lower()
+    return kind if kind in DOCUMENT_TYPES else "other"
+
+
+def _document_key(row: dict) -> Optional[tuple]:
+    """Which document a row belongs to. Rows printed with the same total belong together when they come
+    from the same kind of document, with the same counterparty and, except for a claim (whose lines have
+    their own dates), the same date. None for a bank line or a row without a printed total."""
+    total, kind = to_money(row.get("document_total")), _document_type(row)
+    if not total or not to_money(row.get("amount")) or kind == "statement":
+        return None
+    who = str(row.get("counterparty") or "").strip().lower()
+    return abs(total), kind, who, None if kind == "expense_claim" else row.get("date")
+
+
 def _documents(rows: list[dict]) -> dict:
-    """The rows of each receipt or invoice, keyed by its printed total (statement rows have none)."""
+    """The rows of each receipt, invoice or claim, keyed by _document_key."""
     documents: dict = {}
     for row in rows:
-        total = to_money(row.get("document_total"))
-        if total and to_money(row.get("amount")):
-            documents.setdefault(abs(total), []).append(row)
+        key = _document_key(row)
+        if key:
+            documents.setdefault(key, []).append(row)
     return documents
 
 
@@ -40,7 +58,7 @@ def _keep_unsplittable_whole(rows: list[dict]) -> list[dict]:
     together as one row: one VAT total cannot be divided without guessing, so the document stays whole
     (its total and VAT as printed, on the biggest row's account) and is flagged as mixed items."""
     merged: dict = {}
-    for total, parts in _documents(rows).items():
+    for (total, *_), parts in _documents(rows).items():
         printed_vat = to_money(parts[0].get("document_vat"))
         carried = sum(abs(to_money(part.get("vat")) or 0) for part in parts)
         if len(parts) > 1 and printed_vat and carried != abs(printed_vat):
@@ -53,17 +71,18 @@ def _keep_unsplittable_whole(rows: list[dict]) -> list[dict]:
 def to_transactions(rows: list[dict], source: str, settings: BusinessSettings) -> list[Transaction]:
     result = []
     rows = _keep_unsplittable_whole(rows)
-    sums = {total: sum(abs(to_money(row.get("amount"))) for row in parts)
-            for total, parts in _documents(rows).items()}
+    documents = _documents(rows)
+    sums = {key: sum(abs(to_money(row.get("amount"))) for row in parts) for key, parts in documents.items()}
+    refs = {key: uuid.uuid4().hex[:12] for key in documents}   # one reference per document
     for row in rows:
         amount = to_money(row.get("amount"))
         if not amount:
             continue
         issues = []
-        total = to_money(row.get("document_total"))
-        if total and sums.get(abs(total)) != abs(total):
-            issues.append(issue("total_mismatch", f"The rows from this document add up to £{sums[abs(total)]} but "
-                                                  f"its total is £{abs(total)}; check the amounts against the document."))
+        key = _document_key(row)
+        if key and sums[key] != key[0]:
+            issues.append(issue("total_mismatch", f"The rows from this document add up to £{sums[key]} but "
+                                                  f"its total is £{key[0]}; check the amounts against the document."))
         if row.get("mixed_items"):
             issues.append(issue("mixed_items", "This document mixes items of different kinds but shows one VAT total, "
                                                "so it was kept as one row; split it by hand if each kind needs its own "
@@ -85,6 +104,8 @@ def to_transactions(rows: list[dict], source: str, settings: BusinessSettings) -
                          direction=Direction.IN if said_in and amount > 0 else Direction.OUT,
                          gross=abs(amount), vat=abs(vat) if vat is not None else None,   # sign: direction
                          account_code=code, currency=row.get("currency"), source=source,
-                         method="llm", issues=issues)
+                         method="llm", issues=issues, document_type=_document_type(row),
+                         counterparty=str(row.get("counterparty") or "").strip() or None,
+                         document_ref=refs[key] if key else uuid.uuid4().hex[:12])
         result.append(normalise(tx, settings))
     return result

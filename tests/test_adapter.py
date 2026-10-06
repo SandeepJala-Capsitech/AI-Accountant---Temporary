@@ -127,3 +127,36 @@ def test_negative_vat_printed_on_a_credit_note_is_still_vat():
     assert (t.vat, t.vat_posted) == (Decimal("2.00"), Decimal("2.00"))
     assert not [i for i in t.issues if i.severity == "error"]
     assert trial_balance([t], BusinessSettings()).is_balanced
+
+
+def test_rows_carry_the_document_type_and_counterparty():
+    [t] = adapt(dict(ROW, document_type="invoice", counterparty=" BT plc "))
+    assert (t.document_type, t.counterparty, t.contra_account_code) == ("invoice", "BT plc", "2100")
+
+
+def test_an_unexpected_document_type_is_left_for_a_person():
+    [t] = adapt(dict(ROW, document_type="delivery note"))
+    assert t.document_type == "other" and ("not_booked", "info") in issues_of(t)
+
+
+def test_rows_of_one_invoice_share_a_reference_and_bank_lines_do_not():
+    doc = {"document_total": 60.0, "document_type": "invoice", "counterparty": "Hilton", "date": "2026-09-01"}
+    bill = adapt(dict(ROW, **doc, amount=20.0, account="7406 Subsistence"),
+                 dict(ROW, **doc, amount=40.0, account="7400 Travel"))
+    lines = adapt(dict(ROW, document_type="statement"), dict(ROW, document_type="statement"))
+    assert bill[0].document_ref == bill[1].document_ref and lines[0].document_ref != lines[1].document_ref
+
+
+def test_two_invoices_with_the_same_total_on_different_dates_are_two_documents():
+    doc = {"document_total": 12000.0, "document_type": "invoice", "counterparty": "Business Cube"}
+    first, second = adapt(dict(ROW, **doc, amount=12000.0, date="2026-10-01"),
+                          dict(ROW, **doc, amount=12000.0, date="2026-11-01"))
+    assert first.document_ref != second.document_ref
+    assert "total_mismatch" not in [code for t in (first, second) for code, _ in issues_of(t)]
+
+
+def test_a_claims_lines_share_one_reference_whatever_their_dates():
+    claim = {"document_total": 50.0, "document_type": "expense_claim", "counterparty": "Matt Barnes"}
+    lines = adapt(dict(ROW, **claim, amount=18.0, date="2026-09-12"),
+                  dict(ROW, **claim, amount=32.0, date="2026-09-14"))
+    assert lines[0].document_ref is not None and lines[0].document_ref == lines[1].document_ref
