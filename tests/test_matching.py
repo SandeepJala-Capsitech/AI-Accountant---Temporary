@@ -163,3 +163,60 @@ def test_matching_again_gives_the_same_result_without_duplicate_issues():
 def test_receipts_are_neither_documents_nor_payments():
     receipt, line = matched(row("receipt", "out", "12000.00", "2026-10-01", "Business Cube", "r-1"), bank())
     assert line.pays == [] and receipt.owed is None
+
+
+def test_one_payment_can_clear_several_bills_from_the_same_supplier():
+    a, b, line = matched(bill("300.00", ref="cw-1", who="Clearway Office Supplies"),
+                         bill("200.00", date="2026-10-05", ref="cw-2", who="Clearway Office Supplies"),
+                         bank("500.00", "2026-10-20", "CLEARWAY OFFICE SUPP"))
+    assert sorted(p.ref for p in line.pays) == ["cw-1", "cw-2"] and a.owed == b.owed == Decimal("0.00")
+
+
+def test_several_sets_that_add_up_ask_a_person_to_choose():
+    docs = [bill(gross, date=date, ref=ref, who="Clearway Office Supplies")
+            for gross, date, ref in (("300.00", "2026-10-01", "a"), ("200.00", "2026-10-02", "b"),
+                                     ("400.00", "2026-10-03", "c"), ("100.00", "2026-10-04", "d"))]
+    *_, line = matched(*docs, bank("500.00", "2026-10-20", "CLEARWAY"))
+    assert codes(line) == [("choose_payment", "error")]
+    assert sorted(sorted(c.ref for c in option) for option in line.candidates) == [["a", "b"], ["c", "d"]]
+
+
+def test_a_part_payment_is_applied_and_flagged():
+    open_bill, line = matched(bill(), bank("10000.00"))
+    assert open_bill.owed == Decimal("2000.00") and [p.amount for p in line.pays] == [Decimal("10000.00")]
+    assert codes(line) == [("part_payment", "warning")]
+    assert line.issues[0].message == "Paid £10,000.00 of £12,000.00. £2,000.00 still owed."
+
+
+def test_an_overpayment_is_applied_and_flagged():
+    open_bill, line = matched(bill(), bank("12050.00"))
+    assert open_bill.owed == Decimal("-50.00") and codes(line) == [("overpayment", "warning")]
+    assert line.issues[0].message == "Paid £50.00 more than owed. The supplier now owes you £50.00."
+
+
+def test_a_customer_who_pays_too_much_is_owed_the_difference():
+    invoice = row("invoice", "in", "2400.00", "2026-09-30", "Harbour & Lane Architects", "inv-117", account="4000")
+    _, line = matched(invoice, bank("2450.00", "2026-10-14", "HARBOUR LANE", direction="in", account="4000"))
+    assert line.issues[0].message == "Received £50.00 more than owed. You now owe the customer £50.00."
+
+
+def test_a_bill_linked_twice_is_flagged_as_overpaid():
+    _, first, second = matched(bill(), bank(ref="line-1", link=["bill-oct"]),
+                               bank(ref="line-2", date="2026-10-04", link=["bill-oct"]))
+    assert codes(first) == [] and codes(second) == [("overpayment", "warning")]
+
+
+def test_a_part_payment_with_two_open_bills_from_the_supplier_asks_a_person():
+    *_, line = matched(bill(), bill("9000.00", date="2026-10-05", ref="bill-2"), bank("10000.00", "2026-10-20"))
+    assert codes(line) == [("choose_payment", "error")] and len(line.candidates) == 2
+
+
+def test_the_same_amount_from_a_different_name_is_only_a_suggestion():
+    open_bill, line = matched(bill(), bank(who="HMRC PAYE"))
+    assert codes(line) == [("possible_payment", "warning")] and line.pays == []
+    assert [[c.ref for c in o] for o in line.candidates] == [["bill-oct"]] and open_bill.owed == Decimal("12000.00")
+
+
+def test_a_bank_line_without_a_counterparty_is_only_a_suggestion():
+    _, line = matched(bill(), bank(who=None))
+    assert codes(line) == [("possible_payment", "warning")]

@@ -6,13 +6,16 @@ import datetime as dt
 import re
 from dataclasses import dataclass, field
 from decimal import Decimal
+from itertools import combinations
 from typing import Optional
 
+from .accounts import DEBTORS, STAFF_EXPENSES
 from .checks import MATCHING_ISSUES, booked, issue
-from .models import BusinessSettings, Issue, Settlement, Transaction
+from .models import BusinessSettings, Direction, Issue, Settlement, Transaction
 from .money import ZERO
 
 WINDOW = dt.timedelta(days=31)   # a payment pays a document dated at most 31 days before it
+MAX_SET = 5                      # one payment clears at most five documents from one counterparty
 
 # Words that say nothing about who a business is: legal forms, bank-statement noise and generic trade words.
 _IGNORED = {"ltd", "limited", "plc", "llp", "co", "the", "and",
@@ -134,32 +137,70 @@ def _settle(n: int, line: Transaction, documents: dict[str, _Document], change: 
     elif kind == "choose":
         found.append(issue("choose_payment", f"Could pay: {_choices(options)}. Choose one.", "error"))
         change["candidates"] = [[d.settlement(d.open) for d in option] for option in options]
+    elif kind == "suggest":
+        found.append(issue("possible_payment", f"May pay {_choices(options)}: the same amount, but the names do "
+                                               "not match. Link it if it does."))
+        change["candidates"] = [[d.settlement(d.open) for d in option] for option in options]
     _note(change, line, found)
 
 
 def _decide(line: Transaction, docs: list[_Document]) -> tuple[str, list[list[_Document]]]:
-    """Pay the document when exactly one from the same counterparty is owed the payment's amount; ask a
-    person to choose when several are."""
+    """What to do with a bank line, given the open documents it could pay (same direction, within 31 days):
+    pay them, ask a person to choose, suggest them, or nothing. Only documents from the same counterparty
+    are ever paid automatically."""
     named = [d for d in docs if line.counterparty and names_match(line.counterparty, d.counterparty)]
     exact = [d for d in named if d.open == line.gross]
     if exact:
         return ("pay", [exact]) if len(exact) == 1 else ("choose", [[d] for d in exact])
-    return "none", []
+    sets = _sets_adding_up_to(line.gross, named)
+    if sets:
+        return ("pay", sets) if len(sets) == 1 else ("choose", sets)
+    if named:      # a part payment or an overpayment, when only one document can be meant
+        return ("pay", [named]) if len(named) == 1 else ("choose", [[d] for d in named])
+    same_amount = [d for d in docs if d.open == line.gross]
+    return ("suggest", [[d] for d in same_amount]) if same_amount else ("none", [])
+
+
+def _sets_adding_up_to(amount: Decimal, docs: list[_Document]) -> list[list[_Document]]:
+    """Sets of two to five documents whose open amounts add up to the payment, oldest documents first;
+    stops once it has found more than five, since a person has to choose anyway."""
+    oldest = sorted(docs, key=lambda d: (d.date, d.ref))[:20]
+    found: list[list[_Document]] = []
+    for size in range(2, MAX_SET + 1):
+        for chosen in combinations(oldest, size):
+            if sum((d.open for d in chosen), ZERO) == amount:
+                found.append(list(chosen))
+                if len(found) > 5:
+                    return found
+    return found
 
 
 def _pay(n: int, line: Transaction, docs: list[_Document], change: dict, found: list[Issue]) -> None:
     """Applies the bank line to documents, oldest first: each takes what is open on it and the last takes
-    the rest. The line then posts against the account holding what was owed, with no VAT: the VAT was
-    booked with the document."""
+    the rest, so a part payment or an overpayment shows on it. The line then posts against the account
+    holding what was owed, with no VAT: the VAT was booked with the document."""
     docs = sorted(docs, key=lambda d: (d.date or dt.date.max, d.ref))
-    left, pays = line.gross, []
+    owed_before, left, pays = sum((d.open for d in docs), ZERO), line.gross, []
     for k, doc in enumerate(docs):
         take = left if k == len(docs) - 1 else min(doc.open, left)
         doc.open, left = doc.open - take, left - take
         pays.append(doc.settlement(take))
         doc.paid_by.append(Settlement(ref=line.document_ref or f"row-{n}", amount=take, date=line.date,
                                       description=line.description))
+    still_owed = owed_before - line.gross
+    if still_owed > ZERO:
+        found.append(issue("part_payment", f"Paid {_gbp(line.gross)} of {_gbp(owed_before)}. "
+                                           f"{_gbp(still_owed)} still owed."))
+    elif still_owed < ZERO:
+        found.append(issue("overpayment", _overpaid(line, docs[-1], -still_owed)))
     change.update(paid_against=docs[0].account, pays=pays, vat_posted=ZERO, net=line.gross)
+
+
+def _overpaid(line: Transaction, doc: _Document, excess: Decimal) -> str:
+    whom = {DEBTORS: "the customer", STAFF_EXPENSES: "the employee"}.get(doc.account, "the supplier")
+    if line.direction == Direction.IN:
+        return f"Received {_gbp(excess)} more than owed. You now owe {whom} {_gbp(excess)}."
+    return f"Paid {_gbp(excess)} more than owed. {whom[0].upper()}{whom[1:]} now owes you {_gbp(excess)}."
 
 
 def _choices(options: list[list[_Document]]) -> str:
