@@ -118,13 +118,13 @@ def run_case(client, case: dict, timeout: float) -> dict:
 
 
 def _print_summary(report: dict) -> None:
-    head = ("cases", "prec", "recall", "correct", "amount", "date", "dir", "acct", "vat", "exact", "TB ok",
+    head = ("cases", "prec", "recall", "correct", "amount", "date", "dir", "acct", "vat", "type", "exact", "TB ok",
             "p50 s", "p95 s")
     print("\n" + " " * 8 + " ".join(f"{h:>7}" for h in head))
     for name, s in [("all", report["summary"]), *report["by_kind"].items()]:
         f = s["field_accuracy"]
         cells = (s["cases"], s["row_precision"], s["row_recall"], s["correct_rows"], f["amount"], f["date"],
-                 f["direction"], f["account"], f["vat"], s["exact_cases"], s["tb_balanced"], s["latency_p50_s"],
+                 f["direction"], f["account"], f["vat"], f["document_type"], s["exact_cases"], s["tb_balanced"], s["latency_p50_s"],
                  s["latency_p95_s"])
         print(f"{name:8}" + " ".join(f"{'n/a' if c is None else c:>7}" for c in cells))
     if report["summary"]["errors"]:

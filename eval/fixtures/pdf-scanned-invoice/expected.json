@@ -9,7 +9,8 @@
       "gross": "540.00",
       "vat": "90.00",
       "account_code": "7601",
-      "description": "Hartley & Co Chartered Accountants"
+      "description": "Hartley & Co Chartered Accountants",
+      "document_type": "invoice"
     }
   ]
 }

@@ -9,7 +9,8 @@
       "gross": "86.40",
       "vat": null,
       "account_code": "7201",
-      "description": "BRITISH GAS BUSINESS"
+      "description": "BRITISH GAS BUSINESS",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-05",
@@ -17,7 +18,8 @@
       "gross": "1250.00",
       "vat": null,
       "account_code": "7100",
-      "description": "LANDMARK PROPERTIES RENT"
+      "description": "LANDMARK PROPERTIES RENT",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-09",
@@ -25,7 +27,8 @@
       "gross": "3600.00",
       "vat": null,
       "account_code": "4000",
-      "description": "HARBOUR & LANE ARCHITECTS"
+      "description": "HARBOUR & LANE ARCHITECTS",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-20",
@@ -33,7 +36,8 @@
       "gross": "8.50",
       "vat": null,
       "account_code": "7901",
-      "description": "BARCLAYS BANK CHARGES"
+      "description": "BARCLAYS BANK CHARGES",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-28",
@@ -41,7 +45,8 @@
       "gross": "142.18",
       "vat": null,
       "account_code": "7200",
-      "description": "OCTOPUS ENERGY"
+      "description": "OCTOPUS ENERGY",
+      "document_type": "statement"
     }
   ]
 }

@@ -9,7 +9,8 @@
       "gross": "87.50",
       "vat": null,
       "account_code": "7400",
-      "description": "Trainline London Euston to Manchester Piccadilly"
+      "description": "Trainline London Euston to Manchester Piccadilly",
+      "document_type": "receipt"
     }
   ]
 }

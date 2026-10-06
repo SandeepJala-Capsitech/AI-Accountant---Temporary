@@ -9,7 +9,8 @@
       "gross": "26.40",
       "vat": null,
       "account_code": "8201",
-      "description": "SAGE SUBSCRIPTION"
+      "description": "SAGE SUBSCRIPTION",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-17",
@@ -17,7 +18,8 @@
       "gross": "980.00",
       "vat": null,
       "account_code": "4000",
-      "description": "RIVERSIDE DENTAL"
+      "description": "RIVERSIDE DENTAL",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-25",
@@ -25,7 +27,8 @@
       "gross": "41.25",
       "vat": null,
       "account_code": "8204",
-      "description": "HISCOX INSURANCE"
+      "description": "HISCOX INSURANCE",
+      "document_type": "statement"
     },
     {
       "date": "2026-10-02",
@@ -33,7 +36,8 @@
       "gross": "72.00",
       "vat": null,
       "account_code": "7502",
-      "description": "BT BUSINESS BROADBAND"
+      "description": "BT BUSINESS BROADBAND",
+      "document_type": "statement"
     },
     {
       "date": "2026-10-09",
@@ -41,7 +45,8 @@
       "gross": "980.00",
       "vat": null,
       "account_code": "4000",
-      "description": "RIVERSIDE DENTAL"
+      "description": "RIVERSIDE DENTAL",
+      "document_type": "statement"
     },
     {
       "date": "2026-10-20",
@@ -49,7 +54,8 @@
       "gross": "7.85",
       "vat": null,
       "account_code": "7501",
-      "description": "ROYAL MAIL"
+      "description": "ROYAL MAIL",
+      "document_type": "statement"
     }
   ]
 }

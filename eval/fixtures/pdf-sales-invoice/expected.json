@@ -9,7 +9,8 @@
       "gross": "2400.00",
       "vat": "400.00",
       "account_code": "4000",
-      "description": "Harbour & Lane Architects LLP"
+      "description": "Harbour & Lane Architects LLP",
+      "document_type": "invoice"
     }
   ]
 }

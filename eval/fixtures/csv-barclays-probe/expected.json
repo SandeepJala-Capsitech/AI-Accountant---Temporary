@@ -9,7 +9,8 @@
       "gross": "72.00",
       "vat": null,
       "account_code": "7502",
-      "description": "BT BUSINESS BROADBAND"
+      "description": "BT BUSINESS BROADBAND",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-02",
@@ -17,7 +18,8 @@
       "gross": "3600.00",
       "vat": null,
       "account_code": "4000",
-      "description": "ACME LTD BACS"
+      "description": "ACME LTD BACS",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-04",
@@ -25,7 +27,8 @@
       "gross": "24.50",
       "vat": null,
       "account_code": "8205",
-      "description": "SAINSBURYS"
+      "description": "SAINSBURYS",
+      "document_type": "statement"
     }
   ]
 }

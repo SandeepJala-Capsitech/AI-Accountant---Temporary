@@ -9,7 +9,8 @@
       "gross": "18.00",
       "vat": null,
       "account_code": "7406",
-      "description": "Breakfast"
+      "description": "Breakfast",
+      "document_type": "expense_claim"
     },
     {
       "date": "2026-09-12",
@@ -17,7 +18,8 @@
       "gross": "32.00",
       "vat": null,
       "account_code": "7400",
-      "description": "Taxi to client"
+      "description": "Taxi to client",
+      "document_type": "expense_claim"
     }
   ]
 }

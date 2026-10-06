@@ -9,7 +9,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Optional
 
-FIELDS = ("amount", "date", "direction", "account", "vat")
+FIELDS = ("amount", "date", "direction", "account", "vat", "document_type")
 _DATE_FORMATS = ("%Y-%m-%d", "%d/%m/%Y", "%d/%m/%y", "%d-%m-%Y", "%d.%m.%Y")
 
 
@@ -52,6 +52,8 @@ def adapt_rows(result: dict) -> list[dict]:
         "description": str(row.get("description") or ""),
         "has_account": "account_code" in row,
         "has_vat": "vat_posted" in row or "vat" in row,
+        "document_type": row.get("document_type"),
+        "has_type": "document_type" in row,
     } for row in result.get("transactions") or []]
 
 
@@ -107,6 +109,8 @@ def score_case(expected: list[dict], predicted: list[dict]) -> dict:
             check("account", p["account_code"] == e["account_code"])
         if e.get("vat") is not None and p["has_vat"]:
             check("vat", p["vat"] == e["vat"])
+        if e.get("document_type") and p.get("has_type"):
+            check("document_type", p["document_type"] == e["document_type"])
     exact = (len(pairs) == len(expected) == len(predicted)
              and all(correct == scored for correct, scored in checks.values()))
     # Rows a bookkeeper could post as-is: right amount, date and direction.

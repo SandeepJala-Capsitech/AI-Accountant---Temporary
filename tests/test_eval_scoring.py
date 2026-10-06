@@ -92,7 +92,8 @@ def test_net_instead_of_gross_counts_as_a_wrong_amount():
 
 
 def test_correct_rows_counts_fully_right_rows_over_all_expected_rows():
-    none = {"amount": [0, 0], "date": [0, 0], "direction": [0, 0], "account": [0, 0], "vat": [0, 0]}
+    none = {"amount": [0, 0], "date": [0, 0], "direction": [0, 0], "account": [0, 0], "vat": [0, 0],
+            "document_type": [0, 0]}
     s = summarise([{"kind": "table", "expected": 4, "predicted": 1, "matched": 1, "correct": 1, "exact": False,
                     "latency_s": 1.0, "error": None, "tb_balanced": None,
                     "checks": {**none, "amount": [1, 1], "date": [1, 1], "direction": [1, 1]}}])
@@ -101,7 +102,8 @@ def test_correct_rows_counts_fully_right_rows_over_all_expected_rows():
 
 
 def test_summary_aggregates_rows_fields_latency_and_errors():
-    none = {"amount": [0, 0], "date": [0, 0], "direction": [0, 0], "account": [0, 0], "vat": [0, 0]}
+    none = {"amount": [0, 0], "date": [0, 0], "direction": [0, 0], "account": [0, 0], "vat": [0, 0],
+            "document_type": [0, 0]}
     cases = [
         {"kind": "text", "expected": 1, "predicted": 6, "matched": 1, "correct": 0, "exact": False,
          "latency_s": 10.0, "error": None, "tb_balanced": False,
@@ -111,7 +113,18 @@ def test_summary_aggregates_rows_fields_latency_and_errors():
     ]
     s = summarise(cases)
     assert s["row_precision"] == round(1 / 6, 3) and s["row_recall"] == 0.25
-    assert s["field_accuracy"] == {"amount": 1.0, "date": 1.0, "direction": 0.0, "account": None, "vat": None}
+    assert s["field_accuracy"] == {"amount": 1.0, "date": 1.0, "direction": 0.0, "account": None, "vat": None,
+                                   "document_type": None}
     assert (s["exact_cases"], s["tb_balanced"]) == (0.0, 0.0)
     assert (s["latency_p50_s"], s["latency_p95_s"]) == (10.0, 30.0)
     assert s["errors"] == {"ai_offline": 1}
+
+
+def test_the_document_type_is_scored_when_both_sides_have_it():
+    expected = expected_rows([{"date": "2026-09-03", "direction": "out", "gross": "12.50", "vat": None,
+                               "account_code": "7406", "description": "Tesco", "document_type": "receipt"}])
+    right = adapt_rows({"transactions": [dict(api_row(12.50), document_type="receipt")]})
+    wrong = adapt_rows({"transactions": [dict(api_row(12.50), document_type="invoice")]})
+    assert score_case(expected, right)["checks"]["document_type"] == [1, 1]
+    assert score_case(expected, wrong)["checks"]["document_type"] == [0, 1]
+    assert score_case(expected, adapt_rows({"transactions": [api_row(12.50)]}))["checks"]["document_type"] == [0, 0]

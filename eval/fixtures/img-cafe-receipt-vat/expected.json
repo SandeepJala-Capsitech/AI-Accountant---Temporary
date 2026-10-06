@@ -9,7 +9,8 @@
       "gross": "7.50",
       "vat": "1.25",
       "account_code": "7406",
-      "description": "The Daily Grind Cafe"
+      "description": "The Daily Grind Cafe",
+      "document_type": "receipt"
     }
   ]
 }

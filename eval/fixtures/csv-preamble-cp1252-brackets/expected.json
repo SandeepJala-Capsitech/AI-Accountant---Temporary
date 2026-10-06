@@ -9,7 +9,8 @@
       "gross": "19.97",
       "vat": null,
       "account_code": "8201",
-      "description": "ADOBE SYSTEMS"
+      "description": "ADOBE SYSTEMS",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-06",
@@ -17,7 +18,8 @@
       "gross": "1200.00",
       "vat": null,
       "account_code": "4000",
-      "description": "CLIENT PAYMENT - FIELDHOUSE LTD"
+      "description": "CLIENT PAYMENT - FIELDHOUSE LTD",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-14",
@@ -25,7 +27,8 @@
       "gross": "8.40",
       "vat": null,
       "account_code": "7406",
-      "description": "COSTA COFFEE"
+      "description": "COSTA COFFEE",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-29",
@@ -33,7 +36,8 @@
       "gross": "12.00",
       "vat": null,
       "account_code": "7901",
-      "description": "BARCLAYCARD COMMERCIAL FEES"
+      "description": "BARCLAYCARD COMMERCIAL FEES",
+      "document_type": "statement"
     }
   ]
 }

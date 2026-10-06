@@ -8,6 +8,7 @@ import pymupdf
 import pytest
 
 from ledgersync.intake import from_text, load_upload
+from ledgersync.models import DOCUMENT_TYPES
 
 FIXTURES = Path(__file__).parent.parent / "eval" / "fixtures"
 CASE_DIRS = sorted(p for p in FIXTURES.iterdir() if p.is_dir()) if FIXTURES.exists() else []
@@ -35,8 +36,8 @@ def intake_of(case_dir, spec):
     return load_upload(spec["input"], data, max_pdf_pages=30)
 
 
-def test_there_are_31_cases_covering_every_input_kind():
-    assert len(CASE_DIRS) == 31
+def test_there_are_33_cases_covering_every_input_kind():
+    assert len(CASE_DIRS) == 33
     assert {spec_of(d)["kind"] for d in CASE_DIRS} == {"text", "table", "pdf", "image"}
 
 
@@ -51,6 +52,7 @@ def test_fixture_is_readable_and_well_formed(case_dir):
         assert row["vat"] is None or Decimal(row["vat"]) < Decimal(row["gross"])
         assert re.fullmatch(r"\d{4}", row["account_code"])
         assert re.fullmatch(r"2026-\d\d-\d\d", row["date"])
+        assert row["document_type"] in DOCUMENT_TYPES and row["document_type"] != "other"
 
 
 @pytest.mark.parametrize("case_dir", CASE_DIRS, ids=lambda p: p.name)

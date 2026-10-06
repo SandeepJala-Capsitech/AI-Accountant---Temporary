@@ -1,5 +1,5 @@
 {
-  "case": "pdf-purchase-invoice",
+  "case": "pdf-supplier-statement",
   "kind": "pdf",
   "input": "input.pdf",
   "rows": [
@@ -7,10 +7,10 @@
       "date": "2026-09-08",
       "direction": "out",
       "gross": "300.00",
-      "vat": "50.00",
+      "vat": null,
       "account_code": "7504",
       "description": "Clearway Office Supplies Ltd",
-      "document_type": "invoice"
+      "document_type": "supplier_statement"
     }
   ]
 }

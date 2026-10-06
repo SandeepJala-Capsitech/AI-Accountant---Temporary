@@ -49,6 +49,7 @@ class Case:
     filename: str
     render: Callable[[], bytes]
     transactions: tuple[Tx, ...]
+    document_type: str = "statement"   # the kind of document every row comes from (models.DocumentType)
 
 
 # ── Renderers ───────────────────────────────────────────────────────────────────
@@ -404,9 +405,18 @@ T_UNSEEN_MIXED = (Tx("2026-10-01", "ONBUY.COM - A4 COPIER PAPER", "-32.40", "750
                   Tx("2026-10-26", "CAMDEN COUNCIL PENALTY CHARGE", "-65.00", "9998"),  # a fine: no account
                   Tx("2026-10-28", "OFFICE DEPOT", "-27.99", "7504"))
 
+PRO_FORMA = ["Brightline IT Supplies Ltd", "8 Kings Road, Reading RG1 3AA", "PRO FORMA INVOICE",
+             "Pro forma number: PF-0921", "Date: 22/09/2026", "To: Northbridge Consulting Ltd",
+             "Dell 24in monitor x2                300.00", "VAT at 20%                           60.00",
+             "Total payable in advance            360.00", "This is not a VAT invoice."]
+
+SUPPLIER_STATEMENT = ["Clearway Office Supplies Ltd", "STATEMENT OF ACCOUNT", "Customer: Northbridge Consulting Ltd",
+                      "Statement date: 30/09/2026", "08/09/2026  Invoice CW-20931            300.00",
+                      "Balance due                           300.00"]
+
 CASES: tuple[Case, ...] = (
     # Typed or pasted text (Quick Paste)
-    Case("text-tesco-receipt", "text", "input.txt", _text(TESCO), T_TESCO),
+    Case("text-tesco-receipt", "text", "input.txt", _text(TESCO), T_TESCO, document_type="receipt"),
     Case("text-hmrc-vat-payment", "text", "input.txt", _text("HMRC VAT settlement payment 1450.00 paid 07/09/2026"),
          (Tx("2026-09-07", "HMRC VAT settlement payment", "-1450.00", "2202"),)),
     Case("text-supplier-refund", "text", "input.txt",
@@ -427,42 +437,48 @@ CASES: tuple[Case, ...] = (
           Tx("2026-09-10", "Office chair from IKEA", "-149.99", "0040"))),
     Case("text-pasted-csv", "text", "input.txt", lambda: _statement_csv(T_PASTED_CSV, "5000.00"), T_PASTED_CSV),
     # Photos of receipts
-    Case("img-tesco-receipt", "image", "input.png", lambda: _receipt_png(TESCO.splitlines()), T_TESCO),
+    Case("img-tesco-receipt", "image", "input.png", lambda: _receipt_png(TESCO.splitlines()), T_TESCO, document_type="receipt"),
     Case("img-cafe-receipt-vat", "image", "input.png", lambda: _receipt_png(CAFE),
-         (Tx("2026-09-12", "The Daily Grind Cafe", "-7.50", "7406", vat="1.25"),)),
+         (Tx("2026-09-12", "The Daily Grind Cafe", "-7.50", "7406", vat="1.25"),), document_type="receipt"),
     Case("img-fuel-receipt-rotated", "image", "input.png", lambda: _receipt_png(FUEL, rotate=2.0, noise=True),
-         (Tx("2026-09-16", "Shell Westway fuel", "-68.39", "7300", vat="11.40"),)),
+         (Tx("2026-09-16", "Shell Westway fuel", "-68.39", "7300", vat="11.40"),), document_type="receipt"),
     Case("img-train-ticket", "image", "input.png", lambda: _receipt_png(TRAIN),
-         (Tx("2026-09-17", "Trainline London Euston to Manchester Piccadilly", "-87.50", "7400"),)),
+         (Tx("2026-09-17", "Trainline London Euston to Manchester Piccadilly", "-87.50", "7400"),), document_type="receipt"),
     # Zero-rated food plus standard-rated household goods: only 0.70 of the 7.95 is VAT. Two accounts
     # (groceries, cleaning supplies) and a VAT summary that divides by rate give two rows.
     Case("img-supermarket-mixed-vat", "image", "input.png", lambda: _receipt_png(MIXED_VAT),
          (Tx("2026-09-18", "Sainsbury's Local groceries", "-3.75", "8205", vat="0.00"),
-          Tx("2026-09-18", "Sainsbury's Local cleaning supplies", "-4.20", "7801", vat="0.70"))),
+          Tx("2026-09-18", "Sainsbury's Local cleaning supplies", "-4.20", "7801", vat="0.70")), document_type="receipt"),
     # Two kinds of expense and no VAT shown: one row per account.
     Case("text-expense-note-mixed", "text", "input.txt",
          _text("Expenses 12/09/2026\nBreakfast £18.00\nTaxi to client £32.00\nTotal £50.00"),
-         (Tx("2026-09-12", "Breakfast", "-18.00", "7406"), Tx("2026-09-12", "Taxi to client", "-32.00", "7400"))),
+         (Tx("2026-09-12", "Breakfast", "-18.00", "7406"), Tx("2026-09-12", "Taxi to client", "-32.00", "7400")), document_type="expense_claim"),
     # Two kinds of item but one VAT total that cannot be divided: one row, on the biggest item's account.
     Case("text-mixed-receipt-one-vat", "text", "input.txt",
          _text("WHSMITH\nKings Cross Station\nVAT No 238 5548 36\n15/09/2026 08:12\nCoffee to go     3.00\n"
                "A4 notebook      9.00\nVAT              2.00\nTOTAL           12.00\nCARD            12.00"),
-         (Tx("2026-09-15", "WHSmith", "-12.00", "7504", vat="2.00"),)),
+         (Tx("2026-09-15", "WHSmith", "-12.00", "7504", vat="2.00"),), document_type="receipt"),
     # PDFs
     Case("pdf-purchase-invoice", "pdf", "input.pdf", lambda: _text_pdf(PURCHASE_INVOICE),
-         (Tx("2026-09-08", "Clearway Office Supplies Ltd", "-300.00", "7504", vat="50.00"),)),
+         (Tx("2026-09-08", "Clearway Office Supplies Ltd", "-300.00", "7504", vat="50.00"),), document_type="invoice"),
     Case("pdf-paid-invoice", "pdf", "input.pdf", lambda: _placed_pdf(PAID_INVOICE),
-         (Tx("2026-09-14", "Brightline IT Supplies Ltd", "-1260.00", "0030", vat="210.00"),)),
+         (Tx("2026-09-14", "Brightline IT Supplies Ltd", "-1260.00", "0030", vat="210.00"),), document_type="invoice"),
     Case("pdf-sales-invoice", "pdf", "input.pdf", lambda: _text_pdf(SALES_INVOICE),
-         (Tx("2026-09-30", "Harbour & Lane Architects LLP", "2400.00", "4000", vat="400.00"),)),
+         (Tx("2026-09-30", "Harbour & Lane Architects LLP", "2400.00", "4000", vat="400.00"),),
+         document_type="invoice"),
     Case("pdf-scanned-invoice", "pdf", "input.pdf", lambda: _scanned_pdf(ACCOUNTANT_INVOICE),
-         (Tx("2026-09-25", "Hartley & Co Chartered Accountants", "-540.00", "7601", vat="90.00"),)),
+         (Tx("2026-09-25", "Hartley & Co Chartered Accountants", "-540.00", "7601", vat="90.00"),), document_type="invoice"),
     Case("pdf-bank-statement", "pdf", "input.pdf", lambda: _text_pdf(STATEMENT),
          (Tx("2026-09-03", "BRITISH GAS BUSINESS", "-86.40", "7201"),
           Tx("2026-09-05", "LANDMARK PROPERTIES RENT", "-1250.00", "7100"),
           Tx("2026-09-09", "HARBOUR & LANE ARCHITECTS", "3600.00", "4000"),
           Tx("2026-09-20", "BARCLAYS BANK CHARGES", "-8.50", "7901"),
           Tx("2026-09-28", "OCTOPUS ENERGY", "-142.18", "7200"))),
+    # Documents that are not transactions: their amounts are listed for a person to check, not booked.
+    Case("pdf-pro-forma", "pdf", "input.pdf", lambda: _text_pdf(PRO_FORMA),
+         (Tx("2026-09-22", "Brightline IT Supplies Ltd", "-360.00", "0030", vat="60.00"),), document_type="pro_forma"),
+    Case("pdf-supplier-statement", "pdf", "input.pdf", lambda: _text_pdf(SUPPLIER_STATEMENT),
+         (Tx("2026-09-08", "Clearway Office Supplies Ltd", "-300.00", "7504"),), document_type="supplier_statement"),
     # Bank exports
     Case("csv-barclays-probe", "table", "input.csv", lambda: _statement_csv(T_PROBE_CSV, "1306.56"), T_PROBE_CSV),
     Case("csv-barclays-export", "table", "input.csv", lambda: _barclays_export(T_BARCLAYS),

@@ -21,7 +21,7 @@ def write_all(target: Path = FIXTURES) -> list[Path]:
         folder.mkdir(parents=True)
         (folder / case.filename).write_bytes(case.render())
         expected = {"case": case.id, "kind": case.kind, "input": case.filename,
-                    "rows": [tx.expected for tx in case.transactions]}
+                    "rows": [{**tx.expected, "document_type": case.document_type} for tx in case.transactions]}
         (folder / "expected.json").write_text(json.dumps(expected, indent=2) + "\n")
         written.append(folder)
     return written

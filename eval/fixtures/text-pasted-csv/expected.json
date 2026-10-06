@@ -9,7 +9,8 @@
       "gross": "9.60",
       "vat": null,
       "account_code": "8201",
-      "description": "MICROSOFT 365 BUSINESS"
+      "description": "MICROSOFT 365 BUSINESS",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-11",
@@ -17,7 +18,8 @@
       "gross": "19.97",
       "vat": null,
       "account_code": "8201",
-      "description": "ADOBE CREATIVE CLOUD"
+      "description": "ADOBE CREATIVE CLOUD",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-12",
@@ -25,7 +27,8 @@
       "gross": "1250.00",
       "vat": null,
       "account_code": "4000",
-      "description": "CLIENT PAYMENT BRIGHTWELL LTD"
+      "description": "CLIENT PAYMENT BRIGHTWELL LTD",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-14",
@@ -33,7 +36,8 @@
       "gross": "38.12",
       "vat": null,
       "account_code": "8204",
-      "description": "DIRECT LINE BUSINESS INSURANCE"
+      "description": "DIRECT LINE BUSINESS INSURANCE",
+      "document_type": "statement"
     }
   ]
 }

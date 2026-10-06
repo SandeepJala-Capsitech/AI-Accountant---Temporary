@@ -9,7 +9,8 @@
       "gross": "2140.37",
       "vat": null,
       "account_code": "2210",
-      "description": "HMRC PAYE and National Insurance"
+      "description": "HMRC PAYE and National Insurance",
+      "document_type": "statement"
     }
   ]
 }

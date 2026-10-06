@@ -13,7 +13,8 @@ from server import create_app
 
 FIXTURES = Path(__file__).parent.parent / "eval" / "fixtures"
 HMRC_ROW = {"description": "HMRC VAT settlement payment", "date": "2026-09-07", "amount": 1450.0,
-            "direction": "out", "account": "2202 VAT Liability", "vat": None, "currency": "GBP"}
+            "direction": "out", "account": "2202 VAT Liability", "vat": None, "currency": "GBP",
+            "document_type": "statement"}
 
 
 @pytest.fixture
@@ -212,7 +213,7 @@ def test_rescore_updates_saved_results_without_the_api(tmp_path):
     saved = {"label": "b", "date": "2026-09-28", "api": "x", "model": "m", "cases": [{
         "case": "pdf-sales-invoice", "kind": "pdf", "error": None, "latency_s": 6.4, "model": "m",
         "tb_balanced": False, "expected": 1, "predicted": 1, "matched": 0, "exact": False,
-        "checks": {f: [0, 0] for f in ("amount", "date", "direction", "account", "vat")},
+        "checks": {f: [0, 0] for f in ("amount", "date", "direction", "account", "vat", "document_type")},
         "predicted_rows": [{"date": "2026-09-30", "direction": "in", "gross": "2000.00", "vat": None,
                             "account_code": None, "description": "Strategy consultancy",
                             "has_account": False, "has_vat": False}]}]}

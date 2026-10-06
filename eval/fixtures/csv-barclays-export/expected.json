@@ -9,7 +9,8 @@
       "gross": "45.99",
       "vat": null,
       "account_code": "7502",
-      "description": "VODAFONE LTD"
+      "description": "VODAFONE LTD",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-10",
@@ -17,7 +18,8 @@
       "gross": "32.40",
       "vat": null,
       "account_code": "7504",
-      "description": "STAPLES UK"
+      "description": "STAPLES UK",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-13",
@@ -25,7 +27,8 @@
       "gross": "950.00",
       "vat": null,
       "account_code": "4000",
-      "description": "BRIGHTWELL LTD"
+      "description": "BRIGHTWELL LTD",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-18",
@@ -33,7 +36,8 @@
       "gross": "15.60",
       "vat": null,
       "account_code": "7501",
-      "description": "ROYAL MAIL"
+      "description": "ROYAL MAIL",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-22",
@@ -41,7 +45,8 @@
       "gross": "89.00",
       "vat": null,
       "account_code": "7402",
-      "description": "PREMIER INN"
+      "description": "PREMIER INN",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-27",
@@ -49,7 +54,8 @@
       "gross": "1210.33",
       "vat": null,
       "account_code": "2202",
-      "description": "HMRC VAT"
+      "description": "HMRC VAT",
+      "document_type": "statement"
     }
   ]
 }
