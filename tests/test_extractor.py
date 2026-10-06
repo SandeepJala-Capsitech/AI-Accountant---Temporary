@@ -139,3 +139,23 @@ def test_the_prompt_defines_every_account_it_offers():
     _, client = extract(transactions_json(ROW), "BT Broadband 72.00")
     system = client.calls[0]["messages"][0]["content"]
     assert [a.code for a in choosable() if f"{a.code} {a.name}: {a.definition}" not in system] == []
+
+
+def test_the_instructions_name_every_document_type():
+    _, client = extract(transactions_json(ROW), "BT Broadband 72.00")
+    system = client.calls[0]["messages"][0]["content"]
+    assert all(f'"{kind}"' in system for kind in ("receipt", "invoice", "expense_claim", "statement", "quote",
+                                                  "pro_forma", "purchase_order", "remittance_advice",
+                                                  "supplier_statement"))
+    assert "a credit note is an invoice with the money going the other way" in system
+    assert "The counterparty of every line is the person claiming, not the shop" in system
+
+
+def test_rows_carry_the_document_type_and_counterparty():
+    result, _ = extract(transactions_json(dict(ROW, document_type="Invoice ", counterparty="BT plc")))
+    assert (result.data[0].document_type, result.data[0].counterparty) == ("invoice", "BT plc")
+
+
+def test_a_row_without_a_document_type_is_a_receipt():
+    result, _ = extract(transactions_json(ROW))
+    assert (result.data[0].document_type, result.data[0].counterparty) == ("receipt", None)

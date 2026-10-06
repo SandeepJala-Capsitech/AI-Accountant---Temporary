@@ -9,11 +9,14 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from .accounts import choosable
 from .errors import ModelError
+from .models import DOCUMENT_TYPES
 
 logger = logging.getLogger(__name__)
 
 # The accounts a model may choose, as "<code> <name>", e.g. "7502 Telephone and Internet".
 ACCOUNT_CHOICES: tuple[str, ...] = tuple(f"{a.code} {a.name}" for a in choosable())
+# The document types a model may give; anything else becomes "other" in the adapter.
+MODEL_DOCUMENT_TYPES: tuple[str, ...] = tuple(t for t in DOCUMENT_TYPES if t != "other")
 
 
 class AccountingTransaction(BaseModel):
@@ -43,6 +46,13 @@ class AccountingTransaction(BaseModel):
     mixed_items: bool = Field(False, description="true when this one transaction covers items of different "
                                                  "accounts because the document shows one VAT total that "
                                                  "cannot be divided between them")
+    # Which kind of document the row comes from: the ledger books an unpaid invoice or claim as owed, and
+    # leaves a quote, a pro forma or the like for a person to check. Any other text passes here; the
+    # adapter treats it as a document that is not a transaction.
+    document_type: str = Field("receipt", description="The kind of document this transaction comes from",
+                               json_schema_extra={"enum": list(MODEL_DOCUMENT_TYPES)})
+    counterparty: Optional[str] = Field(None, description="Who was paid or who paid, as printed: the supplier, "
+                                                          "customer, employee or payee; null when not shown")
 
     @field_validator("mixed_items", mode="before")
     @classmethod
@@ -58,6 +68,11 @@ class AccountingTransaction(BaseModel):
     @classmethod
     def _account_text(cls, v):
         return "" if v is None else str(v)
+
+    @field_validator("document_type", mode="before")
+    @classmethod
+    def _document_type_text(cls, v):
+        return "receipt" if v is None else str(v).strip().lower()
 
 
 class ExtractedTransactions(BaseModel):
@@ -103,19 +118,20 @@ class TransactionExtractor:
 
 Rules:
 1. Direction: "in" is money the business received (sales, refunds from suppliers, loans received, capital paid in); "out" is money it paid (purchases, expenses, bills, wages, taxes to HMRC, refunds to customers, the owner's drawings, transfers to savings).{invoices}
-2. A receipt or an invoice is recorded whether it is still to be paid or already paid (an amount due of 0.00 means it has been paid, not that there is nothing to record). Give one transaction per account, not per item: add together the items that belong to the same account, so a receipt or invoice whose items all belong to one account is ONE transaction for its total, including VAT. When its items belong to different accounts, give one transaction per account for that account's share of the total, including its VAT, but only if the VAT can be divided between them (it is shown per item or per rate, or no VAT is shown). If the document shows a single VAT total that cannot be divided, give ONE transaction for the total on the account of the biggest items and set mixed_items to true. The transactions from one document add up to its total: give that printed total as document_total, and its printed VAT total as document_vat (null when none is shown), on each of them. Subtotals, discounts, cash tendered, change, card-payment, amount-paid and amount-due lines, and payment instructions, are not transactions.
-3. An expense claim or expense report lists separate expenses, each with its own receipt, date and payee. Give one transaction per expense line, copying that line's date, payee, amount and the VAT printed on that line. Never add expense lines together, even when they belong to the same account. Subtotals and the claim total are not transactions. Give the claim's grand total as document_total on every line; document_vat is null, because each line carries its own VAT.
-4. A bank statement or spreadsheet has one transaction per payment row. The amount is the money that moved, as a positive number; take the direction from the paid in / paid out columns or the sign. Balances and totals are not transactions, and document_total and document_vat are null.
-5. Account: choose by what was bought and why, not by the shop, because most shops sell many kinds of things. On a receipt or invoice, go by the items listed. On a bank line that names only the payee, go by what that kind of business usually sells to a business like this one. Use "9998 Suspense" when the payee could be selling almost anything (such as an online marketplace or a department store) and nothing says what was bought, or when no account below fits.
-6. VAT: the VAT amount printed on the document for that transaction, or null when none is printed. Never calculate VAT.
-7. Dates are UK format (DD/MM/YYYY): "03/09/2026" is 3 September 2026, written "2026-09-03". Use null when there is no date.
-8. If there are no transactions, return {{"transactions": []}}.
+2. Document type: give every transaction the type of the document it comes from. "receipt": a till or card receipt, or a ticket, paid when it was issued. "invoice": an invoice or bill asking for payment, even when it says paid; a credit note is an invoice with the money going the other way. "expense_claim": an expense claim or expense report. "statement": a bank statement, or bank lines pasted or typed. A quote, a pro forma invoice, a purchase order, a remittance advice and a supplier's statement of account are not transactions: still list their amounts, with the type "quote", "pro_forma", "purchase_order", "remittance_advice" or "supplier_statement", so a person can check them. Give as counterparty who was paid or who paid, as printed: the supplier, the customer or the payee.
+3. A receipt or an invoice is recorded whether it is still to be paid or already paid (an amount due of 0.00 means it has been paid, not that there is nothing to record). Give one transaction per account, not per item: add together the items that belong to the same account, so a receipt or invoice whose items all belong to one account is ONE transaction for its total, including VAT. When its items belong to different accounts, give one transaction per account for that account's share of the total, including its VAT, but only if the VAT can be divided between them (it is shown per item or per rate, or no VAT is shown). If the document shows a single VAT total that cannot be divided, give ONE transaction for the total on the account of the biggest items and set mixed_items to true. The transactions from one document add up to its total: give that printed total as document_total, and its printed VAT total as document_vat (null when none is shown), on each of them. Subtotals, discounts, cash tendered, change, card-payment, amount-paid and amount-due lines, and payment instructions, are not transactions.
+4. An expense claim or expense report lists separate expenses, each with its own receipt, date and payee. Give one transaction per expense line, copying that line's date, payee, amount and the VAT printed on that line. Never add expense lines together, even when they belong to the same account. Subtotals and the claim total are not transactions. Give the claim's grand total as document_total on every line; document_vat is null, because each line carries its own VAT. The counterparty of every line is the person claiming, not the shop.
+5. A bank statement or spreadsheet has one transaction per payment row. The amount is the money that moved, as a positive number; take the direction from the paid in / paid out columns or the sign. Balances and totals are not transactions, and document_total and document_vat are null.
+6. Account: choose by what was bought and why, not by the shop, because most shops sell many kinds of things. On a receipt or invoice, go by the items listed. On a bank line that names only the payee, go by what that kind of business usually sells to a business like this one. Use "9998 Suspense" when the payee could be selling almost anything (such as an online marketplace or a department store) and nothing says what was bought, or when no account below fits.
+7. VAT: the VAT amount printed on the document for that transaction, or null when none is printed. Never calculate VAT.
+8. Dates are UK format (DD/MM/YYYY): "03/09/2026" is 3 September 2026, written "2026-09-03". Use null when there is no date.
+9. If there are no transactions, return {{"transactions": []}}.
 
 Chart of accounts:
 {chart}
 
 Answer with JSON only, in this shape (one object per transaction):
-{{"transactions": [{{"description": "who was paid or who paid, and what for", "date": "YYYY-MM-DD" or null, "amount": 12.50, "direction": "in" or "out", "account": "<code> <name> from the chart, e.g. 7502 Telephone and Internet", "vat": 2.08 or null, "currency": "GBP", "document_total": 12.50 or null, "document_vat": 2.08 or null, "mixed_items": false}}]}}"""
+{{"transactions": [{{"description": "who was paid or who paid, and what for", "date": "YYYY-MM-DD" or null, "amount": 12.50, "direction": "in" or "out", "account": "<code> <name> from the chart, e.g. 7502 Telephone and Internet", "vat": 2.08 or null, "currency": "GBP", "document_total": 12.50 or null, "document_vat": 2.08 or null, "mixed_items": false, "document_type": "receipt", "counterparty": "who was paid or who paid"}}]}}"""
 
     @staticmethod
     def _document(text_input: Optional[str], images: Optional[List[str]]) -> str:
