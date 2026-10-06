@@ -7,6 +7,13 @@ export interface Issue {
   severity: 'info' | 'warning' | 'error'
 }
 
+export interface Settlement {
+  ref: string
+  amount: string
+  date: string | null
+  description: string
+}
+
 export interface Transaction {
   date: string | null
   description: string
@@ -24,6 +31,17 @@ export interface Transaction {
   method: string
   evidence: string | null
   issues: Issue[]
+  document_type?: string             // receipt, invoice, expense_claim, statement, or one that is not a transaction
+  counterparty?: string | null
+  document_ref?: string | null       // shared by the rows of one document
+  include?: boolean                  // a person's tick on a document that is not a transaction
+  link?: string[] | null             // a person's decision on a bank line: null automatic, [] none, refs: pays these
+  paid_against?: string | null       // set by the API: the account a matched bank line settles
+  paid_against_name?: string | null
+  pays?: Settlement[]                // set by the API on a bank line
+  candidates?: Settlement[][]        // set by the API: options for the Link buttons
+  owed?: string | null               // set by the API on a document's row: what is still open on it
+  paid_by?: Settlement[]             // set by the API on a document's row
 }
 
 export interface AnalyzeResult {

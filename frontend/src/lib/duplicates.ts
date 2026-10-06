@@ -21,17 +21,23 @@ export interface PaymentRow {
   gross: string
   direction: string
   date: string | null      // ISO YYYY-MM-DD
+  kind: 'document' | 'bank' | 'other' | 'not booked'   // payment matching pairs a document with a bank line
 }
 
 // For each row, the index of an earlier row from another input that it may duplicate: the same
 // amount and direction, dated within DUPLICATE_WINDOW_DAYS (or both undated); otherwise null.
 // Rows of one input are not compared: two equal payments on one statement are usually real.
+// Rows that are not booked are never flagged, and a document is never paired with a bank line:
+// payment matching links those.
 export function possibleDuplicates(rows: PaymentRow[]): (number | null)[] {
   return rows.map((row, i) => {
+    if (row.kind === 'not booked') return null
     for (let j = 0; j < i; j++) {
       const other = rows[j]
       if (other.sourceId === row.sourceId || other.direction !== row.direction
-          || Number(other.gross) !== Number(row.gross)) continue
+          || Number(other.gross) !== Number(row.gross) || other.kind === 'not booked') continue
+      // A bill and the bank line that pays it are not duplicates: matching links them.
+      if ((row.kind === 'document' && other.kind === 'bank') || (row.kind === 'bank' && other.kind === 'document')) continue
       if (row.date === null || other.date === null) {
         if (row.date === other.date) return j
         continue

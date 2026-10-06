@@ -353,4 +353,15 @@ label { font-size: 0.75rem; color: var(--text-secondary); display: block; margin
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 22rem;
 }
 .table-actions { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; margin-top: 1.25rem; }
+.row-status {
+  margin-top: 0.2rem; font-size: 0.72rem; color: var(--text-secondary);
+  display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem;
+}
+.row-status input { accent-color: var(--accent); }
+.link-btn {
+  background: none; border: 1px solid var(--border); border-radius: 6px; color: var(--accent);
+  padding: 0.05rem 0.45rem; font-size: 0.72rem; font-family: inherit; cursor: pointer;
+}
+.link-btn:hover { border-color: var(--accent); }
+.row-not-booked td { color: var(--text-muted); }
 .table-actions .btn-ghost { margin-left: 0; color: var(--text-secondary); }
