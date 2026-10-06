@@ -312,6 +312,17 @@ export default function Home() {
   }))), [rows])
   const duplicateCount = duplicateOf.filter(of => of !== null).length
 
+  // Totals for money in and for money out, added up in whole pennies so they don't drift. A row with
+  // an error (impossible VAT) has no VAT or net, so its group's VAT and net totals are unknown.
+  const totals = useMemo(() => (['in', 'out'] as const).flatMap(direction => {
+    const txs = rows.map(row => row.tx).filter(tx => tx.direction === direction)
+    const sum = (field: 'gross' | 'vat_posted' | 'net') => txs.some(tx => tx[field] == null) ? null
+      : (txs.reduce((pennies, tx) => pennies + Math.round(Number(tx[field]) * 100), 0) / 100).toFixed(2)
+    return txs.length
+      ? [{ direction, count: txs.length, gross: sum('gross'), vat: sum('vat_posted'), net: sum('net') }]
+      : []
+  }), [rows])
+
   const step1Done = rows.length > 0
   const step2Active = analyzing || step1Done
   const showStep2 = analyzing || rows.length > 0 || batch.length > 0 || !!analyzeError
@@ -555,6 +566,7 @@ export default function Home() {
                         <th>In / Out</th>
                         <th>Amount</th>
                         <th>VAT</th>
+                        <th>Net</th>
                         <th>Account</th>
                         <th>Check</th>
                       </tr>
@@ -583,12 +595,27 @@ export default function Home() {
                             </td>
                             <td className="amount-cell">{money(tx.gross)}</td>
                             <td className="amount-cell">{money(tx.vat_posted)}</td>
+                            <td className="amount-cell">{money(tx.net)}</td>
                             <td>{tx.account_code} {tx.account_name ?? ''}</td>
                             <td className={check.cls} title={check.title}>{check.mark}</td>
                           </tr>
                         )
                       })}
                     </tbody>
+                    <tfoot>
+                      {totals.map(t => {
+                        const unknown = t.vat == null ? 'Fix the rows marked ✖ first' : undefined
+                        return (
+                          <tr key={t.direction} className="tb-total-row">
+                            <td colSpan={3}>Total money {t.direction} ({t.count} row{t.count === 1 ? '' : 's'})</td>
+                            <td className="amount-cell">{money(t.gross)}</td>
+                            <td className="amount-cell" title={unknown}>{money(t.vat)}</td>
+                            <td className="amount-cell" title={unknown}>{money(t.net)}</td>
+                            <td colSpan={2} />
+                          </tr>
+                        )
+                      })}
+                    </tfoot>
                   </table>
                 </div>
 

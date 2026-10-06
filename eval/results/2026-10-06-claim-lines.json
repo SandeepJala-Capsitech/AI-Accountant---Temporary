@@ -1,0 +1,865 @@
+{
+  "date": "2026-10-06",
+  "label": "claim-lines",
+  "api": "http://127.0.0.1:8089",
+  "model": "qwen/qwen3.8-27b",
+  "note": "Groq qwen/qwen3.8-27b free plan; reasoning low; commit 582b4b8 + PyMuPDF PDF text + expense-claim rule (one row per expense line); 8192 output tokens, 1 image per request; LEDGERSYNC_BUSINESS_NAME=Northbridge Consulting Ltd; --pause 15; 14 cases where receipts, notes, invoices and claims could be confused",
+  "timeout_s": 600,
+  "summary": {
+    "cases": 14,
+    "expected": 23,
+    "predicted": 23,
+    "matched": 23,
+    "row_precision": 1.0,
+    "row_recall": 1.0,
+    "correct_rows": 1.0,
+    "field_accuracy": {
+      "amount": 1.0,
+      "date": 1.0,
+      "direction": 1.0,
+      "account": 1.0,
+      "vat": 1.0
+    },
+    "exact_cases": 1.0,
+    "tb_balanced": 1.0,
+    "latency_p50_s": 14.7,
+    "latency_p95_s": 62.3,
+    "errors": {}
+  },
+  "by_kind": {
+    "image": {
+      "cases": 5,
+      "expected": 6,
+      "predicted": 6,
+      "matched": 6,
+      "row_precision": 1.0,
+      "row_recall": 1.0,
+      "correct_rows": 1.0,
+      "field_accuracy": {
+        "amount": 1.0,
+        "date": 1.0,
+        "direction": 1.0,
+        "account": 1.0,
+        "vat": 1.0
+      },
+      "exact_cases": 1.0,
+      "tb_balanced": 1.0,
+      "latency_p50_s": 29.6,
+      "latency_p95_s": 42.8,
+      "errors": {}
+    },
+    "pdf": {
+      "cases": 4,
+      "expected": 4,
+      "predicted": 4,
+      "matched": 4,
+      "row_precision": 1.0,
+      "row_recall": 1.0,
+      "correct_rows": 1.0,
+      "field_accuracy": {
+        "amount": 1.0,
+        "date": 1.0,
+        "direction": 1.0,
+        "account": 1.0,
+        "vat": 1.0
+      },
+      "exact_cases": 1.0,
+      "tb_balanced": 1.0,
+      "latency_p50_s": 2.6,
+      "latency_p95_s": 62.3,
+      "errors": {}
+    },
+    "table": {
+      "cases": 1,
+      "expected": 6,
+      "predicted": 6,
+      "matched": 6,
+      "row_precision": 1.0,
+      "row_recall": 1.0,
+      "correct_rows": 1.0,
+      "field_accuracy": {
+        "amount": 1.0,
+        "date": 1.0,
+        "direction": 1.0,
+        "account": 1.0,
+        "vat": null
+      },
+      "exact_cases": 1.0,
+      "tb_balanced": 1.0,
+      "latency_p50_s": 25.5,
+      "latency_p95_s": 25.5,
+      "errors": {}
+    },
+    "text": {
+      "cases": 4,
+      "expected": 7,
+      "predicted": 7,
+      "matched": 7,
+      "row_precision": 1.0,
+      "row_recall": 1.0,
+      "correct_rows": 1.0,
+      "field_accuracy": {
+        "amount": 1.0,
+        "date": 1.0,
+        "direction": 1.0,
+        "account": 1.0,
+        "vat": 1.0
+      },
+      "exact_cases": 1.0,
+      "tb_balanced": 1.0,
+      "latency_p50_s": 12.7,
+      "latency_p95_s": 14.8,
+      "errors": {}
+    }
+  },
+  "cases": [
+    {
+      "case": "img-cafe-receipt-vat",
+      "kind": "image",
+      "error": null,
+      "latency_s": 42.8,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 1,
+      "predicted": 1,
+      "matched": 1,
+      "correct": 1,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          1,
+          1
+        ],
+        "vat": [
+          1,
+          1
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-12",
+          "direction": "out",
+          "gross": "7.50",
+          "vat": "1.25",
+          "account_code": "7406",
+          "description": "The Daily Grind Cafe - flat white, almond croissant and bottled water",
+          "has_account": true,
+          "has_vat": true
+        }
+      ]
+    },
+    {
+      "case": "img-fuel-receipt-rotated",
+      "kind": "image",
+      "error": null,
+      "latency_s": 21.9,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 1,
+      "predicted": 1,
+      "matched": 1,
+      "correct": 1,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          1,
+          1
+        ],
+        "vat": [
+          1,
+          1
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-16",
+          "direction": "out",
+          "gross": "68.39",
+          "vat": "11.40",
+          "account_code": "7300",
+          "description": "Shell Westway - unleaded fuel (45.20 L), paid by Visa",
+          "has_account": true,
+          "has_vat": true
+        }
+      ]
+    },
+    {
+      "case": "img-supermarket-mixed-vat",
+      "kind": "image",
+      "error": null,
+      "latency_s": 41.3,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 2,
+      "predicted": 2,
+      "matched": 2,
+      "correct": 2,
+      "checks": {
+        "amount": [
+          2,
+          2
+        ],
+        "date": [
+          2,
+          2
+        ],
+        "direction": [
+          2,
+          2
+        ],
+        "account": [
+          2,
+          2
+        ],
+        "vat": [
+          2,
+          2
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-18",
+          "direction": "out",
+          "gross": "3.75",
+          "vat": "0.00",
+          "account_code": "8205",
+          "description": "Sainsbury's Local - groceries (semi skimmed milk, wholemeal bread, bananas)",
+          "has_account": true,
+          "has_vat": true
+        },
+        {
+          "date": "2026-09-18",
+          "direction": "out",
+          "gross": "4.20",
+          "vat": "0.70",
+          "account_code": "7801",
+          "description": "Sainsbury's Local - cleaning supplies (kitchen roll, washing up liquid)",
+          "has_account": true,
+          "has_vat": true
+        }
+      ]
+    },
+    {
+      "case": "img-tesco-receipt",
+      "kind": "image",
+      "error": null,
+      "latency_s": 11.7,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 1,
+      "predicted": 1,
+      "matched": 1,
+      "correct": 1,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          1,
+          1
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-03",
+          "direction": "out",
+          "gross": "12.50",
+          "vat": "0.00",
+          "account_code": "7406",
+          "description": "Tesco Express - Meal Deal, Coffee and Sandwich (subsistence)",
+          "has_account": true,
+          "has_vat": true
+        }
+      ]
+    },
+    {
+      "case": "img-train-ticket",
+      "kind": "image",
+      "error": null,
+      "latency_s": 29.6,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 1,
+      "predicted": 1,
+      "matched": 1,
+      "correct": 1,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          1,
+          1
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-17",
+          "direction": "out",
+          "gross": "87.50",
+          "vat": "0.00",
+          "account_code": "7400",
+          "description": "Trainline e-ticket, London Euston to Manchester Piccadilly Standard Anytime Return",
+          "has_account": true,
+          "has_vat": true
+        }
+      ]
+    },
+    {
+      "case": "pdf-paid-invoice",
+      "kind": "pdf",
+      "error": null,
+      "latency_s": 62.3,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 1,
+      "predicted": 1,
+      "matched": 1,
+      "correct": 1,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          1,
+          1
+        ],
+        "vat": [
+          1,
+          1
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-14",
+          "direction": "out",
+          "gross": "1260.00",
+          "vat": "210.00",
+          "account_code": "0030",
+          "description": "Brightline IT Supplies Ltd - Dell Latitude 5450 laptop with 3 Year ProSupport",
+          "has_account": true,
+          "has_vat": true
+        }
+      ]
+    },
+    {
+      "case": "pdf-purchase-invoice",
+      "kind": "pdf",
+      "error": null,
+      "latency_s": 1.6,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 1,
+      "predicted": 1,
+      "matched": 1,
+      "correct": 1,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          1,
+          1
+        ],
+        "vat": [
+          1,
+          1
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-08",
+          "direction": "out",
+          "gross": "300.00",
+          "vat": "50.00",
+          "account_code": "7504",
+          "description": "Clearway Office Supplies Ltd \u2013 A4 copier paper, toner cartridge, desk organisers",
+          "has_account": true,
+          "has_vat": true
+        }
+      ]
+    },
+    {
+      "case": "pdf-sales-invoice",
+      "kind": "pdf",
+      "error": null,
+      "latency_s": 2.6,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 1,
+      "predicted": 1,
+      "matched": 1,
+      "correct": 1,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          1,
+          1
+        ],
+        "vat": [
+          1,
+          1
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-30",
+          "direction": "in",
+          "gross": "2400.00",
+          "vat": "400.00",
+          "account_code": "4000",
+          "description": "Invoice NB-0117 to Harbour & Lane Architects LLP for strategy consultancy, September 2026",
+          "has_account": true,
+          "has_vat": true
+        }
+      ]
+    },
+    {
+      "case": "pdf-scanned-invoice",
+      "kind": "pdf",
+      "error": null,
+      "latency_s": 7.7,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 1,
+      "predicted": 1,
+      "matched": 1,
+      "correct": 1,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          1,
+          1
+        ],
+        "vat": [
+          1,
+          1
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-25",
+          "direction": "out",
+          "gross": "540.00",
+          "vat": "90.00",
+          "account_code": "7601",
+          "description": "Hartley & Co Chartered Accountants for management accounts",
+          "has_account": true,
+          "has_vat": true
+        }
+      ]
+    },
+    {
+      "case": "text-expense-note-mixed",
+      "kind": "text",
+      "error": null,
+      "latency_s": 14.8,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 2,
+      "predicted": 2,
+      "matched": 2,
+      "correct": 2,
+      "checks": {
+        "amount": [
+          2,
+          2
+        ],
+        "date": [
+          2,
+          2
+        ],
+        "direction": [
+          2,
+          2
+        ],
+        "account": [
+          2,
+          2
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-12",
+          "direction": "out",
+          "gross": "18.00",
+          "vat": "0.00",
+          "account_code": "7406",
+          "description": "Breakfast",
+          "has_account": true,
+          "has_vat": true
+        },
+        {
+          "date": "2026-09-12",
+          "direction": "out",
+          "gross": "32.00",
+          "vat": "0.00",
+          "account_code": "7400",
+          "description": "Taxi to client",
+          "has_account": true,
+          "has_vat": true
+        }
+      ]
+    },
+    {
+      "case": "text-mixed-receipt-one-vat",
+      "kind": "text",
+      "error": null,
+      "latency_s": 11.8,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 1,
+      "predicted": 1,
+      "matched": 1,
+      "correct": 1,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          1,
+          1
+        ],
+        "vat": [
+          1,
+          1
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-15",
+          "direction": "out",
+          "gross": "12.00",
+          "vat": "2.00",
+          "account_code": "7504",
+          "description": "Whsmith Kings Cross Station \u2013 coffee to go and A4 notebook",
+          "has_account": true,
+          "has_vat": true
+        }
+      ]
+    },
+    {
+      "case": "text-notes",
+      "kind": "text",
+      "error": null,
+      "latency_s": 14.7,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 3,
+      "predicted": 3,
+      "matched": 3,
+      "correct": 3,
+      "checks": {
+        "amount": [
+          3,
+          3
+        ],
+        "date": [
+          3,
+          3
+        ],
+        "direction": [
+          3,
+          3
+        ],
+        "account": [
+          3,
+          3
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-02",
+          "direction": "in",
+          "gross": "2400.00",
+          "vat": "0.00",
+          "account_code": "4000",
+          "description": "ACME Corp paid for consulting services",
+          "has_account": true,
+          "has_vat": true
+        },
+        {
+          "date": "2026-09-01",
+          "direction": "out",
+          "gross": "72.00",
+          "vat": "0.00",
+          "account_code": "7502",
+          "description": "BT Business Broadband monthly bill",
+          "has_account": true,
+          "has_vat": true
+        },
+        {
+          "date": "2026-09-10",
+          "direction": "out",
+          "gross": "149.99",
+          "vat": "0.00",
+          "account_code": "0040",
+          "description": "IKEA office chair",
+          "has_account": true,
+          "has_vat": true
+        }
+      ]
+    },
+    {
+      "case": "text-tesco-receipt",
+      "kind": "text",
+      "error": null,
+      "latency_s": 12.7,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 1,
+      "predicted": 1,
+      "matched": 1,
+      "correct": 1,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          1,
+          1
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-03",
+          "direction": "out",
+          "gross": "12.50",
+          "vat": "0.00",
+          "account_code": "7406",
+          "description": "Tesco Express \u2013 meal deal, coffee and sandwich",
+          "has_account": true,
+          "has_vat": true
+        }
+      ]
+    },
+    {
+      "case": "xlsx-two-months",
+      "kind": "table",
+      "error": null,
+      "latency_s": 25.5,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 6,
+      "predicted": 6,
+      "matched": 6,
+      "correct": 6,
+      "checks": {
+        "amount": [
+          6,
+          6
+        ],
+        "date": [
+          6,
+          6
+        ],
+        "direction": [
+          6,
+          6
+        ],
+        "account": [
+          6,
+          6
+        ],
+        "vat": [
+          0,
+          0
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-04",
+          "direction": "out",
+          "gross": "26.40",
+          "vat": "0.00",
+          "account_code": "8201",
+          "description": "SAGE SUBSCRIPTION",
+          "has_account": true,
+          "has_vat": true
+        },
+        {
+          "date": "2026-09-17",
+          "direction": "in",
+          "gross": "980.00",
+          "vat": "0.00",
+          "account_code": "4000",
+          "description": "RIVERSIDE DENTAL",
+          "has_account": true,
+          "has_vat": true
+        },
+        {
+          "date": "2026-09-25",
+          "direction": "out",
+          "gross": "41.25",
+          "vat": "0.00",
+          "account_code": "8204",
+          "description": "HISCOX INSURANCE",
+          "has_account": true,
+          "has_vat": true
+        },
+        {
+          "date": "2026-10-02",
+          "direction": "out",
+          "gross": "72.00",
+          "vat": "0.00",
+          "account_code": "7502",
+          "description": "BT BUSINESS BROADBAND",
+          "has_account": true,
+          "has_vat": true
+        },
+        {
+          "date": "2026-10-09",
+          "direction": "in",
+          "gross": "980.00",
+          "vat": "0.00",
+          "account_code": "4000",
+          "description": "RIVERSIDE DENTAL",
+          "has_account": true,
+          "has_vat": true
+        },
+        {
+          "date": "2026-10-20",
+          "direction": "out",
+          "gross": "7.85",
+          "vat": "0.00",
+          "account_code": "7501",
+          "description": "ROYAL MAIL",
+          "has_account": true,
+          "has_vat": true
+        }
+      ]
+    }
+  ]
+}

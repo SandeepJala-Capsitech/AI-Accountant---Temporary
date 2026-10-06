@@ -50,6 +50,16 @@ def text_pdf(text="Invoice total 120.00"):
     return doc.tobytes()
 
 
+def table_pdf(rows, columns=(40, 110, 330, 400, 470)):
+    """A table with every cell placed on its own, as Excel and bank exports write their PDFs."""
+    doc = pymupdf.open()
+    page = doc.new_page()
+    for n, cells in enumerate(rows):
+        for x, cell in zip(columns, cells):
+            page.insert_text((x, 80 + 12 * n), cell, fontsize=9)
+    return doc.tobytes()
+
+
 def scanned_pdf(pages):
     doc = pymupdf.open()
     for _ in range(pages):
@@ -68,6 +78,19 @@ def test_a_pdf_with_a_text_layer_goes_as_text():
     ex = RecordingExtractor()
     analyze(Intake("pdf", data=text_pdf()), ex, ctx())
     assert "Invoice total 120.00" in ex.calls[0]["text"] and ex.calls[0]["images"] is None
+
+
+def test_a_pdf_table_reaches_the_model_one_row_per_line():
+    # Each payment's date, description and amounts must arrive together, not one column after another.
+    rows = [("Date", "Particulars", "Debit", "Credit", "Balance"),
+            ("06/11/2020", "BANK HILTON LORD Greys", "-", "465.00", "465.00"),
+            ("09/11/2020", "Annual Card Fee", "69.00", "-", "396.00"),
+            ("11/03/2021", "BANK HILTON LORD Greys", "-", "765.00", "1,161.00")]
+    ex = RecordingExtractor()
+    analyze(Intake("pdf", data=table_pdf(rows)), ex, ctx())
+    lines = [line.split() for line in ex.calls[0]["text"].splitlines()]
+    assert ["09/11/2020", "Annual", "Card", "Fee", "69.00", "-", "396.00"] in lines
+    assert ["11/03/2021", "BANK", "HILTON", "LORD", "Greys", "-", "765.00", "1,161.00"] in lines
 
 
 def test_photos_go_to_the_model_as_images():
@@ -104,7 +127,7 @@ def test_cancel_before_model_call_skips_it():
 
 
 def test_document_text_is_never_logged(caplog):
-    # Our own code at DEBUG; third-party loggers (pdfminer) stay at WARNING, see test_logging.
+    # Our own code at DEBUG; third-party loggers stay at WARNING, see test_logging.
     caplog.set_level(logging.DEBUG, logger="ledgersync")
     analyze(Intake("pdf", data=text_pdf("MRS CLIENT SECRET 12.50")), RecordingExtractor(), ctx())
     assert "CLIENT SECRET" not in caplog.text
@@ -119,5 +142,16 @@ def test_rendering_pdf_pages_waits_for_the_pymupdf_lock():
     pdf, done = doc.tobytes(), threading.Event()
     with PYMUPDF_LOCK:
         threading.Thread(target=lambda: (_pdf_pages(pdf), done.set())).start()
+        assert not done.wait(0.3)
+    assert done.wait(5)
+
+
+def test_reading_pdf_text_waits_for_the_pymupdf_lock():
+    import threading
+    from ledgersync.intake import PYMUPDF_LOCK
+    from ledgersync.pipeline import _pdf_text
+    pdf, done = text_pdf(), threading.Event()
+    with PYMUPDF_LOCK:
+        threading.Thread(target=lambda: (_pdf_text(pdf), done.set())).start()
         assert not done.wait(0.3)
     assert done.wait(5)

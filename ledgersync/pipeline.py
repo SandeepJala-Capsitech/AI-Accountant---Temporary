@@ -65,9 +65,13 @@ def _pdf_pages(data: bytes) -> list[bytes]:
 
 
 def _pdf_text(data: bytes) -> Optional[str]:
-    from pdfminer.high_level import extract_text
+    """The text layer, in reading order with each line of the page kept together: a table's cells
+    stay in their row, where a column-by-column read would separate dates from their amounts."""
+    import pymupdf
     try:
-        return extract_text(io.BytesIO(data)).strip() or None
+        with PYMUPDF_LOCK, pymupdf.open(stream=data, filetype="pdf") as doc:
+            text = "\n\n".join(page.get_text("text", sort=True) for page in doc)
     except Exception as exc:
         logger.warning("PDF text extraction failed (%s); the model will read the pages instead", type(exc).__name__)
         return None
+    return text.strip() or None

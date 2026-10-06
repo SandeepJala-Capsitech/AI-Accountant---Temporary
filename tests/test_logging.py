@@ -23,7 +23,7 @@ def root_logger():
     """Restores the logging configuration that create_app changes."""
     root = logging.getLogger()
     saved_handlers, saved_level = root.handlers[:], root.level
-    saved = {name: logging.getLogger(name).level for name in ("ledgersync", "pdfminer")}
+    saved = {name: logging.getLogger(name).level for name in ("ledgersync",)}
     yield root
     root.handlers = saved_handlers
     root.setLevel(saved_level)

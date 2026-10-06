@@ -22,7 +22,7 @@ logger = logging.getLogger("ledgersync.server")
 
 def configure_logging(level: str) -> None:
     """LEDGERSYNC_LOG_LEVEL applies to our own loggers only. Third-party libraries stay at
-    WARNING because some log document text at DEBUG (pdfminer logs every parsed token)."""
+    WARNING because some can log document text at DEBUG."""
     logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger().setLevel(logging.WARNING)
     logging.getLogger("ledgersync").setLevel(level)

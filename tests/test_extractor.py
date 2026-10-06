@@ -118,6 +118,17 @@ def test_a_receipt_gives_one_transaction_per_account():
     assert "and its printed VAT total as document_vat" in system
 
 
+def test_an_expense_claim_gives_one_transaction_per_expense_line():
+    # Matt's claim of 24 expenses came back as one row: the model added the lines up by account, got three
+    # sums wrong, and the rows' VAT no longer matched the printed total, so the ledger kept the claim whole.
+    # Each line of a claim is its own expense: copied as printed, never added together.
+    _, client = extract(transactions_json(ROW), "BT Broadband 72.00")
+    system = client.calls[0]["messages"][0]["content"]
+    assert "An expense claim or expense report lists separate expenses" in system
+    assert "one transaction per expense line" in system and "Never add expense lines together" in system
+    assert "the claim's grand total as document_total" in system and "document_vat is null" in system
+
+
 def test_rows_carry_the_document_totals_and_the_mixed_items_flag():
     result, _ = extract(transactions_json(dict(ROW, document_total=72.0, document_vat=12.0, mixed_items=None)))
     row = result.data[0]
