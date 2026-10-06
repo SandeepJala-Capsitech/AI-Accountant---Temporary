@@ -1,10 +1,14 @@
+import datetime as dt
 import sqlite3
+import threading
 from contextlib import closing
+from decimal import Decimal
 
 import pytest
 
+from ledgersync.checks import issue
 from ledgersync.errors import ClientArchived, NotFound, StorageError
-from ledgersync.models import ClientFields
+from ledgersync.models import ClientFields, Transaction
 from ledgersync.store import Store
 
 CUBE = ClientFields(name="Business Cube Ltd", business_type="limited_company", contact_name="Jenny Clarke",
@@ -69,3 +73,131 @@ def test_editing_a_client_changes_only_what_is_sent_and_moves_updated(store, mon
 def test_an_unknown_client_is_not_found(store):
     with pytest.raises(NotFound):
         store.get_client(99)
+
+
+def bill(**changes) -> Transaction:
+    fields = dict(direction="out", gross="72.00", account_code="7502", date=dt.date(2026, 9, 1),
+                  description="BT Business, broadband", document_type="invoice", counterparty="BT Business")
+    return Transaction(**{**fields, **changes})
+
+
+def test_an_upload_keeps_its_rows_in_order_and_only_their_inputs(store):
+    client = store.create_client(CUBE)
+    worked_out = bill(document_ref="bt", vat_posted="12.00", net="60.00", owed="72.00",
+                      issues=[issue("total_mismatch", "The rows add up to £82.00."), issue("not_booked", "x", "info")])
+    upload_id = store.add_upload(client.id, "BT-0905.pdf", "pdf", [worked_out, bill(document_ref="bt", gross="10.00")],
+                                 sha256="ab12", model="fake-model", warnings=["Row 3 skipped"])
+    first, second = store.rows(client.id)
+    assert (first.upload_id, first.tx.gross, second.tx.gross) == (upload_id, Decimal("72.00"), Decimal("10.00"))
+    assert (first.tx.vat_posted, first.tx.net, first.tx.owed) == (None, None, None)   # worked out on every read
+    assert [i.code for i in first.tx.issues] == ["total_mismatch"]                      # the adapter's own check
+    [upload] = store.uploads(client.id)
+    assert (upload["name"], upload["kind"], upload["sha256"], upload["model"], upload["warnings"],
+            upload["row_count"]) == ("BT-0905.pdf", "pdf", "ab12", "fake-model", ["Row 3 skipped"], 2)
+
+
+def test_a_row_saved_without_a_document_reference_gets_one(store):
+    client = store.create_client(CUBE)
+    store.add_upload(client.id, "Manual entry", "manual", [bill(document_ref=None)])
+    assert store.rows(client.id)[0].tx.document_ref
+
+
+def test_uploads_are_listed_newest_first(store):
+    client = store.create_client(CUBE)
+    older = store.add_upload(client.id, "a.pdf", "pdf", [bill()])
+    newer = store.add_upload(client.id, "b.pdf", "pdf", [bill()])
+    assert [u["id"] for u in store.uploads(client.id)] == [newer, older]
+
+
+def test_removing_an_upload_removes_its_rows_and_nothing_else(store):
+    client = store.create_client(CUBE)
+    keep = store.add_upload(client.id, "a.pdf", "pdf", [bill()])
+    gone = store.add_upload(client.id, "b.pdf", "pdf", [bill(), bill()])
+    store.delete_upload(client.id, gone)
+    assert [r.upload_id for r in store.rows(client.id)] == [keep]
+    with pytest.raises(NotFound):
+        store.delete_upload(client.id, gone)
+
+
+def test_another_clients_rows_and_uploads_are_not_found(store):
+    mine, theirs = store.create_client(CUBE), store.create_client(CUBE)
+    upload = store.add_upload(theirs.id, "b.pdf", "pdf", [bill()])
+    row = store.rows(theirs.id)[0].id
+    with pytest.raises(NotFound):
+        store.delete_upload(mine.id, upload)
+    with pytest.raises(NotFound):
+        store.patch_row(mine.id, row, {"include": True})
+
+
+def test_include_and_document_wide_fields_change_every_row_of_the_document(store):
+    client = store.create_client(CUBE)
+    quote = dict(document_type="quote", document_ref="q1")
+    store.add_upload(client.id, "q.pdf", "pdf", [bill(**quote), bill(**quote, gross="5.00"), bill(document_ref="other")])
+    first = store.rows(client.id)[0].id
+    store.patch_row(client.id, first, {"include": True, "counterparty": "BT plc", "gross": "70.00"})
+    assert [(r.tx.include, r.tx.counterparty, r.tx.gross) for r in store.rows(client.id)] == [
+        (True, "BT plc", Decimal("70.00")), (True, "BT plc", Decimal("5.00")), (False, "BT Business", Decimal("72.00"))]
+
+
+def test_a_rows_first_edit_keeps_what_it_held_and_revert_brings_the_document_back(store):
+    client = store.create_client(CUBE)
+    store.add_upload(client.id, "a.pdf", "pdf", [bill(document_ref="a"), bill(document_ref="a", gross="10.00")])
+    first, second = (r.id for r in store.rows(client.id))
+    store.patch_row(client.id, first, {"gross": "70.00"})
+    store.patch_row(client.id, first, {"account_code": "7504"})
+    store.patch_row(client.id, second, {"document_type": "receipt"})   # a whole-document field
+    one, two = store.rows(client.id)
+    assert (one.tx.gross, one.tx.account_code, one.tx.document_type, two.tx.document_type) == (
+        Decimal("70.00"), "7504", "receipt", "receipt")
+    assert (one.original["gross"], one.original["account_code"], one.original["document_type"]) == (
+        "72.00", "7502", "invoice")
+    store.patch_row(client.id, second, {}, revert=True)
+    one, two = store.rows(client.id)
+    assert (one.tx.gross, one.tx.account_code, one.tx.document_type, one.original) == (
+        Decimal("72.00"), "7502", "invoice", None)
+    assert (two.tx.document_type, two.original) == ("invoice", None)
+
+
+def test_a_link_is_not_an_edit(store):
+    client = store.create_client(CUBE)
+    store.add_upload(client.id, "s.csv", "table", [bill(document_type="statement")])
+    row = store.rows(client.id)[0].id
+    store.patch_row(client.id, row, {"link": []})
+    [saved] = store.rows(client.id)
+    assert (saved.tx.link, saved.original) == ([], None)
+
+
+def test_saving_rows_moves_the_clients_updated_time(store, monkeypatch):
+    client = store.create_client(CUBE)
+    monkeypatch.setattr("ledgersync.store._now", lambda: "2030-01-01T00:00:00+00:00")
+    store.add_upload(client.id, "a.pdf", "pdf", [bill()])
+    assert store.get_client(client.id).updated_at == "2030-01-01T00:00:00+00:00"
+
+
+def test_jobs_and_people_can_write_at_the_same_time(store):
+    # Review focus: a background job saves uploads while a person links a row; neither may fail.
+    client = store.create_client(CUBE)
+    store.add_upload(client.id, "s.csv", "table", [bill(document_type="statement")])
+    row = store.rows(client.id)[0].id
+    failures = []
+
+    def save():
+        try:
+            for _ in range(15):
+                store.add_upload(client.id, "s.csv", "table", [bill()])
+        except Exception as exc:   # the assertion below reports it
+            failures.append(exc)
+
+    def link():
+        try:
+            for n in range(15):
+                store.patch_row(client.id, row, {"link": [] if n % 2 else None})
+        except Exception as exc:
+            failures.append(exc)
+
+    threads = [threading.Thread(target=save) for _ in range(3)] + [threading.Thread(target=link)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert failures == [] and len(store.rows(client.id)) == 46

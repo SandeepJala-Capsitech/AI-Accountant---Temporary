@@ -4,15 +4,18 @@ side. Rows keep their inputs only; statuses, matching and warnings are worked ou
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
 import sqlite3
 import threading
+import uuid
 from contextlib import closing, contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, NamedTuple, Optional
 
+from .checks import is_derived
 from .errors import ClientArchived, NotFound, StorageError
-from .models import Client, ClientFields
+from .models import Client, ClientFields, Transaction
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +53,30 @@ CREATE TABLE IF NOT EXISTS rows (
 CREATE INDEX IF NOT EXISTS rows_by_client ON rows(client_id, upload_id, position);
 """
 _CLIENT_FIELDS = ("name", "business_type", "contact_name", "contact_email", "contact_phone", "vat_registered")
+# What is kept of a row: the inputs a document or a person gave. Everything else is worked out on read.
+INPUTS = {"date", "description", "direction", "gross", "vat", "vat_treatment", "account_code", "contra_account_code",
+          "currency", "source", "method", "evidence", "document_type", "counterparty", "document_ref", "include",
+          "link", "balance", "opening_balance", "closing_balance"}
+# The fields a person can edit; a row's first edit keeps what they held as `original`.
+EDITABLE = ("date", "description", "counterparty", "direction", "gross", "vat", "account_code", "document_type")
+# Fields of a whole document: a change to one row changes every row with its document_ref.
+WHOLE_DOCUMENT = {"counterparty", "document_type", "include"}
+
+
+class StoredRow(NamedTuple):
+    id: int
+    upload_id: int
+    tx: Transaction
+    original: Optional[dict]   # what the editable fields held before a person's first edit; None if never edited
+
+
+def saved_form(tx: Transaction) -> dict:
+    """A row as the database keeps it: its inputs, the issues the ledger doesn't work out itself, and a
+    document reference (a manual entry arrives without one)."""
+    data = tx.model_dump(mode="json", include=INPUTS)
+    data["issues"] = [found.model_dump() for found in tx.issues if not is_derived(found)]
+    data["document_ref"] = data.get("document_ref") or uuid.uuid4().hex[:12]
+    return data
 
 
 def _now() -> str:
@@ -104,6 +131,74 @@ class Store:
                 db.execute(f"UPDATE clients SET {assignments} WHERE id = ?", (*sets.values(), client_id))
             return _client(db, client_id)
 
+    # ─── Uploads and rows ──────────────────────────────────────────────────────
+
+    def add_upload(self, client_id: int, name: str, kind: str, rows: list[Transaction], *, sha256: str = "",
+                   model: str = "", warnings=()) -> int:
+        """Saves an upload and its rows in order, and returns the upload's id. Archived or not: a job that
+        finishes after its client was archived is still kept."""
+        now = _now()
+        with self._db(write=True) as db:
+            _client(db, client_id)
+            upload_id = db.execute(
+                "INSERT INTO uploads (client_id, name, kind, sha256, model, warnings, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (client_id, name, kind, sha256, model or "", json.dumps(list(warnings)), now)).lastrowid
+            db.executemany("INSERT INTO rows (client_id, upload_id, position, data) VALUES (?, ?, ?, ?)",
+                           [(client_id, upload_id, n, json.dumps(saved_form(tx))) for n, tx in enumerate(rows)])
+            _touch(db, client_id, now)
+            return upload_id
+
+    def uploads(self, client_id: int) -> list[dict]:
+        """The client's uploads, newest first, each with its row count."""
+        with self._db() as db:
+            _client(db, client_id)
+            found = db.execute("SELECT u.*, (SELECT COUNT(*) FROM rows r WHERE r.upload_id = u.id) AS row_count"
+                               " FROM uploads u WHERE u.client_id = ? ORDER BY u.id DESC", (client_id,)).fetchall()
+        return [{**dict(row), "warnings": json.loads(row["warnings"])} for row in found]
+
+    def delete_upload(self, client_id: int, upload_id: int) -> None:
+        """Removes an upload and its rows for good."""
+        with self._db(write=True) as db:
+            if not db.execute("DELETE FROM uploads WHERE id = ? AND client_id = ?", (upload_id, client_id)).rowcount:
+                raise NotFound("This upload was not found.")
+            _touch(db, client_id, _now())
+
+    def rows(self, client_id: int) -> list[StoredRow]:
+        """The client's rows in table order: by upload, oldest first, then as the model gave them."""
+        with self._db() as db:
+            _client(db, client_id)
+            found = db.execute("SELECT id, upload_id, data FROM rows WHERE client_id = ? ORDER BY upload_id, position",
+                               (client_id,)).fetchall()
+        return [_stored(row) for row in found]
+
+    def patch_row(self, client_id: int, row_id: int, changes: dict, *, revert: bool = False) -> None:
+        """A person's change to a row: Link, Include, an edit, or revert. Include, counterparty and document
+        type change every row of its document (the same document_ref); the rest change that row. A row's first
+        edit keeps what it held as `original`; revert puts back every edited row of the document."""
+        with self._db(write=True) as db:
+            saved = {row["id"]: json.loads(row["data"]) for row in
+                     db.execute("SELECT id, data FROM rows WHERE client_id = ?", (client_id,))}
+            if row_id not in saved:
+                raise NotFound("This row was not found.")
+            ref = saved[row_id].get("document_ref")
+            for rid, data in saved.items():
+                if rid != row_id and not (ref and data.get("document_ref") == ref):
+                    continue
+                if revert:
+                    if "original" not in data:
+                        continue
+                    data.update(data.pop("original"))
+                else:
+                    change = changes if rid == row_id else {k: v for k, v in changes.items() if k in WHOLE_DOCUMENT}
+                    if not change:
+                        continue
+                    if "original" not in data and any(k in EDITABLE and data.get(k) != v for k, v in change.items()):
+                        data["original"] = {k: data.get(k) for k in EDITABLE}
+                    data.update(change)
+                db.execute("UPDATE rows SET data = ? WHERE id = ?", (json.dumps(data), rid))
+            _touch(db, client_id, _now())
+
     # ─── The database ──────────────────────────────────────────────────────────
 
     def _prepare(self) -> None:
@@ -155,6 +250,16 @@ class Store:
 def _rollback(db: sqlite3.Connection) -> None:
     if db.in_transaction:
         db.execute("ROLLBACK")
+
+
+def _touch(db: sqlite3.Connection, client_id: int, now: str) -> None:
+    db.execute("UPDATE clients SET updated_at = ? WHERE id = ?", (now, client_id))
+
+
+def _stored(row: sqlite3.Row) -> StoredRow:
+    data = json.loads(row["data"])
+    original = data.pop("original", None)
+    return StoredRow(row["id"], row["upload_id"], Transaction.model_validate(data), original)
 
 
 def _client(db: sqlite3.Connection, client_id: int) -> Client:
