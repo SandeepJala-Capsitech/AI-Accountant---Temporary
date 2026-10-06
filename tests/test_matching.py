@@ -226,3 +226,21 @@ def test_the_same_amount_from_a_different_name_is_only_a_suggestion():
 def test_a_bank_line_without_a_counterparty_is_only_a_suggestion():
     _, line = matched(bill(), bank(who=None))
     assert codes(line) == [("possible_payment", "warning")]
+
+
+def test_one_payment_never_clears_documents_owed_on_different_accounts():
+    # A £300 claim (owed to staff) and a £200 bill (owed to a supplier), both named like "M BARNES", must not be
+    # settled together by one £500 line: the whole £500 would post against just one of the two accounts.
+    claim = row("expense_claim", "out", "300.00", "2026-10-01", "Matt Barnes", "claim", account="7402")
+    plumber = bill("200.00", date="2026-10-01", ref="plumber", who="Barnes Plumbing", account="7800")
+    *_, line = matched(claim, plumber, bank("500.00", "2026-10-05", "M BARNES"))
+    assert line.pays == [] and codes(line) == [("choose_payment", "error")]
+
+
+def test_a_link_to_documents_on_different_accounts_is_refused():
+    claim = row("expense_claim", "out", "300.00", "2026-10-01", "Matt Barnes", "claim", account="7402")
+    plumber = bill("200.00", date="2026-10-01", ref="plumber", who="Barnes Plumbing", account="7800")
+    open_claim, open_bill, line = matched(claim, plumber,
+                                          bank("500.00", "2026-10-05", "M BARNES", link=["claim", "plumber"]))
+    assert line.pays == [] and codes(line) == [("mixed_link", "error")]
+    assert (open_claim.owed, open_bill.owed) == (Decimal("300.00"), Decimal("200.00"))

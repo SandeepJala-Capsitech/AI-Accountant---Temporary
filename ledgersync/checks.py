@@ -11,7 +11,8 @@ from .money import PENNY, ZERO, VatTreatment, vat_in_gross
 
 _NO_VAT = {AccountType.LIABILITY, AccountType.EQUITY}
 # Issues matching.match adds; listed here so validating again replaces them instead of adding copies.
-MATCHING_ISSUES = {"choose_payment", "part_payment", "overpayment", "possible_payment", "stale_link"}
+MATCHING_ISSUES = {"choose_payment", "part_payment", "overpayment", "possible_payment", "stale_link",
+                   "mixed_link"}
 _DERIVED = {"unknown_account", "same_account", "non_gbp_currency", "vat_not_applicable", "vat_estimated",
             "vat_arithmetic", "vat_rate_mismatch", "date_missing", "date_out_of_period", "unusual_direction",
             "not_booked"} | MATCHING_ISSUES

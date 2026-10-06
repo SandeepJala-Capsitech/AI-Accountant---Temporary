@@ -129,7 +129,11 @@ def _settle(n: int, line: Transaction, documents: dict[str, _Document], change: 
     if line.link:
         linked = [documents[ref] for ref in line.link if ref in documents]
         if len(linked) == len(line.link):
-            _pay(n, line, linked, change, found)          # the person's choice, as given
+            if len({d.account for d in linked}) > 1:      # one bank line posts against one account
+                found.append(issue("mixed_link", "The documents linked to this line are owed on different "
+                                                 "accounts; link each to its own bank line.", "error"))
+            else:
+                _pay(n, line, linked, change, found)      # the person's choice, as given
             _note(change, line, found)
             return
         found.append(issue("stale_link", "A document this line was linked to is no longer in the table, "
@@ -165,16 +169,18 @@ def _decide(line: Transaction, docs: list[_Document]) -> tuple[str, list[list[_D
 
 
 def _sets_adding_up_to(amount: Decimal, docs: list[_Document]) -> list[list[_Document]]:
-    """Sets of two to five documents whose open amounts add up to the payment, oldest documents first;
-    stops once it has found more than five, since a person has to choose anyway."""
-    oldest = sorted(docs, key=lambda d: (d.date, d.ref))[:20]
+    """Sets of two to five documents owed on the same account (a bank line posts against one account)
+    whose open amounts add up to the payment, oldest documents first; stops once it has found more than
+    five, since a person has to choose anyway."""
     found: list[list[_Document]] = []
-    for size in range(2, MAX_SET + 1):
-        for chosen in combinations(oldest, size):
-            if sum((d.open for d in chosen), ZERO) == amount:
-                found.append(list(chosen))
-                if len(found) > 5:
-                    return found
+    for account in sorted({d.account or "" for d in docs}):
+        oldest = sorted((d for d in docs if (d.account or "") == account), key=lambda d: (d.date, d.ref))[:20]
+        for size in range(2, MAX_SET + 1):
+            for chosen in combinations(oldest, size):
+                if sum((d.open for d in chosen), ZERO) == amount:
+                    found.append(list(chosen))
+                    if len(found) > 5:
+                        return found
     return found
 
 
