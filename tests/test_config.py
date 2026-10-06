@@ -1,3 +1,6 @@
+from pathlib import Path
+
+from ledgersync import config
 from ledgersync.config import Settings, read_env_file
 
 
@@ -61,3 +64,9 @@ def test_two_files_are_read_at_once_unless_set_otherwise():
     assert Settings.from_env({}).max_parallel_jobs == 2
     assert Settings.from_env({"LEDGERSYNC_MAX_PARALLEL_JOBS": "1"}).max_parallel_jobs == 1
     assert Settings.from_env({"LEDGERSYNC_MAX_PARALLEL_JOBS": "0"}).max_parallel_jobs == 1   # never below one
+
+
+def test_the_database_lives_in_the_projects_data_folder_unless_set_otherwise(tmp_path):
+    project = Path(config.__file__).resolve().parent.parent
+    assert Settings.from_env({}).db_path == project / "data" / "ledgersync.db"
+    assert Settings.from_env({"LEDGERSYNC_DB_PATH": str(tmp_path / "books.db")}).db_path == tmp_path / "books.db"

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Mapping, Optional
 
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env"   # git-ignored; see .env.example
+DEFAULT_DB = Path(__file__).resolve().parent.parent / "data" / "ledgersync.db"   # git-ignored: data/
 
 
 def _flag(value: str) -> bool:
@@ -55,6 +56,7 @@ class Settings:
     groq_max_images: int = 3              # pages per request, Groq's most; set 1 on the free plan: 3 overflow its 8K tokens/min
     health_ttl: float = 300.0             # the UI polls health every 30 s; the free plan counts requests
     business_name: str = ""               # whose books these are: tells sales invoices from purchases
+    db_path: Path = DEFAULT_DB            # the local database of clients and their saved rows
 
     @property
     def max_upload_bytes(self) -> int:
@@ -86,4 +88,6 @@ class Settings:
             groq_reasoning_effort=env.get("GROQ_REASONING_EFFORT", d.groq_reasoning_effort).strip(),
             groq_max_images=int(env.get("GROQ_MAX_IMAGES", d.groq_max_images)),
             business_name=env.get("LEDGERSYNC_BUSINESS_NAME", "").strip(),
+            db_path=(Path(env["LEDGERSYNC_DB_PATH"].strip()).expanduser()
+                     if env.get("LEDGERSYNC_DB_PATH", "").strip() else d.db_path),
         )

@@ -174,3 +174,37 @@ class TrialBalance(BaseModel):
     total_credits: Decimal
     is_balanced: bool
     journal: list[JournalLine]
+
+
+class ClientFields(BaseModel):
+    """What a person enters for a client, trimmed; ledger.check_client says what is missing."""
+    name: str
+    business_type: BusinessType
+    contact_name: str                  # the responsible person: the client's own contact
+    contact_email: str = ""
+    contact_phone: str = ""
+    vat_registered: bool = True
+
+    @field_validator("name", "contact_name", "contact_email", "contact_phone", mode="before")
+    @classmethod
+    def _trimmed(cls, value):
+        return "" if value is None else str(value).strip()
+
+
+class Client(ClientFields):
+    id: int
+    archived: bool = False
+    archived_at: Optional[str] = None
+    created_at: str
+    updated_at: str
+
+
+class ClientPatch(BaseModel):
+    """A change to a client: only the fields sent change; archived true archives it, false restores it."""
+    name: Optional[str] = None
+    business_type: Optional[BusinessType] = None
+    contact_name: Optional[str] = None
+    contact_email: Optional[str] = None
+    contact_phone: Optional[str] = None
+    vat_registered: Optional[bool] = None
+    archived: Optional[bool] = None

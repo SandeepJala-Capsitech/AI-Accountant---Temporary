@@ -66,3 +66,27 @@ class ModelRateLimited(ModelUnavailable):
     """The hosted model's rate limit (e.g. a free plan's tokens per minute) is used up for now."""
 
     code = "ai_rate_limited"
+
+
+class NotFound(LedgerSyncError):
+    status_code = 404
+    code = "not_found"
+
+
+class ClientArchived(LedgerSyncError):
+    """A change to an archived client: it can only be restored."""
+
+    status_code = 409
+    code = "client_archived"
+
+
+class InvalidInput(LedgerSyncError):
+    status_code = 422
+    code = "invalid_input"
+
+
+class StorageError(LedgerSyncError):
+    """The local database could not be read or written; the server log says why."""
+
+    status_code = 500
+    code = "storage_error"
