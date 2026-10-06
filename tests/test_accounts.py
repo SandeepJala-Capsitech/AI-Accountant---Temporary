@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from ledgersync.accounts import BY_CODE, CHART, AccountType, choosable
+from ledgersync.accounts import BANK, BY_CODE, CHART, AccountType, choosable
 
 FIXTURES = Path(__file__).parent.parent / "eval" / "fixtures"
 
@@ -22,9 +22,21 @@ def test_posting_accounts_have_the_right_types():
     assert BY_CODE["4000"].type == AccountType.INCOME and BY_CODE["7502"].type == AccountType.EXPENSE
 
 
-def test_a_model_may_choose_any_account_but_the_bank_and_the_vat_control_accounts():
-    # The bank is the other side of every posting, and the ledger splits VAT itself.
-    assert {a.code for a in choosable()} == set(BY_CODE) - {"1200", "2200", "2201"}
+def test_1200_is_the_bank_account():
+    # Every payment's other side posts to 1200: renamed "Debtors", a rent payment showed as money owed to us.
+    assert (BANK, BY_CODE["1200"].name, BY_CODE["1210"].name) == ("1200", "Bank Current Account", "Bank Deposit Account")
+    assert BY_CODE["1210"].type == AccountType.ASSET
+
+
+def test_debtors_and_creditors_have_their_own_codes():
+    assert (BY_CODE["1100"].name, BY_CODE["1100"].type) == ("Debtors", AccountType.ASSET)
+    assert (BY_CODE["2100"].name, BY_CODE["2100"].type) == ("Creditors", AccountType.LIABILITY)
+
+
+def test_a_model_may_choose_any_account_but_the_bank_and_the_control_accounts():
+    # The bank is the other side of every posting, and the ledger splits VAT itself. Every document is
+    # booked as paid through the bank, so a bill or a sale must not stop at Debtors or Creditors.
+    assert {a.code for a in choosable()} == set(BY_CODE) - {"1200", "2200", "2201", "1100", "2100"}
 
 
 def test_every_account_has_a_short_definition():

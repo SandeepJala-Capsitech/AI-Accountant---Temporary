@@ -32,9 +32,11 @@ CHART: tuple[Account, ...] = (
     Account("0030", "Office Equipment", _A, V.STANDARD, "Computers, printers and other equipment kept for over a year."),
     Account("0040", "Furniture and Fixtures", _A, V.STANDARD, "Desks, chairs, shelving and fittings for the premises."),
     Account("0050", "Motor Vehicles", _A, V.STANDARD, "Cars and vans bought for the business."),
-    Account("1200", "Debtors", _A, V.OUTSIDE_SCOPE, "Money owed to the business by customers for goods or services already delivered. These are invoices that the business has issued and is expecting payment for."),
-    Account("1210", "Creditors", _L, V.OUTSIDE_SCOPE, "Money the business owes to suppliers for goods or services it has received. These are the invoices that the business has received and needs to pay."),
+    Account("1100", "Debtors", _A, V.OUTSIDE_SCOPE, "Money customers owe for invoices the business has sent and not yet been paid."),
+    Account("1200", "Bank Current Account", _A, V.OUTSIDE_SCOPE, "The business's main bank account."),
+    Account("1210", "Bank Deposit Account", _A, V.OUTSIDE_SCOPE, "A savings account; moving money into it is a transfer, not spending."),
     Account("1230", "Petty Cash", _A, V.OUTSIDE_SCOPE, "Cash withdrawn to keep for small purchases."),
+    Account("2100", "Creditors", _L, V.OUTSIDE_SCOPE, "Money the business owes suppliers for bills it has received and not yet paid."),
     Account("2200", "Sales VAT", _L, V.OUTSIDE_SCOPE, "VAT charged to customers."),
     Account("2201", "Purchase VAT", _L, V.OUTSIDE_SCOPE, "VAT paid to suppliers."),
     Account("2202", "VAT Liability", _L, V.OUTSIDE_SCOPE, "VAT paid to, or refunded by, HMRC for VAT returns."),
@@ -79,9 +81,11 @@ CHART: tuple[Account, ...] = (
 
 BY_CODE: dict[str, Account] = {a.code: a for a in CHART}
 BANK, SALES_VAT, PURCHASE_VAT, SUSPENSE = "1200", "2200", "2201", "9998"
+DEBTORS, CREDITORS = "1100", "2100"
 
 
 def choosable() -> tuple[Account, ...]:
     """Accounts a model may pick for a transaction: every account except the bank (the other
-    side of each posting) and the VAT control accounts (the ledger splits VAT itself)."""
-    return tuple(a for a in CHART if a.code not in (BANK, SALES_VAT, PURCHASE_VAT))
+    side of each posting), the VAT control accounts (the ledger splits VAT itself), and Debtors
+    and Creditors (every document is booked as paid through the bank, so nothing is left owing)."""
+    return tuple(a for a in CHART if a.code not in (BANK, SALES_VAT, PURCHASE_VAT, DEBTORS, CREDITORS))
