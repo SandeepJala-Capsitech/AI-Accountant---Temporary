@@ -208,3 +208,71 @@ class ClientPatch(BaseModel):
     contact_phone: Optional[str] = None
     vat_registered: Optional[bool] = None
     archived: Optional[bool] = None
+
+
+class ClientSummary(Client):
+    rows: int = 0
+    to_review: int = 0   # rows with an error or a warning
+
+
+class Upload(BaseModel):
+    id: int
+    name: str
+    kind: str
+    sha256: str = ""
+    model: str = ""
+    warnings: list[str] = Field(default_factory=list)
+    created_at: str
+    rows: int = 0
+    statement: Optional[StatementCheck] = None   # a bank statement's balance check; None for other uploads
+
+
+class SavedRow(Transaction):
+    """A saved row as the pages show it: its id, its upload, and what was read before a person's first edit."""
+    id: int
+    upload_id: int
+    edited: bool = False
+    original: Optional[dict] = None
+
+
+class Ledger(BaseModel):
+    client: Client
+    uploads: list[Upload]
+    transactions: list[SavedRow]
+
+
+class RowPatch(BaseModel):
+    """A person's change to a saved row: Link or Include, an edit of what was read, or revert. Only the fields
+    sent change; ledger.change_row checks them."""
+    link: Optional[list[str]] = None
+    include: Optional[bool] = None
+    date: Optional[dt.date] = None
+    description: Optional[str] = None
+    counterparty: Optional[str] = None
+    direction: Optional[Direction] = None
+    gross: Optional[Decimal] = None
+    vat: Optional[Decimal] = None
+    account_code: Optional[str] = None
+    document_type: Optional[DocumentType] = None
+    revert: bool = False
+
+    @field_validator("gross", "vat", mode="before")
+    @classmethod
+    def _pennies(cls, value):
+        if value is None or value == "":
+            return None
+        money = to_money(value)
+        if money is None:
+            raise ValueError("not an amount")
+        return money
+
+    @field_validator("description", "counterparty", mode="before")
+    @classmethod
+    def _trimmed(cls, value):
+        return None if value is None else (str(value).strip() or None)
+
+
+class ManualUpload(BaseModel):
+    name: str = "Manual entry"
+    kind: Literal["manual"] = "manual"
+    transactions: list[Transaction]
