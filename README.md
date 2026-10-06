@@ -60,6 +60,27 @@ edited row can simply be sent back. `vat_posted` is the VAT booked: the amount s
 person picked a rate in `vat_treatment`, the VAT inside the gross at that rate (flagged); otherwise
 none, because VAT can only be reclaimed when it was charged.
 
+### Unpaid bills, claims and payments
+
+Documents are booked the way an accountant would (accruals):
+
+- A till or card receipt, or a bank line, is money that moved: it posts against 1200 Bank Current Account.
+- An invoice starts unpaid. A bill, or a supplier's credit note, posts against 2100 Creditors; a sales
+  invoice, or a credit note to a customer, against 1100 Debtors; an expense claim against 2110 Expenses
+  Owed to Staff.
+- A bank line that pays an open invoice or claim clears it instead of being booked as a second expense:
+  the same counterparty, dated on or after the document and at most 31 days later. One payment can clear
+  up to five documents from one counterparty. When several could be meant, the table asks you to choose
+  (Link) and the trial balance waits. Part payments and overpayments are applied and flagged; a payment
+  of the same amount under a different name is only suggested. Unlink undoes a match.
+- Quotes, pro formas, purchase orders, remittance advices and supplier statements are not booked unless
+  you tick Include.
+
+`POST /api/transactions/validate` and `POST /api/trial-balance` take `document_type`, `counterparty`,
+`document_ref`, `link` and `include` on each row, and return `paid_against`, `pays`, `candidates`, `owed`
+and `paid_by`. Rows without a `document_type` are receipts, so older clients keep their postings. The
+design is in `docs/superpowers/specs/2026-10-06-unpaid-documents-and-payment-matching-design.md`.
+
 ## The AI model (Groq)
 
 Pasted text, spreadsheets and PDFs with a text layer go to the model as text; photos and scanned
