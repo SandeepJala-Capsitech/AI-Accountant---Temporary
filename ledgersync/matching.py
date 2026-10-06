@@ -122,6 +122,13 @@ def _could_pay(line: Transaction, doc: _Document) -> bool:
             and line.date is not None and doc.date <= line.date <= doc.date + WINDOW)
 
 
+def _paid_before(line: Transaction, doc: _Document) -> bool:
+    """Still open, the same direction, and the payment dated in the 31 days before the document (a card
+    payment or an advance). Such a payment is only ever suggested, never matched automatically."""
+    return (doc.open > ZERO and doc.direction == line.direction.value and doc.date is not None
+            and line.date is not None and line.date < doc.date <= line.date + WINDOW)
+
+
 def _settle(n: int, line: Transaction, documents: dict[str, _Document], change: dict) -> None:
     found: list[Issue] = []
     if line.link == []:                                   # Unlink: an ordinary bank line
@@ -139,14 +146,19 @@ def _settle(n: int, line: Transaction, documents: dict[str, _Document], change: 
         found.append(issue("stale_link", "A document this line was linked to is no longer in the table, "
                                          "so it was matched automatically."))
     kind, options = _decide(line, [d for d in documents.values() if _could_pay(line, d)])
+    why = "the names do not match"
+    if kind == "none":
+        early = [d for d in documents.values() if _paid_before(line, d) and d.open == line.gross]
+        if early:
+            kind, options, why = "suggest", [[d] for d in early], "the payment is dated before the document"
     if kind == "pay":
         _pay(n, line, options[0], change, found)
     elif kind == "choose":
         found.append(issue("choose_payment", f"Could pay: {_choices(options)}. Choose one.", "error"))
         change["candidates"] = [[d.settlement(d.open) for d in option] for option in options]
     elif kind == "suggest":
-        found.append(issue("possible_payment", f"May pay {_choices(options)}: the same amount, but the names do "
-                                               "not match. Link it if it does."))
+        found.append(issue("possible_payment", f"May pay {_choices(options)}: the same amount, but {why}. "
+                                               "Link it if it does."))
         change["candidates"] = [[d.settlement(d.open) for d in option] for option in options]
     _note(change, line, found)
 

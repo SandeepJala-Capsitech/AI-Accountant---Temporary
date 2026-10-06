@@ -244,3 +244,12 @@ def test_a_link_to_documents_on_different_accounts_is_refused():
                                           bank("500.00", "2026-10-05", "M BARNES", link=["claim", "plumber"]))
     assert line.pays == [] and codes(line) == [("mixed_link", "error")]
     assert (open_claim.owed, open_bill.owed) == (Decimal("300.00"), Decimal("200.00"))
+
+
+def test_a_payment_dated_before_its_bill_is_suggested_not_ignored():
+    # A card payment the day before the invoice was neither matched nor flagged, so the rent was counted twice.
+    open_bill, line = matched(bill(date="2026-10-02"), bank(date="2026-10-01"))
+    assert codes(line) == [("possible_payment", "warning")] and line.pays == []
+    assert [[c.ref for c in o] for o in line.candidates] == [["bill-oct"]]
+    assert "the payment is dated before the document" in line.issues[0].message
+    assert open_bill.owed == Decimal("12000.00")
