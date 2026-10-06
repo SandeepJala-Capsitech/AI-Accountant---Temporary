@@ -39,6 +39,15 @@ class BusinessSettings(BaseModel):
     bank_account: str = BANK
 
 
+class Settlement(BaseModel):
+    """A payment applied to a document. On a bank line: a document it pays. On a document's rows: a bank
+    line that paid it. In a bank line's candidates: a document it could pay, with what is open on it."""
+    ref: str
+    amount: Decimal
+    date: Optional[dt.date] = None
+    description: str = ""
+
+
 class Transaction(BaseModel):
     date: Optional[dt.date] = None
     description: str = ""
@@ -64,6 +73,14 @@ class Transaction(BaseModel):
     counterparty: Optional[str] = None
     document_ref: Optional[str] = None
     include: bool = False
+    link: Optional[list[str]] = None               # a person's decision on a bank line: None automatic,
+                                                   # [] not a payment of any document, refs: pays these
+    # Outputs, recomputed by matching.match on every pass:
+    paid_against: Optional[str] = None             # a bank line that pays documents: the account it settles
+    pays: list[Settlement] = Field(default_factory=list)              # a bank line: the documents it pays
+    candidates: list[list[Settlement]] = Field(default_factory=list)  # a bank line: what it could pay (Link)
+    owed: Optional[Decimal] = None                 # a document's row: what is still open on the document
+    paid_by: list[Settlement] = Field(default_factory=list)           # a document's row: what paid it
     issues: list[Issue] = Field(default_factory=list)
 
     @field_validator("gross", mode="before")
@@ -74,7 +91,7 @@ class Transaction(BaseModel):
             raise ValueError("gross must be a positive amount; direction says whether money went in or out")
         return money
 
-    @field_validator("vat", "vat_posted", "net", mode="before")
+    @field_validator("vat", "vat_posted", "net", "owed", mode="before")
     @classmethod
     def _pennies(cls, value):
         if value is None:
@@ -94,6 +111,12 @@ class Transaction(BaseModel):
     @property
     def account_name(self) -> Optional[str]:
         account = BY_CODE.get(self.account_code)
+        return account.name if account else None
+
+    @computed_field
+    @property
+    def paid_against_name(self) -> Optional[str]:
+        account = BY_CODE.get(self.paid_against or "")
         return account.name if account else None
 
 
