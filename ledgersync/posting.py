@@ -6,7 +6,7 @@ from collections import defaultdict
 from decimal import Decimal
 
 from .accounts import BY_CODE, PURCHASE_VAT, SALES_VAT, AccountType
-from .checks import normalise
+from .checks import booked, normalise
 from .errors import InvalidTransactions
 from .models import BusinessSettings, Direction, JournalLine, Transaction, TrialBalance, TrialBalanceLine
 from .money import ZERO
@@ -30,12 +30,13 @@ def journal_for(tx: Transaction, index: int) -> list[JournalLine]:
 
 def trial_balance(transactions: list[Transaction], settings: BusinessSettings) -> TrialBalance:
     ready = [normalise(tx, settings) for tx in transactions]
-    problems = [f"#{n + 1}: {issue.message}" for n, tx in enumerate(ready)
+    posted = [(n, tx) for n, tx in enumerate(ready) if booked(tx)]   # a quote or the like waits for Include
+    problems = [f"#{n + 1}: {issue.message}" for n, tx in posted
                 for issue in tx.issues if issue.severity == "error"]
     if problems:
         raise InvalidTransactions(f"{len(problems)} problem(s) must be fixed before the trial balance: "
                                   + " ".join(problems[:5]))
-    journal = [line for n, tx in enumerate(ready) for line in journal_for(tx, n)]
+    journal = [line for n, tx in posted for line in journal_for(tx, n)]
     balances: dict[str, Decimal] = defaultdict(lambda: ZERO)
     for line in journal:
         balances[line.code] += line.debit - line.credit

@@ -5,17 +5,43 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Optional
 
-from .accounts import BY_CODE, AccountType
-from .models import BusinessSettings, Direction, Issue, Transaction
+from .accounts import BY_CODE, CREDITORS, DEBTORS, STAFF_EXPENSES, AccountType
+from .models import NOT_TRANSACTIONS, BusinessSettings, Direction, Issue, Transaction
 from .money import PENNY, ZERO, VatTreatment, vat_in_gross
 
 _NO_VAT = {AccountType.LIABILITY, AccountType.EQUITY}
 _DERIVED = {"unknown_account", "same_account", "non_gbp_currency", "vat_not_applicable", "vat_estimated",
-            "vat_arithmetic", "vat_rate_mismatch", "date_missing", "date_out_of_period", "unusual_direction"}
+            "vat_arithmetic", "vat_rate_mismatch", "date_missing", "date_out_of_period", "unusual_direction",
+            "not_booked"}
 
 
 def issue(code: str, message: str, severity: str = "warning") -> Issue:
     return Issue(code=code, message=message, severity=severity)
+
+
+_NOT_TRANSACTION_NAMES = {
+    "quote": "a quote", "pro_forma": "a pro forma invoice", "purchase_order": "a purchase order",
+    "remittance_advice": "a remittance advice", "supplier_statement": "a supplier's statement of account",
+    "other": "a document that is not a transaction",
+}
+
+
+def booked(tx: Transaction) -> bool:
+    """A quote, a pro forma or another document that is not a transaction is booked only when a person
+    ticks Include."""
+    return tx.document_type not in NOT_TRANSACTIONS or tx.include
+
+
+def other_side(tx: Transaction, settings: BusinessSettings) -> str:
+    """The other side of a posting. A receipt or a bank line moved money through the bank. An invoice,
+    a claim or an included document is owed until a bank line pays it: a sale to the customer's account
+    (Debtors), anything else to the supplier's (Creditors), and a claim to the employee."""
+    if tx.document_type == "expense_claim":
+        return STAFF_EXPENSES
+    if tx.document_type == "invoice" or tx.document_type in NOT_TRANSACTIONS:
+        account = BY_CODE.get(tx.account_code)
+        return DEBTORS if account is not None and account.type == AccountType.INCOME else CREDITORS
+    return settings.bank_account
 
 
 def _most_vat(gross: Decimal) -> Decimal:
@@ -28,7 +54,10 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
     kept = [i for i in tx.issues if i.code not in _DERIVED]   # re-validating must not duplicate
     issues: list[Issue] = []
     account = BY_CODE.get(tx.account_code)
-    contra = tx.contra_account_code or settings.bank_account
+    # The bank and the accounts for what is owed are worked out afresh on every pass, so a row whose
+    # account or document type changes moves with it; any other account sent in (petty cash, say) is kept.
+    worked_out = {None, settings.bank_account, DEBTORS, CREDITORS, STAFF_EXPENSES}
+    contra = other_side(tx, settings) if tx.contra_account_code in worked_out else tx.contra_account_code
     if account is None:
         issues.append(issue("unknown_account", f"Account {tx.account_code} is not in the chart of accounts.", "error"))
     if contra not in BY_CODE:
@@ -75,6 +104,9 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
     if account is not None and tx.direction == Direction.OUT and account.type == AccountType.INCOME:
         issues.append(issue("unusual_direction", f"Money out on {account.name} is usually a customer refund; "
                                                   "check it.", "info"))
+    if not booked(tx):
+        issues.append(issue("not_booked", f"Looks like {_NOT_TRANSACTION_NAMES[tx.document_type]}: not booked. "
+                                          "Tick Include to book it as an invoice.", "info"))
     net = tx.gross - posted if posted is not None else None
     return tx.model_copy(update={"vat_posted": posted, "net": net, "contra_account_code": contra,
                                  "issues": kept + issues})

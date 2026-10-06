@@ -83,3 +83,25 @@ def test_trial_balance_always_balances_for_random_ledgers():
     for n in range(len(ledger)):
         mine = [l for l in tb.journal if l.transaction == n]
         assert sum(l.debit for l in mine) == sum(l.credit for l in mine)
+
+
+def test_a_bill_received_is_owed_to_the_supplier_not_paid_from_the_bank():
+    rent = tx("out", "12000.00", "7100", vat="2000.00", document_type="invoice")
+    assert lines(rent) == [("7100", "10000.00", "0.00"), ("2201", "2000.00", "0.00"), ("2100", "0.00", "12000.00")]
+
+
+def test_a_claim_is_owed_to_the_employee():
+    assert lines(tx("out", "173.75", "7402", vat="28.96", document_type="expense_claim")) == [
+        ("7402", "144.79", "0.00"), ("2201", "28.96", "0.00"), ("2110", "0.00", "173.75")]
+
+
+def test_documents_that_are_not_transactions_stay_out_until_included():
+    assert trial_balance([tx("out", "360.00", "0030", vat="60.00", document_type="pro_forma")], REGISTERED).lines == []
+    included = trial_balance([tx("out", "360.00", "0030", vat="60.00", document_type="pro_forma", include=True)],
+                             REGISTERED)
+    assert [(l.code, str(l.debit), str(l.credit)) for l in included.lines] == [
+        ("0030", "300.00", "0.00"), ("2100", "0.00", "360.00"), ("2201", "60.00", "0.00")]
+
+
+def test_errors_on_a_row_that_is_not_booked_do_not_block_the_trial_balance():
+    assert trial_balance([tx("out", "10.00", "9999", document_type="quote")], REGISTERED).lines == []

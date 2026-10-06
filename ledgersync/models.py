@@ -4,7 +4,7 @@ from __future__ import annotations
 import datetime as dt
 from decimal import Decimal
 from enum import Enum
-from typing import Literal, Optional
+from typing import Literal, Optional, get_args
 
 from pydantic import BaseModel, Field, computed_field, field_validator
 
@@ -15,6 +15,14 @@ from .money import VatTreatment, to_money
 class Direction(str, Enum):
     IN = "in"      # money into the bank
     OUT = "out"    # money out of the bank
+
+
+# The kind of document a row comes from. The last six are not transactions: a person ticks Include to
+# book one as an invoice. "other" is what the adapter makes of a type it does not know.
+DocumentType = Literal["receipt", "invoice", "expense_claim", "statement", "quote", "pro_forma",
+                       "purchase_order", "remittance_advice", "supplier_statement", "other"]
+DOCUMENT_TYPES: tuple[str, ...] = get_args(DocumentType)
+NOT_TRANSACTIONS = frozenset(DOCUMENT_TYPES[4:])
 
 
 class Issue(BaseModel):
@@ -49,6 +57,13 @@ class Transaction(BaseModel):
     source: str = "text"
     method: Literal["parsed", "llm", "vlm", "user"] = "llm"
     evidence: Optional[str] = None
+    # Inputs too: what the row comes from and who it is with (from the model), the reference shared by
+    # the rows of one document (from the adapter), and a person's Include tick on a document that is
+    # not a transaction. Rows without a type, as older clients send them, are receipts: paid when issued.
+    document_type: DocumentType = "receipt"
+    counterparty: Optional[str] = None
+    document_ref: Optional[str] = None
+    include: bool = False
     issues: list[Issue] = Field(default_factory=list)
 
     @field_validator("gross", mode="before")

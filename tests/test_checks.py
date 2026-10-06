@@ -154,3 +154,39 @@ def test_normalising_twice_changes_nothing():
         settings = NOT_REGISTERED if n % 5 == 0 else REGISTERED
         once = normalise(tx(rng.choice(["in", "out"]), gross, rng.choice(accounts), **shown), settings)
         assert normalise(revalidated(once), settings) == once, once
+
+
+# ─── The other side, by document type ─────────────────────────────────────────
+
+@pytest.mark.parametrize("document_type, direction, account, other_side", [
+    ("receipt", "out", "7502", "1200"),
+    ("statement", "out", "7100", "1200"),
+    ("invoice", "out", "7100", "2100"),        # a bill received: owed to the supplier
+    ("invoice", "in", "7100", "2100"),         # a supplier's credit note: the supplier owes us
+    ("invoice", "in", "4000", "1100"),         # a sales invoice: owed by the customer
+    ("invoice", "out", "4000", "1100"),        # a credit note to a customer: we owe them
+    ("expense_claim", "out", "7402", "2110"),  # owed to the employee until reimbursed
+])
+def test_the_other_side_follows_the_document_type(document_type, direction, account, other_side):
+    t = normalise(tx(direction, account=account, document_type=document_type), REGISTERED)
+    assert t.contra_account_code == other_side
+
+
+def test_rows_without_a_document_type_are_booked_as_paid_from_the_bank():
+    # Older API clients send no document_type: their postings must not change.
+    t = normalise(Transaction(direction="out", gross="72.00", account_code="7502", description="BT"), REGISTERED)
+    assert (t.document_type, t.contra_account_code) == ("receipt", "1200")
+
+
+def test_a_document_that_is_not_a_transaction_is_flagged_not_booked():
+    assert ("not_booked", "info") in codes(normalise(tx(document_type="pro_forma"), REGISTERED))
+    assert ("not_booked", "info") not in codes(normalise(tx(document_type="pro_forma", include=True), REGISTERED))
+
+
+def test_the_worked_out_side_follows_an_edit():
+    bill = normalise(tx(account="7100", document_type="invoice"), REGISTERED)
+    assert normalise(revalidated(bill, account_code="4000"), REGISTERED).contra_account_code == "1100"
+
+
+def test_an_other_side_sent_by_a_client_is_kept():
+    assert normalise(tx(contra_account_code="1230"), REGISTERED).contra_account_code == "1230"
