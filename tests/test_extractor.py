@@ -159,3 +159,33 @@ def test_rows_carry_the_document_type_and_counterparty():
 def test_a_row_without_a_document_type_is_a_receipt():
     result, _ = extract(transactions_json(ROW))
     assert (result.data[0].document_type, result.data[0].counterparty) == ("receipt", None)
+
+
+def test_the_prompt_names_a_limited_company_and_offers_its_directors_loan_account():
+    client = FakeModel([transactions_json(ROW)])
+    TransactionExtractor(client, business_name="Business Cube Ltd",
+                         business_type="limited_company").extract_accounting_data("x")
+    system = client.calls[0]["messages"][0]["content"]
+    assert "You keep the books of Business Cube Ltd, a UK limited company." in system
+    assert "2250 Director's Loan Account:" in system and "3260 Drawings:" not in system
+
+
+def test_a_sole_trader_is_offered_drawings_and_no_directors_loan():
+    client = FakeModel([transactions_json(ROW)])
+    TransactionExtractor(client, business_name="Jo Bloggs", business_type="sole_trader").extract_accounting_data("x")
+    system = client.calls[0]["messages"][0]["content"]
+    assert "You keep the books of Jo Bloggs, a UK sole trader." in system
+    assert "3260 Drawings:" in system and "2250 Director's Loan Account:" not in system
+
+
+def test_the_schema_accepts_any_account_a_business_could_use():
+    account = ExtractedTransactions.model_json_schema()["$defs"]["AccountingTransaction"]["properties"]["account"]
+    assert {"2250 Director's Loan Account", "3260 Drawings", "0055 Vans"} <= set(account["enum"])
+
+
+def test_statement_rows_carry_their_printed_balances():
+    row = dict(ROW, balance=1240.5, opening_balance=1500.0, closing_balance=-20.0)
+    result, client = extract(transactions_json(row))
+    assert (result.data[0].balance, result.data[0].opening_balance, result.data[0].closing_balance) == (
+        1240.5, 1500.0, -20.0)
+    assert "opening_balance and closing_balance on every row" in client.calls[0]["messages"][0]["content"]

@@ -160,3 +160,13 @@ def test_a_claims_lines_share_one_reference_whatever_their_dates():
     lines = adapt(dict(ROW, **claim, amount=18.0, date="2026-09-12"),
                   dict(ROW, **claim, amount=32.0, date="2026-09-14"))
     assert lines[0].document_ref is not None and lines[0].document_ref == lines[1].document_ref
+
+
+def test_a_bank_line_keeps_the_balances_its_statement_prints():
+    [t] = adapt(dict(ROW, document_type="statement", balance=1240.5, opening_balance=1500, closing_balance=-20))
+    assert (t.balance, t.opening_balance, t.closing_balance) == (Decimal("1240.50"), Decimal("1500.00"), Decimal("-20.00"))
+
+
+def test_balances_on_any_other_row_are_dropped():
+    [t] = adapt(dict(ROW, document_type="receipt", balance=10, opening_balance=5, closing_balance=1))
+    assert (t.balance, t.opening_balance, t.closing_balance) == (None, None, None)

@@ -100,12 +100,16 @@ def to_transactions(rows: list[dict], source: str, settings: BusinessSettings) -
             issues.append(issue("account_not_recognised",
                                 "The model was not sure which account this is; it went to Suspense for review."))
         vat = to_money(row.get("vat"))
+        statement = _document_type(row) == "statement"
         tx = Transaction(date=parse_date(row.get("date")), description=str(row.get("description") or ""),
                          direction=Direction.IN if said_in and amount > 0 else Direction.OUT,
                          gross=abs(amount), vat=abs(vat) if vat is not None else None,   # sign: direction
                          account_code=code, currency=row.get("currency"), source=source,
                          method="llm", issues=issues, document_type=_document_type(row),
                          counterparty=str(row.get("counterparty") or "").strip() or None,
-                         document_ref=refs[key] if key else uuid.uuid4().hex[:12])
+                         document_ref=refs[key] if key else uuid.uuid4().hex[:12],
+                         balance=to_money(row.get("balance")) if statement else None,
+                         opening_balance=to_money(row.get("opening_balance")) if statement else None,
+                         closing_balance=to_money(row.get("closing_balance")) if statement else None)
         result.append(normalise(tx, settings))
     return result

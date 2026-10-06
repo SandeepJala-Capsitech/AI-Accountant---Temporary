@@ -81,6 +81,11 @@ class Transaction(BaseModel):
     include: bool = False
     link: Optional[list[str]] = None               # a person's decision on a bank line: None automatic,
                                                    # [] not a payment of any document, refs: pays these
+    # Inputs too, on a bank statement row: the running balance printed on its line and the statement's
+    # opening and closing balances, which statements.check_statement compares with the rows.
+    balance: Optional[Decimal] = None
+    opening_balance: Optional[Decimal] = None
+    closing_balance: Optional[Decimal] = None
     # Outputs, recomputed by matching.match on every pass:
     paid_against: Optional[str] = None             # a bank line that pays documents: the account it settles
     pays: list[Settlement] = Field(default_factory=list)              # a bank line: the documents it pays
@@ -97,7 +102,7 @@ class Transaction(BaseModel):
             raise ValueError("gross must be a positive amount; direction says whether money went in or out")
         return money
 
-    @field_validator("vat", "vat_posted", "net", "owed", mode="before")
+    @field_validator("vat", "vat_posted", "net", "owed", "balance", "opening_balance", "closing_balance", mode="before")
     @classmethod
     def _pennies(cls, value):
         if value is None:
