@@ -1,4 +1,5 @@
 """FastAPI entry point: a thin HTTP layer over the ledgersync package."""
+import hashlib
 import logging
 import threading
 from contextlib import asynccontextmanager
@@ -80,25 +81,46 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
 
     # ─── Step 2 — Analyze (background job) ─────────────────────────────────────
 
-    def run_analysis(item, ctx) -> dict:
-        extraction = pipeline.analyze(item, extractor, ctx)
-        transactions = adapter.to_transactions([row.model_dump() for row in extraction.data],
-                                               source=item.kind, settings=BusinessSettings(business_name=settings.business_name))
-        return AnalysisResult(transactions=transactions, warnings=extraction.warnings,
-                              model=extraction.model).model_dump(mode="json")
+    def run_analysis(item, ctx, client: Optional[Client] = None, name: str = "Pasted text", sha256: str = "") -> dict:
+        """Reads one input. For a client: the model is told its name and kind of business, the rows are booked
+        with its settings, and they are saved to it as an upload when any were found (not after a cancel)."""
+        if client is None:
+            reader, rules = extractor, BusinessSettings(business_name=settings.business_name)
+        else:
+            rules = books.settings_for(client)
+            reader = TransactionExtractor(model_client, business_name=client.name, business_type=client.business_type)
+        extraction = pipeline.analyze(item, reader, ctx)
+        transactions = adapter.to_transactions([row.model_dump() for row in extraction.data], source=item.kind,
+                                               settings=rules)
+        result = AnalysisResult(transactions=transactions, warnings=extraction.warnings,
+                                model=extraction.model).model_dump(mode="json")
+        if client is not None and transactions:
+            ctx.check_cancelled()
+            result["client_id"] = client.id
+            result["upload_id"] = store.add_upload(client.id, name, item.kind, transactions, sha256=sha256,
+                                                   model=extraction.model or "", warnings=extraction.warnings)
+        return result
 
     @app.post("/api/analyze", status_code=202)
-    def analyze_transaction(text: Optional[str] = Form(None), file: Optional[UploadFile] = File(None)):
-        """Validates the input now (413/415/422), then analyses it in a background job."""
+    def analyze_transaction(text: Optional[str] = Form(None), file: Optional[UploadFile] = File(None),
+                            client_id: Optional[int] = Form(None)):
+        """Validates the input now (404/409/413/415/422), then analyses it in a background job; with a
+        client_id, the job saves the rows it finds to that client."""
+        client = None
+        if client_id is not None:
+            client = store.get_client(client_id)
+            books.require_active(client)
+        name, sha256 = "Pasted text", ""
         if file is not None and file.filename:
             data = intake.read_limited(file.file, settings.max_upload_bytes)
             item = intake.load_upload(file.filename, data, settings.max_pdf_pages)
+            name, sha256 = file.filename, hashlib.sha256(data).hexdigest()
         elif text is not None:
             item = intake.from_text(text, settings.max_upload_bytes)
         else:
             raise UnreadableFile("Provide text or a file to analyse.")
         model_client.ensure_available()   # fail fast with 503 instead of queueing doomed work
-        job = jobs.submit(lambda ctx: run_analysis(item, ctx))
+        job = jobs.submit(lambda ctx: run_analysis(item, ctx, client, name, sha256))
         return {"job_id": job.id, "status": job.status}
 
     @app.get("/api/jobs/{job_id}")

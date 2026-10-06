@@ -1,8 +1,13 @@
+import hashlib
+import threading
+import time
+
 import pytest
-from fakes import FakeModel
+from fakes import ROW, FakeModel, transactions_json
 from fastapi.testclient import TestClient
 
 from ledgersync.config import Settings
+from ledgersync.errors import ModelError
 from ledgersync.store import Store
 from server import create_app
 
@@ -140,3 +145,98 @@ def test_the_browser_may_send_patch(api):
     preflight = api().options("/api/clients/1", headers={"Origin": "http://localhost:3000",
                                                           "Access-Control-Request-Method": "PATCH"})
     assert "PATCH" in preflight.headers.get("access-control-allow-methods", "")
+
+
+class GatedModel(FakeModel):
+    """Answers only once the test opens the gate, so the test can act while the job is running."""
+
+    def __init__(self, replies, gate):
+        super().__init__(replies)
+        self.gate = gate
+
+    def chat_json(self, messages, schema, images=None):
+        self.gate.wait(5)
+        return super().chat_json(messages, schema, images)
+
+
+def finish(client, job_id, timeout=5):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        job = client.get(f"/api/jobs/{job_id}").json()
+        if job["status"] in ("succeeded", "failed", "cancelled"):
+            return job
+        time.sleep(0.02)
+    raise AssertionError("job did not finish in time")
+
+
+def test_analysing_for_a_client_saves_the_rows_as_an_upload(api):
+    model = FakeModel([transactions_json(ROW)])
+    client = api(model)
+    cid = add(client)["id"]
+    data = b"Date,Description,Amount\n01/09/2026,BT Business Broadband,-72.00\n"
+    resp = client.post("/api/analyze", data={"client_id": str(cid)},
+                       files={"file": ("Barclays Sept.csv", data, "text/csv")})
+    job = finish(client, resp.json()["job_id"])
+    assert (job["status"], job["result"]["client_id"]) == ("succeeded", cid)
+    [upload] = client.get(f"/api/clients/{cid}/ledger").json()["uploads"]
+    assert (upload["id"], upload["name"], upload["kind"], upload["rows"]) == (
+        job["result"]["upload_id"], "Barclays Sept.csv", "table", 1)
+    assert upload["sha256"] == hashlib.sha256(data).hexdigest()
+    assert "You keep the books of Business Cube Ltd, a UK limited company." in model.calls[0]["messages"][0]["content"]
+
+
+def test_pasted_text_is_saved_and_the_clients_vat_setting_applies(api):
+    client = api(FakeModel([transactions_json(dict(ROW, vat=12.0))]))
+    cid = add(client, vat_registered=False)["id"]
+    finish(client, client.post("/api/analyze", data={"text": "BT 72.00", "client_id": str(cid)}).json()["job_id"])
+    ledger = client.get(f"/api/clients/{cid}/ledger").json()
+    assert (ledger["uploads"][0]["name"], ledger["transactions"][0]["vat_posted"]) == ("Pasted text", "0.00")
+
+
+@pytest.mark.parametrize("reply", [transactions_json(), ModelError("The AI model's answer was not valid JSON.")])
+def test_nothing_is_saved_when_a_job_finds_no_rows_or_fails(api, reply):
+    client = api(FakeModel([reply]))
+    cid = add(client)["id"]
+    finish(client, client.post("/api/analyze", data={"text": "x", "client_id": str(cid)}).json()["job_id"])
+    assert client.get(f"/api/clients/{cid}/ledger").json()["uploads"] == []
+
+
+def test_an_unknown_or_archived_client_is_refused_before_anything_is_queued(api):
+    model = FakeModel([transactions_json(ROW)])
+    client = api(model)
+    assert client.post("/api/analyze", data={"text": "x", "client_id": "99"}).status_code == 404
+    cid = add(client)["id"]
+    client.patch(f"/api/clients/{cid}", json={"archived": True})
+    archived = client.post("/api/analyze", data={"text": "x", "client_id": str(cid)})
+    assert (archived.status_code, archived.json()["detail"]["code"]) == (409, "client_archived")
+    assert model.calls == []
+
+
+def test_a_job_that_finishes_after_its_client_was_archived_is_still_saved(api):
+    # Review focus: archiving stops new work, not work already running.
+    gate = threading.Event()
+    client = api(GatedModel([transactions_json(ROW)], gate))
+    cid = add(client)["id"]
+    job_id = client.post("/api/analyze", data={"text": "x", "client_id": str(cid)}).json()["job_id"]
+    client.patch(f"/api/clients/{cid}", json={"archived": True})
+    gate.set()
+    assert finish(client, job_id)["status"] == "succeeded"
+    assert len(client.get(f"/api/clients/{cid}/ledger").json()["transactions"]) == 1
+
+
+def test_a_cancelled_job_saves_nothing(api):
+    gate = threading.Event()
+    client = api(GatedModel([transactions_json(ROW)], gate))
+    cid = add(client)["id"]
+    job_id = client.post("/api/analyze", data={"text": "x", "client_id": str(cid)}).json()["job_id"]
+    client.delete(f"/api/jobs/{job_id}")
+    gate.set()
+    assert finish(client, job_id)["status"] == "cancelled"
+    assert client.get(f"/api/clients/{cid}/ledger").json()["uploads"] == []
+
+
+def test_analysing_without_a_client_saves_nothing(api):
+    client = api(FakeModel([transactions_json(ROW)]))
+    cid = add(client)["id"]
+    job = finish(client, client.post("/api/analyze", data={"text": "x"}).json()["job_id"])
+    assert "upload_id" not in job["result"] and client.get(f"/api/clients/{cid}/ledger").json()["uploads"] == []
