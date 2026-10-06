@@ -1,0 +1,142 @@
+import pytest
+from fakes import FakeModel
+from fastapi.testclient import TestClient
+
+from ledgersync.config import Settings
+from ledgersync.store import Store
+from server import create_app
+
+CUBE = {"name": "Business Cube Ltd", "business_type": "limited_company", "contact_name": "Jenny Clarke",
+        "contact_email": "jenny@businesscube.co.uk"}
+BILL = {"direction": "out", "gross": "72.00", "account_code": "7502", "date": "2026-09-01", "description": "BT",
+        "document_type": "invoice", "counterparty": "BT Business", "document_ref": "bt"}
+LINE = {**BILL, "date": "2026-09-05", "document_type": "statement", "counterparty": "BT BUSINESS DD",
+        "document_ref": "l1"}
+
+
+@pytest.fixture
+def api(tmp_path):
+    opened = []
+
+    def _make(model=None):
+        app = create_app(Settings(warmup=False), model_client=model or FakeModel([]),
+                         store=Store(tmp_path / "ledgersync.db"))
+        client = TestClient(app)
+        client.__enter__()
+        opened.append(client)
+        return client
+
+    yield _make
+    for client in opened:
+        client.__exit__(None, None, None)
+
+
+def add(client, **changes):
+    resp = client.post("/api/clients", json={**CUBE, **changes})
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+def manual(client, client_id, *rows):
+    resp = client.post(f"/api/clients/{client_id}/uploads", json={"transactions": list(rows)})
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+def test_a_client_is_added_listed_and_read(api):
+    client = api()
+    added = add(client)
+    assert (added["name"], added["archived"], added["vat_registered"]) == ("Business Cube Ltd", False, True)
+    [summary] = client.get("/api/clients").json()
+    assert (summary["id"], summary["rows"], summary["to_review"]) == (added["id"], 0, 0)
+    assert client.get(f"/api/clients/{added['id']}").json() == added
+
+
+def test_archiving_hides_a_client_until_it_is_restored(api):
+    client = api()
+    added = add(client)
+    assert client.patch(f"/api/clients/{added['id']}", json={"archived": True}).json()["archived"] is True
+    assert client.get("/api/clients").json() == []
+    assert [c["id"] for c in client.get("/api/clients?archived=true").json()] == [added["id"]]
+    refused = client.patch(f"/api/clients/{added['id']}", json={"name": "Renamed"})
+    assert (refused.status_code, refused.json()["detail"]["code"]) == (409, "client_archived")
+    assert client.patch(f"/api/clients/{added['id']}", json={"archived": False}).json()["archived"] is False
+
+
+@pytest.mark.parametrize("changes, message", [({"name": " "}, "Enter the company name."),
+                                              ({"contact_name": ""}, "Enter the responsible person."),
+                                              ({"contact_email": "jenny"}, "Enter a valid email.")])
+def test_a_client_needs_its_details(api, changes, message):
+    resp = api().post("/api/clients", json={**CUBE, **changes})
+    assert (resp.status_code, resp.json()["detail"]) == (422, {"code": "invalid_input", "message": message})
+
+
+def test_an_unknown_business_type_or_client_is_refused(api):
+    client = api()
+    assert client.post("/api/clients", json={**CUBE, "business_type": "charity"}).status_code == 422
+    missing = client.get("/api/clients/99/ledger")
+    assert (missing.status_code, missing.json()["detail"]["code"]) == (404, "not_found")
+
+
+def test_the_ledger_pairs_a_bill_and_its_payment_saved_in_two_uploads(api):
+    client = api()
+    cid = add(client)["id"]
+    manual(client, cid, BILL)
+    ledger = manual(client, cid, LINE)
+    bill, line = ledger["transactions"]
+    assert ([s["ref"] for s in line["pays"]], bill["owed"]) == (["bt"], "0.00")
+    assert [u["name"] for u in ledger["uploads"]] == ["Manual entry", "Manual entry"]
+    assert (line["edited"], line["original"]) == (False, None)
+
+
+def test_links_and_edits_rematch_the_ledger_and_revert_undoes_an_edit(api):
+    client = api()
+    cid = add(client)["id"]
+    manual(client, cid, BILL, LINE)
+    bill_id, line_id = (r["id"] for r in client.get(f"/api/clients/{cid}/ledger").json()["transactions"])
+    unlinked = client.patch(f"/api/clients/{cid}/rows/{line_id}", json={"link": []}).json()["transactions"]
+    assert (unlinked[0]["owed"], unlinked[1]["pays"]) == ("72.00", [])
+    [edited, _] = client.patch(f"/api/clients/{cid}/rows/{bill_id}", json={"gross": "70.00"}).json()["transactions"]
+    assert (edited["gross"], edited["edited"], edited["original"]["gross"]) == ("70.00", True, "72.00")
+    bad = client.patch(f"/api/clients/{cid}/rows/{bill_id}", json={"link": []})
+    assert (bad.status_code, bad.json()["detail"]["message"]) == (422, "Only a bank line can be linked to documents.")
+    [back, _] = client.patch(f"/api/clients/{cid}/rows/{bill_id}", json={"revert": True}).json()["transactions"]
+    assert (back["gross"], back["edited"]) == ("72.00", False)
+
+
+def test_removing_an_upload_leaves_a_stale_link(api):
+    client = api()
+    cid = add(client)["id"]
+    bill_upload = manual(client, cid, BILL)["uploads"][0]["id"]
+    manual(client, cid, {**LINE, "link": ["bt"]})
+    [line] = client.delete(f"/api/clients/{cid}/uploads/{bill_upload}").json()["transactions"]
+    assert "stale_link" in [i["code"] for i in line["issues"]]
+
+
+def test_an_archived_client_takes_no_new_rows(api):
+    client = api()
+    cid = add(client)["id"]
+    client.patch(f"/api/clients/{cid}", json={"archived": True})
+    resp = client.post(f"/api/clients/{cid}/uploads", json={"transactions": [BILL]})
+    assert (resp.status_code, resp.json()["detail"]["code"]) == (409, "client_archived")
+
+
+def test_a_clients_trial_balance_uses_its_vat_setting(api):
+    client = api()
+    cid = add(client, vat_registered=False)["id"]
+    manual(client, cid, {**BILL, "document_type": "receipt", "vat": "12.00"})
+    lines = client.get(f"/api/clients/{cid}/trial-balance").json()["lines"]
+    assert [(l["code"], l["debit"], l["credit"]) for l in lines] == [("1200", "0.00", "72.00"), ("7502", "72.00", "0.00")]
+
+
+def test_accounts_can_be_listed_for_a_kind_of_business(api):
+    client = api()
+    company = {a["code"] for a in client.get("/api/accounts?business_type=limited_company").json()}
+    assert "2250" in company and "3260" not in company and "1200" not in company
+    assert "1200" in {a["code"] for a in client.get("/api/accounts").json()}   # the whole chart, as before
+
+
+def test_the_browser_may_send_patch(api):
+    preflight = api().options("/api/clients/1", headers={"Origin": "http://localhost:3000",
+                                                          "Access-Control-Request-Method": "PATCH"})
+    assert "PATCH" in preflight.headers.get("access-control-allow-methods", "")

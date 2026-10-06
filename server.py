@@ -9,6 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from ledgersync import accounts, adapter, intake, pipeline, posting
+from ledgersync import ledger as books
+from ledgersync.accounts import choosable
 from ledgersync.checks import normalise
 from ledgersync.config import Settings
 from ledgersync.errors import LedgerSyncError, UnreadableFile
@@ -16,7 +18,10 @@ from ledgersync.extractor import TransactionExtractor
 from ledgersync.groq_client import GroqClient
 from ledgersync.jobs import JobStore
 from ledgersync.matching import match
-from ledgersync.models import AnalysisResult, BusinessSettings, LedgerRequest, TransactionList, TrialBalance
+from ledgersync.models import (AnalysisResult, BusinessSettings, BusinessType, Client, ClientFields, ClientPatch,
+                               ClientSummary, Ledger, LedgerRequest, ManualUpload, RowPatch, TransactionList,
+                               TrialBalance)
+from ledgersync.store import Store
 
 logger = logging.getLogger("ledgersync.server")
 
@@ -29,11 +34,12 @@ def configure_logging(level: str) -> None:
     logging.getLogger("ledgersync").setLevel(level)
 
 
-def create_app(settings: Optional[Settings] = None, *, model_client=None) -> FastAPI:
-    """The API; tests pass a stand-in for the Groq client as model_client."""
+def create_app(settings: Optional[Settings] = None, *, model_client=None, store: Optional[Store] = None) -> FastAPI:
+    """The API; tests pass a stand-in for the Groq client as model_client, and a store in a temporary folder."""
     settings = settings or Settings.from_env()
     configure_logging(settings.log_level)
     model_client = model_client or GroqClient(settings)
+    store = store or Store(settings.db_path)   # opened on first use, not now
     extractor = TransactionExtractor(model_client, business_name=settings.business_name)
     jobs = JobStore(ttl_seconds=settings.job_ttl_seconds, max_workers=settings.max_parallel_jobs)
 
@@ -50,7 +56,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None) -> Fas
         lifespan=lifespan,
     )
     app.add_middleware(CORSMiddleware, allow_origins=list(settings.cors_origins),
-                       allow_methods=["GET", "POST", "DELETE"], allow_headers=["*"])
+                       allow_methods=["GET", "POST", "PATCH", "DELETE"], allow_headers=["*"])
 
     @app.exception_handler(LedgerSyncError)
     async def ledgersync_error(request: Request, exc: LedgerSyncError):
@@ -106,8 +112,10 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None) -> Fas
     # ─── Ledger ─────────────────────────────────────────────────────────────────
 
     @app.get("/api/accounts")
-    def list_accounts():
-        return [{"code": a.code, "name": a.name, "type": a.type.value, "vat": a.vat.value} for a in accounts.CHART]
+    def list_accounts(business_type: Optional[BusinessType] = None):
+        """The chart; with a business type, only the accounts a row of that business can be coded to."""
+        chosen = choosable(business_type) if business_type else accounts.CHART
+        return [{"code": a.code, "name": a.name, "type": a.type.value, "vat": a.vat.value} for a in chosen]
 
     @app.post("/api/transactions/validate", response_model=TransactionList)
     def validate_transactions(request: LedgerRequest):
@@ -120,6 +128,44 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None) -> Fas
     def generate_trial_balance(request: LedgerRequest):
         """Double-entry trial balance; 422 when a transaction cannot be posted."""
         return posting.trial_balance(request.transactions, request.settings)
+
+    # ─── Clients: saved work (design of 2026-10-06) ─────────────────────────────
+
+    @app.get("/api/clients", response_model=list[ClientSummary])
+    def list_clients(archived: bool = False):
+        return books.summaries(store, archived)
+
+    @app.post("/api/clients", response_model=Client, status_code=201)
+    def add_client(fields: ClientFields):
+        return books.add_client(store, fields)
+
+    @app.get("/api/clients/{client_id}", response_model=Client)
+    def get_client(client_id: int):
+        return store.get_client(client_id)
+
+    @app.patch("/api/clients/{client_id}", response_model=Client)
+    def change_client(client_id: int, patch: ClientPatch):
+        return books.change_client(store, client_id, patch)
+
+    @app.get("/api/clients/{client_id}/ledger", response_model=Ledger)
+    def client_ledger(client_id: int):
+        return books.build(store, client_id)
+
+    @app.patch("/api/clients/{client_id}/rows/{row_id}", response_model=Ledger)
+    def change_row(client_id: int, row_id: int, patch: RowPatch):
+        return books.change_row(store, client_id, row_id, patch)
+
+    @app.post("/api/clients/{client_id}/uploads", response_model=Ledger, status_code=201)
+    def add_manual_rows(client_id: int, upload: ManualUpload):
+        return books.add_manual(store, client_id, upload)
+
+    @app.delete("/api/clients/{client_id}/uploads/{upload_id}", response_model=Ledger)
+    def remove_upload(client_id: int, upload_id: int):
+        return books.remove_upload(store, client_id, upload_id)
+
+    @app.get("/api/clients/{client_id}/trial-balance", response_model=TrialBalance)
+    def client_trial_balance(client_id: int):
+        return books.trial_balance(store, client_id)
 
     return app
 
