@@ -19,6 +19,12 @@ def test_names_that_match(a, b):
     ("", "Business Cube"),
     (None, "Business Cube"),
     ("BT", "BT"),                                                   # too short to tell
+    ("BRITISH GAS", "British Airways"),                             # national and place words say nothing
+    ("PRET A MANGER LONDON", "London Borough of Camden"),
+    ("TRANSPORT FOR LONDON", "Fordham Ltd"),                        # "for" is not an abbreviation of Fordham
+    ("DIRECT DEBIT OCTOPUS ENERGY", "Screwfix Direct"),             # bank-line words say nothing either
+    ("DEB 4421 TESCO STORES", "Debenhams"),
+    ("VIS 0193 BOOTS", "Vision Express"),
 ])
 def test_names_that_do_not_match(a, b):
     assert not names_match(a, b)

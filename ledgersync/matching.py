@@ -17,10 +17,13 @@ from .money import ZERO
 WINDOW = dt.timedelta(days=31)   # a payment pays a document dated at most 31 days before it
 MAX_SET = 5                      # one payment clears at most five documents from one counterparty
 
-# Words that say nothing about who a business is: legal forms, bank-statement noise and generic trade words.
-_IGNORED = {"ltd", "limited", "plc", "llp", "co", "the", "and",
-            "bank", "payment", "payments", "fin", "card", "dd", "so", "bacs", "fps", "ref",
-            "services", "solutions", "group", "uk", "online", "international", "holdings", "company", "trading"}
+# Words that say nothing about who a business is: legal forms and small linking words, bank-statement
+# noise (payment types and their short codes), generic trade words, and place and national words.
+_IGNORED = {"ltd", "limited", "plc", "llp", "co", "the", "and", "for", "of", "to", "at", "in", "on",
+            "bank", "payment", "payments", "fin", "card", "dd", "so", "bacs", "fps", "ref", "direct", "debit",
+            "credit", "faster", "standing", "order", "transfer", "tfr", "deb", "vis", "pos", "bgc", "chq", "atm",
+            "int", "services", "solutions", "group", "online", "international", "holdings", "company", "trading",
+            "uk", "gb", "london", "british", "national", "royal", "england", "scotland", "wales"}
 
 
 def _words(name: Optional[str]) -> list[str]:
