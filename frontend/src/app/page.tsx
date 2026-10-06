@@ -7,22 +7,15 @@ import {
   getHealth,
   trialBalance,
   validateTransactions,
-  type Settlement,
   type Transaction,
   type AnalyzeResult,
   type Health,
   type TrialBalanceResult,
 } from '@/lib/api'
 import { DUPLICATE_WINDOW_DAYS, fingerprint, possibleDuplicates } from '@/lib/duplicates'
+import { kindOf, money, rowStatus, totalsOf } from '@/lib/ledger'
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
-
-const fmt = (n: number) =>
-  n === 0
-    ? ''
-    : `£${Math.abs(n).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-
-const money = (value: string | null) => (value == null ? '—' : fmt(Number(value)) || '£0.00')
 
 const issueSummary = (tx: Transaction) => {
   if (!tx.issues.length) return { mark: '✓', cls: 'issue-ok', title: 'No issues' }
@@ -31,27 +24,6 @@ const issueSummary = (tx: Transaction) => {
   return { mark: `${worst === 'issue-error' ? '✖' : '⚠'} ${tx.issues.length}`, cls: worst,
            title: tx.issues.map(i => i.message).join('\n') }
 }
-
-const NOT_TRANSACTIONS: Record<string, string> = {
-  quote: 'a quote', pro_forma: 'a pro forma invoice', purchase_order: 'a purchase order',
-  remittance_advice: 'a remittance advice', supplier_statement: "a supplier's statement of account",
-  other: 'a document that is not a transaction',
-}
-
-// How a row is booked: a document holding what is owed, a bank line, anything else paid when it
-// happened, or not booked at all (a quote or the like, until a person ticks Include).
-const kindOf = (tx: Transaction): 'document' | 'bank' | 'other' | 'not booked' => {
-  const type = tx.document_type ?? 'receipt'
-  if (type in NOT_TRANSACTIONS) return tx.include ? 'document' : 'not booked'
-  if (type === 'invoice' || type === 'expense_claim') return 'document'
-  return type === 'statement' ? 'bank' : 'other'
-}
-
-const shortDate = (iso: string | null) =>
-  iso ? new Date(`${iso}T00:00:00`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : 'no date'
-
-const optionLabel = (option: Settlement[]) =>
-  option.map(s => `${s.description} (${money(s.amount)}, ${shortDate(s.date)})`).join(' + ')
 
 // ─── Several files in one upload ──────────────────────────────────────────────
 
@@ -371,94 +343,13 @@ export default function Home() {
   }))), [rows])
   const duplicateCount = duplicateOf.filter(of => of !== null).length
 
-  // Totals by how rows are booked, in whole pennies so they don't drift: money that moved through the
-  // bank, and documents owed by you or to you. An unpaid bill is not money out, so the two are kept
-  // apart; rows not booked are left out. A row with an error (impossible VAT) has no VAT or net, so its
-  // group's VAT and net totals are unknown.
-  const totals = useMemo(() => {
-    const moved = (row: LedgerRow) => ['bank', 'other'].includes(kindOf(row.tx))
-    const groups = [
-      { key: 'bank-out', label: 'Paid out (bank)', keep: (r: LedgerRow) => moved(r) && r.tx.direction === 'out' },
-      { key: 'bank-in', label: 'Received (bank)', keep: (r: LedgerRow) => moved(r) && r.tx.direction === 'in' },
-      { key: 'owed-by-you', label: 'Owed by you', keep: (r: LedgerRow) => kindOf(r.tx) === 'document' && r.tx.direction === 'out' },
-      { key: 'owed-to-you', label: 'Owed to you', keep: (r: LedgerRow) => kindOf(r.tx) === 'document' && r.tx.direction === 'in' },
-    ]
-    return groups.flatMap(({ key, label, keep }) => {
-      const txs = rows.filter(keep).map(row => row.tx)
-      const sum = (field: 'gross' | 'vat_posted' | 'net') => txs.some(tx => tx[field] == null) ? null
-        : (txs.reduce((pennies, tx) => pennies + Math.round(Number(tx[field]) * 100), 0) / 100).toFixed(2)
-      return txs.length ? [{ key, label, count: txs.length, gross: sum('gross'), vat: sum('vat_posted'), net: sum('net') }] : []
-    })
-  }, [rows])
+  const totals = useMemo(() => totalsOf(rows.map(row => row.tx)), [rows])
 
   const step1Done = rows.length > 0
   const step2Active = analyzing || step1Done
   const showStep2 = analyzing || rows.length > 0 || batch.length > 0 || !!analyzeError
   const canRetry = !analyzing && batch.some(item => item.status === 'failed' || item.status === 'cancelled')
   const step3Active = tbResult !== null || generating
-
-  // What is still owed on a document, or how it was paid.
-  const owedLine = (tx: Transaction) => {
-    if (tx.owed == null) return null
-    const owed = Number(tx.owed)
-    const who = tx.counterparty ?? 'them'
-    const text = !tx.paid_by?.length
-      ? (tx.contra_account_code === '1100' ? `Unpaid, owed by ${who}` : `Unpaid, owed to ${who}`)
-      : owed > 0 ? `Part paid: ${money(tx.owed)} still owed`
-      : owed < 0 ? `Overpaid by ${money(String(-owed))}`
-      : `Paid by bank line on ${shortDate(tx.paid_by[tx.paid_by.length - 1].date)}`
-    return <div className="row-status">{text}</div>
-  }
-
-  // The status under a row's description, with the person's choices: Include, Link, Unlink.
-  const statusLine = (tx: Transaction, index: number) => {
-    const type = tx.document_type ?? 'receipt'
-    if (type in NOT_TRANSACTIONS) {
-      return (
-        <>
-          <label className="row-status">
-            <input type="checkbox" checked={!!tx.include}
-                   onChange={e => includeDocument(tx.document_ref, e.target.checked)} />
-            {tx.include ? 'Included as an invoice'
-              : `Looks like ${NOT_TRANSACTIONS[type]}, not booked. Tick to include it as an invoice`}
-          </label>
-          {tx.include && owedLine(tx)}
-        </>
-      )
-    }
-    if (kindOf(tx) === 'document') return owedLine(tx)
-    if (kindOf(tx) !== 'bank') return null
-    if (tx.pays?.length) {
-      return (
-        <div className="row-status">
-          Pays: {optionLabel(tx.pays)}
-          <button className="link-btn" onClick={() => decide(index, { link: [] })}>Unlink</button>
-        </div>
-      )
-    }
-    if (tx.candidates?.length) {
-      const choosing = tx.issues.some(i => i.code === 'choose_payment')
-      return (
-        <div className="row-status">
-          {choosing ? 'Could pay:' : 'May pay:'}
-          {tx.candidates.map((option, k) => (
-            <button key={k} className="link-btn" onClick={() => decide(index, { link: option.map(s => s.ref) })}>
-              Link {optionLabel(option)}
-            </button>
-          ))}
-        </div>
-      )
-    }
-    if (tx.link && !tx.link.length) {
-      return (
-        <div className="row-status">
-          Not matched to a document
-          <button className="link-btn" onClick={() => decide(index, { link: null })}>Match automatically</button>
-        </div>
-      )
-    }
-    return null
-  }
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -721,7 +612,22 @@ export default function Home() {
                             <td>
                               {tx.description}
                               <div className="row-origin" title={origin}>{origin}</div>
-                              {statusLine(tx, i)}
+                              {rowStatus(tx).map((status, k) => (status.include !== undefined ? (
+                                <label key={k} className="row-status">
+                                  <input type="checkbox" checked={status.include}
+                                         onChange={e => includeDocument(tx.document_ref, e.target.checked)} />
+                                  {status.text}
+                                </label>
+                              ) : (
+                                <div key={k} className="row-status">
+                                  {status.text}
+                                  {status.actions.map((action, j) => (
+                                    <button key={j} className="link-btn" onClick={() => decide(i, { link: action.link })}>
+                                      {action.label}
+                                    </button>
+                                  ))}
+                                </div>
+                              )))}
                             </td>
                             <td>
                               <span className={`badge-type ${tx.direction === 'out' ? 'badge-expense' : 'badge-revenue'}`}>
@@ -746,7 +652,10 @@ export default function Home() {
                         const unknown = t.vat == null ? 'Fix the rows marked ✖ first' : undefined
                         return (
                           <tr key={t.key} className="tb-total-row">
-                            <td colSpan={3}>{t.label} ({t.count} row{t.count === 1 ? '' : 's'})</td>
+                            <td colSpan={3}>
+                              {t.label} ({t.count} row{t.count === 1 ? '' : 's'})
+                              {t.stillOwed != null && ` · ${money(t.stillOwed)} still owed`}
+                            </td>
                             <td className="amount-cell">{money(t.gross)}</td>
                             <td className="amount-cell" title={unknown}>{money(t.vat)}</td>
                             <td className="amount-cell" title={unknown}>{money(t.net)}</td>
