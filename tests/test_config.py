@@ -26,7 +26,7 @@ def test_groq_settings_have_working_defaults():
     s = Settings.from_env({})
     assert (s.groq_base_url, s.groq_model) == ("https://api.groq.com/openai/v1", "qwen/qwen3.8-27b")
     assert (s.groq_timeout, s.groq_max_output_tokens, s.groq_reasoning_effort, s.groq_max_images) == (
-        60.0, 8192, "low", 1)
+        60.0, 8192, "high", 3)
     assert (s.groq_api_key, s.business_name, s.health_ttl) == ("", "", 300.0)
 
 
@@ -57,7 +57,7 @@ def test_a_missing_env_file_gives_no_values(tmp_path):
     assert read_env_file(tmp_path / "absent.env") == {}
 
 
-def test_four_files_are_read_at_once_unless_set_otherwise():
-    assert Settings.from_env({}).max_parallel_jobs == 4
+def test_two_files_are_read_at_once_unless_set_otherwise():
+    assert Settings.from_env({}).max_parallel_jobs == 2
     assert Settings.from_env({"LEDGERSYNC_MAX_PARALLEL_JOBS": "1"}).max_parallel_jobs == 1
     assert Settings.from_env({"LEDGERSYNC_MAX_PARALLEL_JOBS": "0"}).max_parallel_jobs == 1   # never below one

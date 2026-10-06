@@ -40,7 +40,7 @@ cp .env.example .env                      # then paste your key after GROQ_API_K
 ```
 
 Analyses run as background jobs: `POST /api/analyze` returns `{job_id}`, then
-`GET /api/jobs/{job_id}` reports progress and the result; `DELETE` cancels. Up to four jobs run at
+`GET /api/jobs/{job_id}` reports progress and the result; `DELETE` cancels. Up to two jobs run at
 once (`LEDGERSYNC_MAX_PARALLEL_JOBS`), and the UI sends that many files of an upload at a time; on
 Groq's free plan they mostly wait on its per-minute limits, so the gain shows on a paid plan.
 
@@ -84,7 +84,7 @@ design is in `docs/superpowers/specs/2026-10-06-unpaid-documents-and-payment-mat
 ## The AI model (Groq)
 
 Pasted text, spreadsheets and PDFs with a text layer go to the model as text; photos and scanned
-pages go as images (turned upright, at most 1600 px, one page per request). The model answers in a
+pages go as images (turned upright, at most 1600 px, up to three pages per request). The model answers in a
 strict JSON schema: the direction of the money, an account chosen from the chart, and the VAT
 printed on the document. A receipt or invoice gives one transaction per account: one row when its
 items are all of one kind, one row per kind otherwise (e.g. a meal and a taxi fare). It stays one
@@ -113,8 +113,8 @@ Settings come from environment variables or `.env` (environment variables win).
 | `GROQ_BASE_URL` | `https://api.groq.com/openai/v1` | Groq's OpenAI-compatible API |
 | `GROQ_TIMEOUT` | `60` | Seconds to wait for one model call |
 | `GROQ_MAX_OUTPUT_TOKENS` | `8192` | Longest answer; a 60-row statement needs over 4,000 tokens |
-| `GROQ_REASONING_EFFORT` | `low` | The model's "thinking" (`none`, `low`, `high`); `low` keeps it to the receipt rules, `none` is about 10x faster |
-| `GROQ_MAX_IMAGES` | `1` | Scanned pages per request; Groq allows 3, but 3 overflow the free plan's 8K tokens a minute |
+| `GROQ_REASONING_EFFORT` | `high` | The model's "thinking" (`none`, `low`, `high`); thinking keeps it to the receipt rules, `none` is about 10x faster than `low` |
+| `GROQ_MAX_IMAGES` | `3` | Scanned pages per request, Groq's most; on the free plan set `1`, as 3 overflow its 8K tokens a minute |
 | `LEDGERSYNC_BUSINESS_NAME` | — | Whose books these are; tells sales invoices from purchases |
 | `LEDGERSYNC_HOST` / `LEDGERSYNC_PORT` | `127.0.0.1` / `8085` | API bind address |
 | `LEDGERSYNC_RELOAD` | `0` | Auto-reload on code changes (development) |
@@ -122,7 +122,7 @@ Settings come from environment variables or `.env` (environment variables win).
 | `LEDGERSYNC_CORS_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | Allowed browser origins |
 | `LEDGERSYNC_MAX_UPLOAD_MB` | `20` | Largest accepted upload |
 | `LEDGERSYNC_MAX_PDF_PAGES` | `30` | Most pages accepted in one PDF |
-| `LEDGERSYNC_MAX_PARALLEL_JOBS` | `4` | Documents read at once; `1` reads them one at a time |
+| `LEDGERSYNC_MAX_PARALLEL_JOBS` | `2` | Documents read at once; `1` reads them one at a time |
 | `LEDGERSYNC_LOG_LEVEL` | `INFO` | Log level (document contents are never logged) |
 | `API_URL` (frontend) | `http://127.0.0.1:8085` | Where the Next.js `/api` rewrite sends requests |
 

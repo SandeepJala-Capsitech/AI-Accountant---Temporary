@@ -33,7 +33,7 @@ def test_chat_asks_the_configured_model_for_strict_json():
     assert req.get_header("Authorization") == f"Bearer {KEY}"
     assert req.get_header("User-agent").startswith("LedgerSync")   # urllib's default agent can be blocked
     assert (body["model"], body["temperature"], body["max_completion_tokens"], body["reasoning_effort"]) == (
-        "qwen/qwen3.8-27b", 0, 8192, "low")
+        "qwen/qwen3.8-27b", 0, 8192, "high")
     fmt = body["response_format"]
     assert fmt["type"] == "json_schema" and fmt["json_schema"]["strict"] is True
     assert fmt["json_schema"]["schema"]["additionalProperties"] is False
@@ -88,10 +88,11 @@ def test_strict_schema_inlines_refs_closes_objects_and_drops_unsupported_keyword
     assert row["properties"]["note"]["anyOf"] == [{"type": "string"}, {"type": "null"}]
 
 
-def test_the_client_sends_one_page_per_request_by_default():
-    # Three pages are about 7.2K tokens before any answer: over the free plan's 8K tokens a minute.
+def test_the_client_sends_three_pages_per_request_by_default():
+    # Groq's most. Three pages are about 7.2K tokens before any answer, over the free plan's 8K tokens a
+    # minute, so there GROQ_MAX_IMAGES=1.
     client, _, _, _ = make_client()
-    assert client.max_images == 1
+    assert client.max_images == 3
 
 
 def test_health_needs_a_key():

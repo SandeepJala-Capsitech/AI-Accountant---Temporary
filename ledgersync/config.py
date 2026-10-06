@@ -52,7 +52,7 @@ class Settings:
     # mixed_items on every row, is over 4K tokens.
     groq_max_output_tokens: int = 8192
     groq_reasoning_effort: str = "high"   # thinking keeps the model to the receipt rules; "none" is ~10x faster than "low"
-    groq_max_images: int = 3              # pages per request: 3 pages overflow the free plan's 8K tokens/min
+    groq_max_images: int = 3              # pages per request, Groq's most; set 1 on the free plan: 3 overflow its 8K tokens/min
     health_ttl: float = 300.0             # the UI polls health every 30 s; the free plan counts requests
     business_name: str = ""               # whose books these are: tells sales invoices from purchases
 
