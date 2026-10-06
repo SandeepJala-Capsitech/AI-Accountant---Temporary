@@ -3,12 +3,14 @@ client's own settings, each bank statement checked against its balances; the cli
 person's changes, checked before the store saves them."""
 from __future__ import annotations
 
+import datetime as dt
 from collections import defaultdict
 from typing import Optional
 
 from .accounts import choosable
 from .checks import normalise
-from .errors import ClientArchived, InvalidInput, NotFound
+from .errors import ClientArchived, InvalidInput, InvalidTransactions, NotFound
+from .export import file_name, workbook
 from .matching import match
 from .models import (BusinessSettings, Client, ClientFields, ClientPatch, ClientSummary, Ledger, ManualUpload,
                      RowPatch, SavedRow, StatementCheck, Transaction, TrialBalance, Upload)
@@ -155,3 +157,13 @@ def trial_balance(store: Store, client_id: int) -> TrialBalance:
     """The client's trial balance from its saved rows; InvalidTransactions (422) while rows need fixing."""
     client = store.get_client(client_id)
     return post([row.tx for row in store.rows(client_id)], settings_for(client))
+
+
+def export(store: Store, client_id: int, day: dt.date) -> tuple[bytes, str]:
+    """The client's workbook and its file name; while rows need fixing, the trial balance sheet says what."""
+    built = build(store, client_id)
+    try:
+        balance = trial_balance(store, client_id)
+    except InvalidTransactions as exc:
+        balance = exc.problems
+    return workbook(built, balance, day), file_name(built.client.name, day)

@@ -61,6 +61,10 @@ class InvalidTransactions(LedgerSyncError):
     status_code = 422
     code = "transactions_need_fixing"
 
+    def __init__(self, message: str, problems=()):
+        super().__init__(message)
+        self.problems = list(problems)   # one line per problem, for a list such as the Excel export's
+
 
 class ModelRateLimited(ModelUnavailable):
     """The hosted model's rate limit (e.g. a free plan's tokens per minute) is used up for now."""

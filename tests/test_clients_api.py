@@ -240,3 +240,13 @@ def test_analysing_without_a_client_saves_nothing(api):
     cid = add(client)["id"]
     job = finish(client, client.post("/api/analyze", data={"text": "x"}).json()["job_id"])
     assert "upload_id" not in job["result"] and client.get(f"/api/clients/{cid}/ledger").json()["uploads"] == []
+
+
+def test_the_export_downloads_with_the_clients_name_even_when_archived(api):
+    client = api()
+    cid = add(client, name="Café/Bar Ltd")["id"]
+    client.patch(f"/api/clients/{cid}", json={"archived": True})
+    resp = client.get(f"/api/clients/{cid}/export.xlsx")
+    assert resp.status_code == 200 and resp.headers["content-type"].startswith("application/vnd.openxmlformats")
+    disposition = resp.headers["content-disposition"]
+    assert "filename*=UTF-8''Caf%C3%A9%20Bar%20Ltd%20" in disposition and 'filename="Caf_ Bar Ltd ' in disposition

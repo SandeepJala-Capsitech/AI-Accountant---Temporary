@@ -39,7 +39,7 @@ def trial_balance(transactions: list[Transaction], settings: BusinessSettings) -
                 for issue in tx.issues if issue.severity == "error"]
     if problems:
         raise InvalidTransactions(f"{len(problems)} problem(s) must be fixed before the trial balance: "
-                                  + " ".join(problems[:5]))
+                                  + " ".join(problems[:5]), problems=problems)
     journal = [line for n, tx in posted for line in journal_for(tx, n)]
     balances: dict[str, Decimal] = defaultdict(lambda: ZERO)
     for line in journal:

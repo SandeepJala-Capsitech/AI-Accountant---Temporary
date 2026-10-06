@@ -1,13 +1,15 @@
 """FastAPI entry point: a thin HTTP layer over the ledgersync package."""
+import datetime as dt
 import hashlib
 import logging
 import threading
 from contextlib import asynccontextmanager
 from typing import Optional
+from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from ledgersync import accounts, adapter, intake, pipeline, posting
 from ledgersync import ledger as books
@@ -188,6 +190,15 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
     @app.get("/api/clients/{client_id}/trial-balance", response_model=TrialBalance)
     def client_trial_balance(client_id: int):
         return books.trial_balance(store, client_id)
+
+    @app.get("/api/clients/{client_id}/export.xlsx")
+    def export_client(client_id: int):
+        """The client's trial balance and transactions as an Excel workbook (archived clients too)."""
+        content, name = books.export(store, client_id, dt.date.today())
+        plain = name.encode("ascii", "replace").decode().replace("?", "_")
+        return Response(content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        headers={"Content-Disposition": f"attachment; filename=\"{plain}\"; "
+                                                        f"filename*=UTF-8''{quote(name)}"})
 
     return app
 
