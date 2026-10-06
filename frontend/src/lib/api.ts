@@ -48,6 +48,8 @@ export interface AnalyzeResult {
   transactions: Transaction[]
   warnings: string[]
   model: string | null
+  client_id?: number    // set when the analysis was for a client: its rows were saved
+  upload_id?: number
 }
 
 export interface TrialBalanceLine {
@@ -98,7 +100,7 @@ const API_DOWN = 'The LedgerSync API is not running or failed. Check that `pytho
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
-async function request<T>(path: string, init: RequestInit = {}, timeoutMs = 30_000): Promise<T> {
+export async function request<T>(path: string, init: RequestInit = {}, timeoutMs = 30_000): Promise<T> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   const res = await fetch(path, { ...init, signal: controller.signal })
