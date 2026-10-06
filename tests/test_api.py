@@ -241,3 +241,22 @@ def test_an_account_the_ledger_cannot_post_to_lands_in_suspense(make_client, acc
 
 def test_health_tells_the_ui_how_many_files_to_send_at_once(make_client):
     assert make_client().get("/api/health").json()["max_parallel_jobs"] == 4
+
+
+def test_validate_matches_a_payment_to_its_bill(make_client):
+    bill = {**BT, "document_type": "invoice", "counterparty": "BT Business", "document_ref": "bt-sept"}
+    line = {**BT, "date": "2026-09-05", "document_type": "statement", "counterparty": "BT BUSINESS DD",
+            "document_ref": "line-1"}
+    out_bill, out_line = make_client().post("/api/transactions/validate",
+                                            json={"transactions": [bill, line]}).json()["transactions"]
+    assert out_line["pays"] == [{"ref": "bt-sept", "amount": "72.00", "date": "2026-09-01", "description": "BT"}]
+    assert (out_line["paid_against"], out_line["paid_against_name"]) == ("2100", "Creditors")
+    assert (out_bill["owed"], out_bill["contra_account_code"]) == ("0.00", "2100")
+
+
+def test_trial_balance_waits_for_a_person_to_choose_a_payment(make_client):
+    bills = [{**BT, "document_type": "invoice", "counterparty": "BT Business", "document_ref": r} for r in "ab"]
+    line = {**BT, "date": "2026-09-05", "document_type": "statement", "counterparty": "BT BUSINESS",
+            "document_ref": "l"}
+    resp = make_client().post("/api/trial-balance", json={"transactions": [*bills, line]})
+    assert resp.status_code == 422 and "Choose one" in resp.json()["detail"]["message"]

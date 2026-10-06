@@ -105,3 +105,23 @@ def test_documents_that_are_not_transactions_stay_out_until_included():
 
 def test_errors_on_a_row_that_is_not_booked_do_not_block_the_trial_balance():
     assert trial_balance([tx("out", "10.00", "9999", document_type="quote")], REGISTERED).lines == []
+
+
+def bank_line(gross, who, day, **kw):
+    return Transaction(direction="out", gross=gross, account_code="7100", description=who, counterparty=who,
+                       date=dt.date(2026, 9, day), document_type="statement", document_ref=f"line-{day}", **kw)
+
+
+def test_a_bank_line_that_pays_a_bill_clears_creditors_and_counts_the_rent_once():
+    rent = tx("out", "12000.00", "7100", vat="2000.00", document_type="invoice",
+              counterparty="Business Cube Management Solutions", document_ref="bill")
+    tb = trial_balance([rent, bank_line("12000.00", "BUSINESS CUBE MGMT", 3)], REGISTERED)
+    assert [(l.code, str(l.debit), str(l.credit)) for l in tb.lines] == [
+        ("1200", "0.00", "12000.00"), ("2201", "2000.00", "0.00"), ("7100", "10000.00", "0.00")]
+
+
+def test_a_payment_waiting_for_a_choice_blocks_the_trial_balance():
+    bills = [tx("out", "500.00", "7100", document_type="invoice", counterparty="Landmark Properties",
+                document_ref=ref) for ref in ("a", "b")]
+    with pytest.raises(InvalidTransactions, match="Choose one"):
+        trial_balance([*bills, bank_line("500.00", "LANDMARK PROPERTIES", 5)], REGISTERED)

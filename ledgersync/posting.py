@@ -8,18 +8,22 @@ from decimal import Decimal
 from .accounts import BY_CODE, PURCHASE_VAT, SALES_VAT, AccountType
 from .checks import booked, normalise
 from .errors import InvalidTransactions
+from .matching import match
 from .models import BusinessSettings, Direction, JournalLine, Transaction, TrialBalance, TrialBalanceLine
 from .money import ZERO
 
 
 def journal_for(tx: Transaction, index: int) -> list[JournalLine]:
-    """Journal lines for one normalised transaction: account and VAT legs, then the bank (or contra) leg."""
-    account = BY_CODE[tx.account_code]
+    """Journal lines for one transaction after checks.normalise and matching.match: the account and VAT
+    legs, then the bank (or contra) leg. A bank line that pays a document posts against the account
+    holding what was owed (paid_against); its VAT is nil, because it was booked with the document."""
+    code = tx.paid_against or tx.account_code
+    account = BY_CODE[code]
     vat_account = SALES_VAT if account.type == AccountType.INCOME else PURCHASE_VAT
     out = tx.direction == Direction.OUT
-    lines = [JournalLine(transaction=index, code=code, description=tx.description,
+    lines = [JournalLine(transaction=index, code=leg, description=tx.description,
                          debit=amount if out else ZERO, credit=ZERO if out else amount)
-             for code, amount in ((tx.account_code, tx.net), (vat_account, tx.vat_posted)) if amount]
+             for leg, amount in ((code, tx.net), (vat_account, tx.vat_posted)) if amount]
     lines.append(JournalLine(transaction=index, code=tx.contra_account_code, description=tx.description,
                              debit=ZERO if out else tx.gross, credit=tx.gross if out else ZERO))
     debits, credits = sum(l.debit for l in lines), sum(l.credit for l in lines)
@@ -29,7 +33,7 @@ def journal_for(tx: Transaction, index: int) -> list[JournalLine]:
 
 
 def trial_balance(transactions: list[Transaction], settings: BusinessSettings) -> TrialBalance:
-    ready = [normalise(tx, settings) for tx in transactions]
+    ready = match([normalise(tx, settings) for tx in transactions], settings)
     posted = [(n, tx) for n, tx in enumerate(ready) if booked(tx)]   # a quote or the like waits for Include
     problems = [f"#{n + 1}: {issue.message}" for n, tx in posted
                 for issue in tx.issues if issue.severity == "error"]

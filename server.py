@@ -15,6 +15,7 @@ from ledgersync.errors import LedgerSyncError, UnreadableFile
 from ledgersync.extractor import TransactionExtractor
 from ledgersync.groq_client import GroqClient
 from ledgersync.jobs import JobStore
+from ledgersync.matching import match
 from ledgersync.models import AnalysisResult, BusinessSettings, LedgerRequest, TransactionList, TrialBalance
 
 logger = logging.getLogger("ledgersync.server")
@@ -110,8 +111,10 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None) -> Fas
 
     @app.post("/api/transactions/validate", response_model=TransactionList)
     def validate_transactions(request: LedgerRequest):
-        """Splits VAT, fills in the bank account and lists issues; no posting."""
-        return TransactionList(transactions=[normalise(tx, request.settings) for tx in request.transactions])
+        """Splits VAT, works out the other side of each row, matches bank lines to the documents they pay
+        and lists issues; no posting."""
+        ready = [normalise(tx, request.settings) for tx in request.transactions]
+        return TransactionList(transactions=match(ready, request.settings))
 
     @app.post("/api/trial-balance", response_model=TrialBalance)
     def generate_trial_balance(request: LedgerRequest):
