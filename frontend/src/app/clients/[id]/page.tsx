@@ -1,0 +1,135 @@
+'use client'
+
+import Link from 'next/link'
+import { useParams } from 'next/navigation'
+import { useCallback, useEffect, useState } from 'react'
+import ClientDialog from '@/components/ClientDialog'
+import { useConfirm } from '@/components/ConfirmDialog'
+import TransactionsTable from '@/components/TransactionsTable'
+import TrialBalancePanel from '@/components/TrialBalancePanel'
+import UploadsList from '@/components/UploadsList'
+import { ApiError } from '@/lib/api'
+import {
+  changeClient, changeRow, exportUrl, getLedger, removeUpload, type ClientFields, type Ledger, type RowChange, type Upload,
+} from '@/lib/clients'
+import { BUSINESS_TYPES, figuresOf } from '@/lib/clientRules'
+import { money } from '@/lib/ledger'
+
+const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
+
+// One client: its details, its figures, its saved transactions and uploads, and its trial balance.
+export default function ClientPage() {
+  const params = useParams<{ id: string }>()
+  const clientId = Number(params.id)
+  const { ask, dialog: confirmDialog } = useConfirm()
+  const [ledger, setLedger] = useState<Ledger | null>(null)
+  const [missing, setMissing] = useState(false)
+  const [error, setError] = useState('')
+  const [editingClient, setEditingClient] = useState(false)
+  const [version, setVersion] = useState(0)   // bumped whenever the rows change: a trial balance shown is cleared
+
+  const show = useCallback((next: Ledger) => {
+    setLedger(next)
+    setVersion(v => v + 1)
+    setError('')
+  }, [])
+
+  const load = useCallback(async () => {
+    if (!Number.isInteger(clientId) || clientId < 1) {
+      setMissing(true)
+      return
+    }
+    try {
+      show(await getLedger(clientId))
+    } catch (e) {
+      if (e instanceof ApiError && e.code === 'not_found') setMissing(true)
+      else setError(message(e))
+    }
+  }, [clientId, show])
+
+  useEffect(() => { load() }, [load])
+
+  // A change the API answers with the whole ledger, worked out again.
+  const act = useCallback(async (change: () => Promise<Ledger>) => {
+    try { show(await change()) } catch (e) { setError(message(e)) }
+  }, [show])
+
+  if (missing) {
+    return (
+      <div className="empty card">
+        <h1>Client not found</h1>
+        <p className="muted">It may never have existed, or the link is wrong.</p>
+        <Link href="/" className="btn">Back to clients</Link>
+      </div>
+    )
+  }
+  if (!ledger) return error ? <div className="notice notice-error">{error}</div> : <p className="muted">Loading…</p>
+
+  const { client } = ledger
+  const figures = figuresOf(ledger.transactions)
+  const contact = [client.contact_name, client.contact_email, client.contact_phone].filter(Boolean).join(' · ')
+
+  const archive = async () => {
+    if (!(await ask(`Archive ${client.name}? You can restore it from Show archived.`, 'Archive'))) return
+    try { await changeClient(client.id, { archived: true }); await load() } catch (e) { setError(message(e)) }
+  }
+  const restore = async () => {
+    try { await changeClient(client.id, { archived: false }); await load() } catch (e) { setError(message(e)) }
+  }
+  const saveDetails = async (fields: ClientFields) => {
+    await changeClient(client.id, fields)
+    setEditingClient(false)
+    await load()
+  }
+  const remove = async (upload: Upload) => {
+    const rows = `${upload.rows} row${upload.rows === 1 ? '' : 's'}`
+    const question = `Remove ${upload.name} and its ${rows}? This can't be undone: analyse the file again to get them back.`
+    if (await ask(question, 'Remove')) await act(() => removeUpload(client.id, upload.id))
+  }
+  const change = (rowId: number, rowChange: RowChange) => act(() => changeRow(client.id, rowId, rowChange))
+
+  return (
+    <>
+      <nav className="crumbs"><Link href="/">Clients</Link> / {client.name}</nav>
+      <div className="page-head">
+        <div>
+          <h1>
+            {client.name}{' '}
+            <span className={client.vat_registered ? 'badge badge-accent' : 'badge badge-warn'}>
+              {client.vat_registered ? 'VAT registered' : 'Not VAT registered'}
+            </span>
+          </h1>
+          <p className="muted">{BUSINESS_TYPES[client.business_type]} · {contact}</p>
+        </div>
+        <div className="head-actions">
+          {!client.archived && <button type="button" className="btn" onClick={() => setEditingClient(true)}>Edit details</button>}
+          <a className="btn" href={exportUrl(client.id)} download>Export to Excel</a>
+          {!client.archived && <button type="button" className="btn btn-ghost" onClick={archive}>Archive</button>}
+        </div>
+      </div>
+      {client.archived && (
+        <div className="notice notice-warn">
+          <span>Archived. Restore to add documents or make changes.</span>
+          <button type="button" className="btn" onClick={restore}>Restore</button>
+        </div>
+      )}
+      {error && <div className="notice notice-error">{error}</div>}
+      <div className="figures">
+        <div className="card figure"><div className="figure-label">Rows</div><div className="figure-value">{figures.rows}</div></div>
+        <div className="card figure">
+          <div className="figure-label">To review</div>
+          <div className={figures.toReview ? 'figure-value text-warn' : 'figure-value'}>{figures.toReview}</div>
+        </div>
+        <div className="card figure"><div className="figure-label">To pay</div><div className="figure-value">{money(figures.toPay)}</div></div>
+        <div className="card figure"><div className="figure-label">To receive</div><div className="figure-value">{money(figures.toReceive)}</div></div>
+      </div>
+      <div className="workspace">
+        <TransactionsTable ledger={ledger} readOnly={client.archived} onChange={change} />
+        <UploadsList uploads={ledger.uploads} readOnly={client.archived} onRemove={remove} />
+      </div>
+      <TrialBalancePanel clientId={client.id} version={version} hasRows={ledger.transactions.length > 0} />
+      {editingClient && <ClientDialog client={client} onCancel={() => setEditingClient(false)} onSave={saveDetails} />}
+      {confirmDialog}
+    </>
+  )
+}
