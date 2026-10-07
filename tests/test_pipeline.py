@@ -155,3 +155,18 @@ def test_reading_pdf_text_waits_for_the_pymupdf_lock():
         threading.Thread(target=lambda: (_pdf_text(pdf), done.set())).start()
         assert not done.wait(0.3)
     assert done.wait(5)
+
+
+class StatementExtractor(RecordingExtractor):
+    """Reads one batch of pages per call: the first batch prints the opening balance, the second the closing one."""
+
+    def extract_accounting_data(self, text_input=None, images=None):
+        self.calls.append({"text": text_input, "images": images})
+        first = len(self.calls) == 1
+        return TransactionExtractionResult(data=[], model="fake-model", opening_balance=1000.0 if first else None,
+                                           closing_balance=None if first else 928.0)
+
+
+def test_a_scanned_statements_opening_comes_from_its_first_pages_and_closing_from_its_last():
+    result = analyze(Intake("pdf", data=scanned_pdf(5)), StatementExtractor(), ctx())
+    assert (result.opening_balance, result.closing_balance) == (1000.0, 928.0)

@@ -373,14 +373,19 @@ These apply everywhere, including analyses without a client and `/api/transactio
 
 ### Statement balance check
 
-- **What the model reads.** It gains three fields, which are null when not printed, and always null on
-  rows that aren't bank statement lines:
-  - `balance`: the running balance printed on the line, after it;
-  - `opening_balance`: the statement's opening balance (brought forward), on every row;
-  - `closing_balance`: its closing balance (carried forward), on every row.
+- **What the model reads.** Three values, each null when not printed:
+  - `balance` on each row: the running balance printed on the line, after it; always null on rows that
+    aren't bank statement lines;
+  - `opening_balance` and `closing_balance`, once, next to the transactions array: the statement's opening
+    balance (brought forward) and closing balance (carried forward).
 
-  Rule 5 of the prompt says to give them, and that balance lines are still not transactions. The adapter
-  carries them into `Transaction` as inputs.
+  The first design put the opening and closing balances on every row. The eval of 2026-10-06 showed that
+  this pushed a 60-row statement past the model's 8,192 output tokens, so they come once.
+
+  Rule 5 of the prompt says to give them, and that balance lines are still not transactions. A scanned
+  statement read in batches of pages takes its opening balance from its first pages and its closing
+  balance from its last. The adapter puts all three on each bank line of the statement, as inputs of
+  `Transaction`.
 - **The check.** A new module, `ledgersync/statements.py`, checks the statement rows of each upload, in
   their saved order, on every ledger read:
   1. **Running balances:**

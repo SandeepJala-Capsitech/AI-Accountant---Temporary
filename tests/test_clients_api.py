@@ -1,4 +1,5 @@
 import hashlib
+import json
 import threading
 import time
 
@@ -250,3 +251,13 @@ def test_the_export_downloads_with_the_clients_name_even_when_archived(api):
     assert resp.status_code == 200 and resp.headers["content-type"].startswith("application/vnd.openxmlformats")
     disposition = resp.headers["content-disposition"]
     assert "filename*=UTF-8''Caf%C3%A9%20Bar%20Ltd%20" in disposition and 'filename="Caf_ Bar Ltd ' in disposition
+
+
+def test_a_statements_balances_reach_the_saved_rows_and_are_checked(api):
+    reply = json.dumps({"transactions": [dict(ROW, document_type="statement", balance=928.0)],
+                        "opening_balance": 1000.0, "closing_balance": 928.0})
+    client = api(FakeModel([reply]))
+    cid = add(client)["id"]
+    finish(client, client.post("/api/analyze", data={"text": "x", "client_id": str(cid)}).json()["job_id"])
+    [upload] = client.get(f"/api/clients/{cid}/ledger").json()["uploads"]
+    assert upload["statement"] == {"status": "ok", "difference": None}

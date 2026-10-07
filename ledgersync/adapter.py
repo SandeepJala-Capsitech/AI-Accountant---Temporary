@@ -68,7 +68,10 @@ def _keep_unsplittable_whole(rows: list[dict]) -> list[dict]:
     return [kept for kept in (merged.get(id(row), row) for row in rows) if kept is not None]
 
 
-def to_transactions(rows: list[dict], source: str, settings: BusinessSettings) -> list[Transaction]:
+def to_transactions(rows: list[dict], source: str, settings: BusinessSettings, opening_balance=None,
+                    closing_balance=None) -> list[Transaction]:
+    """The model's rows as ledger rows; a bank statement's opening and closing balances, which the model gives
+    once, go on each of its bank lines."""
     result = []
     rows = _keep_unsplittable_whole(rows)
     documents = _documents(rows)
@@ -109,7 +112,7 @@ def to_transactions(rows: list[dict], source: str, settings: BusinessSettings) -
                          counterparty=str(row.get("counterparty") or "").strip() or None,
                          document_ref=refs[key] if key else uuid.uuid4().hex[:12],
                          balance=to_money(row.get("balance")) if statement else None,
-                         opening_balance=to_money(row.get("opening_balance")) if statement else None,
-                         closing_balance=to_money(row.get("closing_balance")) if statement else None)
+                         opening_balance=to_money(opening_balance) if statement else None,
+                         closing_balance=to_money(closing_balance) if statement else None)
         result.append(normalise(tx, settings))
     return result

@@ -183,9 +183,12 @@ def test_the_schema_accepts_any_account_a_business_could_use():
     assert {"2250 Director's Loan Account", "3260 Drawings", "0055 Vans"} <= set(account["enum"])
 
 
-def test_statement_rows_carry_their_printed_balances():
-    row = dict(ROW, balance=1240.5, opening_balance=1500.0, closing_balance=-20.0)
-    result, client = extract(transactions_json(row))
-    assert (result.data[0].balance, result.data[0].opening_balance, result.data[0].closing_balance) == (
-        1240.5, 1500.0, -20.0)
-    assert "opening_balance and closing_balance on every row" in client.calls[0]["messages"][0]["content"]
+def test_statement_balances_come_once_with_the_answer_and_running_balances_per_row():
+    # A 60-row statement with its opening and closing balance on every row ran past 8,192 output tokens.
+    shape = ExtractedTransactions.model_json_schema()
+    assert {"opening_balance", "closing_balance"} <= set(shape["properties"])
+    assert not {"opening_balance", "closing_balance"} & set(shape["$defs"]["AccountingTransaction"]["properties"])
+    reply = json.dumps({"transactions": [dict(ROW, balance=1240.5)], "opening_balance": 1500.0, "closing_balance": -20.0})
+    result, client = extract(reply)
+    assert (result.data[0].balance, result.opening_balance, result.closing_balance) == (1240.5, 1500.0, -20.0)
+    assert "opening_balance and closing_balance once" in client.calls[0]["messages"][0]["content"]

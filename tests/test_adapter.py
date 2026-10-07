@@ -163,10 +163,12 @@ def test_a_claims_lines_share_one_reference_whatever_their_dates():
 
 
 def test_a_bank_line_keeps_the_balances_its_statement_prints():
-    [t] = adapt(dict(ROW, document_type="statement", balance=1240.5, opening_balance=1500, closing_balance=-20))
+    [t] = to_transactions([dict(ROW, document_type="statement", balance=1240.5)], source="table",
+                          settings=BusinessSettings(), opening_balance=1500, closing_balance=-20)
     assert (t.balance, t.opening_balance, t.closing_balance) == (Decimal("1240.50"), Decimal("1500.00"), Decimal("-20.00"))
 
 
 def test_balances_on_any_other_row_are_dropped():
-    [t] = adapt(dict(ROW, document_type="receipt", balance=10, opening_balance=5, closing_balance=1))
+    [t] = to_transactions([dict(ROW, document_type="receipt", balance=10)], source="table",
+                          settings=BusinessSettings(), opening_balance=5, closing_balance=1)
     assert (t.balance, t.opening_balance, t.closing_balance) == (None, None, None)

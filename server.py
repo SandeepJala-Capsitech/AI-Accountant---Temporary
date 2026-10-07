@@ -93,7 +93,8 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
             reader = TransactionExtractor(model_client, business_name=client.name, business_type=client.business_type)
         extraction = pipeline.analyze(item, reader, ctx)
         transactions = adapter.to_transactions([row.model_dump() for row in extraction.data], source=item.kind,
-                                               settings=rules)
+                                               settings=rules, opening_balance=extraction.opening_balance,
+                                               closing_balance=extraction.closing_balance)
         result = AnalysisResult(transactions=transactions, warnings=extraction.warnings,
                                 model=extraction.model).model_dump(mode="json")
         if client is not None and transactions:

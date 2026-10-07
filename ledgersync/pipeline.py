@@ -54,7 +54,10 @@ def _read_pages(pages: list[bytes], extractor, ctx: JobContext):
         if several:
             part = part.model_copy(update={"warnings": [f"{label}: {w}" for w in part.warnings]})
         result = part if result is None else result.model_copy(update={
-            "data": result.data + part.data, "warnings": result.warnings + part.warnings})
+            "data": result.data + part.data, "warnings": result.warnings + part.warnings,
+            # A statement's opening balance is on its first pages, its closing balance on its last.
+            "opening_balance": result.opening_balance if result.opening_balance is not None else part.opening_balance,
+            "closing_balance": part.closing_balance if part.closing_balance is not None else result.closing_balance})
     return result
 
 
