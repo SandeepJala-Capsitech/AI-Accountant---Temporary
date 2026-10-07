@@ -61,6 +61,32 @@ def test_summaries_count_rows_and_what_needs_review(store):
     assert (summary.id, summary.rows, summary.to_review) == (client.id, 2, 1)
 
 
+def test_the_clients_page_works_a_client_out_again_only_after_its_work_changes(store, monkeypatch):
+    # Final review #5: every visit to the clients page rebuilt every client's whole ledger.
+    cube = store.create_client(CUBE)
+    jo = store.create_client(CUBE.model_copy(update={"name": "Jo Bloggs"}))
+    drawings = store.add_upload(cube.id, "a.pdf", "pdf", [row(account_code="3260", document_type="receipt")])
+    store.add_upload(jo.id, "b.pdf", "pdf", [row()])
+    [saved] = store.rows(cube.id)
+    read, rows = [], store.rows
+    monkeypatch.setattr(store, "rows", lambda client_id: read.append(client_id) or rows(client_id))
+
+    def visit():
+        read.clear()
+        return [(s.rows, s.to_review) for s in ledger.summaries(store)], read
+
+    assert visit() == ([(1, 1), (1, 0)], [cube.id, jo.id])
+    assert visit() == ([(1, 1), (1, 0)], [])
+    store.update_client(cube.id, {"business_type": "sole_trader"})   # drawings are a sole trader's
+    assert visit() == ([(1, 0), (1, 0)], [cube.id])
+    store.patch_row(cube.id, saved.id, {"account_code": "9999"})
+    assert visit() == ([(1, 1), (1, 0)], [cube.id])
+    store.add_upload(jo.id, "c.pdf", "pdf", [row(gross="30.00", date=dt.date(2026, 9, 20), document_ref="c")])
+    assert visit() == ([(1, 1), (2, 0)], [jo.id])
+    store.delete_upload(cube.id, drawings)
+    assert visit() == ([(0, 0), (2, 0)], [cube.id])
+
+
 def test_an_edit_is_checked_before_it_is_saved(store):
     client = store.create_client(CUBE)
     store.add_upload(client.id, "a.pdf", "pdf", [row()])

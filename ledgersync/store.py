@@ -4,6 +4,7 @@ side. Rows keep their inputs only; statuses, matching and warnings are worked ou
 from __future__ import annotations
 
 import datetime as dt
+import itertools
 import json
 import logging
 import sqlite3
@@ -88,6 +89,13 @@ class Store:
         self.path = Path(path)
         self._ready = False
         self._lock = threading.Lock()
+        self._stamps = itertools.count(1)
+        self._revisions: dict[int, int] = {}   # client id → stamp of the last change committed to it
+
+    def revision(self, client_id: int) -> int:
+        """Changes once a change to the client, its uploads or its rows is committed, so anything worked out
+        from them stays right while it stays the same. (Kept by this Store: one API process.)"""
+        return self._revisions.get(client_id, 0)
 
     # ─── Clients ───────────────────────────────────────────────────────────────
 
@@ -115,7 +123,7 @@ class Store:
     def update_client(self, client_id: int, changes: dict) -> Client:
         """Changes the fields given; `archived` True archives the client and False restores it. An archived
         client can only be restored."""
-        with self._db(write=True) as db:
+        with self._db(write=True, changes=client_id) as db:
             client = _client(db, client_id)
             fields = {k: changes[k] for k in _CLIENT_FIELDS if changes.get(k) is not None}
             if client.archived and fields:
@@ -138,7 +146,7 @@ class Store:
         """Saves an upload and its rows in order, and returns the upload's id. Archived or not: a job that
         finishes after its client was archived is still kept."""
         now = _now()
-        with self._db(write=True) as db:
+        with self._db(write=True, changes=client_id) as db:
             _client(db, client_id)
             upload_id = db.execute(
                 "INSERT INTO uploads (client_id, name, kind, sha256, model, warnings, created_at)"
@@ -159,7 +167,7 @@ class Store:
 
     def delete_upload(self, client_id: int, upload_id: int) -> None:
         """Removes an upload and its rows for good."""
-        with self._db(write=True) as db:
+        with self._db(write=True, changes=client_id) as db:
             if not db.execute("DELETE FROM uploads WHERE id = ? AND client_id = ?", (upload_id, client_id)).rowcount:
                 raise NotFound("This upload was not found.")
             _touch(db, client_id, _now())
@@ -176,7 +184,7 @@ class Store:
         """A person's change to a row: Link, Include, an edit, or revert. Include, counterparty and document
         type change every row of its document (the same document_ref); the rest change that row. A row's first
         edit keeps what it held as `original`; revert puts back every edited row of the document."""
-        with self._db(write=True) as db:
+        with self._db(write=True, changes=client_id) as db:
             saved = {row["id"]: json.loads(row["data"]) for row in
                      db.execute("SELECT id, data FROM rows WHERE client_id = ?", (client_id,))}
             if row_id not in saved:
@@ -224,9 +232,11 @@ class Store:
             self._ready = True
 
     @contextmanager
-    def _db(self, write: bool = False) -> Iterator[sqlite3.Connection]:
+    def _db(self, write: bool = False, changes: Optional[int] = None) -> Iterator[sqlite3.Connection]:
         """One connection for one call, in one transaction. A write takes the write lock up front (waiting up
-        to ten seconds for another writer), so a background job and a person never trip over each other."""
+        to ten seconds for another writer), so a background job and a person never trip over each other. The
+        client a write `changes` gets a new revision once it is committed, never before: a reader that saw the
+        old revision may have read the old rows, and the new revision tells it so."""
         self._prepare()
         try:
             db = sqlite3.connect(self.path, timeout=10, isolation_level=None)
@@ -238,6 +248,8 @@ class Store:
             db.execute("BEGIN IMMEDIATE" if write else "BEGIN")
             yield db
             db.execute("COMMIT")
+            if changes is not None:
+                self._revisions[changes] = next(self._stamps)
         except sqlite3.Error as exc:
             _rollback(db)
             raise self._failed(exc) from None

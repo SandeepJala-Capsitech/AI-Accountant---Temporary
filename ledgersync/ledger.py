@@ -6,6 +6,7 @@ from __future__ import annotations
 import datetime as dt
 from collections import defaultdict
 from typing import Optional
+from weakref import WeakKeyDictionary
 
 from .accounts import choosable
 from .checks import normalise
@@ -87,13 +88,22 @@ def build(store: Store, client_id: int) -> Ledger:
     return Ledger(client=client, uploads=uploads, transactions=transactions)
 
 
+# Each store's clients: (revision, rows, rows to review), as the clients page last worked them out.
+_counted: WeakKeyDictionary[Store, dict[int, tuple[int, int, int]]] = WeakKeyDictionary()
+
+
 def summaries(store: Store, archived: bool = False) -> list[ClientSummary]:
-    """The clients page: each client with how many rows it has and how many need a look."""
+    """The clients page: each client with how many rows it has and how many need a look. A client's ledger is
+    built again only once its work has changed (its revision moved)."""
+    counted = _counted.setdefault(store, {})
     found = []
     for client in store.list_clients(archived):
-        rows = build(store, client.id).transactions
-        found.append(ClientSummary(**client.model_dump(), rows=len(rows),
-                                   to_review=sum(needs_review(r) for r in rows)))
+        revision = store.revision(client.id)   # read before the rows, so a change made meanwhile shows next time
+        known = counted.get(client.id)
+        if known is None or known[0] != revision:
+            rows = build(store, client.id).transactions
+            known = counted[client.id] = (revision, len(rows), sum(needs_review(r) for r in rows))
+        found.append(ClientSummary(**client.model_dump(), rows=known[1], to_review=known[2]))
     return found
 
 
