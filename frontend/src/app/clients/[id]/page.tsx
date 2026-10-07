@@ -5,13 +5,14 @@ import { useParams } from 'next/navigation'
 import { useCallback, useEffect, useState } from 'react'
 import AddDocuments from '@/components/AddDocuments'
 import ClientDialog from '@/components/ClientDialog'
+import EditRowDialog from '@/components/EditRowDialog'
 import { useConfirm } from '@/components/ConfirmDialog'
 import TransactionsTable from '@/components/TransactionsTable'
 import TrialBalancePanel from '@/components/TrialBalancePanel'
 import UploadsList from '@/components/UploadsList'
 import { ApiError } from '@/lib/api'
 import {
-  changeClient, changeRow, exportUrl, getLedger, removeUpload, type ClientFields, type Ledger, type RowChange, type Upload,
+  changeClient, changeRow, exportUrl, getLedger, removeUpload, type ClientFields, type Ledger, type RowChange, type SavedRow, type Upload,
 } from '@/lib/clients'
 import { BUSINESS_TYPES, figuresOf } from '@/lib/clientRules'
 import { money } from '@/lib/ledger'
@@ -27,6 +28,7 @@ export default function ClientPage() {
   const [missing, setMissing] = useState(false)
   const [error, setError] = useState('')
   const [editingClient, setEditingClient] = useState(false)
+  const [editingRow, setEditingRow] = useState<SavedRow | null>(null)
   const [version, setVersion] = useState(0)   // bumped whenever the rows change: a trial balance shown is cleared
 
   const show = useCallback((next: Ledger) => {
@@ -88,6 +90,11 @@ export default function ClientPage() {
     if (await ask(question, 'Remove')) await act(() => removeUpload(client.id, upload.id))
   }
   const change = (rowId: number, rowChange: RowChange) => act(() => changeRow(client.id, rowId, rowChange))
+  const saveRow = async (rowChange: RowChange) => {
+    if (!editingRow) return
+    show(await changeRow(client.id, editingRow.id, rowChange))
+    setEditingRow(null)
+  }
 
   return (
     <>
@@ -126,11 +133,15 @@ export default function ClientPage() {
       </div>
       {!client.archived && <AddDocuments clientId={client.id} uploads={ledger.uploads} onSaved={load} onLedger={show} />}
       <div className="workspace">
-        <TransactionsTable ledger={ledger} readOnly={client.archived} onChange={change} />
+        <TransactionsTable ledger={ledger} readOnly={client.archived} onChange={change} onEdit={setEditingRow} />
         <UploadsList uploads={ledger.uploads} readOnly={client.archived} onRemove={remove} />
       </div>
       <TrialBalancePanel clientId={client.id} version={version} hasRows={ledger.transactions.length > 0} />
       {editingClient && <ClientDialog client={client} onCancel={() => setEditingClient(false)} onSave={saveDetails} />}
+      {editingRow && (
+        <EditRowDialog row={editingRow} businessType={client.business_type}
+                       onCancel={() => setEditingRow(null)} onSave={saveRow} />
+      )}
       {confirmDialog}
     </>
   )
