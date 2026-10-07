@@ -163,8 +163,8 @@ def test_the_trial_balance_comes_from_the_saved_rows(store):
     client = store.create_client(CUBE)
     store.add_upload(client.id, "a.pdf", "pdf", [row(document_type="receipt", vat="12.00")])
     assert [(l.code, l.debit, l.credit) for l in ledger.trial_balance(store, client.id).lines] == [
-        ("1200", Decimal("0.00"), Decimal("72.00")), ("2201", Decimal("12.00"), Decimal("0.00")),
-        ("7502", Decimal("60.00"), Decimal("0.00"))]
+        ("1200", Decimal("0.00"), Decimal("72.00")), ("7502", Decimal("60.00"), Decimal("0.00")),
+        ("2201", Decimal("12.00"), Decimal("0.00"))]
 
 
 def test_an_edited_suspense_row_leaves_to_review(store):

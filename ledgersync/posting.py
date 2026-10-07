@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from decimal import Decimal
 
-from .accounts import BY_CODE, PURCHASE_VAT, SALES_VAT, AccountType
+from .accounts import BY_CODE, PURCHASE_VAT, SALES_VAT, VAT_ACCOUNTS, AccountType
 from .checks import booked, normalise
 from .errors import InvalidTransactions
 from .matching import match
@@ -32,6 +32,11 @@ def journal_for(tx: Transaction, index: int) -> list[JournalLine]:
     return lines
 
 
+def _vat_last(item: tuple[str, Decimal]) -> tuple[bool, str]:
+    """By account code, with the VAT accounts last."""
+    return item[0] in VAT_ACCOUNTS, item[0]
+
+
 def trial_balance(transactions: list[Transaction], settings: BusinessSettings) -> TrialBalance:
     ready = match([normalise(tx, settings) for tx in transactions], settings)
     posted = [(n, tx) for n, tx in enumerate(ready) if booked(tx)]   # a quote or the like waits for Include
@@ -46,7 +51,7 @@ def trial_balance(transactions: list[Transaction], settings: BusinessSettings) -
         balances[line.code] += line.debit - line.credit
     lines = [TrialBalanceLine(code=code, name=BY_CODE[code].name, type=BY_CODE[code].type.value,
                               debit=balance if balance > 0 else ZERO, credit=-balance if balance < 0 else ZERO)
-             for code, balance in sorted(balances.items()) if balance != 0]
+             for code, balance in sorted(balances.items(), key=_vat_last) if balance != 0]
     total_debits = sum((l.debit for l in lines), ZERO)
     total_credits = sum((l.credit for l in lines), ZERO)
     return TrialBalance(lines=lines, total_debits=total_debits, total_credits=total_credits,

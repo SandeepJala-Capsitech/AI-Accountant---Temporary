@@ -179,8 +179,8 @@ def test_trial_balance_balances_with_bank_and_vat_legs(make_client):
     tb = make_client().post("/api/trial-balance", json={"transactions": [{**BT, "vat": "12.00"}, sale]}).json()
     assert tb["is_balanced"] is True and tb["total_debits"] == tb["total_credits"] == "240.00"
     assert [(l["code"], l["debit"], l["credit"]) for l in tb["lines"]] == [
-        ("1200", "168.00", "0.00"), ("2200", "0.00", "40.00"), ("2201", "12.00", "0.00"),
-        ("4000", "0.00", "200.00"), ("7502", "60.00", "0.00")]
+        ("1200", "168.00", "0.00"), ("4000", "0.00", "200.00"), ("7502", "60.00", "0.00"),
+        ("2200", "0.00", "40.00"), ("2201", "12.00", "0.00")]
 
 
 def test_trial_balance_rejects_unpostable_rows_with_422(make_client):

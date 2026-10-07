@@ -51,12 +51,19 @@ def test_trial_balance_shows_net_balances_by_code():
     tb = trial_balance([tx("out", "120.00", "7502", vat="20.00"), tx("in", "2400.00", "4000", vat="400.00")], REGISTERED)
     assert [(l.code, l.name, str(l.debit), str(l.credit)) for l in tb.lines] == [
         ("1200", "Bank Current Account", "2280.00", "0.00"),
-        ("2200", "Sales VAT", "0.00", "400.00"),
-        ("2201", "Purchase VAT", "20.00", "0.00"),
         ("4000", "Sales", "0.00", "2000.00"),
         ("7502", "Telephone and Internet", "100.00", "0.00"),
+        ("2200", "Sales VAT", "0.00", "400.00"),
+        ("2201", "Purchase VAT", "20.00", "0.00"),
     ]
     assert (str(tb.total_debits), str(tb.total_credits), tb.is_balanced) == ("2400.00", "2400.00", True)
+
+
+def test_vat_comes_last_in_the_trial_balance():
+    # Asked for on 2026-10-07: the VAT accounts close the trial balance, after every other account.
+    tb = trial_balance([tx("out", "120.00", "7502", vat="20.00"), tx("in", "2400.00", "4000", vat="400.00"),
+                        tx("out", "1450.00", "2202"), tx("out", "50.00", "9998")], REGISTERED)
+    assert [l.code for l in tb.lines] == ["1200", "4000", "7502", "9998", "2200", "2201", "2202"]
 
 
 def test_cancelling_transactions_leave_no_zero_lines():
@@ -117,7 +124,7 @@ def test_a_bank_line_that_pays_a_bill_clears_creditors_and_counts_the_rent_once(
               counterparty="Business Cube Management Solutions", document_ref="bill")
     tb = trial_balance([rent, bank_line("12000.00", "BUSINESS CUBE MGMT", 3)], REGISTERED)
     assert [(l.code, str(l.debit), str(l.credit)) for l in tb.lines] == [
-        ("1200", "0.00", "12000.00"), ("2201", "2000.00", "0.00"), ("7100", "10000.00", "0.00")]
+        ("1200", "0.00", "12000.00"), ("7100", "10000.00", "0.00"), ("2201", "2000.00", "0.00")]
 
 
 def test_a_payment_waiting_for_a_choice_blocks_the_trial_balance():

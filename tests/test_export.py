@@ -38,7 +38,7 @@ def test_the_workbook_has_the_trial_balance_and_the_transactions(store):
     assert tb["A1"].value == "Business Cube Ltd — trial balance — 6 Oct 2026"
     assert [[c.value for c in row] for row in tb.iter_rows(min_row=2)] == [
         ["Code", "Account", "Debit", "Credit"], ["1200", "Bank Current Account", 0, 72],
-        ["2201", "Purchase VAT", 12, 0], ["7502", "Telephone and Internet", 60, 0], [None, "Totals", 72, 72]]
+        ["7502", "Telephone and Internet", 60, 0], ["2201", "Purchase VAT", 12, 0], [None, "Totals", 72, 72]]
     assert (tb["C3"].number_format, tb.freeze_panes) == (MONEY, "A3")
     assert [c.value for c in txs[2]] == ["Date", "Description", "Counterparty", "Document type", "In/Out", "Amount",
                                          "VAT", "Net", "Account", "Account name", "Other side", "Still owed",
