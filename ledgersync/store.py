@@ -189,12 +189,17 @@ class Store:
                     if "original" not in data:
                         continue
                     data.update(data.pop("original"))
+                    data["issues"] = data.pop("original_issues", data.get("issues", []))
                 else:
                     change = changes if rid == row_id else {k: v for k, v in changes.items() if k in WHOLE_DOCUMENT}
                     if not change:
                         continue
                     if "original" not in data and any(k in EDITABLE and data.get(k) != v for k, v in change.items()):
                         data["original"] = {k: data.get(k) for k in EDITABLE}
+                        # A person's edit is their review of the row: the warnings from the reading go, and come
+                        # back with Revert.
+                        data["original_issues"] = data.get("issues", [])
+                        data["issues"] = []
                     data.update(change)
                 db.execute("UPDATE rows SET data = ? WHERE id = ?", (json.dumps(data), rid))
             _touch(db, client_id, _now())
@@ -259,6 +264,7 @@ def _touch(db: sqlite3.Connection, client_id: int, now: str) -> None:
 def _stored(row: sqlite3.Row) -> StoredRow:
     data = json.loads(row["data"])
     original = data.pop("original", None)
+    data.pop("original_issues", None)
     return StoredRow(row["id"], row["upload_id"], Transaction.model_validate(data), original)
 
 

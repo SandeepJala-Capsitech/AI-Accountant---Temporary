@@ -201,3 +201,15 @@ def test_jobs_and_people_can_write_at_the_same_time(store):
     for thread in threads:
         thread.join()
     assert failures == [] and len(store.rows(client.id)) == 46
+
+
+def test_a_persons_edit_clears_the_warnings_from_the_reading_and_revert_brings_them_back(store):
+    # Final review #1: a Suspense row recoded by hand still said it went to Suspense, so it stayed in To review.
+    client = store.create_client(CUBE)
+    store.add_upload(client.id, "a.pdf", "pdf", [bill(account_code="9998",
+                                                      issues=[issue("account_not_recognised", "Went to Suspense.")])])
+    row = store.rows(client.id)[0].id
+    store.patch_row(client.id, row, {"account_code": "7500"})
+    assert store.rows(client.id)[0].tx.issues == []
+    store.patch_row(client.id, row, {}, revert=True)
+    assert [i.code for i in store.rows(client.id)[0].tx.issues] == ["account_not_recognised"]

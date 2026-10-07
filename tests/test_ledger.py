@@ -5,6 +5,7 @@ from decimal import Decimal
 import pytest
 
 from ledgersync import ledger
+from ledgersync.checks import issue
 from ledgersync.errors import ClientArchived, InvalidInput
 from ledgersync.models import ClientFields, ClientPatch, ManualUpload, RowPatch, Transaction
 from ledgersync.store import Store
@@ -138,3 +139,13 @@ def test_the_trial_balance_comes_from_the_saved_rows(store):
     assert [(l.code, l.debit, l.credit) for l in ledger.trial_balance(store, client.id).lines] == [
         ("1200", Decimal("0.00"), Decimal("72.00")), ("2201", Decimal("12.00"), Decimal("0.00")),
         ("7502", Decimal("60.00"), Decimal("0.00"))]
+
+
+def test_an_edited_suspense_row_leaves_to_review(store):
+    client = store.create_client(CUBE)
+    store.add_upload(client.id, "a.pdf", "pdf", [row(account_code="9998",
+                                                     issues=[issue("account_not_recognised", "Went to Suspense.")])])
+    rid = store.rows(client.id)[0].id
+    assert ledger.summaries(store)[0].to_review == 1
+    ledger.change_row(store, client.id, rid, RowPatch(account_code="7500"))
+    assert ledger.summaries(store)[0].to_review == 0
