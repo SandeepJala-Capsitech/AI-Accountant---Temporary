@@ -8,6 +8,7 @@ import re
 from typing import Union
 
 from openpyxl import Workbook
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.styles import Font
 
 from .models import Direction, Ledger, TrialBalance
@@ -41,8 +42,17 @@ def workbook(ledger: Ledger, balance: Union[TrialBalance, list[str]], day: dt.da
     return out.getvalue()
 
 
+def _append(sheet, values) -> None:
+    """Adds a row. Text read from documents stays text: characters a worksheet can't hold are dropped, and
+    text starting with "=" is not made a formula."""
+    sheet.append([ILLEGAL_CHARACTERS_RE.sub("", v) if isinstance(v, str) else v for v in values])
+    for cell in sheet[sheet.max_row]:
+        if isinstance(cell.value, str) and cell.value.startswith("="):
+            cell.data_type = "s"
+
+
 def _title(sheet, text: str) -> None:
-    sheet.append([text])
+    _append(sheet, [text])
     sheet["A1"].font = Font(bold=True)
 
 
@@ -55,14 +65,14 @@ def _trial_balance(sheet, ledger: Ledger, balance, day: dt.date) -> None:
     sheet.title = "Trial balance"
     _title(sheet, f"{ledger.client.name} — trial balance — {day.day} {day:%b %Y}")
     if isinstance(balance, list):
-        sheet.append(["The trial balance can't be produced yet:"])
+        _append(sheet, ["The trial balance can't be produced yet:"])
         for problem in balance:
-            sheet.append([problem])
+            _append(sheet, [problem])
         return
-    sheet.append(["Code", "Account", "Debit", "Credit"])
+    _append(sheet, ["Code", "Account", "Debit", "Credit"])
     for line in balance.lines:
-        sheet.append([line.code, line.name, line.debit, line.credit])
-    sheet.append([None, "Totals", balance.total_debits, balance.total_credits])
+        _append(sheet, [line.code, line.name, line.debit, line.credit])
+    _append(sheet, [None, "Totals", balance.total_debits, balance.total_credits])
     for row in sheet.iter_rows(min_row=3, min_col=3, max_col=4):
         for cell in row:
             cell.number_format = MONEY
@@ -73,10 +83,10 @@ def _trial_balance(sheet, ledger: Ledger, balance, day: dt.date) -> None:
 def _transactions(sheet, ledger: Ledger) -> None:
     uploads = {u.id: u.name for u in ledger.uploads}
     _title(sheet, f"{ledger.client.name} — transactions")
-    sheet.append(list(COLUMNS))
+    _append(sheet, COLUMNS)
     for tx in ledger.transactions:
         code, name = (tx.paid_against, tx.paid_against_name) if tx.paid_against else (tx.account_code, tx.account_name)
-        sheet.append([tx.date, tx.description, tx.counterparty, _TYPE_NAMES.get(tx.document_type, tx.document_type),
+        _append(sheet, [tx.date, tx.description, tx.counterparty, _TYPE_NAMES.get(tx.document_type, tx.document_type),
                       "In" if tx.direction == Direction.IN else "Out", tx.gross, tx.vat_posted, tx.net, code, name,
                       tx.contra_account_code, tx.owed, "; ".join(i.message for i in tx.issues) or None,
                       uploads.get(tx.upload_id), "Yes" if tx.edited else None])

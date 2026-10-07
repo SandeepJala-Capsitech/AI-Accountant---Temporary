@@ -70,3 +70,15 @@ def test_the_file_name_drops_characters_file_names_cannot_hold():
     assert file_name('A/B: "Trading" Ltd', DAY) == "A B Trading Ltd 2026-10-06.xlsx"
     assert file_name("Café £ Ltd", DAY) == "Café £ Ltd 2026-10-06.xlsx"
     assert file_name("???", DAY) == "Client 2026-10-06.xlsx"
+
+
+def test_document_text_never_becomes_a_formula_or_breaks_the_export(store):
+    # Final review #3: "=HYPERLINK(…)" read from a document became a live formula, and a stray control character
+    # failed the whole export.
+    client = store.create_client(CUBE.model_copy(update={"name": "=Evil Ltd"}))
+    store.add_upload(client.id, "=cmd.pdf", "pdf", [receipt(description='=HYPERLINK("http://example.invalid","x")'),
+                                                    receipt(description="Paper\x0cand toner", document_ref="p")])
+    tb, txs, _ = sheets(store, client.id)
+    assert (txs["B3"].value, txs["B3"].data_type) == ('=HYPERLINK("http://example.invalid","x")', "s")
+    assert txs["B4"].value == "Paperand toner"
+    assert (tb["A1"].data_type, txs["A1"].data_type, txs["N3"].data_type) == ("s", "s", "s")
