@@ -1,7 +1,7 @@
 'use client'
 
 import type { Upload } from '@/lib/clients'
-import { dayMonth, statementText } from '@/lib/clientRules'
+import { dayMonth, statementText, transactionCount } from '@/lib/clientRules'
 
 // What was added to the client, newest first, with each bank statement's balance check and Remove.
 export default function UploadsList({ uploads, readOnly, onRemove }: {
@@ -23,7 +23,7 @@ export default function UploadsList({ uploads, readOnly, onRemove }: {
             return (
               <li key={upload.id}>
                 <div className="upload-name" title={upload.name}>{upload.name}</div>
-                <div className="muted small">{upload.rows} row{upload.rows === 1 ? '' : 's'} · {dayMonth(upload.created_at)}</div>
+                <div className="muted small">{transactionCount(upload.rows)} · {dayMonth(upload.created_at)}</div>
                 {check && (
                   <div className={`small ${status === 'gap' ? 'text-warn' : status === 'ok' ? 'text-ok' : 'muted'}`}>{check}</div>
                 )}

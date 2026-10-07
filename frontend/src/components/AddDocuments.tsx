@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { analyze, ApiError, getHealth, type Transaction } from '@/lib/api'
 import { addManualRows, type Ledger, type Upload } from '@/lib/clients'
-import { requeue, sameFileAs, sameFileText, type FileStatus, type PickedFile } from '@/lib/clientRules'
+import { requeue, sameFileAs, sameFileText, transactionCount, type FileStatus, type PickedFile } from '@/lib/clientRules'
 import { fingerprint } from '@/lib/duplicates'
 
 const MAX_BATCH_FILES = 20
@@ -91,7 +91,7 @@ export default function AddDocuments({ clientId, uploads, onSaved, onLedger }: {
                                        p => update(item.id, { detail: p }), () => cancelRef.current)
           const count = result.transactions.length
           if (!count) throw new ApiError('No transactions were found in this file.', 'empty')
-          update(item.id, { status: 'done', detail: `${count} row${count === 1 ? '' : 's'} saved` })
+          update(item.id, { status: 'done', detail: `${transactionCount(count)} saved` })
           onSaved()
         } catch (e) {
           const cancelled = e instanceof ApiError && e.code === 'cancelled'

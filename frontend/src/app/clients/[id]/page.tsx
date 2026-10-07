@@ -14,7 +14,7 @@ import { ApiError } from '@/lib/api'
 import {
   changeClient, changeRow, exportUrl, getLedger, removeUpload, type ClientFields, type Ledger, type RowChange, type SavedRow, type Upload,
 } from '@/lib/clients'
-import { BUSINESS_TYPES, figuresOf } from '@/lib/clientRules'
+import { BUSINESS_TYPES, figuresOf, transactionCount } from '@/lib/clientRules'
 import { money } from '@/lib/ledger'
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
@@ -85,8 +85,7 @@ export default function ClientPage() {
     await load()
   }
   const remove = async (upload: Upload) => {
-    const rows = `${upload.rows} row${upload.rows === 1 ? '' : 's'}`
-    const question = `Remove ${upload.name} and its ${rows}? This can't be undone: analyse the file again to get them back.`
+    const question = `Remove ${upload.name} and its ${transactionCount(upload.rows)}? This can't be undone: analyse the file again to get them back.`
     if (await ask(question, 'Remove')) await act(() => removeUpload(client.id, upload.id))
   }
   const change = (rowId: number, rowChange: RowChange) => act(() => changeRow(client.id, rowId, rowChange))
@@ -123,7 +122,7 @@ export default function ClientPage() {
       )}
       {error && <div className="notice notice-error">{error}</div>}
       <div className="figures">
-        <div className="card figure"><div className="figure-label">Rows</div><div className="figure-value">{figures.rows}</div></div>
+        <div className="card figure"><div className="figure-label">Transactions</div><div className="figure-value">{figures.rows}</div></div>
         <div className="card figure">
           <div className="figure-label">To review</div>
           <div className={figures.toReview ? 'figure-value text-warn' : 'figure-value'}>{figures.toReview}</div>

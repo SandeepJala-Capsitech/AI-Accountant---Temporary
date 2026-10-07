@@ -5,7 +5,7 @@ import type { ClientSummary, SavedRow, Upload } from './clients.ts'
 import type { PickedFile } from './clientRules.ts'
 import {
   changesOf, clientFormErrors, dayMonth, draftOf, emptyListText, figuresOf, requeue, rowEditErrors, sameFileAs,
-  searchClients, showsInvitation, statementText,
+  searchClients, showsInvitation, statementText, transactionCount,
 } from './clientRules.ts'
 
 const client = (change: Partial<ClientSummary> = {}): ClientSummary => ({
@@ -107,4 +107,9 @@ test('retry skips a file that was saved after all, and queues the rest again', (
   assert.deepEqual(requeue(items, uploads).map(item => [item.status, item.detail]), [
     ['skipped', 'Skipped: same file as clearway.csv, uploaded 7 Oct'], ['waiting', 'Waiting'], ['done', '1 row saved'],
   ])
+})
+
+test('counts say transactions, not rows', () => {
+  // Asked for on 2026-10-07: a count of what was read or saved names transactions.
+  assert.deepEqual([0, 1, 12].map(transactionCount), ['0 transactions', '1 transaction', '12 transactions'])
 })

@@ -87,7 +87,7 @@ export default function ClientsPage() {
                   <th>Company</th>
                   <th>Responsible person</th>
                   <th>VAT</th>
-                  <th className="num">Rows</th>
+                  <th className="num">Transactions</th>
                   <th className="num">To review</th>
                   <th className="num">Updated</th>
                   <th aria-label="Actions" />

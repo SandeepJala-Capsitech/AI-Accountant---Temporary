@@ -3,7 +3,7 @@
 import { useMemo } from 'react'
 import type { Issue } from '@/lib/api'
 import type { Ledger, RowChange, SavedRow } from '@/lib/clients'
-import { DOCUMENT_TYPES } from '@/lib/clientRules'
+import { DOCUMENT_TYPES, transactionCount } from '@/lib/clientRules'
 import { DUPLICATE_WINDOW_DAYS, possibleDuplicates } from '@/lib/duplicates'
 import { kindOf, money, rowStatus, totalsOf } from '@/lib/ledger'
 
@@ -49,7 +49,7 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit }
       <div className="section-head">
         <h2>Transactions</h2>
         <span className="muted small">
-          {rows.length} row{rows.length === 1 ? '' : 's'}
+          {transactionCount(rows.length)}
           {duplicates ? ` · ${duplicates} possible duplicate${duplicates === 1 ? '' : 's'}` : ''}
         </span>
       </div>
@@ -130,7 +130,7 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit }
             {totals.map(t => (
               <tr key={t.key}>
                 <td colSpan={3}>
-                  {t.label} ({t.count} row{t.count === 1 ? '' : 's'})
+                  {t.label} ({transactionCount(t.count)})
                   {t.stillOwed != null && ` · ${money(t.stillOwed)} still owed`}
                 </td>
                 <td className="num">{money(t.gross)}</td>

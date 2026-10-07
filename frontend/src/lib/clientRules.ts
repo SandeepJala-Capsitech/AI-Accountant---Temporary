@@ -76,6 +76,9 @@ export interface PickedFile {
   detail: string
 }
 
+// How many transactions an upload holds or a file gave: "1 transaction", "12 transactions".
+export const transactionCount = (n: number) => `${n} transaction${n === 1 ? '' : 's'}`
+
 // Why a file that repeats a saved upload is not read again.
 export const sameFileText = (upload: Upload) => `Skipped: same file as ${upload.name}, uploaded ${dayMonth(upload.created_at)}`
 
