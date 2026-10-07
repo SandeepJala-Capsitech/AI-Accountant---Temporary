@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { useParams } from 'next/navigation'
 import { useCallback, useEffect, useState } from 'react'
+import AddDocuments from '@/components/AddDocuments'
 import ClientDialog from '@/components/ClientDialog'
 import { useConfirm } from '@/components/ConfirmDialog'
 import TransactionsTable from '@/components/TransactionsTable'
@@ -123,6 +124,7 @@ export default function ClientPage() {
         <div className="card figure"><div className="figure-label">To pay</div><div className="figure-value">{money(figures.toPay)}</div></div>
         <div className="card figure"><div className="figure-label">To receive</div><div className="figure-value">{money(figures.toReceive)}</div></div>
       </div>
+      {!client.archived && <AddDocuments clientId={client.id} uploads={ledger.uploads} onSaved={load} onLedger={show} />}
       <div className="workspace">
         <TransactionsTable ledger={ledger} readOnly={client.archived} onChange={change} />
         <UploadsList uploads={ledger.uploads} readOnly={client.archived} onRemove={remove} />
