@@ -27,6 +27,17 @@ export function searchClients(clients: ClientSummary[], query: string): ClientSu
   return clients.filter(c => [c.name, c.contact_name, c.contact_email].some(text => text.toLowerCase().includes(wanted)))
 }
 
+// The first page invites you to add a client only when there are none at all: with every client archived,
+// the list (and Show archived) must stay, or nothing could be restored.
+export const showsInvitation = (counts: { active: number; archived: number }, showArchived: boolean) =>
+  !showArchived && counts.active === 0 && counts.archived === 0
+
+// What the clients table says when it has no rows to show.
+export function emptyListText(showArchived: boolean, query: string): string {
+  if (query.trim()) return 'No clients match your search.'
+  return showArchived ? 'No archived clients.' : 'No active clients. Show archived to restore one.'
+}
+
 export type ClientErrors = Partial<Record<'name' | 'contact_name' | 'contact_email', string>>
 
 // What the client dialog says before saving; the API checks the same.

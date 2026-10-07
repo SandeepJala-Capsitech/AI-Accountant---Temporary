@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import ClientDialog from '@/components/ClientDialog'
 import { useConfirm } from '@/components/ConfirmDialog'
 import { addClient, changeClient, listClients, type Client, type ClientFields, type ClientSummary } from '@/lib/clients'
-import { BUSINESS_TYPES, dayMonth, searchClients } from '@/lib/clientRules'
+import { BUSINESS_TYPES, dayMonth, emptyListText, searchClients, showsInvitation } from '@/lib/clientRules'
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
@@ -52,7 +52,7 @@ export default function ClientsPage() {
     try { await changeClient(client.id, { archived: false }); await load() } catch (e) { setError(message(e)) }
   }
 
-  const empty = clients !== null && !clients.length && !showArchived
+  const empty = clients !== null && showsInvitation(counts, showArchived)
   return (
     <>
       <div className="page-head">
@@ -128,7 +128,7 @@ export default function ClientsPage() {
                 {clients !== null && !shown.length && (
                   <tr>
                     <td colSpan={7} className="muted">
-                      {showArchived ? 'No archived clients.' : 'No clients match your search.'}
+                      {emptyListText(showArchived, query)}
                     </td>
                   </tr>
                 )}

@@ -3,7 +3,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { ClientSummary, SavedRow, Upload } from './clients.ts'
 import {
-  changesOf, clientFormErrors, dayMonth, draftOf, figuresOf, rowEditErrors, sameFileAs, searchClients, statementText,
+  changesOf, clientFormErrors, dayMonth, draftOf, emptyListText, figuresOf, rowEditErrors, sameFileAs, searchClients,
+  showsInvitation, statementText,
 } from './clientRules.ts'
 
 const client = (change: Partial<ClientSummary> = {}): ClientSummary => ({
@@ -76,4 +77,19 @@ test('dates read as day and short month', () => {
   assert.equal(dayMonth('2026-10-06'), '6 Oct')
   assert.equal(dayMonth('2026-10-06T12:00:00+00:00'), '6 Oct')
   assert.equal(dayMonth(null), '')
+})
+
+test('the first-client invitation shows only when there are no clients at all', () => {
+  // With every client archived, the invitation hid Show archived, so nothing could be restored.
+  assert.equal(showsInvitation({ active: 0, archived: 0 }, false), true)
+  assert.equal(showsInvitation({ active: 0, archived: 1 }, false), false)
+  assert.equal(showsInvitation({ active: 2, archived: 0 }, false), false)
+  assert.equal(showsInvitation({ active: 0, archived: 0 }, true), false)
+})
+
+test('an empty list says why it is empty', () => {
+  assert.equal(emptyListText(false, ''), 'No active clients. Show archived to restore one.')
+  assert.equal(emptyListText(false, 'zz'), 'No clients match your search.')
+  assert.equal(emptyListText(true, ' '), 'No archived clients.')
+  assert.equal(emptyListText(true, 'zz'), 'No clients match your search.')
 })
