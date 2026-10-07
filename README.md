@@ -44,9 +44,9 @@ Analyses run as background jobs: `POST /api/analyze` returns `{job_id}`, then
 once (`LEDGERSYNC_MAX_PARALLEL_JOBS`), and the UI sends that many files of an upload at a time; on
 Groq's free plan they mostly wait on its per-minute limits, so the gain shows on a paid plan.
 
-The UI keeps one table across uploads and catches what was entered twice. A file whose content is
-already in the table, or picked twice, is skipped without being read. A row with the same amount
-and direction as a row from another input, dated within three days of it (a receipt and its bank
+Each client's page keeps one table across its uploads and catches what was entered twice. A file already
+uploaded for that client, on any day, or picked twice, is skipped without being read. A row with the same
+amount and direction as a row from another upload, dated within three days of it (a receipt and its bank
 line, say), is flagged "possible duplicate" and left for a person to decide.
 Without a key or an internet connection the API answers 503 with how to fix it; it never guesses.
 
@@ -80,6 +80,27 @@ Documents are booked the way an accountant would (accruals):
 `document_ref`, `link` and `include` on each row, and return `paid_against`, `pays`, `candidates`, `owed`
 and `paid_by`. Rows without a `document_type` are receipts, so older clients keep their postings. The
 design is in `docs/superpowers/specs/2026-10-06-unpaid-documents-and-payment-matching-design.md`.
+
+### Clients and saved work
+
+The first page lists your clients. Add one with its company name, its business type (limited company,
+sole trader, partnership or LLP), its responsible person (the client's own contact, with email and phone)
+and whether it is VAT registered. Open a client to add its documents: each analysis is saved to that
+client in a local database when it finishes, with the decisions you make (Link, Include, edits), so
+closing the browser loses nothing. Archive hides a client and keeps everything; Restore brings it back.
+
+- Edit corrects a row: date, description, counterparty, money in or out, amount, VAT shown, account and
+  document type. The row shows "Edited", and Revert puts back what the model read.
+- A bank statement is checked against the balances it prints. A line the model missed or misread shows
+  where the balance breaks, and the upload says "Doesn't add up".
+- Export to Excel downloads the client's trial balance and transactions as one workbook.
+- VAT on client entertainment (7403) and on cars (0050 Cars) is not reclaimed; vans (0055 Vans) are. A
+  limited company's owners use 2250 Director's Loan Account; other businesses use 3260 Drawings and
+  3000 Capital Introduced.
+
+The database is one SQLite file, `data/ledgersync.db` (git-ignored), or wherever `LEDGERSYNC_DB_PATH`
+points; deleting it removes every client. The endpoints are under `/api/clients`, and the design is in
+`docs/superpowers/specs/2026-10-06-clients-and-local-database-design.md`.
 
 ## The AI model (Groq)
 
@@ -124,6 +145,7 @@ Settings come from environment variables or `.env` (environment variables win).
 | `LEDGERSYNC_MAX_PDF_PAGES` | `30` | Most pages accepted in one PDF |
 | `LEDGERSYNC_MAX_PARALLEL_JOBS` | `2` | Documents read at once; `1` reads them one at a time |
 | `LEDGERSYNC_LOG_LEVEL` | `INFO` | Log level (document contents are never logged) |
+| `LEDGERSYNC_DB_PATH` | `data/ledgersync.db` | The local database of clients and their saved rows |
 | `API_URL` (frontend) | `http://127.0.0.1:8085` | Where the Next.js `/api` rewrite sends requests |
 
 ## Tests
