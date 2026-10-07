@@ -1,9 +1,10 @@
-# UK LedgerSync (prototype)
+# Super Accountant (prototype)
 
 Turns UK financial inputs (receipt photos, bank statement CSV/Excel/PDF exports, pasted text
 or manual entries) into categorised transactions and a double-entry trial balance. Documents are
 read by Groq's hosted Qwen vision model (`qwen/qwen3.8-27b`): **uploaded documents are sent to
-Groq.**
+Groq.** The code keeps its working name, LedgerSync: the `ledgersync` package, the `LEDGERSYNC_*`
+settings and the `X-LedgerSync` header.
 
 - `server.py` — FastAPI routes (port 8085, localhost only)
 - `ledgersync/` — settings, typed errors, background jobs, the Groq client, upload checks, the

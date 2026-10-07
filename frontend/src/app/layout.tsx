@@ -9,7 +9,7 @@ const serif = Source_Serif_4({ subsets: ['latin'], variable: '--font-serif', dis
 const mono = IBM_Plex_Mono({ subsets: ['latin'], weight: ['400', '500'], variable: '--font-mono', display: 'swap' })
 
 export const metadata: Metadata = {
-  title: 'LedgerSync',
+  title: 'Super Accountant',
   description: "Clients' documents read by AI, booked, matched and saved, with their trial balances",
 }
 

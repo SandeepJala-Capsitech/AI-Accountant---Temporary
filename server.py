@@ -54,7 +54,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         jobs.shutdown()
 
     app = FastAPI(
-        title="UK LedgerSync API",
+        title="Super Accountant API",
         description="Qwen vision model on Groq → structured accounting data → trial balance",
         lifespan=lifespan,
     )
@@ -112,8 +112,8 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         if not x_ledgersync:
             # A form on any web page can post here without the browser asking the API first. The LedgerSync
             # pages send this header, which a form can't, and another site's script can't unless CORS allows it.
-            raise RefusedRequest("Analyses are taken from the LedgerSync pages only: the X-LedgerSync header "
-                                 "is missing.")
+            raise RefusedRequest("Analyses are taken from the Super Accountant pages only: the X-LedgerSync "
+                                 "header is missing.")
         client = None
         if client_id is not None:
             client = store.get_client(client_id)

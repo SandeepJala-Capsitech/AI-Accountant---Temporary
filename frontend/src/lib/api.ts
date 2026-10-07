@@ -96,7 +96,7 @@ export class ApiError extends Error {
 
 const POLL_INTERVAL_MS = 1_000
 const MAX_POLL_FAILURES = 10 // ~10 s: long enough for the API to restart
-const API_DOWN = 'The LedgerSync API is not running or failed. Check that `python server.py` is running and see its log.'
+const API_DOWN = 'The Super Accountant API is not running or failed. Check that `python server.py` is running and see its log.'
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -106,8 +106,8 @@ export async function request<T>(path: string, init: RequestInit = {}, timeoutMs
   const res = await fetch(path, { ...init, signal: controller.signal })
     .catch(() => {
       throw controller.signal.aborted
-        ? new ApiError('The LedgerSync API did not respond in time.', 'timeout')
-        : new ApiError('Cannot reach the LedgerSync API. Is `python server.py` running?', 'network')
+        ? new ApiError('The Super Accountant API did not respond in time.', 'timeout')
+        : new ApiError('Cannot reach the Super Accountant API. Is `python server.py` running?', 'network')
     })
     .finally(() => clearTimeout(timer))
   if (!res.ok) throw await errorFrom(res)
@@ -132,7 +132,7 @@ async function errorFrom(res: Response): Promise<ApiError> {
     const d = detail as { message: string; code?: string }
     return new ApiError(d.message, d.code ?? code)
   }
-  return new ApiError(`The LedgerSync API returned HTTP ${res.status}.`, code)
+  return new ApiError(`The Super Accountant API returned HTTP ${res.status}.`, code)
 }
 
 export function getHealth(): Promise<Health> {
@@ -167,7 +167,7 @@ export async function analyze(
       // The API may be restarting: keep polling briefly. Once it is back, an unknown
       // job answers 404 job_not_found with "please run it again".
       if (e instanceof ApiError && e.code === 'network' && ++failures < MAX_POLL_FAILURES) {
-        onProgress('Waiting for the LedgerSync API…')
+        onProgress('Waiting for the Super Accountant API…')
         await sleep(POLL_INTERVAL_MS)
         continue
       }

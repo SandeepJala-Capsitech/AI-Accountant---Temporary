@@ -20,6 +20,14 @@
   --hover: rgba(31, 36, 33, 0.05);
   --overlay: rgba(31, 36, 33, 0.4);
   --radius: 8px;
+  /* The header bar: the logo's navy in both themes, so the logo sits in it seamlessly. */
+  --bar: #0A1C30;
+  --on-bar: #FFFFFF;
+  --on-bar-muted: #B7C2D0;
+  --bar-rule: rgba(255, 255, 255, 0.18);
+  --bar-hover: rgba(255, 255, 255, 0.08);
+  --bar-ok: #97C459;
+  --bar-error: #F09595;
   color-scheme: light;
 }
 
@@ -86,20 +94,34 @@ button, input, select, textarea { font: inherit; color: inherit; }
 /* Header */
 .app-header {
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
-  padding: 12px 24px; border-bottom: 1px solid var(--rule); background: var(--card);
+  padding: 8px 24px; background: var(--bar); color: var(--on-bar);
 }
-.brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 600; font-size: 15px; color: var(--text); text-decoration: none; }
-.brand-mark {
-  width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center;
-  background: var(--accent); color: var(--on-accent); font-family: var(--font-serif), serif;
+.brand { display: inline-flex; align-items: center; gap: 14px; color: var(--on-bar); text-decoration: none; flex-shrink: 0; }
+.brand:focus-visible { outline: 2px solid var(--on-bar); outline-offset: 4px; border-radius: 4px; }
+.brand-logo { display: block; height: 44px; width: auto; }
+.brand-name {
+  padding-left: 14px; border-left: 1px solid var(--bar-rule);
+  font-family: var(--font-serif), serif; font-size: 19px; font-weight: 600; letter-spacing: 0.01em; white-space: nowrap;
 }
 .header-end { display: flex; align-items: center; gap: 14px; }
-.ai-status { font-size: 12.5px; color: var(--muted); }
+.ai-status { font-size: 12.5px; color: var(--on-bar-muted); white-space: nowrap; }
 .ai-status::before { content: '●'; margin-right: 6px; }
-.ai-on::before { color: var(--ok); }
-.ai-off::before { color: var(--error); }
-.icon-btn { width: 32px; height: 32px; border-radius: var(--radius); border: 1px solid var(--rule); background: transparent; cursor: pointer; }
-.icon-btn:hover { background: var(--hover); }
+.ai-on::before { color: var(--bar-ok); }
+.ai-off::before { color: var(--bar-error); }
+.icon-btn {
+  width: 32px; height: 32px; border-radius: var(--radius); border: 1px solid var(--bar-rule);
+  background: transparent; color: var(--on-bar); cursor: pointer;
+}
+.icon-btn:hover { background: var(--bar-hover); }
+.app-header .icon-btn:focus-visible { outline-color: var(--on-bar); }
+@media (max-width: 640px) {
+  .app-header { padding: 8px 16px; gap: 10px; }
+  .brand { gap: 10px; }
+  .brand-logo { height: 36px; }
+  .brand-name { padding-left: 10px; font-size: 16px; }
+  /* The dot stays; its words are kept for screen readers only. */
+  .ai-status-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+}
 
 /* Page heads */
 .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin: 8px 0 20px; }
