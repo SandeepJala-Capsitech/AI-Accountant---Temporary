@@ -148,7 +148,9 @@ export async function analyze(
   onProgress: (progress: string) => void,
   isCancelled: () => boolean,
 ): Promise<AnalyzeResult> {
-  const { job_id } = await request<{ job_id: string }>('/api/analyze', { method: 'POST', body: formData }, 120_000)
+  // The API takes analyses only with this header, which a form on another web site can't send.
+  const init = { method: 'POST', body: formData, headers: { 'X-LedgerSync': '1' } }
+  const { job_id } = await request<{ job_id: string }>('/api/analyze', init, 120_000)
   let failures = 0
   let cancelSent = false
   for (;;) {

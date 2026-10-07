@@ -25,3 +25,17 @@ test('a cancel that arrives after the job saved its rows still returns them', as
   assert.deepEqual(await analyze(new FormData(), () => {}, () => cancelled), result)
   assert.equal(calls.filter(c => c.startsWith('DELETE')).length, 1)
 })
+
+test('an analysis tells the API it comes from these pages', async () => {
+  // Final review #4: the API refuses an analysis without X-LedgerSync, which a form on another site can't send.
+  let sent: Headers | undefined
+  globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+    if (init?.method === 'POST') {
+      sent = new Headers(init.headers)
+      return reply({ job_id: 'j1', status: 'queued' })
+    }
+    return reply({ job_id: 'j1', status: 'succeeded', progress: '', result: { transactions: [], warnings: [], model: 'm' }, error: null })
+  }) as typeof fetch
+  await analyze(new FormData(), () => {}, () => false)
+  assert.equal(sent?.get('X-LedgerSync'), '1')
+})

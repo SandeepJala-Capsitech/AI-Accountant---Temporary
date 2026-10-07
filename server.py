@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from typing import Optional
 from urllib.parse import quote
 
-from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi import FastAPI, File, Form, Header, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
@@ -16,7 +16,7 @@ from ledgersync import ledger as books
 from ledgersync.accounts import choosable
 from ledgersync.checks import normalise
 from ledgersync.config import Settings
-from ledgersync.errors import LedgerSyncError, UnreadableFile
+from ledgersync.errors import LedgerSyncError, RefusedRequest, UnreadableFile
 from ledgersync.extractor import TransactionExtractor
 from ledgersync.groq_client import GroqClient
 from ledgersync.jobs import JobStore
@@ -106,9 +106,14 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
 
     @app.post("/api/analyze", status_code=202)
     def analyze_transaction(text: Optional[str] = Form(None), file: Optional[UploadFile] = File(None),
-                            client_id: Optional[int] = Form(None)):
-        """Validates the input now (404/409/413/415/422), then analyses it in a background job; with a
+                            client_id: Optional[int] = Form(None), x_ledgersync: Optional[str] = Header(None)):
+        """Validates the input now (403/404/409/413/415/422), then analyses it in a background job; with a
         client_id, the job saves the rows it finds to that client."""
+        if not x_ledgersync:
+            # A form on any web page can post here without the browser asking the API first. The LedgerSync
+            # pages send this header, which a form can't, and another site's script can't unless CORS allows it.
+            raise RefusedRequest("Analyses are taken from the LedgerSync pages only: the X-LedgerSync header "
+                                 "is missing.")
         client = None
         if client_id is not None:
             client = store.get_client(client_id)

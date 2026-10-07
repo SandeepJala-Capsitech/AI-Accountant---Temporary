@@ -89,6 +89,13 @@ class InvalidInput(LedgerSyncError):
     code = "invalid_input"
 
 
+class RefusedRequest(LedgerSyncError):
+    """A request any web page could have sent unasked: it lacks the header the LedgerSync pages send."""
+
+    status_code = 403
+    code = "refused_request"
+
+
 class StorageError(LedgerSyncError):
     """The local database could not be read or written; the server log says why."""
 

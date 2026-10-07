@@ -155,6 +155,10 @@ also allows `PATCH`.
 
 ### Analysing for a client
 
+`POST /api/analyze` takes form data, which any web page can post to the API without the browser asking it
+first. So it refuses (403 `refused_request`) a request without an `X-LedgerSync` header, which the pages send
+and a form can't (final review, 2026-10-07).
+
 When `POST /api/analyze` is given a `client_id`:
 
 1. **Before the job is queued:** an unknown client is a 404, and an archived client a 409 ("Restore

@@ -40,8 +40,9 @@ cp .env.example .env                      # then paste your key after GROQ_API_K
 ```
 
 Analyses run as background jobs: `POST /api/analyze` returns `{job_id}`, then
-`GET /api/jobs/{job_id}` reports progress and the result; `DELETE` cancels. Up to two jobs run at
-once (`LEDGERSYNC_MAX_PARALLEL_JOBS`), and the UI sends that many files of an upload at a time; on
+`GET /api/jobs/{job_id}` reports progress and the result; `DELETE` cancels. The API takes an analysis
+only with an `X-LedgerSync` header, which the pages send and a form on another web site can't. Up to two
+jobs run at once (`LEDGERSYNC_MAX_PARALLEL_JOBS`), and the UI sends that many files of an upload at a time; on
 Groq's free plan they mostly wait on its per-minute limits, so the gain shows on a paid plan.
 
 Each client's page keeps one table across its uploads and catches what was entered twice. A file already

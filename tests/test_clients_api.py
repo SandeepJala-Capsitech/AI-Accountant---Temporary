@@ -27,7 +27,7 @@ def api(tmp_path):
     def _make(model=None):
         app = create_app(Settings(warmup=False), model_client=model or FakeModel([]),
                          store=Store(tmp_path / "ledgersync.db"))
-        client = TestClient(app)
+        client = TestClient(app, headers={"X-LedgerSync": "1"})   # as the LedgerSync pages send
         client.__enter__()
         opened.append(client)
         return client
@@ -200,6 +200,18 @@ def test_nothing_is_saved_when_a_job_finds_no_rows_or_fails(api, reply):
     cid = add(client)["id"]
     finish(client, client.post("/api/analyze", data={"text": "x", "client_id": str(cid)}).json()["job_id"])
     assert client.get(f"/api/clients/{cid}/ledger").json()["uploads"] == []
+
+
+def test_a_post_from_another_web_page_cannot_add_rows(api):
+    # Final review #4: a form on any web page could post here unasked and book rows to a client. The LedgerSync
+    # pages send X-LedgerSync, which a form can't send.
+    model = FakeModel([transactions_json(ROW)])
+    client = api(model)
+    cid = add(client)["id"]
+    del client.headers["X-LedgerSync"]
+    resp = client.post("/api/analyze", data={"text": "BT 72.00", "client_id": str(cid)})
+    assert (resp.status_code, resp.json()["detail"]["code"]) == (403, "refused_request")
+    assert model.calls == [] and client.get(f"/api/clients/{cid}/ledger").json()["uploads"] == []
 
 
 def test_an_unknown_or_archived_client_is_refused_before_anything_is_queued(api):
