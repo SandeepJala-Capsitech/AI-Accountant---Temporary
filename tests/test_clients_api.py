@@ -261,3 +261,25 @@ def test_a_statements_balances_reach_the_saved_rows_and_are_checked(api):
     finish(client, client.post("/api/analyze", data={"text": "x", "client_id": str(cid)}).json()["job_id"])
     [upload] = client.get(f"/api/clients/{cid}/ledger").json()["uploads"]
     assert upload["statement"] == {"status": "ok", "difference": None}
+
+
+def test_a_cancel_that_arrives_after_the_rows_were_saved_leaves_the_job_succeeded(api, monkeypatch):
+    # Final review #2: the job was marked cancelled after its rows were saved, so Retry booked them twice.
+    saving, release = threading.Event(), threading.Event()
+    real_add = Store.add_upload
+
+    def slow_add(self, *args, **kwargs):
+        upload_id = real_add(self, *args, **kwargs)
+        saving.set()
+        release.wait(5)
+        return upload_id
+
+    monkeypatch.setattr(Store, "add_upload", slow_add)
+    client = api(FakeModel([transactions_json(ROW)]))
+    cid = add(client)["id"]
+    job_id = client.post("/api/analyze", data={"text": "x", "client_id": str(cid)}).json()["job_id"]
+    assert saving.wait(5)
+    client.delete(f"/api/jobs/{job_id}")
+    release.set()
+    assert finish(client, job_id)["status"] == "succeeded"
+    assert len(client.get(f"/api/clients/{cid}/ledger").json()["uploads"]) == 1

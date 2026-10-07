@@ -65,6 +65,30 @@ export function figuresOf(rows: SavedRow[]) {
 export const sameFileAs = (hash: string | null, uploads: Upload[]) =>
   (hash ? uploads.find(upload => upload.sha256 === hash) : undefined)
 
+// A file picked for upload, and how far it got.
+export type FileStatus = 'waiting' | 'reading' | 'done' | 'failed' | 'skipped' | 'cancelled'
+
+export interface PickedFile {
+  id: number
+  file: File
+  hash: string | null      // fingerprint of the file's content (null if the browser cannot hash)
+  status: FileStatus
+  detail: string
+}
+
+// Why a file that repeats a saved upload is not read again.
+export const sameFileText = (upload: Upload) => `Skipped: same file as ${upload.name}, uploaded ${dayMonth(upload.created_at)}`
+
+// The files Retry reads again: those that failed or were cancelled, unless the file was saved after all (a job
+// can save its rows just as a cancel arrives); those are skipped like any file uploaded before.
+export function requeue(items: PickedFile[], uploads: Upload[]): PickedFile[] {
+  return items.map(item => {
+    if (item.status !== 'failed' && item.status !== 'cancelled') return item
+    const saved = sameFileAs(item.hash, uploads)
+    return saved ? { ...item, status: 'skipped', detail: sameFileText(saved) } : { ...item, status: 'waiting', detail: 'Waiting' }
+  })
+}
+
 // What the uploads list says about a bank statement's balances; null for any other upload.
 export function statementText(check: StatementCheck | null): string | null {
   if (!check) return null

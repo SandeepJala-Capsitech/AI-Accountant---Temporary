@@ -3,20 +3,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { analyze, ApiError, getHealth, type Transaction } from '@/lib/api'
 import { addManualRows, type Ledger, type Upload } from '@/lib/clients'
-import { dayMonth, sameFileAs } from '@/lib/clientRules'
+import { requeue, sameFileAs, sameFileText, type FileStatus, type PickedFile } from '@/lib/clientRules'
 import { fingerprint } from '@/lib/duplicates'
 
 const MAX_BATCH_FILES = 20
-
-type FileStatus = 'waiting' | 'reading' | 'done' | 'failed' | 'skipped' | 'cancelled'
-
-interface BatchItem {
-  id: number
-  file: File
-  hash: string | null      // fingerprint of the file's content (null if the browser cannot hash)
-  status: FileStatus
-  detail: string
-}
 
 const MARK: Record<FileStatus, string> = { waiting: '○', reading: '', done: '✓', failed: '✖', skipped: '–', cancelled: '■' }
 
@@ -44,7 +34,7 @@ export default function AddDocuments({ clientId, uploads, onSaved, onLedger }: {
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState('')
   const [error, setError] = useState('')
-  const [batch, setBatch] = useState<BatchItem[]>([])
+  const [batch, setBatch] = useState<PickedFile[]>([])
   const [limits, setLimits] = useState({ parallel: 1, maxMb: 20 })
   const cancelRef = useRef(false)
   const nextId = useRef(1)
@@ -56,7 +46,7 @@ export default function AddDocuments({ clientId, uploads, onSaved, onLedger }: {
       .catch(() => { /* the header says the API is down; the defaults stand */ })
   }, [])
 
-  const update = useCallback((id: number, patch: Partial<BatchItem>) =>
+  const update = useCallback((id: number, patch: Partial<PickedFile>) =>
     setBatch(prev => prev.map(item => (item.id === id ? { ...item, ...patch } : item))), [])
 
   const analyseText = async () => {
@@ -80,7 +70,7 @@ export default function AddDocuments({ clientId, uploads, onSaved, onLedger }: {
   }
 
   // Reads the waiting files, up to `parallel` at a time; each is saved to the client as it finishes.
-  const runBatch = async (items: BatchItem[]) => {
+  const runBatch = async (items: PickedFile[]) => {
     const todo = items.filter(item => item.status === 'waiting')
     if (!todo.length) return
     cancelRef.current = false
@@ -122,7 +112,7 @@ export default function AddDocuments({ clientId, uploads, onSaved, onLedger }: {
     if (fileInput.current) fileInput.current.value = ''   // lets the same files be chosen again
     if (!picked.length) return
     const hashes = await Promise.all(picked.slice(0, MAX_BATCH_FILES).map(fingerprint))
-    const items: BatchItem[] = []
+    const items: PickedFile[] = []
     hashes.forEach((hash, n) => {
       const file = picked[n]
       // A file already saved for this client, or picked twice, is not read again: its rows would be booked twice.
@@ -130,7 +120,7 @@ export default function AddDocuments({ clientId, uploads, onSaved, onLedger }: {
       const twice = hash ? items.find(item => item.hash === hash) : undefined
       // Size is checked here because the Next proxy cuts oversized bodies instead of refusing them.
       const tooBig = file.size > limits.maxMb * 1024 * 1024
-      const detail = saved ? `Skipped: same file as ${saved.name}, uploaded ${dayMonth(saved.created_at)}`
+      const detail = saved ? sameFileText(saved)
         : twice ? `Skipped: same file as ${twice.file.name} in this upload`
         : tooBig ? `Larger than the ${limits.maxMb} MB limit: split it and upload the parts` : 'Waiting'
       items.push({ id: nextId.current++, file, hash, status: saved || twice || tooBig ? 'skipped' : 'waiting', detail })
@@ -142,9 +132,9 @@ export default function AddDocuments({ clientId, uploads, onSaved, onLedger }: {
     runBatch(items)
   }
 
+  // Files saved after all, just as a cancel arrived, are skipped rather than read and booked again.
   const retry = () => {
-    const again = batch.map(item => (item.status === 'failed' || item.status === 'cancelled'
-      ? { ...item, status: 'waiting' as const, detail: 'Waiting' } : item))
+    const again = requeue(batch, uploads)
     setBatch(again)
     runBatch(again)
   }

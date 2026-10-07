@@ -2,9 +2,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { ClientSummary, SavedRow, Upload } from './clients.ts'
+import type { PickedFile } from './clientRules.ts'
 import {
-  changesOf, clientFormErrors, dayMonth, draftOf, emptyListText, figuresOf, rowEditErrors, sameFileAs, searchClients,
-  showsInvitation, statementText,
+  changesOf, clientFormErrors, dayMonth, draftOf, emptyListText, figuresOf, requeue, rowEditErrors, sameFileAs,
+  searchClients, showsInvitation, statementText,
 } from './clientRules.ts'
 
 const client = (change: Partial<ClientSummary> = {}): ClientSummary => ({
@@ -92,4 +93,18 @@ test('an empty list says why it is empty', () => {
   assert.equal(emptyListText(false, 'zz'), 'No clients match your search.')
   assert.equal(emptyListText(true, ' '), 'No archived clients.')
   assert.equal(emptyListText(true, 'zz'), 'No clients match your search.')
+})
+
+test('retry skips a file that was saved after all, and queues the rest again', () => {
+  // Final review #2: a file cancelled just after the server saved it was read and booked a second time on Retry.
+  const file = new File(['x'], 'clearway.csv')
+  const items: PickedFile[] = [
+    { id: 1, file, hash: 'abc', status: 'cancelled', detail: 'Analysis cancelled.' },
+    { id: 2, file, hash: 'def', status: 'failed', detail: "Groq's rate limit is used up" },
+    { id: 3, file, hash: 'ghi', status: 'done', detail: '1 row saved' },
+  ]
+  const uploads = [{ id: 9, name: 'clearway.csv', sha256: 'abc', created_at: '2026-10-07T12:00:00+00:00' } as Upload]
+  assert.deepEqual(requeue(items, uploads).map(item => [item.status, item.detail]), [
+    ['skipped', 'Skipped: same file as clearway.csv, uploaded 7 Oct'], ['waiting', 'Waiting'], ['done', '1 row saved'],
+  ])
 })

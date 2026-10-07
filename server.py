@@ -98,7 +98,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         result = AnalysisResult(transactions=transactions, warnings=extraction.warnings,
                                 model=extraction.model).model_dump(mode="json")
         if client is not None and transactions:
-            ctx.check_cancelled()
+            ctx.commit()   # from here a cancel can't discard the job: the rows are being saved
             result["client_id"] = client.id
             result["upload_id"] = store.add_upload(client.id, name, item.kind, transactions, sha256=sha256,
                                                    model=extraction.model or "", warnings=extraction.warnings)

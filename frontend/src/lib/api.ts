@@ -140,7 +140,9 @@ export function getHealth(): Promise<Health> {
 }
 
 // Starts an analysis job and polls it until it finishes, reporting progress along the way.
-// isCancelled is checked between polls; cancelling also tells the server to stop the job.
+// isCancelled is checked between polls. Cancelling asks the server to stop the job, then waits for the job's
+// own answer: a job that saved a client's rows before the cancel arrived still succeeds, and calling it
+// cancelled would invite booking the same file twice.
 export async function analyze(
   formData: FormData,
   onProgress: (progress: string) => void,
@@ -148,10 +150,12 @@ export async function analyze(
 ): Promise<AnalyzeResult> {
   const { job_id } = await request<{ job_id: string }>('/api/analyze', { method: 'POST', body: formData }, 120_000)
   let failures = 0
+  let cancelSent = false
   for (;;) {
-    if (isCancelled()) {
+    if (isCancelled() && !cancelSent) {
+      cancelSent = true
+      onProgress('Cancelling…')
       await request(`/api/jobs/${job_id}`, { method: 'DELETE' }).catch(() => undefined)
-      throw new ApiError('Analysis cancelled.', 'cancelled')
     }
     let job: Job
     try {
@@ -170,7 +174,7 @@ export async function analyze(
     if (job.status === 'succeeded' && job.result) return job.result
     if (job.status === 'failed') throw new ApiError(job.error?.message ?? 'Analysis failed.', job.error?.code ?? 'failed')
     if (job.status === 'cancelled') throw new ApiError('Analysis cancelled.', 'cancelled')
-    onProgress(job.progress)
+    if (!cancelSent) onProgress(job.progress)
     await sleep(POLL_INTERVAL_MS)
   }
 }

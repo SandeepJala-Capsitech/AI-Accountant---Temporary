@@ -33,6 +33,7 @@ class Job:
     result: Any = None
     error: Optional[dict] = None
     finished_at: Optional[float] = None
+    committed: bool = False   # its work has been saved: a cancel can no longer discard it
     cancel_requested: threading.Event = field(default_factory=threading.Event)
     done: threading.Event = field(default_factory=threading.Event)
 
@@ -52,8 +53,14 @@ class JobContext:
         self._job.progress = progress
 
     def check_cancelled(self) -> None:
-        if self._job.cancel_requested.is_set():
+        if self._job.cancel_requested.is_set() and not self._job.committed:
             raise JobCancelled()
+
+    def commit(self) -> None:
+        """Makes the job's work final, just before it saves: from here on a cancel no longer discards it, so a
+        job that saved always ends succeeded. Raises JobCancelled if it was cancelled before this point."""
+        self.check_cancelled()
+        self._job.committed = True
 
 
 class JobStore:
