@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from ledgersync.config import Settings
 from ledgersync.errors import ModelTimeout, ModelUnavailable
-from ledgersync.groq_client import GroqClient
+from ledgersync.model_client import ModelClient
 from server import create_app
 
 
@@ -218,7 +218,7 @@ def test_cors_allows_only_the_frontend(make_client):
 
 def test_health_never_shows_the_api_key(make_client):
     # Pins the rule at the API boundary: health passes on the client's error, which never holds the key.
-    groq = GroqClient(Settings(groq_api_key="gsk-secret"), opener=FakeUrlopen(http_error(401, "Invalid API Key gsk-secret")))
+    groq = ModelClient(Settings(groq_api_key="gsk-secret"), opener=FakeUrlopen(http_error(401, "Invalid API Key gsk-secret")))
     body = make_client(groq).get("/api/health").text
     assert "gsk-secret" not in body and "rejected the API key" in body
 
@@ -250,7 +250,8 @@ def test_validate_matches_a_payment_to_its_bill(make_client):
             "document_ref": "line-1"}
     out_bill, out_line = make_client().post("/api/transactions/validate",
                                             json={"transactions": [bill, line]}).json()["transactions"]
-    assert out_line["pays"] == [{"ref": "bt-sept", "amount": "72.00", "date": "2026-09-01", "description": "BT"}]
+    assert out_line["pays"] == [{"ref": "bt-sept", "amount": "72.00", "date": "2026-09-01", "description": "BT",
+                                 "kind": "invoice"}]
     assert (out_line["paid_against"], out_line["paid_against_name"]) == ("2100", "Creditors")
     assert (out_bill["owed"], out_bill["contra_account_code"]) == ("0.00", "2100")
 

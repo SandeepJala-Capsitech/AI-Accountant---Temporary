@@ -7,6 +7,7 @@ import datetime as dt
 import itertools
 import json
 import logging
+import re
 import sqlite3
 import threading
 import uuid
@@ -56,11 +57,13 @@ CREATE INDEX IF NOT EXISTS rows_by_client ON rows(client_id, upload_id, position
 _CLIENT_FIELDS = ("name", "business_type", "contact_name", "contact_email", "contact_phone", "vat_registered")
 # What is kept of a row: the inputs a document or a person gave. Everything else is worked out on read.
 INPUTS = {"date", "description", "direction", "gross", "vat", "vat_treatment", "account_code", "contra_account_code",
-          "currency", "source", "method", "evidence", "document_type", "counterparty", "document_ref", "include",
-          "link", "balance", "opening_balance", "closing_balance"}
+          "currency", "source", "method", "evidence", "document_type", "counterparty", "document_number", "agent", "document_total",
+          "document_net", "not_vat_invoice", "document_ref", "include", "link", "balance", "opening_balance",
+          "closing_balance"}
 # The fields a person can edit; a row's first edit keeps what they held as `original`.
 EDITABLE = ("date", "description", "counterparty", "direction", "gross", "vat", "account_code", "document_type")
-# Fields of a whole document: a change to one row changes every row with its document_ref.
+# Fields of a whole document: a change to one row changes every row with its document_ref. An expense claim's
+# lines are separate expenses, each with its own receipt, so there Include books one line.
 WHOLE_DOCUMENT = {"counterparty", "document_type", "include"}
 
 
@@ -172,6 +175,17 @@ class Store:
                 raise NotFound("This upload was not found.")
             _touch(db, client_id, _now())
 
+    def delete_row(self, client_id: int, row_id: int) -> None:
+        """Removes one row for good, and its upload once nothing of it is left (so the file can be read again)."""
+        with self._db(write=True, changes=client_id) as db:
+            found = db.execute("SELECT upload_id FROM rows WHERE id = ? AND client_id = ?", (row_id, client_id)).fetchone()
+            if found is None:
+                raise NotFound("This row was not found.")
+            db.execute("DELETE FROM rows WHERE id = ?", (row_id,))
+            if not db.execute("SELECT 1 FROM rows WHERE upload_id = ? LIMIT 1", (found["upload_id"],)).fetchone():
+                db.execute("DELETE FROM uploads WHERE id = ?", (found["upload_id"],))
+            _touch(db, client_id, _now())
+
     def rows(self, client_id: int) -> list[StoredRow]:
         """The client's rows in table order: by upload, oldest first, then as the model gave them."""
         with self._db() as db:
@@ -182,7 +196,8 @@ class Store:
 
     def patch_row(self, client_id: int, row_id: int, changes: dict, *, revert: bool = False) -> None:
         """A person's change to a row: Link, Include, an edit, or revert. Include, counterparty and document
-        type change every row of its document (the same document_ref); the rest change that row. A row's first
+        type change every row of its document (the same document_ref), except Include on an expense claim's line;
+        the rest change that row. A row's first
         edit keeps what it held as `original`; revert puts back every edited row of the document."""
         with self._db(write=True, changes=client_id) as db:
             saved = {row["id"]: json.loads(row["data"]) for row in
@@ -190,6 +205,8 @@ class Store:
             if row_id not in saved:
                 raise NotFound("This row was not found.")
             ref = saved[row_id].get("document_ref")
+            claim_line = saved[row_id].get("document_type") == "expense_claim"
+            whole = WHOLE_DOCUMENT - {"include"} if claim_line else WHOLE_DOCUMENT
             for rid, data in saved.items():
                 if rid != row_id and not (ref and data.get("document_ref") == ref):
                     continue
@@ -199,7 +216,7 @@ class Store:
                     data.update(data.pop("original"))
                     data["issues"] = data.pop("original_issues", data.get("issues", []))
                 else:
-                    change = changes if rid == row_id else {k: v for k, v in changes.items() if k in WHOLE_DOCUMENT}
+                    change = changes if rid == row_id else {k: v for k, v in changes.items() if k in whole}
                     if not change:
                         continue
                     if "original" not in data and any(k in EDITABLE and data.get(k) != v for k, v in change.items()):
@@ -273,10 +290,18 @@ def _touch(db: sqlite3.Connection, client_id: int, now: str) -> None:
     db.execute("UPDATE clients SET updated_at = ? WHERE id = ?", (now, client_id))
 
 
+# Rows read before 2026-10-08 kept their document's printed total only in the words of their warning.
+_OLD_TOTAL = re.compile(r"(?:its total is|it paid over) £(-?[\d,]+\.\d{2})")
+
+
 def _stored(row: sqlite3.Row) -> StoredRow:
     data = json.loads(row["data"])
     original = data.pop("original", None)
     data.pop("original_issues", None)
+    if data.get("document_total") is None:
+        old = [_OLD_TOTAL.search(i.get("message", "")) for i in data.get("issues", []) if i.get("code") == "total_mismatch"]
+        if old and old[0]:
+            data["document_total"] = old[0].group(1).replace(",", "")
     return StoredRow(row["id"], row["upload_id"], Transaction.model_validate(data), original)
 
 

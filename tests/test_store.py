@@ -1,4 +1,5 @@
 import datetime as dt
+import json
 import sqlite3
 import threading
 from contextlib import closing
@@ -83,17 +84,53 @@ def bill(**changes) -> Transaction:
 
 def test_an_upload_keeps_its_rows_in_order_and_only_their_inputs(store):
     client = store.create_client(CUBE)
-    worked_out = bill(document_ref="bt", vat_posted="12.00", net="60.00", owed="72.00",
-                      issues=[issue("total_mismatch", "The rows add up to £82.00."), issue("not_booked", "x", "info")])
+    worked_out = bill(document_ref="bt", document_number="BT-0905", agent="R+R PR Ltd", vat_posted="12.00",
+                      net="60.00", owed="72.00", document_net="60.00", not_vat_invoice=True, vat_found="12.00",
+                      issues=[issue("mixed_items", "One VAT total."), issue("not_booked", "x", "info")])
     upload_id = store.add_upload(client.id, "BT-0905.pdf", "pdf", [worked_out, bill(document_ref="bt", gross="10.00")],
                                  sha256="ab12", model="fake-model", warnings=["Row 3 skipped"])
     first, second = store.rows(client.id)
     assert (first.upload_id, first.tx.gross, second.tx.gross) == (upload_id, Decimal("72.00"), Decimal("10.00"))
-    assert (first.tx.vat_posted, first.tx.net, first.tx.owed) == (None, None, None)   # worked out on every read
-    assert [i.code for i in first.tx.issues] == ["total_mismatch"]                      # the adapter's own check
+    assert (first.tx.vat_posted, first.tx.net, first.tx.owed, first.tx.vat_found) == (None,) * 4   # worked out
+    assert (first.tx.document_number, first.tx.agent) == ("BT-0905", "R+R PR Ltd")    # read from the document
+    assert (first.tx.document_net, first.tx.not_vat_invoice) == (Decimal("60.00"), True)
+    assert [i.code for i in first.tx.issues] == ["mixed_items"]                         # the adapter's own check
     [upload] = store.uploads(client.id)
     assert (upload["name"], upload["kind"], upload["sha256"], upload["model"], upload["warnings"],
             upload["row_count"]) == ("BT-0905.pdf", "pdf", "ab12", "fake-model", ["Row 3 skipped"], 2)
+
+
+def test_a_row_saved_before_totals_were_kept_takes_its_total_from_its_old_warning(store):
+    # Rows read before 2026-10-08 kept a document's printed total only in the words of their warning.
+    client = store.create_client(CUBE)
+    store.add_upload(client.id, "claim.xlsx", "table", [bill(document_ref="claim")])
+    old = {**json.loads(_raw(store)), "issues": [{"code": "total_mismatch", "severity": "warning", "message":
+           "The rows from this document add up to £994.52 but its total is £1048.52; check the amounts against the "
+           "document."}]}
+    _raw(store, json.dumps(old))
+    [row] = store.rows(client.id)
+    assert row.tx.document_total == Decimal("1048.52")
+
+
+def _raw(store, data=None):
+    """The first row's saved JSON, or replaces it: data as an older version of the store wrote it."""
+    with sqlite3.connect(store.path) as db:
+        if data is None:
+            return db.execute("SELECT data FROM rows ORDER BY id LIMIT 1").fetchone()[0]
+        db.execute("UPDATE rows SET data = ? WHERE id = (SELECT MIN(id) FROM rows)", (data,))
+
+
+def test_removing_a_row_removes_only_it_and_an_upload_left_empty(store):
+    client = store.create_client(CUBE)
+    first_upload = store.add_upload(client.id, "a.pdf", "pdf", [bill(document_ref="a"), bill(document_ref="b")])
+    store.add_upload(client.id, "c.pdf", "pdf", [bill(document_ref="c")])
+    a, b, c = store.rows(client.id)
+    store.delete_row(client.id, a.id)
+    assert [r.tx.document_ref for r in store.rows(client.id)] == ["b", "c"]
+    store.delete_row(client.id, c.id)
+    assert [u["id"] for u in store.uploads(client.id)] == [first_upload]   # c.pdf had nothing left
+    with pytest.raises(NotFound):
+        store.delete_row(client.id, c.id)
 
 
 def test_a_row_saved_without_a_document_reference_gets_one(store):
@@ -137,6 +174,19 @@ def test_include_and_document_wide_fields_change_every_row_of_the_document(store
     store.patch_row(client.id, first, {"include": True, "counterparty": "BT plc", "gross": "70.00"})
     assert [(r.tx.include, r.tx.counterparty, r.tx.gross) for r in store.rows(client.id)] == [
         (True, "BT plc", Decimal("70.00")), (True, "BT plc", Decimal("5.00")), (False, "BT Business", Decimal("72.00"))]
+
+
+def test_include_on_an_expense_claim_books_only_that_line(store):
+    # Ticking "book this line as well" on one line of Jenny's claim ticked all twelve, and each line's receipt was
+    # booked twice.
+    client = store.create_client(CUBE)
+    claim = dict(document_type="expense_claim", document_ref="claim", counterparty="Jenny Hogg")
+    store.add_upload(client.id, "claim.xlsx", "table", [bill(**claim), bill(**claim, gross="5.00")])
+    first, second = (r.id for r in store.rows(client.id))
+    store.patch_row(client.id, second, {"include": True, "counterparty": "J Hogg"})
+    assert [(r.tx.include, r.tx.counterparty) for r in store.rows(client.id)] == [(False, "J Hogg"), (True, "J Hogg")]
+    store.patch_row(client.id, second, {"include": False})
+    assert [r.tx.include for r in store.rows(client.id)] == [False, False]
 
 
 def test_a_rows_first_edit_keeps_what_it_held_and_revert_brings_the_document_back(store):

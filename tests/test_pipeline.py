@@ -164,9 +164,25 @@ class StatementExtractor(RecordingExtractor):
         self.calls.append({"text": text_input, "images": images})
         first = len(self.calls) == 1
         return TransactionExtractionResult(data=[], model="fake-model", opening_balance=1000.0 if first else None,
-                                           closing_balance=None if first else 928.0)
+                                           closing_balance=None if first else 928.0,
+                                           agent="R+R PR Ltd" if first else None)
 
 
 def test_a_scanned_statements_opening_comes_from_its_first_pages_and_closing_from_its_last():
     result = analyze(Intake("pdf", data=scanned_pdf(5)), StatementExtractor(), ctx())
     assert (result.opening_balance, result.closing_balance) == (1000.0, 928.0)
+    assert result.agent == "R+R PR Ltd"   # an agent's statement names its agent once, on its first pages
+
+
+class HostsExtractor(RecordingExtractor):
+    """Each batch of pages is read by the next host in turn."""
+
+    def extract_accounting_data(self, text_input=None, images=None):
+        self.calls.append({"text": text_input, "images": images})
+        host = ["DeepInfra", "Parasail", "DeepInfra"][len(self.calls) - 1]
+        return TransactionExtractionResult(data=[], model=f"fake-model via {host}")
+
+
+def test_pages_read_by_different_hosts_name_each_host_once():
+    result = analyze(Intake("pdf", data=scanned_pdf(7)), HostsExtractor(), ctx())   # pages 1-3, 4-6 and 7
+    assert result.model == "fake-model via DeepInfra; fake-model via Parasail"

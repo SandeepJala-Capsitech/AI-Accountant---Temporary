@@ -35,6 +35,17 @@ def test_a_bill_and_its_payment_saved_apart_are_paired_in_the_ledger(store):
     assert [u.name for u in built.uploads] == ["Barclays.csv", "BT-0905.pdf"]
 
 
+def test_a_receipt_dated_away_from_its_file_names_date_asks_and_using_it_settles_the_question(store):
+    client = store.create_client(CUBE)
+    store.add_upload(client.id, "Southgate_Bath_Car_Park-2026-09-09_19_52_00.jpg", "image",
+                     [row(document_type="receipt", gross="36.00", account_code="7400", date=dt.date(2026, 8, 9),
+                          counterparty="Southgate Bath Car Park", document_ref="photo")])
+    [photo] = ledger.build(store, client.id).transactions
+    assert (photo.date_found, [i.code for i in photo.issues]) == (dt.date(2026, 9, 9), ["file_date"])
+    [photo] = ledger.change_row(store, client.id, photo.id, RowPatch(date=dt.date(2026, 9, 9))).transactions   # Use
+    assert (photo.date, photo.date_found, photo.issues, photo.edited) == (dt.date(2026, 9, 9), None, [], True)
+
+
 def test_the_clients_vat_setting_and_kind_of_business_are_applied(store):
     client = store.create_client(CUBE.model_copy(update={"vat_registered": False}))
     store.add_upload(client.id, "a.pdf", "pdf", [row(vat="12.00"), row(account_code="3260", document_type="receipt")])
@@ -95,10 +106,19 @@ def test_an_edit_is_checked_before_it_is_saved(store):
                            (RowPatch(vat="72.00"), "VAT must be below the amount."),
                            (RowPatch(description=" "), "Enter a description."),
                            (RowPatch(account_code="3260"), "Account 3260 can't be chosen for Business Cube Ltd."),
-                           (RowPatch(link=[]), "Only a bank line can be linked to documents.")):
+                           (RowPatch(link=[]),
+                            "Only a bank line, or an item of an agent's statement, can be linked to documents.")):
         with pytest.raises(InvalidInput, match=re.escape(message)):
             ledger.change_row(store, client.id, rid, patch)
     assert store.rows(client.id)[0].original is None
+
+
+def test_a_row_of_an_agents_statement_can_be_linked_to_a_bill_the_agent_paid(store):
+    client = store.create_client(CUBE)
+    store.add_upload(client.id, "a.pdf", "pdf", [row(document_type="agent_statement", agent="R+R PR Ltd")])
+    rid = store.rows(client.id)[0].id
+    [linked] = ledger.change_row(store, client.id, rid, RowPatch(link=[])).transactions
+    assert linked.link == []
 
 
 def test_an_edit_rebooks_the_row_and_revert_brings_back_what_was_read(store):

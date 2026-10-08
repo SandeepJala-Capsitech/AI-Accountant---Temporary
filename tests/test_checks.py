@@ -88,6 +88,17 @@ def test_odd_vat_on_a_standard_rated_account_is_flagged():
     assert ("vat_rate_mismatch", "info") in codes(normalise(tx(vat="5.00"), REGISTERED))
 
 
+def test_vat_at_the_reduced_rate_is_not_flagged():
+    # A small business's electricity is charged VAT at 5%: £2.67 on £56.15 was flagged "mixed rates?".
+    t = normalise(tx(gross="56.15", vat="2.67", account="7200"), REGISTERED)
+    assert codes(t) == [] and t.vat_posted == Decimal("2.67")
+
+
+def test_no_vat_charged_is_not_flagged():
+    # A supplier that isn't VAT registered prints VAT £0.00, which was flagged "not standard-rate VAT".
+    assert codes(normalise(tx(gross="280.00", vat="0.00", account="7800"), REGISTERED)) == []
+
+
 def test_renormalising_keeps_the_estimate_flag_without_duplicates():
     once = normalise(tx(vat_treatment="standard"), REGISTERED)
     twice = normalise(Transaction.model_validate(once.model_dump(mode="json")), REGISTERED)
@@ -227,3 +238,11 @@ def test_a_sole_trader_has_no_directors_loan_account():
 def test_without_a_business_type_the_owners_accounts_are_not_questioned():
     assert codes(normalise(tx(account="3260", gross="500.00"), REGISTERED)) == []
     assert codes(normalise(tx(account="2250", gross="500.00"), REGISTERED)) == []
+
+
+@pytest.mark.parametrize("output", ["copy_of", "recorded_by"])
+def test_a_row_sent_back_with_its_matching_outputs_validates_again(output):
+    # The API returns a copy or a card payment its receipt records with these set; sent back, it must validate.
+    earlier = {"ref": "bill", "amount": "120.00", "date": "2026-09-01", "description": "BT"}
+    t = normalise(tx(document_type="invoice" if output == "copy_of" else "statement", **{output: earlier}), REGISTERED)
+    assert "not_booked" not in [code for code, _ in codes(t)]

@@ -18,7 +18,7 @@ from ledgersync.checks import normalise
 from ledgersync.config import Settings
 from ledgersync.errors import LedgerSyncError, RefusedRequest, UnreadableFile
 from ledgersync.extractor import TransactionExtractor
-from ledgersync.groq_client import GroqClient
+from ledgersync.model_client import ModelClient
 from ledgersync.jobs import JobStore
 from ledgersync.matching import match
 from ledgersync.models import (AnalysisResult, BusinessSettings, BusinessType, Client, ClientFields, ClientPatch,
@@ -38,10 +38,10 @@ def configure_logging(level: str) -> None:
 
 
 def create_app(settings: Optional[Settings] = None, *, model_client=None, store: Optional[Store] = None) -> FastAPI:
-    """The API; tests pass a stand-in for the Groq client as model_client, and a store in a temporary folder."""
+    """The API; tests pass a stand-in for the model client as model_client, and a store in a temporary folder."""
     settings = settings or Settings.from_env()
     configure_logging(settings.log_level)
-    model_client = model_client or GroqClient(settings)
+    model_client = model_client or ModelClient(settings)
     store = store or Store(settings.db_path)   # opened on first use, not now
     extractor = TransactionExtractor(model_client, business_name=settings.business_name)
     jobs = JobStore(ttl_seconds=settings.job_ttl_seconds, max_workers=settings.max_parallel_jobs)
@@ -55,7 +55,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
 
     app = FastAPI(
         title="Super Accountant API",
-        description="Qwen vision model on Groq → structured accounting data → trial balance",
+        description="Qwen vision model on OpenRouter or Groq → structured accounting data → trial balance",
         lifespan=lifespan,
     )
     app.add_middleware(CORSMiddleware, allow_origins=list(settings.cors_origins),
@@ -94,7 +94,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         extraction = pipeline.analyze(item, reader, ctx)
         transactions = adapter.to_transactions([row.model_dump() for row in extraction.data], source=item.kind,
                                                settings=rules, opening_balance=extraction.opening_balance,
-                                               closing_balance=extraction.closing_balance)
+                                               closing_balance=extraction.closing_balance, agent=extraction.agent)
         result = AnalysisResult(transactions=transactions, warnings=extraction.warnings,
                                 model=extraction.model).model_dump(mode="json")
         if client is not None and transactions:
@@ -184,6 +184,10 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
     @app.patch("/api/clients/{client_id}/rows/{row_id}", response_model=Ledger)
     def change_row(client_id: int, row_id: int, patch: RowPatch):
         return books.change_row(store, client_id, row_id, patch)
+
+    @app.delete("/api/clients/{client_id}/rows/{row_id}", response_model=Ledger)
+    def remove_row(client_id: int, row_id: int):
+        return books.remove_row(store, client_id, row_id)
 
     @app.post("/api/clients/{client_id}/uploads", response_model=Ledger, status_code=201)
     def add_manual_rows(client_id: int, upload: ManualUpload):

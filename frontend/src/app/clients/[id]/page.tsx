@@ -12,9 +12,11 @@ import TrialBalancePanel from '@/components/TrialBalancePanel'
 import UploadsList from '@/components/UploadsList'
 import { ApiError } from '@/lib/api'
 import {
-  changeClient, changeRow, exportUrl, getLedger, removeUpload, type ClientFields, type Ledger, type RowChange, type SavedRow, type Upload,
+  addManualRows, changeClient, changeRow, exportUrl, getLedger, removeRow, removeUpload, type ClientFields, type Ledger,
+  type RowChange, type SavedRow, type Upload,
 } from '@/lib/clients'
-import { BUSINESS_TYPES, figuresOf, transactionCount } from '@/lib/clientRules'
+import { BUSINESS_TYPES, figuresOf, lineTemplate, newRowFrom, transactionCount, type EditDraft } from '@/lib/clientRules'
+import type { Transaction } from '@/lib/api'
 import { money } from '@/lib/ledger'
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
@@ -29,6 +31,7 @@ export default function ClientPage() {
   const [error, setError] = useState('')
   const [editingClient, setEditingClient] = useState(false)
   const [editingRow, setEditingRow] = useState<SavedRow | null>(null)
+  const [adding, setAdding] = useState<{ template: Transaction; title: string } | null>(null)   // a row being added
   const [version, setVersion] = useState(0)   // bumped whenever the rows change: a trial balance shown is cleared
 
   const show = useCallback((next: Ledger) => {
@@ -89,6 +92,19 @@ export default function ClientPage() {
     if (await ask(question, 'Remove')) await act(() => removeUpload(client.id, upload.id))
   }
   const change = (rowId: number, rowChange: RowChange) => act(() => changeRow(client.id, rowId, rowChange))
+  const removeOne = async (row: SavedRow) => {
+    const question = `Remove "${row.description}" (${money(row.gross)})? This can't be undone. Its document's total is checked again without it.`
+    if (await ask(question, 'Remove')) await act(() => removeRow(client.id, row.id))
+  }
+  const startAdding = (lineOf: SavedRow | null) => setAdding({
+    template: lineTemplate(lineOf),
+    title: lineOf ? `Add a line to ${lineOf.counterparty ?? 'this document'}` : 'Add a transaction',
+  })
+  const saveNew = async (draft: EditDraft) => {
+    if (!adding) return
+    show(await addManualRows(client.id, [newRowFrom(draft, adding.template)]))
+    setAdding(null)
+  }
   const saveRow = async (rowChange: RowChange) => {
     if (!editingRow) return
     show(await changeRow(client.id, editingRow.id, rowChange))
@@ -132,7 +148,8 @@ export default function ClientPage() {
       </div>
       {!client.archived && <AddDocuments clientId={client.id} uploads={ledger.uploads} onSaved={load} onLedger={show} />}
       <div className="workspace">
-        <TransactionsTable ledger={ledger} readOnly={client.archived} onChange={change} onEdit={setEditingRow} />
+        <TransactionsTable ledger={ledger} readOnly={client.archived} onChange={change} onEdit={setEditingRow}
+                           onAdd={startAdding} onRemove={removeOne} />
         <UploadsList uploads={ledger.uploads} readOnly={client.archived} onRemove={remove} />
       </div>
       <TrialBalancePanel clientId={client.id} version={version} hasRows={ledger.transactions.length > 0} />
@@ -140,6 +157,10 @@ export default function ClientPage() {
       {editingRow && (
         <EditRowDialog row={editingRow} businessType={client.business_type}
                        onCancel={() => setEditingRow(null)} onSave={saveRow} />
+      )}
+      {adding && (
+        <EditRowDialog row={adding.template} businessType={client.business_type} title={adding.title}
+                       onCancel={() => setAdding(null)} onAdd={saveNew} />
       )}
       {confirmDialog}
     </>

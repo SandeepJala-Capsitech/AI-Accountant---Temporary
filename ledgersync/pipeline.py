@@ -57,8 +57,16 @@ def _read_pages(pages: list[bytes], extractor, ctx: JobContext):
             "data": result.data + part.data, "warnings": result.warnings + part.warnings,
             # A statement's opening balance is on its first pages, its closing balance on its last.
             "opening_balance": result.opening_balance if result.opening_balance is not None else part.opening_balance,
-            "closing_balance": part.closing_balance if part.closing_balance is not None else result.closing_balance})
+            "closing_balance": part.closing_balance if part.closing_balance is not None else result.closing_balance,
+            "agent": result.agent or part.agent,
+            "model": _joined(result.model, part.model)})
     return result
+
+
+def _joined(names: Optional[str], name: Optional[str]) -> Optional[str]:
+    """The models that read an input's pages, with their hosts, each named once: each request may go to another host."""
+    seen = names.split("; ") if names else []
+    return "; ".join(seen + [name]) if name and name not in seen else names
 
 
 def _pdf_pages(data: bytes) -> list[bytes]:

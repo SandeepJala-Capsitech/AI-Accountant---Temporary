@@ -1,11 +1,12 @@
 // Run with: npm test (Node's own test runner; Node strips the TypeScript types itself).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import type { Transaction } from './api.ts'
 import type { ClientSummary, SavedRow, Upload } from './clients.ts'
 import type { PickedFile } from './clientRules.ts'
 import {
-  changesOf, clientFormErrors, dayMonth, draftOf, emptyListText, figuresOf, requeue, rowEditErrors, sameFileAs,
-  searchClients, showsInvitation, statementText, transactionCount,
+  changesOf, clientFormErrors, dayMonth, draftOf, emptyListText, figuresOf, lineTemplate, newRowFrom, requeue,
+  rowEditErrors, sameFileAs, searchClients, showsInvitation, statementText, transactionCount,
 } from './clientRules.ts'
 
 const client = (change: Partial<ClientSummary> = {}): ClientSummary => ({
@@ -112,4 +113,23 @@ test('retry skips a file that was saved after all, and queues the rest again', (
 test('counts say transactions, not rows', () => {
   // Asked for on 2026-10-07: a count of what was read or saved names transactions.
   assert.deepEqual([0, 1, 12].map(transactionCount), ['0 transactions', '1 transaction', '12 transactions'])
+})
+
+test('a line added to a document joins it: its reference, type and counterparty', () => {
+  const claimLine = { document_type: 'expense_claim', document_ref: 'claim', counterparty: 'Jenny Hogg', direction: 'out',
+                      date: '2026-09-30', account_code: '7400' } as unknown as Transaction
+  const draft = { ...draftOf(lineTemplate(claimLine)), date: '2026-09-24', description: 'Jenny Hogg - Southgate Bath Car Park',
+                  gross: '54.00', vat: '9.00' }
+  assert.deepEqual(newRowFrom(draft, lineTemplate(claimLine)), {
+    date: '2026-09-24', description: 'Jenny Hogg - Southgate Bath Car Park', counterparty: 'Jenny Hogg', direction: 'out',
+    gross: '54.00', vat: '9.00', account_code: '7400', document_type: 'expense_claim', document_ref: 'claim',
+  })
+})
+
+test('a transaction added on its own is a new document, and empty fields are left out', () => {
+  const draft = { ...draftOf(lineTemplate(null)), description: 'Office chair', gross: '120.00', account_code: '0040' }
+  assert.deepEqual(newRowFrom(draft, lineTemplate(null)), {
+    date: null, description: 'Office chair', counterparty: null, direction: 'out', gross: '120.00', vat: null,
+    account_code: '0040', document_type: 'receipt',
+  })
 })

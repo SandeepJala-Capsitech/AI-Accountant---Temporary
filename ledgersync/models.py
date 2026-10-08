@@ -17,12 +17,13 @@ class Direction(str, Enum):
     OUT = "out"    # money out of the bank
 
 
-# The kind of document a row comes from. The last six are not transactions: a person ticks Include to
-# book one as an invoice. "other" is what the adapter makes of a type it does not know.
-DocumentType = Literal["receipt", "invoice", "expense_claim", "statement", "quote", "pro_forma",
+# The kind of document a row comes from. "agent_statement" is a letting or managing agent's statement: what
+# it collected and paid for the business, and the net it paid over. The last six are not transactions: a person
+# ticks Include to book one as an invoice. "other" is what the adapter makes of a type it does not know.
+DocumentType = Literal["receipt", "invoice", "expense_claim", "statement", "agent_statement", "quote", "pro_forma",
                        "purchase_order", "remittance_advice", "supplier_statement", "other"]
 DOCUMENT_TYPES: tuple[str, ...] = get_args(DocumentType)
-NOT_TRANSACTIONS = frozenset(DOCUMENT_TYPES[4:])
+NOT_TRANSACTIONS = frozenset(DOCUMENT_TYPES[5:])
 
 # The kind of business a client is: a limited company's owners go through 2250 Director's Loan Account,
 # anyone else's through 3260 Drawings and 3000 Capital Introduced.
@@ -52,6 +53,7 @@ class Settlement(BaseModel):
     amount: Decimal
     date: Optional[dt.date] = None
     description: str = ""
+    kind: Optional[str] = None     # the kind of document or line it is (a document_type): what was paid, or what paid
 
 
 class StatementCheck(BaseModel):
@@ -84,6 +86,12 @@ class Transaction(BaseModel):
     # not a transaction. Rows without a type, as older clients send them, are receipts: paid when issued.
     document_type: DocumentType = "receipt"
     counterparty: Optional[str] = None
+    document_number: Optional[str] = None          # the invoice, receipt or claim number printed on it
+    agent: Optional[str] = None                    # on an agent's statement: the agent, who holds the money
+    document_total: Optional[Decimal] = None       # the total printed on its document (an agent's statement: the
+                                                   # net paid over), which matching checks its rows against
+    document_net: Optional[Decimal] = None         # the total before VAT printed on its document, if it prints one
+    not_vat_invoice: bool = False                  # its document says it is not a VAT invoice
     document_ref: Optional[str] = None
     include: bool = False
     link: Optional[list[str]] = None               # a person's decision on a bank line: None automatic,
@@ -98,7 +106,18 @@ class Transaction(BaseModel):
     pays: list[Settlement] = Field(default_factory=list)              # a bank line: the documents it pays
     candidates: list[list[Settlement]] = Field(default_factory=list)  # a bank line: what it could pay (Link)
     owed: Optional[Decimal] = None                 # a document's row: what is still open on the document
+    document_direction: Optional[Direction] = None  # a document's row: which way what it owes goes (in: they owe
+                                                   # the business), which the rows of an agent's statement don't share
     paid_by: list[Settlement] = Field(default_factory=list)           # a document's row: what paid it
+    copy_of: Optional[Settlement] = None           # a document's row: the earlier document it repeats (a
+                                                   # reminder, a receipt read twice); not booked unless included
+    recorded_by: Optional[Settlement] = None       # a bank line or a claim line: the receipt or invoice for the
+                                                   # same payment, booked instead; this row is not booked
+    claimed_in: Optional[Settlement] = None        # a receipt or invoice on an expense claim: owed to the claimant
+    vat_found: Optional[Decimal] = None            # a receipt or invoice on a claim: VAT its prices and the claim agree
+                                                   # on, not booked because it says it is not a VAT invoice (Book VAT)
+    date_found: Optional[dt.date] = None           # a receipt, or a claim line, whose other record (the claim line, the
+                                                   # receipt, the card payment) agrees on all but the date: its date (Use)
     issues: list[Issue] = Field(default_factory=list)
 
     @field_validator("gross", mode="before")
@@ -109,7 +128,8 @@ class Transaction(BaseModel):
             raise ValueError("gross must be a positive amount; direction says whether money went in or out")
         return money
 
-    @field_validator("vat", "vat_posted", "net", "owed", "balance", "opening_balance", "closing_balance", mode="before")
+    @field_validator("vat", "vat_posted", "net", "owed", "balance", "opening_balance", "closing_balance",
+                     "document_total", "document_net", "vat_found", mode="before")
     @classmethod
     def _pennies(cls, value):
         if value is None:

@@ -54,6 +54,8 @@ CHART: tuple[Account, ...] = (
     Account("3260", "Drawings", _E, V.OUTSIDE_SCOPE, "Money the owner takes out for personal use."),
     Account("4000", "Sales", _I, V.STANDARD, "Money from customers for the business's goods or services."),
     Account("4900", "Other Income", _I, V.STANDARD, "Income that is not from sales, such as bank interest received."),
+    Account("4904", "Rent Income", _I, V.EXEMPT,
+            "Rent from tenants of property the business lets, paid directly or through a letting agent."),
     Account("5000", "Purchases", _X, V.STANDARD, "Goods bought to resell or to make products that are sold; not things the business uses."),
     Account("7000", "Gross Wages", _X, V.OUTSIDE_SCOPE, "Salaries and wages paid to employees."),
     Account("7100", "Rent", _X, V.STANDARD, "Rent for offices, desks or other premises."),

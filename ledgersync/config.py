@@ -14,6 +14,11 @@ def _flag(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _names(value: Optional[str], default: tuple[str, ...]) -> tuple[str, ...]:
+    """A comma-separated list: unset gives the default, blank gives none."""
+    return default if value is None else tuple(part.strip() for part in value.split(",") if part.strip())
+
+
 def read_env_file(path: Optional[Path]) -> dict[str, str]:
     """KEY=VALUE lines from a .env file. Comments, blank and malformed lines are skipped, and an
     `export ` prefix and surrounding quotes are removed; a missing file gives nothing."""
@@ -44,10 +49,24 @@ class Settings:
     job_ttl_seconds: float = 3600.0
     max_parallel_jobs: int = 2            # documents read at once, from any input; 1 reads them one at a time
     log_level: str = "INFO"
-    # Groq's hosted vision model, through its OpenAI-compatible API. The key lives in .env.
+    # The hosted vision model, through an OpenAI-compatible API: OpenRouter when its key is set,
+    # otherwise Groq (see `provider`). The keys live in .env.
+    openrouter_api_key: str = field(default="", repr=False)   # never printed or logged
+    openrouter_model: str = "qwen/qwen3.8-27b"                # the model Groq serves, under the same name
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    # OpenRouter counts the model's thinking in this limit too. A 60-row statement's answer alone is
+    # about 9,000 tokens, and at 8,192 one was cut off after 4,083 tokens of thinking (2026-10-07).
+    # 32,768 is the most every host of the model allows; only the tokens used are paid for.
+    openrouter_max_output_tokens: int = 32768
+    # The hosts OpenRouter may send documents to. Left to choose, it sent every read to one 4-bit host, which
+    # left a line out of an expense claim in 13 reads of 13; other hosts missed it less often (2026-10-08).
+    # So a full-precision host is asked first, then any running the model at one of these precisions: never 4-bit.
+    openrouter_providers: tuple[str, ...] = ("deepinfra/bf16",)
+    openrouter_quantizations: tuple[str, ...] = ("bf16", "fp16", "fp32", "fp8")
     groq_api_key: str = field(default="", repr=False)   # never printed or logged
     groq_model: str = "qwen/qwen3.8-27b"
     groq_base_url: str = "https://api.groq.com/openai/v1"
+    # The rest apply to either provider; they keep their Groq names.
     groq_timeout: float = 60.0
     # Room for long statements: a 60-row statement's answer, with document_total, document_vat and
     # mixed_items on every row, is over 4K tokens.
@@ -61,6 +80,27 @@ class Settings:
     @property
     def max_upload_bytes(self) -> int:
         return self.max_upload_mb * 1024 * 1024
+
+    @property
+    def provider(self) -> str:
+        """Who reads the documents: OpenRouter when OPENROUTER_API_KEY is set, otherwise Groq."""
+        return "OpenRouter" if self.openrouter_api_key else "Groq"
+
+    @property
+    def api_key(self) -> str:
+        return self.openrouter_api_key or self.groq_api_key
+
+    @property
+    def model(self) -> str:
+        return self.openrouter_model if self.openrouter_api_key else self.groq_model
+
+    @property
+    def base_url(self) -> str:
+        return self.openrouter_base_url if self.openrouter_api_key else self.groq_base_url
+
+    @property
+    def max_output_tokens(self) -> int:
+        return self.openrouter_max_output_tokens if self.openrouter_api_key else self.groq_max_output_tokens
 
     @classmethod
     def from_env(cls, env: Optional[Mapping[str, str]] = None,
@@ -80,6 +120,12 @@ class Settings:
             max_pdf_pages=int(env.get("LEDGERSYNC_MAX_PDF_PAGES", d.max_pdf_pages)),
             max_parallel_jobs=max(1, int(env.get("LEDGERSYNC_MAX_PARALLEL_JOBS", d.max_parallel_jobs))),
             log_level=env.get("LEDGERSYNC_LOG_LEVEL", d.log_level).upper(),
+            openrouter_api_key=env.get("OPENROUTER_API_KEY", "").strip(),
+            openrouter_model=env.get("OPENROUTER_MODEL", d.openrouter_model).strip(),
+            openrouter_base_url=env.get("OPENROUTER_BASE_URL", d.openrouter_base_url).strip().rstrip("/"),
+            openrouter_max_output_tokens=int(env.get("OPENROUTER_MAX_OUTPUT_TOKENS", d.openrouter_max_output_tokens)),
+            openrouter_providers=_names(env.get("OPENROUTER_PROVIDERS"), d.openrouter_providers),
+            openrouter_quantizations=_names(env.get("OPENROUTER_QUANTIZATIONS"), d.openrouter_quantizations),
             groq_api_key=env.get("GROQ_API_KEY", "").strip(),
             groq_model=env.get("GROQ_MODEL", d.groq_model).strip(),
             groq_base_url=env.get("GROQ_BASE_URL", d.groq_base_url).strip().rstrip("/"),

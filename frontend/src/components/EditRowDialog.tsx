@@ -1,15 +1,19 @@
 'use client'
 
 import { useEffect, useState, type FormEvent } from 'react'
+import type { Transaction } from '@/lib/api'
 import { listAccounts, type AccountChoice, type BusinessType, type RowChange, type SavedRow } from '@/lib/clients'
 import { changesOf, DOCUMENT_TYPES, draftOf, rowEditErrors, type EditDraft, type EditErrors } from '@/lib/clientRules'
 
-// Corrects what the model read on one row. Counterparty and document type change for the whole document.
-export default function EditRowDialog({ row, businessType, onCancel, onSave }: {
-  row: SavedRow
+// Corrects what the model read on one row (counterparty and document type change for the whole document), or, with
+// onAdd, adds a row: a new transaction, or a line of an existing document from a template (clientRules.lineTemplate).
+export default function EditRowDialog({ row, businessType, onCancel, onSave, onAdd, title }: {
+  row: SavedRow | Transaction
   businessType: BusinessType
   onCancel: () => void
-  onSave: (change: RowChange) => Promise<void>
+  onSave?: (change: RowChange) => Promise<void>
+  onAdd?: (draft: EditDraft) => Promise<void>
+  title?: string
 }) {
   const [draft, setDraft] = useState<EditDraft>(() => draftOf(row))
   const [accounts, setAccounts] = useState<AccountChoice[]>([])
@@ -31,14 +35,15 @@ export default function EditRowDialog({ row, businessType, onCancel, onSave }: {
     setShowErrors(true)
     if (Object.keys(errors).length) return
     const change = changesOf(row, draft)
-    if (!Object.keys(change).length) {
+    if (!onAdd && !Object.keys(change).length) {
       onCancel()
       return
     }
     setSaving(true)
     setError('')
     try {
-      await onSave(change)
+      if (onAdd) await onAdd(draft)
+      else await onSave?.(change)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
       setSaving(false)
@@ -46,15 +51,19 @@ export default function EditRowDialog({ row, businessType, onCancel, onSave }: {
   }
 
   // The saved account stays listed even when this kind of business can't choose it, so the form shows the truth.
-  const options = accounts.some(a => a.code === draft.account_code)
+  const options = !row.account_code || accounts.some(a => a.code === draft.account_code)
     ? accounts : [{ code: row.account_code, name: row.account_name ?? '', type: '', vat: '' }, ...accounts]
 
   return (
     <div className="overlay" role="presentation" onMouseDown={e => { if (e.target === e.currentTarget) onCancel() }}
          onKeyDown={e => { if (e.key === 'Escape') onCancel() }}>
       <form className="dialog" role="dialog" aria-modal="true" aria-labelledby="edit-row-title" onSubmit={submit} noValidate>
-        <h2 id="edit-row-title">Edit row</h2>
-        <p className="dialog-note">Counterparty and document type change for every row of this document.</p>
+        <h2 id="edit-row-title">{title ?? 'Edit row'}</h2>
+        <p className="dialog-note">
+          {onAdd ? (row.document_ref ? 'The line joins this document: its total is checked again with it.'
+                                     : 'A transaction you enter yourself, booked like any other.')
+                 : 'Counterparty and document type change for every row of this document.'}
+        </p>
         <div className="field-row">
           <label className="field">
             <span>Date</span>
@@ -102,14 +111,18 @@ export default function EditRowDialog({ row, businessType, onCancel, onSave }: {
           <label className="field">
             <span>Account</span>
             <select className="input" value={draft.account_code} onChange={e => set('account_code', e.target.value)}>
+              {!draft.account_code && <option value="">Choose an account</option>}
               {options.map(a => <option key={a.code} value={a.code}>{a.code} {a.name}</option>)}
             </select>
+            {fieldError('account_code')}
           </label>
         </div>
         {error && <div className="notice notice-error">{error}</div>}
         <div className="dialog-actions">
           <button type="button" className="btn btn-ghost" onClick={onCancel}>Cancel</button>
-          <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
+          <button type="submit" className="btn btn-primary" disabled={saving}>
+            {saving ? 'Saving…' : onAdd ? 'Add' : 'Save'}
+          </button>
         </div>
       </form>
     </div>

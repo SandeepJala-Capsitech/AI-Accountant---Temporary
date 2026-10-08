@@ -12,6 +12,7 @@ export interface Settlement {
   amount: string
   date: string | null
   description: string
+  kind?: string | null      // the kind of document or line it is: what was paid, or what paid (an agent's statement)
 }
 
 export interface Transaction {
@@ -33,6 +34,8 @@ export interface Transaction {
   issues: Issue[]
   document_type?: string             // receipt, invoice, expense_claim, statement, or one that is not a transaction
   counterparty?: string | null
+  document_number?: string | null    // the invoice, receipt or claim number printed on the document
+  agent?: string | null              // on an agent's statement: the agent, who holds what it collected
   document_ref?: string | null       // shared by the rows of one document
   include?: boolean                  // a person's tick on a document that is not a transaction
   link?: string[] | null             // a person's decision on a bank line: null automatic, [] none, refs: pays these
@@ -41,7 +44,18 @@ export interface Transaction {
   pays?: Settlement[]                // set by the API on a bank line
   candidates?: Settlement[][]        // set by the API: options for the Link buttons
   owed?: string | null               // set by the API on a document's row: what is still open on it
+  document_direction?: 'in' | 'out' | null  // set by the API on a document's row: in when they owe the business
   paid_by?: Settlement[]             // set by the API on a document's row
+  copy_of?: Settlement | null        // set by the API: the earlier document this one repeats; not booked unless included
+  recorded_by?: Settlement | null    // set by the API: the receipt or invoice for this bank or claim line, booked instead
+  claimed_in?: Settlement | null     // set by the API on a receipt or invoice: the expense claim it is owed on
+  document_total?: string | null     // the total printed on its document, which the API checks the rows against
+  document_net?: string | null       // the total before VAT printed on its document
+  not_vat_invoice?: boolean          // its document says it is not a VAT invoice
+  vat_found?: string | null          // set by the API on a receipt on a claim: VAT its prices and the claim agree on,
+                                     // not booked because it is not a VAT invoice (Book VAT)
+  date_found?: string | null         // set by the API: the date of the row's other record (its claim line, receipt or
+                                     // card payment) when it agrees on all but the date (Use)
 }
 
 export interface AnalyzeResult {

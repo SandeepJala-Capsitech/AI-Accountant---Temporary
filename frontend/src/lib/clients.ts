@@ -86,6 +86,8 @@ export const changeRow = (id: number, rowId: number, change: RowChange) =>
   request<Ledger>(`/api/clients/${id}/rows/${rowId}`, send('PATCH', change))
 export const addManualRows = (id: number, transactions: Transaction[]) =>
   request<Ledger>(`/api/clients/${id}/uploads`, send('POST', { name: 'Manual entry', kind: 'manual', transactions }))
+export const removeRow = (id: number, rowId: number) =>
+  request<Ledger>(`/api/clients/${id}/rows/${rowId}`, { method: 'DELETE' })
 export const removeUpload = (id: number, uploadId: number) =>
   request<Ledger>(`/api/clients/${id}/uploads/${uploadId}`, { method: 'DELETE' })
 export const clientTrialBalance = (id: number) => request<TrialBalanceResult>(`/api/clients/${id}/trial-balance`)

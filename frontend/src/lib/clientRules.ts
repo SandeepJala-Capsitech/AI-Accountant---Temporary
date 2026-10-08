@@ -9,6 +9,7 @@ export const BUSINESS_TYPES: Record<BusinessType, string> = {
 
 export const DOCUMENT_TYPES: Record<string, string> = {
   receipt: 'Receipt', invoice: 'Invoice', expense_claim: 'Expense claim', statement: 'Bank statement line',
+  agent_statement: "Agent's statement",
   quote: 'Quote', pro_forma: 'Pro forma invoice', purchase_order: 'Purchase order',
   remittance_advice: 'Remittance advice', supplier_statement: "Supplier's statement", other: 'Other document',
 }
@@ -112,12 +113,35 @@ export function draftOf(row: Transaction): EditDraft {
   }
 }
 
+// The form for a row a person adds: blank, or a line of an existing document (a claim, an invoice) that joins it,
+// with its type, counterparty, date, direction and account to start from.
+export function lineTemplate(of: Transaction | null): Transaction {
+  const blank = { date: null, description: '', counterparty: null, direction: 'out', gross: '', vat: null,
+                  account_code: '', document_type: 'receipt' }
+  return (of ? { ...blank, date: of.date, counterparty: of.counterparty ?? null, direction: of.direction,
+                 account_code: of.account_code, document_type: of.document_type ?? 'receipt',
+                 document_ref: of.document_ref ?? null }
+             : blank) as unknown as Transaction
+}
+
+// The row a person added, as the API takes it: a line of the template's document while it keeps its type.
+export function newRowFrom(draft: EditDraft, template: Transaction): Transaction {
+  const text = (value: string) => value.trim() || null
+  const joins = template.document_ref && draft.document_type === template.document_type
+  return {
+    date: text(draft.date), description: draft.description.trim(), counterparty: text(draft.counterparty),
+    direction: draft.direction, gross: draft.gross.trim(), vat: text(draft.vat), account_code: draft.account_code,
+    document_type: draft.document_type, ...(joins ? { document_ref: template.document_ref } : {}),
+  } as unknown as Transaction
+}
+
 // What the edit form says before saving; the API checks the same.
 export function rowEditErrors(draft: EditDraft): EditErrors {
   const errors: EditErrors = {}
   const gross = Number(draft.gross)
   const vat = draft.vat.trim() === '' ? null : Number(draft.vat)
   if (!draft.description.trim()) errors.description = 'Enter a description'
+  if (!draft.account_code) errors.account_code = 'Choose an account'
   if (draft.date && !/^\d{4}-\d{2}-\d{2}$/.test(draft.date)) errors.date = 'Enter a date'
   if (!draft.gross.trim() || !Number.isFinite(gross) || gross <= 0) errors.gross = 'Enter an amount above zero'
   if (vat !== null && (!Number.isFinite(vat) || vat < 0)) errors.vat = "VAT can't be negative"

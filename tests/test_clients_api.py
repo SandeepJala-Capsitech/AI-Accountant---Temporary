@@ -105,7 +105,8 @@ def test_links_and_edits_rematch_the_ledger_and_revert_undoes_an_edit(api):
     [edited, _] = client.patch(f"/api/clients/{cid}/rows/{bill_id}", json={"gross": "70.00"}).json()["transactions"]
     assert (edited["gross"], edited["edited"], edited["original"]["gross"]) == ("70.00", True, "72.00")
     bad = client.patch(f"/api/clients/{cid}/rows/{bill_id}", json={"link": []})
-    assert (bad.status_code, bad.json()["detail"]["message"]) == (422, "Only a bank line can be linked to documents.")
+    assert (bad.status_code, bad.json()["detail"]["message"]) == (
+        422, "Only a bank line, or an item of an agent's statement, can be linked to documents.")
     [back, _] = client.patch(f"/api/clients/{cid}/rows/{bill_id}", json={"revert": True}).json()["transactions"]
     assert (back["gross"], back["edited"]) == ("72.00", False)
 
@@ -117,6 +118,31 @@ def test_removing_an_upload_leaves_a_stale_link(api):
     manual(client, cid, {**LINE, "link": ["bt"]})
     [line] = client.delete(f"/api/clients/{cid}/uploads/{bill_upload}").json()["transactions"]
     assert "stale_link" in [i["code"] for i in line["issues"]]
+
+
+def test_removing_a_copy_row_clears_its_warning_and_books_the_bill_again(api):
+    # A person removes one row: the ledger is worked out again without it, and nothing else goes.
+    client = api()
+    cid = add(client)["id"]
+    manual(client, cid, BILL, {**BILL, "document_ref": "bt-again", "counterparty": "BT", "document_number": "BT-1"},
+           LINE)
+    [bill, copy, line] = client.get(f"/api/clients/{cid}/ledger").json()["transactions"]
+    after = client.delete(f"/api/clients/{cid}/rows/{bill['id']}")
+    assert after.status_code == 200, after.text
+    assert [r["id"] for r in after.json()["transactions"]] == [copy["id"], line["id"]]
+    assert client.delete(f"/api/clients/{cid}/rows/{bill['id']}").status_code == 404
+
+
+def test_a_line_added_by_hand_joins_its_document_and_clears_its_total_warning(api):
+    client = api()
+    cid = add(client)["id"]
+    claim = {"date": "2026-09-09", "description": "Jenny Hogg - car park", "direction": "out", "gross": "36.00",
+             "account_code": "7400", "document_type": "expense_claim", "counterparty": "Jenny Hogg",
+             "document_ref": "claim", "document_total": "90.00"}
+    [first] = manual(client, cid, claim)["transactions"]
+    assert "total_mismatch" in [i["code"] for i in first["issues"]]
+    rows = manual(client, cid, {**claim, "date": "2026-09-24", "gross": "54.00", "document_total": None})["transactions"]
+    assert [[i["code"] for i in r["issues"]] for r in rows] == [[], []] and {r["owed"] for r in rows} == {"90.00"}
 
 
 def test_an_archived_client_takes_no_new_rows(api):

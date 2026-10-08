@@ -12,6 +12,7 @@ from .accounts import choosable
 from .checks import normalise
 from .errors import ClientArchived, InvalidInput, InvalidTransactions, NotFound
 from .export import file_name, workbook
+from .file_dates import check_file_date
 from .matching import match
 from .models import (BusinessSettings, Client, ClientFields, ClientPatch, ClientSummary, Ledger, ManualUpload,
                      RowPatch, SavedRow, StatementCheck, Transaction, TrialBalance, Upload)
@@ -66,7 +67,7 @@ def needs_review(row: Transaction) -> bool:
 
 def build(store: Store, client_id: int) -> Ledger:
     """The client's ledger: every saved row booked and matched with the client's settings, then each upload's
-    bank lines checked against the balances its statement prints."""
+    bank lines checked against the balances its statement prints, and its document's date against its file name's."""
     client = store.get_client(client_id)
     stored = store.rows(client_id)
     settings = settings_for(client)
@@ -74,9 +75,12 @@ def build(store: Store, client_id: int) -> Ledger:
     positions: dict[int, list[int]] = defaultdict(list)
     for n, row in enumerate(stored):
         positions[row.upload_id].append(n)
+    listed = store.uploads(client_id)
+    names = {u["id"]: u["name"] for u in listed}
     checks: dict[int, Optional[StatementCheck]] = {}
     for upload_id, ns in positions.items():
         checked, checks[upload_id] = check_statement([ready[n] for n in ns])
+        checked = check_file_date(checked, names.get(upload_id, ""))
         for n, tx in zip(ns, checked):
             ready[n] = tx
     transactions = [SavedRow(**tx.model_dump(), id=row.id, upload_id=row.upload_id,
@@ -84,7 +88,7 @@ def build(store: Store, client_id: int) -> Ledger:
                     for row, tx in zip(stored, ready)]
     uploads = [Upload(id=u["id"], name=u["name"], kind=u["kind"], sha256=u["sha256"], model=u["model"],
                       warnings=u["warnings"], created_at=u["created_at"], rows=u["row_count"],
-                      statement=checks.get(u["id"])) for u in store.uploads(client_id)]
+                      statement=checks.get(u["id"])) for u in listed]
     return Ledger(client=client, uploads=uploads, transactions=transactions)
 
 
@@ -118,8 +122,9 @@ def _check_edit(patch: RowPatch, sent: set[str], tx: Transaction, client: Client
             raise InvalidInput(message)
     if "description" in sent and not patch.description:
         raise InvalidInput("Enter a description.")
-    if "link" in sent and (patch.document_type if "document_type" in sent else tx.document_type) != "statement":
-        raise InvalidInput("Only a bank line can be linked to documents.")
+    if "link" in sent and (patch.document_type if "document_type" in sent else tx.document_type) not in (
+            "statement", "agent_statement"):
+        raise InvalidInput("Only a bank line, or an item of an agent's statement, can be linked to documents.")
     if "account_code" in sent and patch.account_code not in {a.code for a in choosable(client.business_type)}:
         raise InvalidInput(f"Account {patch.account_code} can't be chosen for {client.name}.")
     gross = patch.gross if "gross" in sent else tx.gross
@@ -160,6 +165,13 @@ def add_manual(store: Store, client_id: int, upload: ManualUpload) -> Ledger:
 def remove_upload(store: Store, client_id: int, upload_id: int) -> Ledger:
     require_active(store.get_client(client_id))
     store.delete_upload(client_id, upload_id)
+    return build(store, client_id)
+
+
+def remove_row(store: Store, client_id: int, row_id: int) -> Ledger:
+    """Removes one row a person no longer wants, and returns the ledger worked out again without it."""
+    require_active(store.get_client(client_id))
+    store.delete_row(client_id, row_id)
     return build(store, client_id)
 
 
