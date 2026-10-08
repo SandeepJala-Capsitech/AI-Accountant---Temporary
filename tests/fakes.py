@@ -5,7 +5,7 @@ import json
 import urllib.error
 
 from ledgersync.errors import ModelUnavailable
-from ledgersync.groq_client import ModelHealth
+from ledgersync.model_client import ModelHealth
 
 OFFLINE = "Cannot reach Groq at https://api.groq.com/openai/v1. Check the internet connection, then try again."
 
@@ -18,7 +18,7 @@ def transactions_json(*rows: dict) -> str:
 
 
 class FakeModel:
-    """Stands in for GroqClient: chat_json returns (or raises) `replies` in order."""
+    """Stands in for ModelClient: chat_json returns (or raises) `replies` in order."""
 
     model = "fake-model"
     max_images = 3
@@ -87,6 +87,8 @@ def http_error(code: int, message: str = "failed", retry_after=None) -> urllib.e
     return urllib.error.HTTPError("https://api.example.test", code, message, headers, io.BytesIO(body))
 
 
-def chat_answer(content: str = '{"transactions": []}', finish_reason: str = "stop") -> dict:
-    return {"choices": [{"index": 0, "message": {"role": "assistant", "content": content},
-                         "finish_reason": finish_reason}]}
+def chat_answer(content: str = '{"transactions": []}', finish_reason: str = "stop", provider=None) -> dict:
+    """A chat completion; OpenRouter's also names the provider that wrote it."""
+    answer = {"choices": [{"index": 0, "message": {"role": "assistant", "content": content},
+                           "finish_reason": finish_reason}]}
+    return {**answer, "provider": provider} if provider else answer

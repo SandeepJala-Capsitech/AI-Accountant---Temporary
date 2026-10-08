@@ -54,8 +54,19 @@ def _read_pages(pages: list[bytes], extractor, ctx: JobContext):
         if several:
             part = part.model_copy(update={"warnings": [f"{label}: {w}" for w in part.warnings]})
         result = part if result is None else result.model_copy(update={
-            "data": result.data + part.data, "warnings": result.warnings + part.warnings})
+            "data": result.data + part.data, "warnings": result.warnings + part.warnings,
+            # A statement's opening balance is on its first pages, its closing balance on its last.
+            "opening_balance": result.opening_balance if result.opening_balance is not None else part.opening_balance,
+            "closing_balance": part.closing_balance if part.closing_balance is not None else result.closing_balance,
+            "agent": result.agent or part.agent,
+            "model": _joined(result.model, part.model)})
     return result
+
+
+def _joined(names: Optional[str], name: Optional[str]) -> Optional[str]:
+    """The models that read an input's pages, with their hosts, each named once: each request may go to another host."""
+    seen = names.split("; ") if names else []
+    return "; ".join(seen + [name]) if name and name not in seen else names
 
 
 def _pdf_pages(data: bytes) -> list[bytes]:
@@ -65,9 +76,13 @@ def _pdf_pages(data: bytes) -> list[bytes]:
 
 
 def _pdf_text(data: bytes) -> Optional[str]:
-    from pdfminer.high_level import extract_text
+    """The text layer, in reading order with each line of the page kept together: a table's cells
+    stay in their row, where a column-by-column read would separate dates from their amounts."""
+    import pymupdf
     try:
-        return extract_text(io.BytesIO(data)).strip() or None
+        with PYMUPDF_LOCK, pymupdf.open(stream=data, filetype="pdf") as doc:
+            text = "\n\n".join(page.get_text("text", sort=True) for page in doc)
     except Exception as exc:
         logger.warning("PDF text extraction failed (%s); the model will read the pages instead", type(exc).__name__)
         return None
+    return text.strip() or None

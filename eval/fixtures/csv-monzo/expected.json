@@ -9,7 +9,8 @@
       "gross": "6.45",
       "vat": null,
       "account_code": "7406",
-      "description": "PRET A MANGER LONDON"
+      "description": "PRET A MANGER LONDON",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-09",
@@ -17,7 +18,8 @@
       "gross": "1450.00",
       "vat": null,
       "account_code": "4000",
-      "description": "OAKRIDGE DESIGN INV 2026-14"
+      "description": "OAKRIDGE DESIGN INV 2026-14",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-21",
@@ -25,7 +27,8 @@
       "gross": "18.20",
       "vat": null,
       "account_code": "7400",
-      "description": "UBER *TRIP"
+      "description": "UBER *TRIP",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-26",
@@ -33,7 +36,8 @@
       "gross": "11.50",
       "vat": null,
       "account_code": "8201",
-      "description": "GOOGLE WORKSPACE"
+      "description": "GOOGLE WORKSPACE",
+      "document_type": "statement"
     }
   ]
 }

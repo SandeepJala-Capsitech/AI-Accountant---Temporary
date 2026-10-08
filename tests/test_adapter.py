@@ -4,6 +4,7 @@ from decimal import Decimal
 import pytest
 
 from ledgersync.adapter import parse_date, to_transactions
+from ledgersync.matching import match
 from ledgersync.models import BusinessSettings
 from ledgersync.posting import trial_balance
 
@@ -13,6 +14,11 @@ ROW = {"description": "BT Business Broadband", "date": "2026-09-01", "amount": 7
 
 def adapt(*rows):
     return to_transactions(list(rows), source="table", settings=BusinessSettings())
+
+
+def checked(*rows):
+    """The rows as the ledger shows them: matching.match checks each document against its printed total."""
+    return match(adapt(*rows), BusinessSettings())
 
 
 def issues_of(t):
@@ -29,18 +35,29 @@ def test_rows_that_do_not_add_up_to_the_document_total_are_flagged():
     # The note said Breakfast £20 and Travelling charges £50, but "Total £60".
     rows = [dict(ROW, description="Breakfast", amount=20.0, account="7406 Subsistence", document_total=60.0),
             dict(ROW, description="Travelling charges", amount=50.0, account="7400 Travel", document_total=60.0)]
-    for t in adapt(*rows):
-        [mismatch] = [i for i in t.issues if i.code == "total_mismatch"]
-        assert mismatch.severity == "warning" and "70.00" in mismatch.message and "60.00" in mismatch.message
+    assert [t.document_total for t in adapt(*rows)] == [Decimal("60.00")] * 2         # each row keeps the total
+    first, second = checked(*rows)
+    [mismatch] = [i for i in first.issues if i.code == "total_mismatch"]
+    assert mismatch.severity == "warning" and "70.00" in mismatch.message and "60.00" in mismatch.message
+    assert "total_mismatch" not in [code for code, _ in issues_of(second)]           # said once, on its first row
+
+
+def test_a_documents_price_before_vat_and_not_a_vat_invoice_are_kept_but_not_on_a_bank_line():
+    receipt = dict(ROW, document_type="receipt", amount=17.99, document_total=17.99, document_net=14.99,
+                   not_vat_invoice=True)
+    [tx] = adapt(receipt)
+    assert (tx.document_net, tx.not_vat_invoice) == (Decimal("14.99"), True)
+    [line] = adapt(dict(receipt, document_type="statement"))
+    assert (line.document_net, line.not_vat_invoice) == (None, False)
 
 
 def test_rows_that_add_up_to_the_document_total_are_not_flagged():
     rows = [dict(ROW, amount=20.0, document_total=70.0), dict(ROW, amount=50.0, document_total=70.0)]
-    assert not [i for t in adapt(*rows) for i in t.issues if i.code == "total_mismatch"]
+    assert not [i for t in checked(*rows) for i in t.issues if i.code == "total_mismatch"]
 
 
 def test_statement_rows_without_a_document_total_are_not_checked():
-    assert not [i for t in adapt(ROW, dict(ROW, amount=10.0)) for i in t.issues if i.code == "total_mismatch"]
+    assert not [i for t in checked(ROW, dict(ROW, amount=10.0)) for i in t.issues if i.code == "total_mismatch"]
 
 
 def test_a_split_that_loses_the_printed_vat_is_put_back_together():
@@ -49,7 +66,7 @@ def test_a_split_that_loses_the_printed_vat_is_put_back_together():
     doc = {"document_total": 12.0, "document_vat": 2.0, "date": "2026-09-15"}
     rows = [dict(ROW, **doc, description="Whsmith for A4 notebook", amount=11.0, account="7504 Office Stationery"),
             dict(ROW, **doc, description="Whsmith for Coffee to go", amount=1.0, vat=0.0, account="7406 Subsistence")]
-    [t] = adapt(*rows)
+    [t] = checked(*rows)
     assert (t.gross, t.vat, t.account_code, t.description) == (
         Decimal("12.00"), Decimal("2.00"), "7504", "Whsmith for A4 notebook")
     assert ("mixed_items", "warning") in issues_of(t) and "total_mismatch" not in [c for c, _ in issues_of(t)]
@@ -127,3 +144,82 @@ def test_negative_vat_printed_on_a_credit_note_is_still_vat():
     assert (t.vat, t.vat_posted) == (Decimal("2.00"), Decimal("2.00"))
     assert not [i for i in t.issues if i.severity == "error"]
     assert trial_balance([t], BusinessSettings()).is_balanced
+
+
+def test_rows_carry_the_document_type_and_counterparty():
+    [t] = adapt(dict(ROW, document_type="invoice", counterparty=" BT plc "))
+    assert (t.document_type, t.counterparty, t.contra_account_code) == ("invoice", "BT plc", "2100")
+
+
+def test_rows_carry_the_number_printed_on_their_document():
+    [bill] = adapt(dict(ROW, document_type="invoice", document_number=" SC-2026-00718 "))
+    [line] = adapt(dict(ROW, document_type="statement", document_number="SC-2026-00718"))
+    assert (bill.document_number, line.document_number) == ("SC-2026-00718", None)   # a bank line is no document
+
+
+AGENT = {"document_type": "agent_statement", "date": "2025-05-09"}
+
+
+def agent_rows(total=526.75):
+    # A letting agent's statement: the rent it collected, its fees and a bill it paid, netting to what it paid over.
+    items = [dict(ROW, **AGENT, description="Rent", amount=925.0, direction="in", account="4904 Rent Income",
+                  counterparty="22 Telecom Ltd"),
+             dict(ROW, **AGENT, description="Fees", amount=118.25, account="7603 Professional Fees",
+                  counterparty="R+R PR Ltd"),
+             dict(ROW, **AGENT, description="Boiler", amount=280.0, account="7800 Repairs and Renewals",
+                  counterparty="Parkside Heating & Plumbing")]
+    return to_transactions([dict(item, document_total=total) for item in items], source="pdf",
+                           settings=BusinessSettings(), agent="R+R PR Ltd")
+
+
+def test_an_agents_statement_is_one_document_held_by_the_agent():
+    rows = agent_rows()
+    assert len({t.document_ref for t in rows}) == 1 and {t.agent for t in rows} == {"R+R PR Ltd"}
+    assert [(t.account_code, t.contra_account_code) for t in rows] == [("4904", "1100"), ("7603", "1100"),
+                                                                       ("7800", "1100")]
+    assert "total_mismatch" not in [code for t in match(rows, BusinessSettings()) for code, _ in issues_of(t)]
+
+
+def test_an_agents_statement_that_does_not_net_to_what_it_paid_over_is_flagged():
+    first, *_ = match(agent_rows(total=600.0), BusinessSettings())
+    assert ("total_mismatch", "warning") in issues_of(first) and "£526.75" in first.issues[-1].message
+
+
+def test_an_unexpected_document_type_is_left_for_a_person():
+    [t] = adapt(dict(ROW, document_type="delivery note"))
+    assert t.document_type == "other" and ("not_booked", "info") in issues_of(t)
+
+
+def test_rows_of_one_invoice_share_a_reference_and_bank_lines_do_not():
+    doc = {"document_total": 60.0, "document_type": "invoice", "counterparty": "Hilton", "date": "2026-09-01"}
+    bill = adapt(dict(ROW, **doc, amount=20.0, account="7406 Subsistence"),
+                 dict(ROW, **doc, amount=40.0, account="7400 Travel"))
+    lines = adapt(dict(ROW, document_type="statement"), dict(ROW, document_type="statement"))
+    assert bill[0].document_ref == bill[1].document_ref and lines[0].document_ref != lines[1].document_ref
+
+
+def test_two_invoices_with_the_same_total_on_different_dates_are_two_documents():
+    doc = {"document_total": 12000.0, "document_type": "invoice", "counterparty": "Business Cube"}
+    first, second = checked(dict(ROW, **doc, amount=12000.0, date="2026-10-01"),
+                            dict(ROW, **doc, amount=12000.0, date="2026-11-01"))
+    assert first.document_ref != second.document_ref
+    assert "total_mismatch" not in [code for t in (first, second) for code, _ in issues_of(t)]
+
+
+def test_a_claims_lines_share_one_reference_whatever_their_dates():
+    claim = {"document_total": 50.0, "document_type": "expense_claim", "counterparty": "Matt Barnes"}
+    lines = adapt(dict(ROW, **claim, amount=18.0, date="2026-09-12"),
+                  dict(ROW, **claim, amount=32.0, date="2026-09-14"))
+    assert lines[0].document_ref is not None and lines[0].document_ref == lines[1].document_ref
+
+
+def test_a_bank_line_keeps_the_balances_its_statement_prints():
+    [t] = to_transactions([dict(ROW, document_type="statement", balance=1240.5)], source="table",
+                          settings=BusinessSettings(), opening_balance=1500, closing_balance=-20)
+    assert (t.balance, t.opening_balance, t.closing_balance) == (Decimal("1240.50"), Decimal("1500.00"), Decimal("-20.00"))
+
+
+def test_balances_on_any_other_row_are_dropped():
+    [t] = to_transactions([dict(ROW, document_type="receipt", balance=10)], source="table",
+                          settings=BusinessSettings(), opening_balance=5, closing_balance=1)
+    assert (t.balance, t.opening_balance, t.closing_balance) == (None, None, None)

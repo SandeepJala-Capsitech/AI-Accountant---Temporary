@@ -1,0 +1,16 @@
+{
+  "case": "pdf-pro-forma",
+  "kind": "pdf",
+  "input": "input.pdf",
+  "rows": [
+    {
+      "date": "2026-09-22",
+      "direction": "out",
+      "gross": "360.00",
+      "vat": "60.00",
+      "account_code": "0030",
+      "description": "Brightline IT Supplies Ltd",
+      "document_type": "pro_forma"
+    }
+  ]
+}

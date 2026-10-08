@@ -9,7 +9,8 @@
       "gross": "295.00",
       "vat": null,
       "account_code": "7100",
-      "description": "WeWork Desk rental September"
+      "description": "WeWork Desk rental September",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-07",
@@ -17,7 +18,8 @@
       "gross": "360.00",
       "vat": null,
       "account_code": "7601",
-      "description": "Hartley & Co Invoice 2026-288"
+      "description": "Hartley & Co Invoice 2026-288",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-15",
@@ -25,7 +27,8 @@
       "gross": "2100.00",
       "vat": null,
       "account_code": "4000",
-      "description": "Brightwell Ltd INV NB-0112"
+      "description": "Brightwell Ltd INV NB-0112",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-23",
@@ -33,7 +36,8 @@
       "gross": "64.30",
       "vat": null,
       "account_code": "7400",
-      "description": "Avanti West Coast Rail"
+      "description": "Avanti West Coast Rail",
+      "document_type": "statement"
     }
   ]
 }

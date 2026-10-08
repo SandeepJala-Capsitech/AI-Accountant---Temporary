@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "next dev --port 3000",
     "build": "next build",
-    "start": "next start --port 3000"
+    "start": "next start --port 3000",
+    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test 'src/lib/*.test.ts'"
   },
   "dependencies": {
     "next": "^16.3.4",

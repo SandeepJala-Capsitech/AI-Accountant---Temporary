@@ -9,7 +9,8 @@
       "gross": "1850.00",
       "vat": null,
       "account_code": "7100",
-      "description": "KNIGHT FRANK RENT SEP"
+      "description": "KNIGHT FRANK RENT SEP",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-02",
@@ -17,7 +18,8 @@
       "gross": "4200.00",
       "vat": null,
       "account_code": "4000",
-      "description": "HALCYON STUDIOS LTD INV 2051"
+      "description": "HALCYON STUDIOS LTD INV 2051",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-03",
@@ -25,7 +27,8 @@
       "gross": "64.20",
       "vat": null,
       "account_code": "7800",
-      "description": "WICKES"
+      "description": "WICKES",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-04",
@@ -33,7 +36,8 @@
       "gross": "6.85",
       "vat": null,
       "account_code": "7406",
-      "description": "CAFFE NERO"
+      "description": "CAFFE NERO",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-05",
@@ -41,7 +45,8 @@
       "gross": "23.97",
       "vat": null,
       "account_code": "7504",
-      "description": "RYMAN"
+      "description": "RYMAN",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-08",
@@ -49,7 +54,8 @@
       "gross": "118.40",
       "vat": null,
       "account_code": "7400",
-      "description": "LNER"
+      "description": "LNER",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-09",
@@ -57,7 +63,8 @@
       "gross": "58.12",
       "vat": null,
       "account_code": "7300",
-      "description": "ESSO"
+      "description": "ESSO",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-10",
@@ -65,7 +72,8 @@
       "gross": "17.95",
       "vat": null,
       "account_code": "7501",
-      "description": "PARCELFORCE"
+      "description": "PARCELFORCE",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-11",
@@ -73,7 +81,8 @@
       "gross": "36.00",
       "vat": null,
       "account_code": "7502",
-      "description": "O2 UK"
+      "description": "O2 UK",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-12",
@@ -81,7 +90,8 @@
       "gross": "15.99",
       "vat": null,
       "account_code": "8201",
-      "description": "DROPBOX"
+      "description": "DROPBOX",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-15",
@@ -89,7 +99,8 @@
       "gross": "72.50",
       "vat": null,
       "account_code": "7402",
-      "description": "TRAVELODGE"
+      "description": "TRAVELODGE",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-16",
@@ -97,7 +108,8 @@
       "gross": "34.60",
       "vat": null,
       "account_code": "7400",
-      "description": "ADDISON LEE"
+      "description": "ADDISON LEE",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-17",
@@ -105,7 +117,8 @@
       "gross": "18.35",
       "vat": null,
       "account_code": "8205",
-      "description": "WAITROSE"
+      "description": "WAITROSE",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-18",
@@ -113,7 +126,8 @@
       "gross": "42.99",
       "vat": null,
       "account_code": "9998",
-      "description": "EBAY"
+      "description": "EBAY",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-19",
@@ -121,7 +135,8 @@
       "gross": "129.00",
       "vat": null,
       "account_code": "9998",
-      "description": "JOHN LEWIS"
+      "description": "JOHN LEWIS",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-22",
@@ -129,7 +144,8 @@
       "gross": "48.75",
       "vat": null,
       "account_code": "8204",
-      "description": "HISCOX"
+      "description": "HISCOX",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-24",
@@ -137,7 +153,8 @@
       "gross": "150.00",
       "vat": null,
       "account_code": "9998",
-      "description": "GOOGLE ADS"
+      "description": "GOOGLE ADS",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-25",
@@ -145,7 +162,8 @@
       "gross": "2310.00",
       "vat": null,
       "account_code": "7000",
-      "description": "J MORGAN SALARY"
+      "description": "J MORGAN SALARY",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-29",
@@ -153,7 +171,8 @@
       "gross": "8.50",
       "vat": null,
       "account_code": "7901",
-      "description": "MONTHLY ACCOUNT FEE"
+      "description": "MONTHLY ACCOUNT FEE",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-30",
@@ -161,7 +180,8 @@
       "gross": "1.26",
       "vat": null,
       "account_code": "4900",
-      "description": "GROSS INTEREST"
+      "description": "GROSS INTEREST",
+      "document_type": "statement"
     }
   ]
 }

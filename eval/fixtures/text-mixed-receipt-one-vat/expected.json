@@ -9,7 +9,8 @@
       "gross": "12.00",
       "vat": "2.00",
       "account_code": "7504",
-      "description": "WHSmith"
+      "description": "WHSmith",
+      "document_type": "receipt"
     }
   ]
 }

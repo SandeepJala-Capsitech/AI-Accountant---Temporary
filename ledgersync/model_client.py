@@ -1,5 +1,6 @@
-"""Client for Groq's hosted vision model, through Groq's OpenAI-compatible chat API. The API key
-travels only in the Authorization header: it is never logged or put into an error message."""
+"""Client for the hosted vision model, through the OpenAI-compatible chat API of OpenRouter or Groq
+(settings.provider). The API key travels only in the Authorization header: it is never logged or put
+into an error message."""
 from __future__ import annotations
 
 import http.client
@@ -32,6 +33,16 @@ class ModelHealth:
     error: Optional[str] = None
 
 
+class ModelAnswer(str):
+    """The model's JSON text, with the host that wrote it: OpenRouter names the provider it chose, Groq hosts the
+    model itself and names none."""
+
+    def __new__(cls, text: str, host: Optional[str] = None):
+        answer = super().__new__(cls, text)
+        answer.host = host
+        return answer
+
+
 def strict_schema(schema: dict) -> dict:
     """The Pydantic JSON schema in the form strict structured outputs accept: $defs inlined,
     every object closed (additionalProperties false) with all its properties required, and
@@ -59,7 +70,7 @@ def strict_schema(schema: dict) -> dict:
     return convert(schema)
 
 
-class GroqClient:
+class ModelClient:
     def __init__(self, settings: Settings, opener: Callable = urllib.request.urlopen,
                  clock: Callable[[], float] = time.monotonic,
                  sleep: Callable[[float], None] = time.sleep):
@@ -74,7 +85,15 @@ class GroqClient:
 
     @property
     def model(self) -> str:
-        return self._s.groq_model
+        return self._s.model
+
+    @property
+    def _openrouter(self) -> bool:
+        return self._s.provider == "OpenRouter"
+
+    def _setting(self, name: str) -> str:
+        """The provider's own variable for a setting, e.g. OPENROUTER_API_KEY or GROQ_MODEL."""
+        return f"{self._s.provider.upper()}_{name}"
 
     @property
     def max_images(self) -> int:
@@ -94,9 +113,9 @@ class GroqClient:
         if not health.model_available:
             raise ModelUnavailable(health.error or self._unreachable_message())
 
-    def chat_json(self, messages: list[dict], schema: dict, images: Optional[list[str]] = None) -> str:
-        """The model's JSON text, held to `schema` by strict structured outputs. Images are
-        base64 JPEGs (pipeline.prepare_image), added to the last message."""
+    def chat_json(self, messages: list[dict], schema: dict, images: Optional[list[str]] = None) -> ModelAnswer:
+        """The model's JSON text, held to `schema` by strict structured outputs, with the host that wrote it.
+        Images are base64 JPEGs (pipeline.prepare_image), added to the last message."""
         messages = [dict(m) for m in messages]
         if images:
             messages[-1]["content"] = [
@@ -104,43 +123,59 @@ class GroqClient:
                 *({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image}"}}
                   for image in images),
             ]
+        # OpenRouter's providers list max_tokens among the parameters they take, not its newer name.
+        max_tokens = "max_tokens" if self._openrouter else "max_completion_tokens"
         payload = {
             "model": self.model,
             "messages": messages,
             "temperature": 0,
-            "max_completion_tokens": self._s.groq_max_output_tokens,
+            max_tokens: self._s.max_output_tokens,
             "response_format": {"type": "json_schema", "json_schema": {
                 "name": "transactions", "schema": strict_schema(schema), "strict": True}},
         }
         if self._s.groq_reasoning_effort:
             payload["reasoning_effort"] = self._s.groq_reasoning_effort
-        choice = (self._chat(payload).get("choices") or [{}])[0]
+        if self._openrouter:
+            # Only to providers that honour every parameter above, the strict schema above all;
+            # otherwise OpenRouter may pick one that ignores it. The hosts set are asked first, and only
+            # hosts running the model at a precision set are used (settings.openrouter_quantizations).
+            route = {"require_parameters": True}
+            if self._s.openrouter_providers:
+                route["order"] = list(self._s.openrouter_providers)
+            if self._s.openrouter_quantizations:
+                route["quantizations"] = list(self._s.openrouter_quantizations)
+            payload["provider"] = route
+        response = self._chat(payload)
+        choice = (response.get("choices") or [{}])[0]
         if choice.get("finish_reason") == "length":
             raise ModelError("The document is too long for the AI model to answer in one pass. "
                              "Split it into smaller files and try again.", code="ai_output_truncated")
         content = (choice.get("message") or {}).get("content") or ""
         if not content.strip():
             raise ModelError("The AI model returned an empty answer.", code="ai_output_invalid")
-        return content
+        return ModelAnswer(content, host=response.get("provider"))
 
     def warm_up(self) -> None:
         """Nothing to load on a hosted model: checks the key and model once. Never raises."""
+        logger.info("Documents are read by %s on %s", self.model, self._s.provider)
         try:
             self.health(force=True)
         except Exception as exc:
-            logger.warning("Groq check failed (%s)", type(exc).__name__)
+            logger.warning("%s check failed (%s)", self._s.provider, type(exc).__name__)
 
     def _check(self) -> ModelHealth:
-        if not self._s.groq_api_key:
-            return ModelHealth(False, False, "Set GROQ_API_KEY in .env, then restart the API.")
+        if not self._s.api_key:
+            return ModelHealth(False, False, "Set OPENROUTER_API_KEY or GROQ_API_KEY in .env, then restart the API.")
+        # OpenRouter's /models answers without a key; /models/user needs one, so it checks the key too.
+        path = "/models/user" if self._openrouter else "/models"
         try:
-            listing = self._request("GET", "/models", None, timeout=10)
+            listing = self._request("GET", path, None, timeout=10)
         except urllib.error.HTTPError as exc:
             if exc.code == 429:   # rate limited: the key works, and the next chat call waits it out
                 return self._health or ModelHealth(True, True)
             return ModelHealth(True, False, self._http_error(exc.code, self._detail(exc)).message)
         except Exception as exc:
-            logger.info("Groq not reachable (%s)", type(exc).__name__)
+            logger.info("%s not reachable (%s)", self._s.provider, type(exc).__name__)
             return ModelHealth(False, False, self._unreachable_message())
         offered = {m.get("id") for m in listing.get("data", []) if m.get("active", True)}
         if self.model in offered:
@@ -160,11 +195,11 @@ class GroqClient:
                     wait = self._retry_after(exc)
                     if waited + wait > RATE_LIMIT_WAIT:
                         raise ModelRateLimited(self._rate_limit_message(wait, self._detail(exc))) from None
-                    logger.info("Groq rate limit reached; waiting %.0f s", wait)
+                    logger.info("%s rate limit reached; waiting %.0f s", self._s.provider, wait)
                     self._sleep(wait)
                     waited += wait
                 elif exc.code >= 500 and not retried:
-                    logger.warning("Groq returned HTTP %d; retrying once", exc.code)
+                    logger.warning("%s returned HTTP %d; retrying once", self._s.provider, exc.code)
                     retried = True
                     self._sleep(1.0)
                 else:
@@ -177,25 +212,26 @@ class GroqClient:
                 if retried:
                     self._health = None
                     raise ModelUnavailable(self._unreachable_message()) from None
-                logger.warning("Lost the connection to Groq; retrying once")
+                logger.warning("Lost the connection to %s; retrying once", self._s.provider)
                 retried = True
                 self._sleep(1.0)
             except json.JSONDecodeError:
-                raise ModelError("Groq returned a response that is not JSON.",
+                raise ModelError(f"{self._s.provider} returned a response that is not JSON.",
                                  code="ai_output_invalid") from None
 
     def _http_error(self, status: int, detail: str) -> Exception:
         if status in (401, 403):
             self._health = None
-            return ModelUnavailable("Groq rejected the API key. Check GROQ_API_KEY in .env, then restart the API.")
-        if status == 404:
+            return ModelUnavailable(f"{self._s.provider} rejected the API key. "
+                                    f"Check {self._setting('API_KEY')} in .env, then restart the API.")
+        if status == 404:   # OpenRouter's reason can be that no host fits, e.g. the account's privacy settings
             self._health = None
-            return ModelUnavailable(self._missing_model_message())
+            return ModelUnavailable(f"{self._missing_model_message()} ({detail})")
         lowered = detail.lower()
         if status == 413 or (status == 400 and ("context" in lowered or "reduce the length" in lowered)):
-            return ModelError("This document is too large for Groq's limits on the current plan. "
+            return ModelError(f"This document is too large for {self._s.provider}'s limits on the current plan. "
                               "Split it into smaller files and try again.", code="ai_input_too_long")
-        return ModelError(f"Groq returned HTTP {status}: {detail}")
+        return ModelError(f"{self._s.provider} returned HTTP {status}: {detail}")
 
     def _detail(self, exc: urllib.error.HTTPError) -> str:
         """The provider's own error message, shortened, with the key blanked in case it is echoed."""
@@ -204,17 +240,16 @@ class GroqClient:
             message = str(json.loads(raw)["error"]["message"])
         except (ValueError, KeyError, TypeError):
             message = raw
-        if self._s.groq_api_key:   # blank first: shortening first could cut the key in half
-            message = message.replace(self._s.groq_api_key, "***")
+        if self._s.api_key:   # blank first: shortening first could cut the key in half
+            message = message.replace(self._s.api_key, "***")
         return message[:300]
 
-    @staticmethod
-    def _rate_limit_message(wait: float, detail: str) -> str:
+    def _rate_limit_message(self, wait: float, detail: str) -> str:
         """When to try again, from Retry-After: a free plan's daily limit can be minutes or hours away."""
         minutes = max(1, math.ceil(wait / 60))
         when = ("about a minute" if minutes == 1 else f"about {minutes} minutes" if minutes < 90
                 else f"about {round(minutes / 60)} hours")
-        return f"Groq's rate limit is used up; try again in {when}. ({detail})"
+        return f"{self._s.provider}'s rate limit is used up; try again in {when}. ({detail})"
 
     @staticmethod
     def _retry_after(exc: urllib.error.HTTPError) -> float:
@@ -224,21 +259,23 @@ class GroqClient:
             return DEFAULT_RETRY_AFTER
 
     def _timeout_message(self) -> str:
-        return (f"Groq did not answer within {self._s.groq_timeout:.0f} seconds. "
+        return (f"{self._s.provider} did not answer within {self._s.groq_timeout:.0f} seconds. "
                 "Try again, or raise GROQ_TIMEOUT.")
 
     def _request(self, method: str, path: str, payload: Optional[dict], timeout: float) -> dict:
         data = json.dumps(payload).encode("utf-8") if payload is not None else None
-        req = urllib.request.Request(f"{self._s.groq_base_url}{path}", data=data, method=method, headers={
+        req = urllib.request.Request(f"{self._s.base_url}{path}", data=data, method=method, headers={
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self._s.groq_api_key}",
+            "Authorization": f"Bearer {self._s.api_key}",
             "User-Agent": USER_AGENT,
         })
         with self._open(req, timeout=timeout) as resp:
             return json.loads(resp.read())
 
     def _unreachable_message(self) -> str:
-        return f"Cannot reach Groq at {self._s.groq_base_url}. Check the internet connection, then try again."
+        return (f"Cannot reach {self._s.provider} at {self._s.base_url}. "
+                "Check the internet connection, then try again.")
 
     def _missing_model_message(self) -> str:
-        return f"Groq does not offer the model '{self.model}'. Check GROQ_MODEL in .env, then restart the API."
+        return (f"{self._s.provider} does not offer the model '{self.model}'. "
+                f"Check {self._setting('MODEL')} in .env, then restart the API.")

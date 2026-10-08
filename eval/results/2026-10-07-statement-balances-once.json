@@ -1,0 +1,2648 @@
+{
+  "date": "2026-10-07",
+  "label": "statement-balances-once",
+  "api": "http://127.0.0.1:8087",
+  "model": "qwen/qwen3.8-27b",
+  "note": "statement balances once per answer; business type; reasoning low; 1 image; Northbridge",
+  "timeout_s": 600,
+  "summary": {
+    "cases": 18,
+    "expected": 149,
+    "predicted": 149,
+    "matched": 149,
+    "row_precision": 1.0,
+    "row_recall": 1.0,
+    "correct_rows": 1.0,
+    "field_accuracy": {
+      "amount": 1.0,
+      "date": 1.0,
+      "direction": 1.0,
+      "account": 0.973,
+      "vat": 1.0,
+      "document_type": 1.0
+    },
+    "exact_cases": 0.778,
+    "tb_balanced": 1.0,
+    "latency_p50_s": 17.8,
+    "latency_p95_s": 64.7,
+    "errors": {}
+  },
+  "by_kind": {
+    "image": {
+      "cases": 3,
+      "expected": 3,
+      "predicted": 3,
+      "matched": 3,
+      "row_precision": 1.0,
+      "row_recall": 1.0,
+      "correct_rows": 1.0,
+      "field_accuracy": {
+        "amount": 1.0,
+        "date": 1.0,
+        "direction": 1.0,
+        "account": 1.0,
+        "vat": 1.0,
+        "document_type": 1.0
+      },
+      "exact_cases": 1.0,
+      "tb_balanced": 1.0,
+      "latency_p50_s": 11.7,
+      "latency_p95_s": 12.2,
+      "errors": {}
+    },
+    "pdf": {
+      "cases": 1,
+      "expected": 5,
+      "predicted": 5,
+      "matched": 5,
+      "row_precision": 1.0,
+      "row_recall": 1.0,
+      "correct_rows": 1.0,
+      "field_accuracy": {
+        "amount": 1.0,
+        "date": 1.0,
+        "direction": 1.0,
+        "account": 1.0,
+        "vat": null,
+        "document_type": 1.0
+      },
+      "exact_cases": 1.0,
+      "tb_balanced": 1.0,
+      "latency_p50_s": 33.5,
+      "latency_p95_s": 33.5,
+      "errors": {}
+    },
+    "table": {
+      "cases": 11,
+      "expected": 135,
+      "predicted": 135,
+      "matched": 135,
+      "row_precision": 1.0,
+      "row_recall": 1.0,
+      "correct_rows": 1.0,
+      "field_accuracy": {
+        "amount": 1.0,
+        "date": 1.0,
+        "direction": 1.0,
+        "account": 0.97,
+        "vat": null,
+        "document_type": 1.0
+      },
+      "exact_cases": 0.636,
+      "tb_balanced": 1.0,
+      "latency_p50_s": 23.6,
+      "latency_p95_s": 64.7,
+      "errors": {}
+    },
+    "text": {
+      "cases": 3,
+      "expected": 6,
+      "predicted": 6,
+      "matched": 6,
+      "row_precision": 1.0,
+      "row_recall": 1.0,
+      "correct_rows": 1.0,
+      "field_accuracy": {
+        "amount": 1.0,
+        "date": 1.0,
+        "direction": 1.0,
+        "account": 1.0,
+        "vat": 1.0,
+        "document_type": 1.0
+      },
+      "exact_cases": 1.0,
+      "tb_balanced": 1.0,
+      "latency_p50_s": 11.7,
+      "latency_p95_s": 64.2,
+      "errors": {}
+    }
+  },
+  "cases": [
+    {
+      "case": "csv-barclays-export",
+      "kind": "table",
+      "error": null,
+      "latency_s": 23.6,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 6,
+      "predicted": 6,
+      "matched": 6,
+      "correct": 6,
+      "checks": {
+        "amount": [
+          6,
+          6
+        ],
+        "date": [
+          6,
+          6
+        ],
+        "direction": [
+          6,
+          6
+        ],
+        "account": [
+          6,
+          6
+        ],
+        "vat": [
+          0,
+          0
+        ],
+        "document_type": [
+          6,
+          6
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-02",
+          "direction": "out",
+          "gross": "45.99",
+          "vat": "0.00",
+          "account_code": "7502",
+          "description": "VODAFONE LTD - Direct Debit",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-10",
+          "direction": "out",
+          "gross": "32.40",
+          "vat": "0.00",
+          "account_code": "7504",
+          "description": "STAPLES UK - Card Purchase",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-13",
+          "direction": "in",
+          "gross": "950.00",
+          "vat": "0.00",
+          "account_code": "4000",
+          "description": "BRIGHTWELL LTD - Bank Credit",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-18",
+          "direction": "out",
+          "gross": "15.60",
+          "vat": "0.00",
+          "account_code": "7501",
+          "description": "ROYAL MAIL - Card Purchase",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-22",
+          "direction": "out",
+          "gross": "89.00",
+          "vat": "0.00",
+          "account_code": "7402",
+          "description": "PREMIER INN - Card Purchase",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-27",
+          "direction": "out",
+          "gross": "1210.33",
+          "vat": "0.00",
+          "account_code": "2202",
+          "description": "HMRC VAT - Direct Debit",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        }
+      ]
+    },
+    {
+      "case": "csv-barclays-probe",
+      "kind": "table",
+      "error": null,
+      "latency_s": 42.2,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 3,
+      "predicted": 3,
+      "matched": 3,
+      "correct": 3,
+      "checks": {
+        "amount": [
+          3,
+          3
+        ],
+        "date": [
+          3,
+          3
+        ],
+        "direction": [
+          3,
+          3
+        ],
+        "account": [
+          3,
+          3
+        ],
+        "vat": [
+          0,
+          0
+        ],
+        "document_type": [
+          3,
+          3
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-01",
+          "direction": "out",
+          "gross": "72.00",
+          "vat": "0.00",
+          "account_code": "7502",
+          "description": "BT BUSINESS BROADBAND",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-02",
+          "direction": "in",
+          "gross": "3600.00",
+          "vat": "0.00",
+          "account_code": "4000",
+          "description": "ACME LTD BACS",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-04",
+          "direction": "out",
+          "gross": "24.50",
+          "vat": "0.00",
+          "account_code": "8205",
+          "description": "SAINSBURYS",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        }
+      ]
+    },
+    {
+      "case": "csv-hsbc-no-header",
+      "kind": "table",
+      "error": null,
+      "latency_s": 2.6,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 4,
+      "predicted": 4,
+      "matched": 4,
+      "correct": 4,
+      "checks": {
+        "amount": [
+          4,
+          4
+        ],
+        "date": [
+          4,
+          4
+        ],
+        "direction": [
+          4,
+          4
+        ],
+        "account": [
+          4,
+          4
+        ],
+        "vat": [
+          0,
+          0
+        ],
+        "document_type": [
+          4,
+          4
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-03",
+          "direction": "out",
+          "gross": "86.40",
+          "vat": "0.00",
+          "account_code": "7201",
+          "description": "British Gas, gas supply",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-11",
+          "direction": "out",
+          "gross": "28.00",
+          "vat": "0.00",
+          "account_code": "7502",
+          "description": "EE Limited, mobile/telecoms",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-15",
+          "direction": "in",
+          "gross": "1800.00",
+          "vat": "0.00",
+          "account_code": "4000",
+          "description": "Northwind Trading, customer payment",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-24",
+          "direction": "out",
+          "gross": "2140.37",
+          "vat": "0.00",
+          "account_code": "2210",
+          "description": "HMRC, PAYE and National Insurance",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        }
+      ]
+    },
+    {
+      "case": "csv-lloyds-debit-credit",
+      "kind": "table",
+      "error": null,
+      "latency_s": 13.8,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 4,
+      "predicted": 4,
+      "matched": 4,
+      "correct": 4,
+      "checks": {
+        "amount": [
+          4,
+          4
+        ],
+        "date": [
+          4,
+          4
+        ],
+        "direction": [
+          4,
+          4
+        ],
+        "account": [
+          3,
+          4
+        ],
+        "vat": [
+          0,
+          0
+        ],
+        "document_type": [
+          4,
+          4
+        ]
+      },
+      "exact": false,
+      "predicted_rows": [
+        {
+          "date": "2026-09-04",
+          "direction": "out",
+          "gross": "54.00",
+          "vat": "0.00",
+          "account_code": "9998",
+          "description": "SCREWFIX DIRECT",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-08",
+          "direction": "in",
+          "gross": "2750.00",
+          "vat": "0.00",
+          "account_code": "4000",
+          "description": "QUAYSIDE MEDIA LTD",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-12",
+          "direction": "out",
+          "gross": "12.80",
+          "vat": "0.00",
+          "account_code": "7400",
+          "description": "TFL TRAVEL CH",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-19",
+          "direction": "out",
+          "gross": "33.00",
+          "vat": "0.00",
+          "account_code": "8201",
+          "description": "XERO UK LTD",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        }
+      ]
+    },
+    {
+      "case": "csv-long-statement-60-rows",
+      "kind": "table",
+      "error": null,
+      "latency_s": 33.4,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 60,
+      "predicted": 60,
+      "matched": 60,
+      "correct": 60,
+      "checks": {
+        "amount": [
+          60,
+          60
+        ],
+        "date": [
+          60,
+          60
+        ],
+        "direction": [
+          60,
+          60
+        ],
+        "account": [
+          60,
+          60
+        ],
+        "vat": [
+          0,
+          0
+        ],
+        "document_type": [
+          60,
+          60
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-01",
+          "direction": "out",
+          "gross": "21.01",
+          "vat": "0.00",
+          "account_code": "8205",
+          "description": "TESCO STORES 001",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-01",
+          "direction": "out",
+          "gross": "53.84",
+          "vat": "0.00",
+          "account_code": "7300",
+          "description": "SHELL 002",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-02",
+          "direction": "out",
+          "gross": "83.83",
+          "vat": "0.00",
+          "account_code": "9998",
+          "description": "AMAZON MARKETPLACE 003",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-02",
+          "direction": "in",
+          "gross": "1741.71",
+          "vat": "0.00",
+          "account_code": "4000",
+          "description": "CLIENT RECEIPT 004",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-03",
+          "direction": "out",
+          "gross": "18.31",
+          "vat": "0.00",
+          "account_code": "7400",
+          "description": "UBER 005",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-03",
+          "direction": "out",
+          "gross": "38.08",
+          "vat": "0.00",
+          "account_code": "7502",
+          "description": "VODAFONE 006",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-04",
+          "direction": "out",
+          "gross": "70.41",
+          "vat": "0.00",
+          "account_code": "7501",
+          "description": "ROYAL MAIL 007",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-04",
+          "direction": "out",
+          "gross": "81.92",
+          "vat": "0.00",
+          "account_code": "7406",
+          "description": "PRET A MANGER 008",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-05",
+          "direction": "out",
+          "gross": "73.76",
+          "vat": "0.00",
+          "account_code": "8205",
+          "description": "TESCO STORES 009",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-05",
+          "direction": "out",
+          "gross": "40.81",
+          "vat": "0.00",
+          "account_code": "7300",
+          "description": "SHELL 010",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-06",
+          "direction": "out",
+          "gross": "1.91",
+          "vat": "0.00",
+          "account_code": "9998",
+          "description": "AMAZON MARKETPLACE 011",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-06",
+          "direction": "in",
+          "gross": "2010.09",
+          "vat": "0.00",
+          "account_code": "4000",
+          "description": "CLIENT RECEIPT 012",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-07",
+          "direction": "out",
+          "gross": "14.72",
+          "vat": "0.00",
+          "account_code": "7400",
+          "description": "UBER 013",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-07",
+          "direction": "out",
+          "gross": "19.64",
+          "vat": "0.00",
+          "account_code": "7502",
+          "description": "VODAFONE 014",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-08",
+          "direction": "out",
+          "gross": "48.56",
+          "vat": "0.00",
+          "account_code": "7501",
+          "description": "ROYAL MAIL 015",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-08",
+          "direction": "out",
+          "gross": "17.56",
+          "vat": "0.00",
+          "account_code": "7406",
+          "description": "PRET A MANGER 016",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-09",
+          "direction": "out",
+          "gross": "75.17",
+          "vat": "0.00",
+          "account_code": "8205",
+          "description": "TESCO STORES 017",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-09",
+          "direction": "out",
+          "gross": "3.38",
+          "vat": "0.00",
+          "account_code": "7300",
+          "description": "SHELL 018",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-10",
+          "direction": "out",
+          "gross": "81.82",
+          "vat": "0.00",
+          "account_code": "9998",
+          "description": "AMAZON MARKETPLACE 019",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-10",
+          "direction": "in",
+          "gross": "2180.97",
+          "vat": "0.00",
+          "account_code": "4000",
+          "description": "CLIENT RECEIPT 020",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-11",
+          "direction": "out",
+          "gross": "52.98",
+          "vat": "0.00",
+          "account_code": "7400",
+          "description": "UBER 021",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-11",
+          "direction": "out",
+          "gross": "35.94",
+          "vat": "0.00",
+          "account_code": "7502",
+          "description": "VODAFONE 022",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-12",
+          "direction": "out",
+          "gross": "66.58",
+          "vat": "0.00",
+          "account_code": "7501",
+          "description": "ROYAL MAIL 023",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-12",
+          "direction": "out",
+          "gross": "42.70",
+          "vat": "0.00",
+          "account_code": "7406",
+          "description": "PRET A MANGER 024",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-13",
+          "direction": "out",
+          "gross": "58.46",
+          "vat": "0.00",
+          "account_code": "8205",
+          "description": "TESCO STORES 025",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-13",
+          "direction": "out",
+          "gross": "59.93",
+          "vat": "0.00",
+          "account_code": "7300",
+          "description": "SHELL 026",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-14",
+          "direction": "out",
+          "gross": "63.16",
+          "vat": "0.00",
+          "account_code": "9998",
+          "description": "AMAZON MARKETPLACE 027",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-14",
+          "direction": "in",
+          "gross": "2355.51",
+          "vat": "0.00",
+          "account_code": "4000",
+          "description": "CLIENT RECEIPT 028",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-15",
+          "direction": "out",
+          "gross": "85.64",
+          "vat": "0.00",
+          "account_code": "7400",
+          "description": "UBER 029",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-15",
+          "direction": "out",
+          "gross": "14.00",
+          "vat": "0.00",
+          "account_code": "7502",
+          "description": "VODAFONE 030",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-16",
+          "direction": "out",
+          "gross": "57.27",
+          "vat": "0.00",
+          "account_code": "7501",
+          "description": "ROYAL MAIL 031",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-16",
+          "direction": "out",
+          "gross": "16.19",
+          "vat": "0.00",
+          "account_code": "7406",
+          "description": "PRET A MANGER 032",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-17",
+          "direction": "out",
+          "gross": "89.65",
+          "vat": "0.00",
+          "account_code": "8205",
+          "description": "TESCO STORES 033",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-17",
+          "direction": "out",
+          "gross": "49.36",
+          "vat": "0.00",
+          "account_code": "7300",
+          "description": "SHELL 034",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-18",
+          "direction": "out",
+          "gross": "48.62",
+          "vat": "0.00",
+          "account_code": "9998",
+          "description": "AMAZON MARKETPLACE 035",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-18",
+          "direction": "in",
+          "gross": "1599.17",
+          "vat": "0.00",
+          "account_code": "4000",
+          "description": "CLIENT RECEIPT 036",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-19",
+          "direction": "out",
+          "gross": "24.58",
+          "vat": "0.00",
+          "account_code": "7400",
+          "description": "UBER 037",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-19",
+          "direction": "out",
+          "gross": "52.12",
+          "vat": "0.00",
+          "account_code": "7502",
+          "description": "VODAFONE 038",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-20",
+          "direction": "out",
+          "gross": "5.55",
+          "vat": "0.00",
+          "account_code": "7501",
+          "description": "ROYAL MAIL 039",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-20",
+          "direction": "out",
+          "gross": "61.93",
+          "vat": "0.00",
+          "account_code": "7406",
+          "description": "PRET A MANGER 040",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-21",
+          "direction": "out",
+          "gross": "61.06",
+          "vat": "0.00",
+          "account_code": "8205",
+          "description": "TESCO STORES 041",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-21",
+          "direction": "out",
+          "gross": "77.04",
+          "vat": "0.00",
+          "account_code": "7300",
+          "description": "SHELL 042",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-22",
+          "direction": "out",
+          "gross": "70.67",
+          "vat": "0.00",
+          "account_code": "9998",
+          "description": "AMAZON MARKETPLACE 043",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-22",
+          "direction": "in",
+          "gross": "637.72",
+          "vat": "0.00",
+          "account_code": "4000",
+          "description": "CLIENT RECEIPT 044",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-23",
+          "direction": "out",
+          "gross": "66.83",
+          "vat": "0.00",
+          "account_code": "7400",
+          "description": "UBER 045",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-23",
+          "direction": "out",
+          "gross": "83.16",
+          "vat": "0.00",
+          "account_code": "7502",
+          "description": "VODAFONE 046",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-24",
+          "direction": "out",
+          "gross": "20.57",
+          "vat": "0.00",
+          "account_code": "7501",
+          "description": "ROYAL MAIL 047",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-24",
+          "direction": "out",
+          "gross": "71.20",
+          "vat": "0.00",
+          "account_code": "7406",
+          "description": "PRET A MANGER 048",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-25",
+          "direction": "out",
+          "gross": "84.46",
+          "vat": "0.00",
+          "account_code": "8205",
+          "description": "TESCO STORES 049",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-25",
+          "direction": "out",
+          "gross": "81.95",
+          "vat": "0.00",
+          "account_code": "7300",
+          "description": "SHELL 050",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-26",
+          "direction": "out",
+          "gross": "66.73",
+          "vat": "0.00",
+          "account_code": "9998",
+          "description": "AMAZON MARKETPLACE 051",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-26",
+          "direction": "in",
+          "gross": "1775.34",
+          "vat": "0.00",
+          "account_code": "4000",
+          "description": "CLIENT RECEIPT 052",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-27",
+          "direction": "out",
+          "gross": "43.87",
+          "vat": "0.00",
+          "account_code": "7400",
+          "description": "UBER 053",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-27",
+          "direction": "out",
+          "gross": "70.30",
+          "vat": "0.00",
+          "account_code": "7502",
+          "description": "VODAFONE 054",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-28",
+          "direction": "out",
+          "gross": "80.01",
+          "vat": "0.00",
+          "account_code": "7501",
+          "description": "ROYAL MAIL 055",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-28",
+          "direction": "out",
+          "gross": "85.54",
+          "vat": "0.00",
+          "account_code": "7406",
+          "description": "PRET A MANGER 056",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-29",
+          "direction": "out",
+          "gross": "86.36",
+          "vat": "0.00",
+          "account_code": "8205",
+          "description": "TESCO STORES 057",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-29",
+          "direction": "out",
+          "gross": "5.65",
+          "vat": "0.00",
+          "account_code": "7300",
+          "description": "SHELL 058",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-30",
+          "direction": "out",
+          "gross": "38.28",
+          "vat": "0.00",
+          "account_code": "9998",
+          "description": "AMAZON MARKETPLACE 059",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-30",
+          "direction": "in",
+          "gross": "2407.56",
+          "vat": "0.00",
+          "account_code": "4000",
+          "description": "CLIENT RECEIPT 060",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        }
+      ]
+    },
+    {
+      "case": "csv-monzo",
+      "kind": "table",
+      "error": null,
+      "latency_s": 41.6,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 4,
+      "predicted": 4,
+      "matched": 4,
+      "correct": 4,
+      "checks": {
+        "amount": [
+          4,
+          4
+        ],
+        "date": [
+          4,
+          4
+        ],
+        "direction": [
+          4,
+          4
+        ],
+        "account": [
+          4,
+          4
+        ],
+        "vat": [
+          0,
+          0
+        ],
+        "document_type": [
+          4,
+          4
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-05",
+          "direction": "out",
+          "gross": "6.45",
+          "vat": "0.00",
+          "account_code": "7406",
+          "description": "Pret A Manger, eating out",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-09",
+          "direction": "in",
+          "gross": "1450.00",
+          "vat": "0.00",
+          "account_code": "4000",
+          "description": "Oakridge Design Ltd, invoice INV 2026-14",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-21",
+          "direction": "out",
+          "gross": "18.20",
+          "vat": "0.00",
+          "account_code": "7400",
+          "description": "Uber, trip",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-26",
+          "direction": "out",
+          "gross": "11.50",
+          "vat": "0.00",
+          "account_code": "8201",
+          "description": "Google Workspace, direct debit",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        }
+      ]
+    },
+    {
+      "case": "csv-preamble-cp1252-brackets",
+      "kind": "table",
+      "error": null,
+      "latency_s": 64.7,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 4,
+      "predicted": 4,
+      "matched": 4,
+      "correct": 4,
+      "checks": {
+        "amount": [
+          4,
+          4
+        ],
+        "date": [
+          4,
+          4
+        ],
+        "direction": [
+          4,
+          4
+        ],
+        "account": [
+          4,
+          4
+        ],
+        "vat": [
+          0,
+          0
+        ],
+        "document_type": [
+          4,
+          4
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-02",
+          "direction": "out",
+          "gross": "19.97",
+          "vat": "0.00",
+          "account_code": "8201",
+          "description": "Adobe Systems software subscription",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-06",
+          "direction": "in",
+          "gross": "1200.00",
+          "vat": "0.00",
+          "account_code": "4000",
+          "description": "Client payment from Fieldhouse Ltd",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-14",
+          "direction": "out",
+          "gross": "8.40",
+          "vat": "0.00",
+          "account_code": "7406",
+          "description": "Costa Coffee",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-29",
+          "direction": "out",
+          "gross": "12.00",
+          "vat": "0.00",
+          "account_code": "7901",
+          "description": "Barclaycard commercial fees",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        }
+      ]
+    },
+    {
+      "case": "csv-starling",
+      "kind": "table",
+      "error": null,
+      "latency_s": 22.9,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 4,
+      "predicted": 4,
+      "matched": 4,
+      "correct": 4,
+      "checks": {
+        "amount": [
+          4,
+          4
+        ],
+        "date": [
+          4,
+          4
+        ],
+        "direction": [
+          4,
+          4
+        ],
+        "account": [
+          3,
+          4
+        ],
+        "vat": [
+          0,
+          0
+        ],
+        "document_type": [
+          4,
+          4
+        ]
+      },
+      "exact": false,
+      "predicted_rows": [
+        {
+          "date": "2026-09-03",
+          "direction": "out",
+          "gross": "295.00",
+          "vat": "0.00",
+          "account_code": "7100",
+          "description": "WeWork, desk rental September",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-07",
+          "direction": "out",
+          "gross": "360.00",
+          "vat": "0.00",
+          "account_code": "9998",
+          "description": "Hartley & Co, Invoice 2026-288",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-15",
+          "direction": "in",
+          "gross": "2100.00",
+          "vat": "0.00",
+          "account_code": "4000",
+          "description": "Brightwell Ltd, INV NB-0112",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-23",
+          "direction": "out",
+          "gross": "64.30",
+          "vat": "0.00",
+          "account_code": "7400",
+          "description": "Avanti West Coast, rail",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        }
+      ]
+    },
+    {
+      "case": "csv-unseen-mixed",
+      "kind": "table",
+      "error": null,
+      "latency_s": 7.6,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 20,
+      "predicted": 20,
+      "matched": 20,
+      "correct": 20,
+      "checks": {
+        "amount": [
+          20,
+          20
+        ],
+        "date": [
+          20,
+          20
+        ],
+        "direction": [
+          20,
+          20
+        ],
+        "account": [
+          19,
+          20
+        ],
+        "vat": [
+          0,
+          0
+        ],
+        "document_type": [
+          20,
+          20
+        ]
+      },
+      "exact": false,
+      "predicted_rows": [
+        {
+          "date": "2026-10-01",
+          "direction": "out",
+          "gross": "32.40",
+          "vat": "0.00",
+          "account_code": "7504",
+          "description": "ONBUY.COM - A4 COPIER PAPER",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-10-01",
+          "direction": "in",
+          "gross": "3150.00",
+          "vat": "0.00",
+          "account_code": "4000",
+          "description": "BRIGHTWATER DESIGN LTD INV 3107",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-10-02",
+          "direction": "out",
+          "gross": "86.30",
+          "vat": "0.00",
+          "account_code": "7800",
+          "description": "TRAVIS PERKINS",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-10-03",
+          "direction": "out",
+          "gross": "5.60",
+          "vat": "0.00",
+          "account_code": "7406",
+          "description": "GREGGS",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-10-05",
+          "direction": "out",
+          "gross": "120.00",
+          "vat": "0.00",
+          "account_code": "0040",
+          "description": "GUMTREE - SECOND-HAND OFFICE DESK",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-10-06",
+          "direction": "out",
+          "gross": "30.00",
+          "vat": "0.00",
+          "account_code": "7502",
+          "description": "PLUSNET",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-10-07",
+          "direction": "out",
+          "gross": "24.50",
+          "vat": "0.00",
+          "account_code": "9998",
+          "description": "ETSY",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-10-08",
+          "direction": "out",
+          "gross": "549.00",
+          "vat": "0.00",
+          "account_code": "0030",
+          "description": "ARGOS - LAPTOP FOR NEW STARTER",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-10-09",
+          "direction": "out",
+          "gross": "94.00",
+          "vat": "0.00",
+          "account_code": "7402",
+          "description": "IBIS LONDON",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-10-12",
+          "direction": "out",
+          "gross": "200.00",
+          "vat": "0.00",
+          "account_code": "9998",
+          "description": "LINKEDIN ADS",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-10-13",
+          "direction": "out",
+          "gross": "21.75",
+          "vat": "0.00",
+          "account_code": "8205",
+          "description": "MORRISONS",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-10-14",
+          "direction": "out",
+          "gross": "38.20",
+          "vat": "0.00",
+          "account_code": "7403",
+          "description": "MARKS & SPENCER - SANDWICHES FOR CLIENT MEETING",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-10-15",
+          "direction": "out",
+          "gross": "10.99",
+          "vat": "0.00",
+          "account_code": "8201",
+          "description": "CANVA",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-10-16",
+          "direction": "out",
+          "gross": "18.00",
+          "vat": "0.00",
+          "account_code": "7400",
+          "description": "NCP CAR PARKS",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-10-19",
+          "direction": "out",
+          "gross": "210.00",
+          "vat": "0.00",
+          "account_code": "9998",
+          "description": "SELFRIDGES",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-10-20",
+          "direction": "out",
+          "gross": "12.49",
+          "vat": "0.00",
+          "account_code": "7501",
+          "description": "DPD UK",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-10-21",
+          "direction": "out",
+          "gross": "46.80",
+          "vat": "0.00",
+          "account_code": "8205",
+          "description": "COSTCO - MILK AND COFFEE FOR THE OFFICE",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-10-22",
+          "direction": "out",
+          "gross": "61.05",
+          "vat": "0.00",
+          "account_code": "7300",
+          "description": "BP CONNECT",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-10-26",
+          "direction": "out",
+          "gross": "65.00",
+          "vat": "0.00",
+          "account_code": "7400",
+          "description": "CAMDEN COUNCIL PENALTY CHARGE",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-10-28",
+          "direction": "out",
+          "gross": "27.99",
+          "vat": "0.00",
+          "account_code": "7504",
+          "description": "OFFICE DEPOT",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        }
+      ]
+    },
+    {
+      "case": "csv-unseen-payees",
+      "kind": "table",
+      "error": null,
+      "latency_s": 17.8,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 20,
+      "predicted": 20,
+      "matched": 20,
+      "correct": 20,
+      "checks": {
+        "amount": [
+          20,
+          20
+        ],
+        "date": [
+          20,
+          20
+        ],
+        "direction": [
+          20,
+          20
+        ],
+        "account": [
+          19,
+          20
+        ],
+        "vat": [
+          0,
+          0
+        ],
+        "document_type": [
+          20,
+          20
+        ]
+      },
+      "exact": false,
+      "predicted_rows": [
+        {
+          "date": "2026-09-01",
+          "direction": "out",
+          "gross": "1850.00",
+          "vat": "0.00",
+          "account_code": "7100",
+          "description": "KNIGHT FRANK RENT SEP",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-02",
+          "direction": "in",
+          "gross": "4200.00",
+          "vat": "0.00",
+          "account_code": "4000",
+          "description": "HALCYON STUDIOS LTD INV 2051",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-03",
+          "direction": "out",
+          "gross": "64.20",
+          "vat": "0.00",
+          "account_code": "7800",
+          "description": "WICKES",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-04",
+          "direction": "out",
+          "gross": "6.85",
+          "vat": "0.00",
+          "account_code": "7406",
+          "description": "CAFFE NERO",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-05",
+          "direction": "out",
+          "gross": "23.97",
+          "vat": "0.00",
+          "account_code": "7504",
+          "description": "RYMAN",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-08",
+          "direction": "out",
+          "gross": "118.40",
+          "vat": "0.00",
+          "account_code": "7400",
+          "description": "LNER",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-09",
+          "direction": "out",
+          "gross": "58.12",
+          "vat": "0.00",
+          "account_code": "7300",
+          "description": "ESSO",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-10",
+          "direction": "out",
+          "gross": "17.95",
+          "vat": "0.00",
+          "account_code": "7501",
+          "description": "PARCELFORCE",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-11",
+          "direction": "out",
+          "gross": "36.00",
+          "vat": "0.00",
+          "account_code": "7502",
+          "description": "O2 UK",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-12",
+          "direction": "out",
+          "gross": "15.99",
+          "vat": "0.00",
+          "account_code": "8201",
+          "description": "DROPBOX",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-15",
+          "direction": "out",
+          "gross": "72.50",
+          "vat": "0.00",
+          "account_code": "7402",
+          "description": "TRAVELODGE",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-16",
+          "direction": "out",
+          "gross": "34.60",
+          "vat": "0.00",
+          "account_code": "7400",
+          "description": "ADDISON LEE",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-17",
+          "direction": "out",
+          "gross": "18.35",
+          "vat": "0.00",
+          "account_code": "8205",
+          "description": "WAITROSE",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-18",
+          "direction": "out",
+          "gross": "42.99",
+          "vat": "0.00",
+          "account_code": "9998",
+          "description": "EBAY",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-19",
+          "direction": "out",
+          "gross": "129.00",
+          "vat": "0.00",
+          "account_code": "9998",
+          "description": "JOHN LEWIS",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-22",
+          "direction": "out",
+          "gross": "48.75",
+          "vat": "0.00",
+          "account_code": "8204",
+          "description": "HISCOX",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-24",
+          "direction": "out",
+          "gross": "150.00",
+          "vat": "0.00",
+          "account_code": "8201",
+          "description": "GOOGLE ADS",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-25",
+          "direction": "out",
+          "gross": "2310.00",
+          "vat": "0.00",
+          "account_code": "7000",
+          "description": "J MORGAN SALARY",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-29",
+          "direction": "out",
+          "gross": "8.50",
+          "vat": "0.00",
+          "account_code": "7901",
+          "description": "MONTHLY ACCOUNT FEE",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-30",
+          "direction": "in",
+          "gross": "1.26",
+          "vat": "0.00",
+          "account_code": "4900",
+          "description": "GROSS INTEREST",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        }
+      ]
+    },
+    {
+      "case": "img-cafe-receipt-vat",
+      "kind": "image",
+      "error": null,
+      "latency_s": 12.2,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 1,
+      "predicted": 1,
+      "matched": 1,
+      "correct": 1,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          1,
+          1
+        ],
+        "vat": [
+          1,
+          1
+        ],
+        "document_type": [
+          1,
+          1
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-12",
+          "direction": "out",
+          "gross": "7.50",
+          "vat": "1.25",
+          "account_code": "7406",
+          "description": "The Daily Grind Cafe - Flat White, Almond Croissant, Bottled Water",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "receipt",
+          "has_type": true
+        }
+      ]
+    },
+    {
+      "case": "img-fuel-receipt-rotated",
+      "kind": "image",
+      "error": null,
+      "latency_s": 11.7,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 1,
+      "predicted": 1,
+      "matched": 1,
+      "correct": 1,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          1,
+          1
+        ],
+        "vat": [
+          1,
+          1
+        ],
+        "document_type": [
+          1,
+          1
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-16",
+          "direction": "out",
+          "gross": "68.39",
+          "vat": "11.40",
+          "account_code": "7300",
+          "description": "Shell Westway - unleaded fuel (45.20 L)",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "receipt",
+          "has_type": true
+        }
+      ]
+    },
+    {
+      "case": "img-tesco-receipt",
+      "kind": "image",
+      "error": null,
+      "latency_s": 3.6,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 1,
+      "predicted": 1,
+      "matched": 1,
+      "correct": 1,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          1,
+          1
+        ],
+        "vat": [
+          0,
+          0
+        ],
+        "document_type": [
+          1,
+          1
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-03",
+          "direction": "out",
+          "gross": "12.50",
+          "vat": "0.00",
+          "account_code": "7406",
+          "description": "Tesco Express - Meal Deal, Coffee, Sandwich",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "receipt",
+          "has_type": true
+        }
+      ]
+    },
+    {
+      "case": "pdf-bank-statement",
+      "kind": "pdf",
+      "error": null,
+      "latency_s": 33.5,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 5,
+      "predicted": 5,
+      "matched": 5,
+      "correct": 5,
+      "checks": {
+        "amount": [
+          5,
+          5
+        ],
+        "date": [
+          5,
+          5
+        ],
+        "direction": [
+          5,
+          5
+        ],
+        "account": [
+          5,
+          5
+        ],
+        "vat": [
+          0,
+          0
+        ],
+        "document_type": [
+          5,
+          5
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-03",
+          "direction": "out",
+          "gross": "86.40",
+          "vat": "0.00",
+          "account_code": "7201",
+          "description": "BRITISH GAS BUSINESS - gas for premises",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-05",
+          "direction": "out",
+          "gross": "1250.00",
+          "vat": "0.00",
+          "account_code": "7100",
+          "description": "LANDMARK PROPERTIES RENT - office rent",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-09",
+          "direction": "in",
+          "gross": "3600.00",
+          "vat": "0.00",
+          "account_code": "4000",
+          "description": "HARBOUR & LANE ARCHITECTS - payment for consulting services",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-20",
+          "direction": "out",
+          "gross": "8.50",
+          "vat": "0.00",
+          "account_code": "7901",
+          "description": "BARCLAYS BANK CHARGES - bank account fees",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-28",
+          "direction": "out",
+          "gross": "142.18",
+          "vat": "0.00",
+          "account_code": "7200",
+          "description": "OCTOPUS ENERGY - electricity for premises",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        }
+      ]
+    },
+    {
+      "case": "text-mixed-receipt-one-vat",
+      "kind": "text",
+      "error": null,
+      "latency_s": 8.1,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 1,
+      "predicted": 1,
+      "matched": 1,
+      "correct": 1,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          1,
+          1
+        ],
+        "vat": [
+          1,
+          1
+        ],
+        "document_type": [
+          1,
+          1
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-15",
+          "direction": "out",
+          "gross": "12.00",
+          "vat": "2.00",
+          "account_code": "7504",
+          "description": "WHSMITH \u2013 coffee to go and A4 notebook",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "receipt",
+          "has_type": true
+        }
+      ]
+    },
+    {
+      "case": "text-pasted-csv",
+      "kind": "text",
+      "error": null,
+      "latency_s": 64.2,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 4,
+      "predicted": 4,
+      "matched": 4,
+      "correct": 4,
+      "checks": {
+        "amount": [
+          4,
+          4
+        ],
+        "date": [
+          4,
+          4
+        ],
+        "direction": [
+          4,
+          4
+        ],
+        "account": [
+          4,
+          4
+        ],
+        "vat": [
+          0,
+          0
+        ],
+        "document_type": [
+          4,
+          4
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-08",
+          "direction": "out",
+          "gross": "9.60",
+          "vat": "0.00",
+          "account_code": "8201",
+          "description": "Microsoft 365 Business subscription",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-11",
+          "direction": "out",
+          "gross": "19.97",
+          "vat": "0.00",
+          "account_code": "8201",
+          "description": "Adobe Creative Cloud subscription",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-12",
+          "direction": "in",
+          "gross": "1250.00",
+          "vat": "0.00",
+          "account_code": "4000",
+          "description": "Client payment from Brightwell Ltd",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-14",
+          "direction": "out",
+          "gross": "38.12",
+          "vat": "0.00",
+          "account_code": "8204",
+          "description": "Direct Line Business Insurance premium",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        }
+      ]
+    },
+    {
+      "case": "text-tesco-receipt",
+      "kind": "text",
+      "error": null,
+      "latency_s": 11.7,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 1,
+      "predicted": 1,
+      "matched": 1,
+      "correct": 1,
+      "checks": {
+        "amount": [
+          1,
+          1
+        ],
+        "date": [
+          1,
+          1
+        ],
+        "direction": [
+          1,
+          1
+        ],
+        "account": [
+          1,
+          1
+        ],
+        "vat": [
+          0,
+          0
+        ],
+        "document_type": [
+          1,
+          1
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-03",
+          "direction": "out",
+          "gross": "12.50",
+          "vat": "0.00",
+          "account_code": "7406",
+          "description": "Meal Deal, Coffee, Sandwich",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "receipt",
+          "has_type": true
+        }
+      ]
+    },
+    {
+      "case": "xlsx-two-months",
+      "kind": "table",
+      "error": null,
+      "latency_s": 43.6,
+      "model": "qwen/qwen3.8-27b",
+      "tb_balanced": true,
+      "expected": 6,
+      "predicted": 6,
+      "matched": 6,
+      "correct": 6,
+      "checks": {
+        "amount": [
+          6,
+          6
+        ],
+        "date": [
+          6,
+          6
+        ],
+        "direction": [
+          6,
+          6
+        ],
+        "account": [
+          6,
+          6
+        ],
+        "vat": [
+          0,
+          0
+        ],
+        "document_type": [
+          6,
+          6
+        ]
+      },
+      "exact": true,
+      "predicted_rows": [
+        {
+          "date": "2026-09-04",
+          "direction": "out",
+          "gross": "26.40",
+          "vat": "0.00",
+          "account_code": "8201",
+          "description": "SAGE SUBSCRIPTION",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-17",
+          "direction": "in",
+          "gross": "980.00",
+          "vat": "0.00",
+          "account_code": "4000",
+          "description": "RIVERSIDE DENTAL",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-09-25",
+          "direction": "out",
+          "gross": "41.25",
+          "vat": "0.00",
+          "account_code": "8204",
+          "description": "HISCOX INSURANCE",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-10-02",
+          "direction": "out",
+          "gross": "72.00",
+          "vat": "0.00",
+          "account_code": "7502",
+          "description": "BT BUSINESS BROADBAND",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-10-09",
+          "direction": "in",
+          "gross": "980.00",
+          "vat": "0.00",
+          "account_code": "4000",
+          "description": "RIVERSIDE DENTAL",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        },
+        {
+          "date": "2026-10-20",
+          "direction": "out",
+          "gross": "7.85",
+          "vat": "0.00",
+          "account_code": "7501",
+          "description": "ROYAL MAIL",
+          "has_account": true,
+          "has_vat": true,
+          "document_type": "statement",
+          "has_type": true
+        }
+      ]
+    }
+  ]
+}

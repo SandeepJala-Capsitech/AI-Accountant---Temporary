@@ -88,6 +88,17 @@ def test_odd_vat_on_a_standard_rated_account_is_flagged():
     assert ("vat_rate_mismatch", "info") in codes(normalise(tx(vat="5.00"), REGISTERED))
 
 
+def test_vat_at_the_reduced_rate_is_not_flagged():
+    # A small business's electricity is charged VAT at 5%: £2.67 on £56.15 was flagged "mixed rates?".
+    t = normalise(tx(gross="56.15", vat="2.67", account="7200"), REGISTERED)
+    assert codes(t) == [] and t.vat_posted == Decimal("2.67")
+
+
+def test_no_vat_charged_is_not_flagged():
+    # A supplier that isn't VAT registered prints VAT £0.00, which was flagged "not standard-rate VAT".
+    assert codes(normalise(tx(gross="280.00", vat="0.00", account="7800"), REGISTERED)) == []
+
+
 def test_renormalising_keeps_the_estimate_flag_without_duplicates():
     once = normalise(tx(vat_treatment="standard"), REGISTERED)
     twice = normalise(Transaction.model_validate(once.model_dump(mode="json")), REGISTERED)
@@ -154,3 +165,84 @@ def test_normalising_twice_changes_nothing():
         settings = NOT_REGISTERED if n % 5 == 0 else REGISTERED
         once = normalise(tx(rng.choice(["in", "out"]), gross, rng.choice(accounts), **shown), settings)
         assert normalise(revalidated(once), settings) == once, once
+
+
+# ─── The other side, by document type ─────────────────────────────────────────
+
+@pytest.mark.parametrize("document_type, direction, account, other_side", [
+    ("receipt", "out", "7502", "1200"),
+    ("statement", "out", "7100", "1200"),
+    ("invoice", "out", "7100", "2100"),        # a bill received: owed to the supplier
+    ("invoice", "in", "7100", "2100"),         # a supplier's credit note: the supplier owes us
+    ("invoice", "in", "4000", "1100"),         # a sales invoice: owed by the customer
+    ("invoice", "out", "4000", "1100"),        # a credit note to a customer: we owe them
+    ("expense_claim", "out", "7402", "2110"),  # owed to the employee until reimbursed
+])
+def test_the_other_side_follows_the_document_type(document_type, direction, account, other_side):
+    t = normalise(tx(direction, account=account, document_type=document_type), REGISTERED)
+    assert t.contra_account_code == other_side
+
+
+def test_rows_without_a_document_type_are_booked_as_paid_from_the_bank():
+    # Older API clients send no document_type: their postings must not change.
+    t = normalise(Transaction(direction="out", gross="72.00", account_code="7502", description="BT"), REGISTERED)
+    assert (t.document_type, t.contra_account_code) == ("receipt", "1200")
+
+
+def test_a_document_that_is_not_a_transaction_is_flagged_not_booked():
+    assert ("not_booked", "info") in codes(normalise(tx(document_type="pro_forma"), REGISTERED))
+    assert ("not_booked", "info") not in codes(normalise(tx(document_type="pro_forma", include=True), REGISTERED))
+
+
+def test_the_worked_out_side_follows_an_edit():
+    bill = normalise(tx(account="7100", document_type="invoice"), REGISTERED)
+    assert normalise(revalidated(bill, account_code="4000"), REGISTERED).contra_account_code == "1100"
+
+
+def test_an_other_side_sent_by_a_client_is_kept():
+    assert normalise(tx(contra_account_code="1230"), REGISTERED).contra_account_code == "1230"
+
+
+LIMITED = BusinessSettings(business_type="limited_company")
+TRADER = BusinessSettings(business_type="sole_trader")
+
+
+def test_vat_on_business_entertainment_stays_in_the_cost():
+    # Client sandwiches with £6.37 VAT on the receipt: UK rules block that VAT, so it is part of the cost.
+    t = normalise(tx(account="7403", gross="38.20", vat="6.37"), REGISTERED)
+    assert (t.vat_posted, t.net) == (Decimal("0.00"), Decimal("38.20"))
+    assert codes(t) == [("vat_blocked", "info")]
+    assert t.issues[0].message == "VAT on Entertainment can't be reclaimed, so the £6.37 stays in the cost."
+    assert codes(normalise(t, REGISTERED)) == [("vat_blocked", "info")]   # validating again doesn't repeat it
+
+
+def test_a_cars_vat_stays_in_its_cost_but_a_vans_is_reclaimed():
+    car = normalise(tx(account="0050", gross="24000.00", vat="4000.00"), REGISTERED)
+    van = normalise(tx(account="0055", gross="24000.00", vat="4000.00"), REGISTERED)
+    assert (car.vat_posted, car.net) == (Decimal("0.00"), Decimal("24000.00"))
+    assert (van.vat_posted, van.net) == (Decimal("4000.00"), Decimal("20000.00"))
+
+
+def test_a_limited_companys_owners_go_through_the_directors_loan_account():
+    drawings = normalise(tx(account="3260", gross="500.00"), LIMITED)
+    assert codes(drawings) == [("director_loan", "warning")]
+    assert drawings.issues[0].message == "For a limited company, use 2250 Director's Loan Account instead of Drawings."
+    assert codes(normalise(tx(account="2250", gross="500.00"), LIMITED)) == []
+
+
+def test_a_sole_trader_has_no_directors_loan_account():
+    assert codes(normalise(tx(account="2250", gross="500.00"), TRADER)) == [("director_loan", "warning")]
+    assert codes(normalise(tx(account="3260", gross="500.00"), TRADER)) == []
+
+
+def test_without_a_business_type_the_owners_accounts_are_not_questioned():
+    assert codes(normalise(tx(account="3260", gross="500.00"), REGISTERED)) == []
+    assert codes(normalise(tx(account="2250", gross="500.00"), REGISTERED)) == []
+
+
+@pytest.mark.parametrize("output", ["copy_of", "recorded_by"])
+def test_a_row_sent_back_with_its_matching_outputs_validates_again(output):
+    # The API returns a copy or a card payment its receipt records with these set; sent back, it must validate.
+    earlier = {"ref": "bill", "amount": "120.00", "date": "2026-09-01", "description": "BT"}
+    t = normalise(tx(document_type="invoice" if output == "copy_of" else "statement", **{output: earlier}), REGISTERED)
+    assert "not_booked" not in [code for code, _ in codes(t)]

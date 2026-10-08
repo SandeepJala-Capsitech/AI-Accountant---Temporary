@@ -23,6 +23,8 @@ RETRY_SECONDS = 2.0
 RETRIES = 5
 # The harness or a rate limit stopped these cases, not the model: --resume runs them again.
 HARNESS_ERRORS = frozenset({"api_unreachable", "eval_timeout", "job_not_found", "ai_rate_limited"})
+# The API takes analyses only with the header the LedgerSync pages send.
+PAGES = {"X-LedgerSync": "1"}
 
 
 class ApiUnreachable(Exception):
@@ -66,9 +68,11 @@ def run_document(client, path: Path, timeout: float) -> tuple[Optional[dict], Op
     """Sends one document through POST /api/analyze and the job API. .txt goes in as pasted text."""
     # The upload is not retried: if it reached the API, a retry would start a second job.
     if path.suffix == ".txt":
-        resp = _call(client.post, "/api/analyze", data={"text": path.read_text(encoding="utf-8")}, retries=1)
+        resp = _call(client.post, "/api/analyze", data={"text": path.read_text(encoding="utf-8")}, headers=PAGES,
+                     retries=1)
     else:
-        resp = _call(client.post, "/api/analyze", files={"file": (path.name, path.read_bytes())}, retries=1)
+        resp = _call(client.post, "/api/analyze", files={"file": (path.name, path.read_bytes())}, headers=PAGES,
+                     retries=1)
     if resp.status_code != 202:
         return None, _error_code(resp)
     job_id = resp.json()["job_id"]
@@ -118,13 +122,13 @@ def run_case(client, case: dict, timeout: float) -> dict:
 
 
 def _print_summary(report: dict) -> None:
-    head = ("cases", "prec", "recall", "correct", "amount", "date", "dir", "acct", "vat", "exact", "TB ok",
+    head = ("cases", "prec", "recall", "correct", "amount", "date", "dir", "acct", "vat", "type", "exact", "TB ok",
             "p50 s", "p95 s")
     print("\n" + " " * 8 + " ".join(f"{h:>7}" for h in head))
     for name, s in [("all", report["summary"]), *report["by_kind"].items()]:
         f = s["field_accuracy"]
         cells = (s["cases"], s["row_precision"], s["row_recall"], s["correct_rows"], f["amount"], f["date"],
-                 f["direction"], f["account"], f["vat"], s["exact_cases"], s["tb_balanced"], s["latency_p50_s"],
+                 f["direction"], f["account"], f["vat"], f["document_type"], s["exact_cases"], s["tb_balanced"], s["latency_p50_s"],
                  s["latency_p95_s"])
         print(f"{name:8}" + " ".join(f"{'n/a' if c is None else c:>7}" for c in cells))
     if report["summary"]["errors"]:

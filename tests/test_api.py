@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from ledgersync.config import Settings
 from ledgersync.errors import ModelTimeout, ModelUnavailable
-from ledgersync.groq_client import GroqClient
+from ledgersync.model_client import ModelClient
 from server import create_app
 
 
@@ -20,7 +20,7 @@ def make_client():
     def _make(model=None):
         settings = Settings(warmup=False, max_upload_mb=1, max_pdf_pages=3)
         app = create_app(settings, model_client=model or FakeModel([transactions_json(ROW)]))
-        client = TestClient(app)
+        client = TestClient(app, headers={"X-LedgerSync": "1"})   # as the LedgerSync pages send
         client.__enter__()
         clients.append(client)
         return client
@@ -179,8 +179,8 @@ def test_trial_balance_balances_with_bank_and_vat_legs(make_client):
     tb = make_client().post("/api/trial-balance", json={"transactions": [{**BT, "vat": "12.00"}, sale]}).json()
     assert tb["is_balanced"] is True and tb["total_debits"] == tb["total_credits"] == "240.00"
     assert [(l["code"], l["debit"], l["credit"]) for l in tb["lines"]] == [
-        ("1200", "168.00", "0.00"), ("2200", "0.00", "40.00"), ("2201", "12.00", "0.00"),
-        ("4000", "0.00", "200.00"), ("7502", "60.00", "0.00")]
+        ("1200", "168.00", "0.00"), ("4000", "0.00", "200.00"), ("7502", "60.00", "0.00"),
+        ("2200", "0.00", "40.00"), ("2201", "12.00", "0.00")]
 
 
 def test_trial_balance_rejects_unpostable_rows_with_422(make_client):
@@ -218,14 +218,15 @@ def test_cors_allows_only_the_frontend(make_client):
 
 def test_health_never_shows_the_api_key(make_client):
     # Pins the rule at the API boundary: health passes on the client's error, which never holds the key.
-    groq = GroqClient(Settings(groq_api_key="gsk-secret"), opener=FakeUrlopen(http_error(401, "Invalid API Key gsk-secret")))
+    groq = ModelClient(Settings(groq_api_key="gsk-secret"), opener=FakeUrlopen(http_error(401, "Invalid API Key gsk-secret")))
     body = make_client(groq).get("/api/health").text
     assert "gsk-secret" not in body and "rejected the API key" in body
 
 
 def test_the_business_name_setting_reaches_the_model():
     model = FakeModel([transactions_json(ROW)])
-    with TestClient(create_app(Settings(warmup=False, business_name="Acme Ltd"), model_client=model)) as client:
+    with TestClient(create_app(Settings(warmup=False, business_name="Acme Ltd"), model_client=model),
+                    headers={"X-LedgerSync": "1"}) as client:
         run_text_job(client)
     assert "Acme Ltd" in model.calls[0]["messages"][0]["content"]
 
@@ -240,4 +241,24 @@ def test_an_account_the_ledger_cannot_post_to_lands_in_suspense(make_client, acc
 
 
 def test_health_tells_the_ui_how_many_files_to_send_at_once(make_client):
-    assert make_client().get("/api/health").json()["max_parallel_jobs"] == 4
+    assert make_client().get("/api/health").json()["max_parallel_jobs"] == 2
+
+
+def test_validate_matches_a_payment_to_its_bill(make_client):
+    bill = {**BT, "document_type": "invoice", "counterparty": "BT Business", "document_ref": "bt-sept"}
+    line = {**BT, "date": "2026-09-05", "document_type": "statement", "counterparty": "BT BUSINESS DD",
+            "document_ref": "line-1"}
+    out_bill, out_line = make_client().post("/api/transactions/validate",
+                                            json={"transactions": [bill, line]}).json()["transactions"]
+    assert out_line["pays"] == [{"ref": "bt-sept", "amount": "72.00", "date": "2026-09-01", "description": "BT",
+                                 "kind": "invoice"}]
+    assert (out_line["paid_against"], out_line["paid_against_name"]) == ("2100", "Creditors")
+    assert (out_bill["owed"], out_bill["contra_account_code"]) == ("0.00", "2100")
+
+
+def test_trial_balance_waits_for_a_person_to_choose_a_payment(make_client):
+    bills = [{**BT, "document_type": "invoice", "counterparty": "BT Business", "document_ref": r} for r in "ab"]
+    line = {**BT, "date": "2026-09-05", "document_type": "statement", "counterparty": "BT BUSINESS",
+            "document_ref": "l"}
+    resp = make_client().post("/api/trial-balance", json={"transactions": [*bills, line]})
+    assert resp.status_code == 422 and "Choose one" in resp.json()["detail"]["message"]

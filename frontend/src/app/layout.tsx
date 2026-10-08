@@ -1,23 +1,29 @@
 import type { Metadata } from 'next'
+import { IBM_Plex_Mono, Inter, Source_Serif_4 } from 'next/font/google'
+import AppHeader from '@/components/AppHeader'
+import { themeScript } from '@/lib/theme'
 import './globals.css'
 
+const sans = Inter({ subsets: ['latin'], variable: '--font-sans', display: 'swap' })
+const serif = Source_Serif_4({ subsets: ['latin'], variable: '--font-serif', display: 'swap' })
+const mono = IBM_Plex_Mono({ subsets: ['latin'], weight: ['400', '500'], variable: '--font-mono', display: 'swap' })
+
 export const metadata: Metadata = {
-  title: 'UK LedgerSync — Trial Balance Prototype',
-  description: 'User input → Qwen vision model on Groq → structured data → trial balance',
+  title: 'Super Accountant',
+  description: "Clients' documents read by AI, booked, matched and saved, with their trial balances",
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en-GB">
+    <html lang="en-GB" className={`${sans.variable} ${serif.variable} ${mono.variable}`} suppressHydrationWarning>
       <head>
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
-        <link
-          href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
-          rel="stylesheet"
-        />
+        {/* Applies a saved light/dark choice before the page paints. */}
+        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
-      <body suppressHydrationWarning>{children}</body>
+      <body suppressHydrationWarning>
+        <AppHeader />
+        <main className="page">{children}</main>
+      </body>
     </html>
   )
 }

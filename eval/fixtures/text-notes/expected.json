@@ -9,7 +9,8 @@
       "gross": "2400.00",
       "vat": null,
       "account_code": "4000",
-      "description": "Consulting services sold to ACME Corp"
+      "description": "Consulting services sold to ACME Corp",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-01",
@@ -17,7 +18,8 @@
       "gross": "72.00",
       "vat": null,
       "account_code": "7502",
-      "description": "BT Business Broadband monthly bill"
+      "description": "BT Business Broadband monthly bill",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-10",
@@ -25,7 +27,8 @@
       "gross": "149.99",
       "vat": null,
       "account_code": "0040",
-      "description": "Office chair from IKEA"
+      "description": "Office chair from IKEA",
+      "document_type": "statement"
     }
   ]
 }

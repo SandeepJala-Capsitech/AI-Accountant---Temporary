@@ -9,7 +9,8 @@
       "gross": "86.40",
       "vat": null,
       "account_code": "7201",
-      "description": "BRITISH GAS"
+      "description": "BRITISH GAS",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-11",
@@ -17,7 +18,8 @@
       "gross": "28.00",
       "vat": null,
       "account_code": "7502",
-      "description": "EE LIMITED"
+      "description": "EE LIMITED",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-15",
@@ -25,7 +27,8 @@
       "gross": "1800.00",
       "vat": null,
       "account_code": "4000",
-      "description": "NORTHWIND TRADING PAYMENT"
+      "description": "NORTHWIND TRADING PAYMENT",
+      "document_type": "statement"
     },
     {
       "date": "2026-09-24",
@@ -33,7 +36,8 @@
       "gross": "2140.37",
       "vat": null,
       "account_code": "2210",
-      "description": "HMRC PAYE"
+      "description": "HMRC PAYE",
+      "document_type": "statement"
     }
   ]
 }

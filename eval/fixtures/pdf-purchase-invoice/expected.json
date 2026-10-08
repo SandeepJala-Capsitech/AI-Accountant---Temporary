@@ -9,7 +9,8 @@
       "gross": "300.00",
       "vat": "50.00",
       "account_code": "7504",
-      "description": "Clearway Office Supplies Ltd"
+      "description": "Clearway Office Supplies Ltd",
+      "document_type": "invoice"
     }
   ]
 }

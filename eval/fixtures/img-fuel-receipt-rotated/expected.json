@@ -9,7 +9,8 @@
       "gross": "68.39",
       "vat": "11.40",
       "account_code": "7300",
-      "description": "Shell Westway fuel"
+      "description": "Shell Westway fuel",
+      "document_type": "receipt"
     }
   ]
 }

@@ -61,8 +61,43 @@ class InvalidTransactions(LedgerSyncError):
     status_code = 422
     code = "transactions_need_fixing"
 
+    def __init__(self, message: str, problems=()):
+        super().__init__(message)
+        self.problems = list(problems)   # one line per problem, for a list such as the Excel export's
+
 
 class ModelRateLimited(ModelUnavailable):
     """The hosted model's rate limit (e.g. a free plan's tokens per minute) is used up for now."""
 
     code = "ai_rate_limited"
+
+
+class NotFound(LedgerSyncError):
+    status_code = 404
+    code = "not_found"
+
+
+class ClientArchived(LedgerSyncError):
+    """A change to an archived client: it can only be restored."""
+
+    status_code = 409
+    code = "client_archived"
+
+
+class InvalidInput(LedgerSyncError):
+    status_code = 422
+    code = "invalid_input"
+
+
+class RefusedRequest(LedgerSyncError):
+    """A request any web page could have sent unasked: it lacks the header the LedgerSync pages send."""
+
+    status_code = 403
+    code = "refused_request"
+
+
+class StorageError(LedgerSyncError):
+    """The local database could not be read or written; the server log says why."""
+
+    status_code = 500
+    code = "storage_error"

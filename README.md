@@ -1,12 +1,13 @@
-# UK LedgerSync (prototype)
+# Super Accountant (prototype)
 
 Turns UK financial inputs (receipt photos, bank statement CSV/Excel/PDF exports, pasted text
 or manual entries) into categorised transactions and a double-entry trial balance. Documents are
-read by Groq's hosted Qwen vision model (`qwen/qwen3.8-27b`): **uploaded documents are sent to
-Groq.**
+read by a hosted Qwen vision model (`qwen/qwen3.8-27b`), through OpenRouter when `OPENROUTER_API_KEY` is
+set and otherwise through Groq: **uploaded documents are sent to that provider.** The code keeps its working name, LedgerSync: the `ledgersync` package, the `LEDGERSYNC_*`
+settings and the `X-LedgerSync` header.
 
 - `server.py` — FastAPI routes (port 8085, localhost only)
-- `ledgersync/` — settings, typed errors, background jobs, the Groq client, upload checks, the
+- `ledgersync/` — settings, typed errors, background jobs, the model client, upload checks, the
   extractor (prompt, schema, per-row validation), pipeline, chart of accounts, money and VAT,
   transaction checks and double-entry posting
 - `frontend/` — Next.js UI (port 3000); calls the API through its `/api` rewrite
@@ -19,14 +20,15 @@ This prototype is being hardened; see
 
 - Python 3.11
 - Node.js 20.9+
-- A Groq API key ([console.groq.com/keys](https://console.groq.com/keys))
+- An OpenRouter API key ([openrouter.ai/keys](https://openrouter.ai/keys)) or a Groq API key
+  ([console.groq.com/keys](https://console.groq.com/keys)); with both, OpenRouter is used
 
 ## Setup
 
 ```bash
 python3.11 -m venv .venv
 .venv/bin/pip install -r requirements-dev.txt
-cp .env.example .env                      # then paste your key after GROQ_API_KEY=
+cp .env.example .env                      # then paste your key after OPENROUTER_API_KEY= or GROQ_API_KEY=
 (cd frontend && npm install)
 ```
 
@@ -40,13 +42,14 @@ cp .env.example .env                      # then paste your key after GROQ_API_K
 ```
 
 Analyses run as background jobs: `POST /api/analyze` returns `{job_id}`, then
-`GET /api/jobs/{job_id}` reports progress and the result; `DELETE` cancels. Up to four jobs run at
-once (`LEDGERSYNC_MAX_PARALLEL_JOBS`), and the UI sends that many files of an upload at a time; on
+`GET /api/jobs/{job_id}` reports progress and the result; `DELETE` cancels. The API takes an analysis
+only with an `X-LedgerSync` header, which the pages send and a form on another web site can't. Up to two
+jobs run at once (`LEDGERSYNC_MAX_PARALLEL_JOBS`), and the UI sends that many files of an upload at a time; on
 Groq's free plan they mostly wait on its per-minute limits, so the gain shows on a paid plan.
 
-The UI keeps one table across uploads and catches what was entered twice. A file whose content is
-already in the table, or picked twice, is skipped without being read. A row with the same amount
-and direction as a row from another input, dated within three days of it (a receipt and its bank
+Each client's page keeps one table across its uploads and catches what was entered twice. A file already
+uploaded for that client, on any day, or picked twice, is skipped without being read. A row with the same
+amount and direction as a row from another upload, dated within three days of it (a receipt and its bank
 line, say), is flagged "possible duplicate" and left for a person to decide.
 Without a key or an internet connection the API answers 503 with how to fix it; it never guesses.
 
@@ -60,17 +63,95 @@ edited row can simply be sent back. `vat_posted` is the VAT booked: the amount s
 person picked a rate in `vat_treatment`, the VAT inside the gross at that rate (flagged); otherwise
 none, because VAT can only be reclaimed when it was charged.
 
-## The AI model (Groq)
+### Unpaid bills, claims and payments
+
+Documents are booked the way an accountant would (accruals):
+
+- A till or card receipt, or a bank line, is money that moved: it posts against 1200 Bank Current Account.
+  A receipt and the card payment for it on a bank statement (the same amount and shop, within three days)
+  are booked once, from the receipt, which shows the VAT; Unlink on the bank line books them apart.
+- An invoice starts unpaid. A bill, or a supplier's credit note, posts against 2100 Creditors; a sales
+  invoice, or a credit note to a customer, against 1100 Debtors; an expense claim against 2110 Expenses
+  Owed to Staff.
+- A bank line that pays an open invoice or claim clears it instead of being booked as a second expense:
+  the same counterparty, dated on or after the document and at most 31 days later. Names match when they
+  are the same once legal and bank words are set aside, however short ("HML PM Ltd"). A payment of exactly
+  what one document owes is applied first, whatever its date, so a bigger payment to the same person is
+  never taken as an overpayment of it. One payment can clear up to five documents from one counterparty.
+  When several could be meant, the table asks you to choose (Link) and the trial balance waits. Part
+  payments and overpayments are applied and flagged; a payment of the same amount under a different name is
+  only suggested. Unlink undoes a match.
+- A document with the same number, counterparty, direction and total as an earlier one (a reminder of a
+  bill; a receipt photographed twice, on the same day) is a copy: it is not booked unless you tick Include.
+- The receipt or invoice for a line of an expense claim (the same amount, within three days, the line naming the
+  shop) is booked instead of that line, owed to the claimant: the document shows the VAT that can be reclaimed.
+  The claim line is greyed out; tick it to book it as well (only when it is a different purchase: ticking it
+  books the cost twice). A claim line showing more VAT than its document is flagged, unless the document's own
+  prices show it: when a receipt on one account prints its total before VAT and that is its total less the
+  claim's VAT, the VAT is booked. If the receipt says it is not a VAT invoice, the VAT is not booked but offered:
+  get the VAT invoice, then click Book VAT on the receipt (an edit, which Revert undoes).
+- Each document is checked against the total printed on it, once, on its first row, with what is missing or too
+  much. The check is worked out afresh, so it clears when you add the line that wasn't read (Add line on any row
+  of the document) or remove a row read twice (Remove on the row).
+- A letting or managing agent's statement books the rent it collected and the fees and bills it took off,
+  each on its own account, against 1100 Debtors: the agent holds the money. The bank line of the net it
+  paid over clears the statement, and a bill the agent paid for the business (a plumber's, say) is cleared
+  by the statement's line for it, not by the bank.
+- Quotes, pro formas, purchase orders, remittance advices and supplier statements are not booked unless
+  you tick Include.
+
+`POST /api/transactions/validate` and `POST /api/trial-balance` take `document_type`, `counterparty`,
+`document_number`, `agent`, `document_ref`, `link` and `include` on each row, and return `paid_against`,
+`pays`, `candidates`, `owed`, `document_direction`, `paid_by`, `copy_of` and `recorded_by`. Rows without a `document_type` are receipts, so older clients keep their postings. The
+design is in `docs/superpowers/specs/2026-10-06-unpaid-documents-and-payment-matching-design.md`.
+
+### Clients and saved work
+
+The first page lists your clients. Add one with its company name, its business type (limited company,
+sole trader, partnership or LLP), its responsible person (the client's own contact, with email and phone)
+and whether it is VAT registered. Open a client to add its documents: each analysis is saved to that
+client in a local database when it finishes, with the decisions you make (Link, Include, edits), so
+closing the browser loses nothing. Archive hides a client and keeps everything; Restore brings it back.
+
+- Edit corrects a row: date, description, counterparty, money in or out, amount, VAT shown, account and
+  document type. The row shows "Edited", and Revert puts back what the model read. Remove deletes one row (and
+  its upload once nothing of it is left); Add transaction adds a row of your own.
+- What needs review shows under each row in words, and a bar above the table counts each kind of issue; click
+  one to see only those rows.
+- A bank statement is checked against the balances it prints. A line the model missed or misread shows
+  where the balance breaks, and the upload says "Doesn't add up".
+- Export to Excel downloads the client's trial balance and transactions as one workbook.
+- VAT on client entertainment (7403) and on cars (0050 Cars) is not reclaimed; vans (0055 Vans) are. A
+  limited company's owners use 2250 Director's Loan Account; other businesses use 3260 Drawings and
+  3000 Capital Introduced. Rent from tenants goes to 4904 Rent Income, and cash from a cash machine to 1230
+  Petty Cash. VAT at the 5% rate (a small business's energy) and £0.00 VAT are not flagged.
+
+The database is one SQLite file, `data/ledgersync.db` (git-ignored), or wherever `LEDGERSYNC_DB_PATH`
+points; deleting it removes every client. The endpoints are under `/api/clients`, and the design is in
+`docs/superpowers/specs/2026-10-06-clients-and-local-database-design.md`.
+
+## The AI model (OpenRouter or Groq)
+
+The app asks OpenRouter when `OPENROUTER_API_KEY` is set, and Groq otherwise; both serve the same model
+under the same name, and the other model settings (`GROQ_TIMEOUT` and the rest) apply to either, apart
+from the longest answer: OpenRouter counts the model's thinking in it, so it has its own, larger limit.
+OpenRouter passes each request to one of the companies hosting the model, and only to one that honours
+the strict JSON schema below; the account's [privacy settings](https://openrouter.ai/settings/privacy)
+decide whether a host that may keep the documents can be used. The startup log names the provider.
+It asks a full-precision host first (DeepInfra), then any host running the model at 8-bit precision or
+better, never a 4-bit one: left to choose, OpenRouter sent every read to a 4-bit host, which left a line
+out of an expense claim every time (`OPENROUTER_PROVIDERS` and `OPENROUTER_QUANTIZATIONS` change this).
+Each upload keeps the model and host that read it, e.g. `qwen/qwen3.8-27b via DeepInfra`.
 
 Pasted text, spreadsheets and PDFs with a text layer go to the model as text; photos and scanned
-pages go as images (turned upright, at most 1600 px, one page per request). The model answers in a
+pages go as images (turned upright, at most 1600 px, up to three pages per request). The model answers in a
 strict JSON schema: the direction of the money, an account chosen from the chart, and the VAT
 printed on the document. A receipt or invoice gives one transaction per account: one row when its
 items are all of one kind, one row per kind otherwise (e.g. a meal and a taxi fare). It stays one
 row, flagged "mixed items", when it shows a single VAT total that cannot be divided between the
 kinds. Rows that do not add up to the document's printed total are flagged.
 
-- Groq's free plan for this model allows about 30 requests and 8,000 tokens a minute and 200,000
+- On Groq, the free plan for this model allows about 30 requests and 8,000 tokens a minute and 200,000
   tokens a day (checked 2026-09-29); each image counts as 2,048 tokens. At the limit the app waits
   up to a minute, then reports a rate limit; `eval/run_eval.py --resume` runs those documents again.
 - The daily allowance refills gradually, about 8,300 tokens an hour, so a full eval run leaves
@@ -78,7 +159,8 @@ kinds. Rows that do not add up to the document's printed total are flagged.
   minute: on 2026-09-29 it refused a few small documents that way (its message suggests lowering
   `max_tokens`, i.e. `GROQ_MAX_OUTPUT_TOKENS`), yet let a 60-row statement's 3,500-token answer
   through minutes later. A refused document usually goes through when tried again later.
-- `qwen/qwen3.8-27b` is a Groq *preview* model and may change; `GROQ_MODEL` switches it.
+- `qwen/qwen3.8-27b` is a Groq *preview* model and may change; `GROQ_MODEL` (or `OPENROUTER_MODEL`)
+  switches it.
 - `.venv/bin/python -m pytest -m llm` checks the key and model with one receipt photo.
 
 ## Configuration
@@ -87,13 +169,19 @@ Settings come from environment variables or `.env` (environment variables win).
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `GROQ_API_KEY` | — | Your Groq key; put it in `.env` |
+| `OPENROUTER_API_KEY` | — | Your OpenRouter key; put it in `.env`. When set, OpenRouter is used instead of Groq |
+| `OPENROUTER_MODEL` | `qwen/qwen3.8-27b` | OpenRouter model; it must read images |
+| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter's OpenAI-compatible API |
+| `OPENROUTER_MAX_OUTPUT_TOKENS` | `32768` | Longest answer on OpenRouter, thinking included: a 60-row statement thinks for about 4,000 tokens and answers in about 9,000 |
+| `OPENROUTER_PROVIDERS` | `deepinfra/bf16` | Hosts asked first, in order, comma-separated; blank lets OpenRouter choose |
+| `OPENROUTER_QUANTIZATIONS` | `bf16,fp16,fp32,fp8` | Precisions a host may run the model at; blank allows any, 4-bit (`fp4`) hosts included |
+| `GROQ_API_KEY` | — | Your Groq key; put it in `.env`. Used when there is no OpenRouter key |
 | `GROQ_MODEL` | `qwen/qwen3.8-27b` | Groq model; it must read images |
 | `GROQ_BASE_URL` | `https://api.groq.com/openai/v1` | Groq's OpenAI-compatible API |
-| `GROQ_TIMEOUT` | `60` | Seconds to wait for one model call |
-| `GROQ_MAX_OUTPUT_TOKENS` | `8192` | Longest answer; a 60-row statement needs over 4,000 tokens |
-| `GROQ_REASONING_EFFORT` | `low` | The model's "thinking" (`none`, `low`, `high`); `low` keeps it to the receipt rules, `none` is about 10x faster |
-| `GROQ_MAX_IMAGES` | `1` | Scanned pages per request; Groq allows 3, but 3 overflow the free plan's 8K tokens a minute |
+| `GROQ_TIMEOUT` | `60` | Seconds to wait for one model call (on either provider, as are `GROQ_REASONING_EFFORT` and `GROQ_MAX_IMAGES`) |
+| `GROQ_MAX_OUTPUT_TOKENS` | `8192` | Longest answer on Groq; a 60-row statement needs over 4,000 tokens |
+| `GROQ_REASONING_EFFORT` | `high` | The model's "thinking" (`none`, `low`, `high`); thinking keeps it to the receipt rules, `none` is about 10x faster than `low` |
+| `GROQ_MAX_IMAGES` | `3` | Scanned pages per request, Groq's most; on the free plan set `1`, as 3 overflow its 8K tokens a minute |
 | `LEDGERSYNC_BUSINESS_NAME` | — | Whose books these are; tells sales invoices from purchases |
 | `LEDGERSYNC_HOST` / `LEDGERSYNC_PORT` | `127.0.0.1` / `8085` | API bind address |
 | `LEDGERSYNC_RELOAD` | `0` | Auto-reload on code changes (development) |
@@ -101,15 +189,16 @@ Settings come from environment variables or `.env` (environment variables win).
 | `LEDGERSYNC_CORS_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | Allowed browser origins |
 | `LEDGERSYNC_MAX_UPLOAD_MB` | `20` | Largest accepted upload |
 | `LEDGERSYNC_MAX_PDF_PAGES` | `30` | Most pages accepted in one PDF |
-| `LEDGERSYNC_MAX_PARALLEL_JOBS` | `4` | Documents read at once; `1` reads them one at a time |
+| `LEDGERSYNC_MAX_PARALLEL_JOBS` | `2` | Documents read at once; `1` reads them one at a time |
 | `LEDGERSYNC_LOG_LEVEL` | `INFO` | Log level (document contents are never logged) |
+| `LEDGERSYNC_DB_PATH` | `data/ledgersync.db` | The local database of clients and their saved rows |
 | `API_URL` (frontend) | `http://127.0.0.1:8085` | Where the Next.js `/api` rewrite sends requests |
 
 ## Tests
 
 ```bash
 .venv/bin/python -m pytest                # fast tests, no network
-.venv/bin/python -m pytest -m llm         # live test against Groq (needs GROQ_API_KEY)
+.venv/bin/python -m pytest -m llm         # live test against the model (needs OPENROUTER_API_KEY or GROQ_API_KEY)
 ```
 
 ## Measuring accuracy
