@@ -9,7 +9,7 @@ from typing import Literal, Optional, get_args
 from pydantic import BaseModel, Field, computed_field, field_validator
 
 from .accounts import BANK, BY_CODE
-from .money import VatTreatment, to_money
+from .money import VatTreatment, ZERO, to_money
 
 
 class Direction(str, Enum):
@@ -200,6 +200,11 @@ class TrialBalance(BaseModel):
     total_credits: Decimal
     is_balanced: bool
     journal: list[JournalLine]
+    total_income: Decimal = ZERO
+    total_expenses: Decimal = ZERO
+    net_profit: Decimal = ZERO
+    total_assets: Decimal = ZERO
+    total_liabilities: Decimal = ZERO
 
 
 class ClientFields(BaseModel):

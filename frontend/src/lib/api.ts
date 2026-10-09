@@ -82,6 +82,11 @@ export interface TrialBalanceResult {
   total_debits: string
   total_credits: string
   is_balanced: boolean
+  total_income?: string
+  total_expenses?: string
+  net_profit?: string
+  total_assets?: string
+  total_liabilities?: string
 }
 
 export interface Health {
