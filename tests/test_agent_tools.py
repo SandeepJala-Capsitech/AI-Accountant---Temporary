@@ -2,6 +2,7 @@
 that the agent can change only a row's account, document type, Include, Link and Not the same, and that every
 write is audited once."""
 import datetime as dt
+from types import SimpleNamespace
 
 import pytest
 
@@ -99,6 +100,22 @@ def three_rows_to_review(mongo_store, cube_id):
     return [r.id for r in mongo_store.rows(cube_id) if r.tx.date is None]
 
 
+@pytest.fixture
+def bill(deps, mongo_store):
+    """A client with one three-line invoice (the lines share a document reference), all on Suspense."""
+    client = mongo_store.create_client(CUBE)
+    mongo_store.add_upload(client.id, "BT bill.pdf", "pdf", [
+        row(), row(description="BT line 2", gross="10.00"), row(description="BT line 3", gross="5.00")])
+    return SimpleNamespace(client_id=client.id, ids=[r.id for r in mongo_store.rows(client.id)],
+                           tools=row_tools(deps, client.id, "j1"))
+
+
+def agent_fields(tx):
+    """The fields the agent may change, as the audit log would hold them."""
+    return {"account_code": tx.account_code, "document_type": tx.document_type, "include": tx.include,
+            "link": None if tx.link is None else list(tx.link), "apart_from": list(tx.apart_from)}
+
+
 def update(tools, row_id, reasoning="BT broadband bill", confidence=0.9, **fields):
     return tools["update_row"].invoke({"row_id": row_id, "reasoning": reasoning, "confidence": confidence, **fields})
 
@@ -194,13 +211,14 @@ def test_update_row_has_no_amount_date_or_vat_arguments(tools):
         assert {"client_id", "job_id"}.isdisjoint(tool.args), name
 
 
-def test_update_row_sends_only_the_fields_given_and_never_the_ones_it_may_not_change(tools, deps, monkeypatch, row_id):
+def test_update_row_sends_only_the_fields_that_change_and_never_one_it_may_not_change(tools, monkeypatch, row_id):
     sent = []
     real = ledger.change_row
     monkeypatch.setattr(ledger, "change_row", lambda store, cid, rid, patch: sent.append(patch) or real(store, cid, rid, patch))
-    update(tools, row_id, account_code="7502", include=True)
-    [patch] = sent
-    assert type(patch) is RowPatch and patch.model_fields_set == {"account_code", "include"}
+    update(tools, row_id, account_code="7502", include=True, document_type="invoice")   # the type is unchanged
+    update(tools, row_id, account_code="7500")
+    assert all(type(p) is RowPatch for p in sent)
+    assert [p.model_fields_set for p in sent] == [{"account_code", "include"}, {"account_code"}]
 
 
 @pytest.mark.parametrize("reasoning, confidence, error", [
@@ -384,16 +402,136 @@ def test_revert_row_cant_touch_another_clients_row_and_checks_its_reasoning(tool
         "ok": False, "error": "Give your reasoning in 1 to 500 characters."}
 
 
-def test_revert_row_wont_undo_an_amount_a_person_corrected(tools, deps, audit, cube_id, mongo_store, row_id):
-    """A row's `original` is what it held before anyone's first edit, so putting it back would also undo a person's
-    correction of the amount, which the agent may not change."""
+def test_a_persons_correction_of_the_amount_survives_the_agents_revert(tools, audit, cube_id, mongo_store, row_id):
     ledger.change_row(mongo_store, cube_id, row_id, RowPatch(gross="80.00"))   # a person, before the job
     update(tools, row_id, account_code="7500")
-    result = tools["revert_row"].invoke({"row_id": row_id, "reasoning": "Wrong account"})
-    assert result["ok"] is False and "a person" in result["error"]
+    assert tools["revert_row"].invoke({"row_id": row_id, "reasoning": "Wrong account"})["ok"] is True
     after = saved(mongo_store, cube_id, row_id).tx
-    assert (str(after.gross), after.account_code) == ("80.00", "7500")
-    assert [e["action"] for e in audit.entries(client_id=cube_id)] == ["update_row"]
+    assert (str(after.gross), after.account_code) == ("80.00", "9998")
+    assert [e["action"] for e in audit.entries(client_id=cube_id)] == ["update_row", "revert_row"]
+
+
+def test_a_persons_choice_on_a_row_the_model_never_touched_survives_revert_row(tools, audit, cube_id, mongo_store, row_id):
+    ledger.change_row(mongo_store, cube_id, row_id, RowPatch(account_code="7502", document_type="receipt"))   # a person
+    result = tools["revert_row"].invoke({"row_id": row_id, "reasoning": "Just checking"})
+    assert result["ok"] is True and result["row"]["account_code"] == "7502"
+    after = saved(mongo_store, cube_id, row_id).tx
+    assert (after.account_code, after.document_type) == ("7502", "receipt")
+    assert audit.entries(client_id=cube_id) == []
+
+
+def test_revert_row_puts_back_only_what_this_job_changed(tools, mongo_store, cube_id, row_id):
+    """A person chose 7502; this job moved the row to 7500 and then 7504. Revert goes back to 7502, not to the
+    account first read."""
+    ledger.change_row(mongo_store, cube_id, row_id, RowPatch(account_code="7502"))
+    update(tools, row_id, account_code="7500")
+    update(tools, row_id, account_code="7504")
+    tools["revert_row"].invoke({"row_id": row_id, "reasoning": "Wrong account"})
+    assert saved(mongo_store, cube_id, row_id).tx.account_code == "7502"
+
+
+def test_a_job_cant_revert_what_an_earlier_job_changed(deps, tools, audit, cube_id, mongo_store, row_id):
+    update(row_tools(deps, cube_id, "j0"), row_id, account_code="7500")             # another job
+    assert tools["revert_row"].invoke({"row_id": row_id, "reasoning": "x"})["ok"] is True
+    assert saved(mongo_store, cube_id, row_id).tx.account_code == "7500"
+    assert [e["job_id"] for e in audit.entries(client_id=cube_id)] == ["j0"]
+
+
+def test_reverting_row_one_leaves_a_sibling_rows_own_account_alone(bill, audit, mongo_store):
+    a, b, c = bill.ids
+    update(bill.tools, b, "b is phone", 0.9, account_code="7502")
+    update(bill.tools, a, "a is printing", 0.9, account_code="7500")
+    assert bill.tools["revert_row"].invoke({"row_id": a, "reasoning": "wrong"})["ok"] is True
+    accounts = [saved(mongo_store, bill.client_id, i).tx.account_code for i in bill.ids]
+    assert accounts == ["9998", "7502", "9998"]
+    assert [(e["action"], e["target"]["row_id"], e["after"]) for e in audit.entries(client_id=bill.client_id)] == [
+        ("update_row", b, {"account_code": "7502"}), ("update_row", a, {"account_code": "7500"}),
+        ("revert_row", a, {"account_code": "9998"})]
+
+
+def test_revert_row_puts_back_include(bill, audit, mongo_store):
+    a = bill.ids[0]
+    update(bill.tools, a, include=True)
+    result = bill.tools["revert_row"].invoke({"row_id": a, "reasoning": "Not needed"})
+    assert result["ok"] is True and saved(mongo_store, bill.client_id, a).tx.include is False
+    assert audit.entries(client_id=bill.client_id)[-1]["after"] == {"include": False}
+
+
+@pytest.fixture
+def automatic_line(mongo_store, cube_id):
+    """A bank line whose link is automatic (None), and the id of it."""
+    mongo_store.add_upload(cube_id, "Barclays.csv", "table", [
+        row(document_type="statement", description="BT DD", counterparty="BT BUSINESS DD", document_ref="line")])
+    return mongo_store.rows(cube_id)[-1].id
+
+
+def test_revert_row_sets_a_link_back_to_automatic(tools, audit, cube_id, mongo_store, automatic_line):
+    assert saved(mongo_store, cube_id, automatic_line).tx.link is None
+    update(tools, automatic_line, link=["x"])
+    assert saved(mongo_store, cube_id, automatic_line).tx.link == ["x"]
+    result = tools["revert_row"].invoke({"row_id": automatic_line, "reasoning": "Not a payment of x"})
+    assert result["ok"] is True and saved(mongo_store, cube_id, automatic_line).tx.link is None
+    entry = audit.entries(client_id=cube_id)[-1]
+    assert (entry["action"], entry["before"], entry["after"]) == ("revert_row", {"link": ["x"]}, {"link": None})
+
+
+def test_revert_row_puts_back_a_link_and_not_the_same(tools, mongo_store, cube_id, bank_line, three_rows_to_review):
+    update(tools, bank_line, link=[], apart_from=three_rows_to_review[:2])
+    tools["revert_row"].invoke({"row_id": bank_line, "reasoning": "Undo"})
+    after = saved(mongo_store, cube_id, bank_line).tx
+    assert (after.link, after.apart_from) == (["b", "a"], [])
+
+
+def test_reverting_a_change_that_reached_every_line_of_a_document_audits_each_line(bill, audit, mongo_store):
+    a, b, c = bill.ids
+    update(bill.tools, b, document_type="receipt")                    # every line of the bill becomes a receipt
+    bill.tools["revert_row"].invoke({"row_id": a, "reasoning": "It is an invoice"})
+    assert [saved(mongo_store, bill.client_id, i).tx.document_type for i in bill.ids] == ["invoice"] * 3
+    reverted = [e for e in audit.entries(client_id=bill.client_id) if e["action"] == "revert_row"]
+    assert [(e["target"]["row_id"], e["before"], e["after"], e["note"]) for e in reverted] == [
+        (i, {"document_type": "receipt"}, {"document_type": "invoice"}, "It is an invoice") for i in bill.ids]
+
+
+def test_a_document_type_change_on_one_row_of_a_three_row_document_is_audited_for_each_row(bill, audit, mongo_store):
+    a, b, c = bill.ids
+    assert update(bill.tools, a, document_type="receipt")["ok"] is True
+    assert [saved(mongo_store, bill.client_id, i).tx.document_type for i in bill.ids] == ["receipt"] * 3
+    entries = audit.entries(client_id=bill.client_id, job_id="j1")
+    assert [e["target"] for e in entries] == [{"row_id": a}, {"row_id": b}, {"row_id": c}]
+    assert all((e["action"], e["before"], e["after"], e["note"]) == (
+        "update_row", {"document_type": "invoice"}, {"document_type": "receipt"}, "BT broadband bill (confidence 0.9)")
+        for e in entries)
+    assert audit.verify() is None
+
+
+def test_a_field_given_but_already_equal_doesnt_overwrite_the_rest_of_the_document(deps, mongo_store, audit):
+    client = mongo_store.create_client(CUBE)
+    mongo_store.add_upload(client.id, "BT bill.pdf", "pdf", [row(), row(document_type="receipt", gross="10.00")])
+    tools = row_tools(deps, client.id, "j1")
+    x, y = (r.id for r in mongo_store.rows(client.id))
+    update(tools, x, account_code="7502", document_type="invoice")     # x is already an invoice
+    assert saved(mongo_store, client.id, y).tx.document_type == "receipt"
+    [entry] = audit.entries(client_id=client.id)
+    assert (entry["target"], entry["before"], entry["after"]) == (
+        {"row_id": x}, {"account_code": "9998"}, {"account_code": "7502"})
+
+
+def test_the_audit_log_matches_the_saved_rows_after_updates_and_a_revert(bill, audit, mongo_store):
+    a, b, c = bill.ids
+    start = {i: agent_fields(saved(mongo_store, bill.client_id, i).tx) for i in bill.ids}
+    update(bill.tools, a, document_type="receipt")                       # reaches all three lines
+    update(bill.tools, b, account_code="7502")
+    update(bill.tools, a, include=True, account_code="7500")             # Include reaches all three lines
+    bill.tools["revert_row"].invoke({"row_id": a, "reasoning": "Undo it all"})
+    expected = {i: dict(fields) for i, fields in start.items()}
+    for entry in audit.entries(client_id=bill.client_id, job_id="j1"):
+        row_id = entry["target"]["row_id"]
+        assert {f: expected[row_id][f] for f in entry["before"]} == entry["before"]   # it says what the row held
+        expected[row_id].update(entry["after"])
+    now = {i: agent_fields(saved(mongo_store, bill.client_id, i).tx) for i in bill.ids}
+    assert expected == now
+    assert (now[a]["account_code"], now[b]["account_code"], now[c]["account_code"]) == ("9998", "7502", "9998")
+    assert audit.verify() is None
 
 
 def test_every_tool_returns_its_error_instead_of_raising(deps):

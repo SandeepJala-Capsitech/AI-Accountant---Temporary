@@ -2,14 +2,17 @@
 
 `row_tools` builds them for one job: the client's ID and the job's ID are closed over, so they never appear in a
 tool's arguments and the model can't name another client's rows. The agent can change only a row's account,
-document type, Include, Link and Not the same. There is no argument for an amount, a date or VAT, and putting
-a row back is refused when it would undo a person's edit of one.
+document type, Include, Link and Not the same. There is no argument for an amount, a date or VAT, and the
+store's own revert (back to the extraction, which would also undo a person's edits) is never used: `revert_row`
+puts back what this job changed, read from this job's audit entries.
 
 No tool raises a LedgerSyncError: each returns {"ok": False, "error": <message>} instead, a message a person (or
 the model) can act on.
 
-Every change is saved first and then appended to the audit log. If the process stops between the two, the row
-is changed and has no entry, and the replay finds nothing left to change, so it does not add one."""
+Every change is saved first and then appended to the audit log, one entry for every row it changed (the store
+applies a document type or Include to every row of a document). The entries come from comparing the rows
+before and after the save, so the log says what the rows hold. If the process stops between the save and the
+entries, the rows are changed and have no entry, and the replay finds nothing left to change, so it adds none."""
 import datetime as dt
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -23,12 +26,11 @@ from ledgersync.models import DOCUMENT_TYPES, Ledger, RowPatch, SavedRow, Settle
 from ledgersync.money import to_money
 from ledgersync.records.audit import AuditLog
 from ledgersync.records.jobs import JobRecords
-from ledgersync.store import EDITABLE, StoredRow
+from ledgersync.store import StoredRow
 from ledgersync.store_mongo import MongoStore
 
-# What the agent may change on a row, and what putting a row back may change.
+# What the agent may change on a row.
 CHANGEABLE = ("account_code", "document_type", "include", "link", "apart_from")
-REVERTIBLE = {"account_code", "document_type"}
 MAX_ROWS = 100          # the most rows one call returns
 MAX_ACCOUNTS = 10
 NOT_FOUND = "This row was not found."
@@ -86,13 +88,6 @@ def _differs(field: str, one: Any, other: Any) -> bool:
     return _canon(field, one) != _canon(field, other)
 
 
-def _put_back(row: StoredRow) -> set[str]:
-    """The fields putting this row back would change: where it differs from what was read before its first edit."""
-    if row.original is None:
-        return set()
-    return {f for f in EDITABLE if _differs(f, row.original.get(f), getattr(row.tx, f))}
-
-
 def _short(row: SavedRow, ledger: Ledger) -> dict:
     """A row as the tools list it, money as exact strings."""
     upload = next((u for u in ledger.uploads if u.id == row.upload_id), None)
@@ -128,6 +123,18 @@ def row_tools(deps: ToolDeps, client_id: int, job_id: str) -> dict[str, BaseTool
     def stored(row_id: int) -> tuple[list[StoredRow], Optional[StoredRow]]:
         rows = store.rows(client_id)
         return rows, next((r for r in rows if r.id == row_id), None)
+
+    def record(action: str, note: str, rows_before: list[StoredRow], built: Ledger) -> None:
+        """One audit entry for every row whose agent-editable fields differ from before the save, in row ID
+        order, each with only the fields that changed."""
+        was = {r.id: r.tx for r in rows_before}
+        for now in sorted(built.transactions, key=lambda r: r.id):
+            then = was.get(now.id)
+            changed = [f for f in CHANGEABLE if then is not None and _differs(f, getattr(then, f), getattr(now, f))]
+            if changed:
+                audit.append(actor="agent", action=action, client_id=client_id, job_id=job_id,
+                             target={"row_id": now.id}, before={f: _value(then, f) for f in changed},
+                             after={f: _value(now, f) for f in changed}, note=note)
 
     @tool(parse_docstring=True)
     def lookup_account(query: str) -> list[dict]:
@@ -201,7 +208,8 @@ def row_tools(deps: ToolDeps, client_id: int, job_id: str) -> dict[str, BaseTool
         """Change one row's account, document type, Include, Link or Not the same. Give only what should change.
 
         This can never change an amount, a date or VAT: those are what the document shows. Every change is
-        recorded with your reasoning. Asking for what a row already has changes nothing.
+        recorded with your reasoning. Asking for what a row already has changes nothing. A document type or
+        Include given for one line of a document applies to all its lines.
 
         Args:
             row_id: The row's ID.
@@ -225,28 +233,26 @@ def row_tools(deps: ToolDeps, client_id: int, job_id: str) -> dict[str, BaseTool
                                               + f" or {CHANGEABLE[-1]}."}
             if document_type is not None and document_type not in DOCUMENT_TYPES:
                 return {"ok": False, "error": "Choose a document type from: " + ", ".join(DOCUMENT_TYPES) + "."}
-            before: dict = {}
-            _, current = stored(row_id)
-            if current is not None:
-                before = {f: _value(current.tx, f) for f in given if _differs(f, given[f], getattr(current.tx, f))}
-                if not before:   # a replay, or nothing to do: nothing to save and nothing to audit
-                    built = ledger()
-                    return {"ok": True, "row": _short(_row(built, row_id), built)}
-            built = books.change_row(store, client_id, row_id, RowPatch(**given))   # NotFound for a row not here
-            row = _row(built, row_id)
-            audit.append(actor="agent", action="update_row", client_id=client_id, job_id=job_id,
-                         target={"row_id": row_id}, before=before, after={f: _value(row, f) for f in before},
-                         note=f"{reasoning.strip()} (confidence {confidence})")
-            return {"ok": True, "row": _short(row, built)}
+            rows, current = stored(row_id)
+            if current is None:
+                raise NotFound(NOT_FOUND)
+            # Only what differs from the row now: a replay, or a field already as asked, writes nothing (a document
+            # type or Include is applied to every row of the document, so a field sent again could overwrite theirs).
+            changes = {f: v for f, v in given.items() if _differs(f, v, getattr(current.tx, f))}
+            if not changes:
+                built = ledger()
+                return {"ok": True, "row": _short(_row(built, row_id), built)}
+            built = books.change_row(store, client_id, row_id, RowPatch(**changes))
+            record("update_row", f"{reasoning.strip()} (confidence {confidence})", rows, built)
+            return {"ok": True, "row": _short(_row(built, row_id), built)}
         except LedgerSyncError as exc:
             return _failed(exc)
 
     @tool(parse_docstring=True)
     def revert_row(row_id: int, reasoning: str) -> dict:
-        """Put a row back to what was read from its document, undoing the changes made to its account and document type.
+        """Undo what you changed on a row in this job, putting its account, document type, Include, Link and Not the same back to what they were before your first change.
 
-        A row that was never changed is left as it is. A row whose amount, date or VAT a person edited can't be
-        put back by the agent.
+        A row you haven't changed is left as it is, and so is anything a person chose. Amounts, dates and VAT are never touched.
 
         Args:
             row_id: The row's ID.
@@ -256,25 +262,23 @@ def row_tools(deps: ToolDeps, client_id: int, job_id: str) -> dict[str, BaseTool
             problem = _check_why(reasoning)
             if problem:
                 return {"ok": False, "error": problem}
-            before: dict = {}
             rows, current = stored(row_id)
-            if current is not None:
-                before = {f: _value(current.tx, f) for f in _put_back(current)}
-                if not before:   # never changed, or already as it was read
-                    built = ledger()
-                    return {"ok": True, "row": _short(_row(built, row_id), built)}
-                ref = current.tx.document_ref   # the store puts back every row of the same document too
-                same_document = [r for r in rows if r.id == row_id or (ref and r.tx.document_ref == ref)]
-                if any(_put_back(r) - REVERTIBLE for r in same_document):
-                    return {"ok": False, "error": (
-                        "A person has edited this row's amount, date, VAT or other details, which the agent can't "
-                        "change, and putting it back would undo that. Leave it for a person.")}
-            built = books.change_row(store, client_id, row_id, RowPatch(revert=True))   # NotFound for a row not here
-            row = _row(built, row_id)
-            audit.append(actor="agent", action="revert_row", client_id=client_id, job_id=job_id,
-                         target={"row_id": row_id}, before=before, after={f: _value(row, f) for f in before},
-                         note=reasoning.strip())
-            return {"ok": True, "row": _short(row, built)}
+            if current is None:
+                raise NotFound(NOT_FOUND)
+            # What each field held before this job's first change to the row, from the audit log.
+            first: dict[str, Any] = {}
+            for entry in audit.entries(client_id=client_id, job_id=job_id):
+                if entry["target"] == {"row_id": row_id}:
+                    for field, value in (entry["before"] or {}).items():
+                        if field in CHANGEABLE:
+                            first.setdefault(field, value)
+            undo = {f: v for f, v in first.items() if _differs(f, v, getattr(current.tx, f))}
+            if not undo:   # this job never changed the row, or it is already as it was
+                built = ledger()
+                return {"ok": True, "row": _short(_row(built, row_id), built)}
+            built = books.change_row(store, client_id, row_id, RowPatch(**undo))
+            record("revert_row", reasoning.strip(), rows, built)
+            return {"ok": True, "row": _short(_row(built, row_id), built)}
         except LedgerSyncError as exc:
             return _failed(exc)
 
