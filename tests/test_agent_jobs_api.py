@@ -344,7 +344,8 @@ def test_with_a_model_set_the_built_in_steps_run_the_job_to_review(mongo_store, 
         job = wait_for(api, start(api, cid)["id"])
         messages = [e["message"] for e in api.get(f"/api/agent-jobs/{job['id']}/events").json()]
     assert job["status"] == "awaiting_review"
-    assert messages[:2] == ["Started ingest", "This step isn't built yet, so it did nothing."]
+    assert messages[:3] == ["Started ingest", "Found 1 document and 1 row. No rows need a look.", "Started classify"]
+    assert messages[3] == "This step isn't built yet, so it did nothing."   # the steps after ingest are still stubs
 
 
 @mongo

@@ -4,6 +4,7 @@ import hashlib
 import logging
 import threading
 from contextlib import asynccontextmanager, nullcontext
+from dataclasses import replace
 from typing import Optional
 from urllib.parse import quote
 
@@ -14,7 +15,7 @@ from langgraph.checkpoint.mongodb import MongoDBSaver
 from pydantic import BaseModel
 
 from ledgersync import accounts, adapter, intake, pipeline, posting
-from ledgersync.agent import AgentRunner, Busy, Nodes, build_graph, staged, stub_nodes
+from ledgersync.agent import AgentRunner, Busy, Nodes, ToolDeps, build_graph, make_ingest, staged, stub_nodes
 from ledgersync.blobs import BlobStore, GridFSBlobStore, MemoryBlobStore
 from ledgersync import ledger as books
 from ledgersync.accounts import choosable
@@ -28,6 +29,7 @@ from ledgersync.matching import match
 from ledgersync.models import (AnalysisResult, BusinessSettings, BusinessType, Client, ClientFields, ClientPatch,
                                ClientSummary, Ledger, LedgerRequest, ManualUpload, RowPatch, TransactionList,
                                TrialBalance)
+from ledgersync.records.audit import AuditLog
 from ledgersync.records.jobs import JobEvent, JobRecord, JobRecords
 from ledgersync.store import Store
 from ledgersync.store_mongo import MongoStore
@@ -74,7 +76,9 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         records = JobRecords(store.db)
         # LangGraph's checkpoints go in a database of their own beside the store's: <name>_checkpoints.
         checkpointer = MongoDBSaver(store.client, f"{store.db_name}_checkpoints")
-        steps = agent_nodes if agent_nodes is not None else stub_nodes(records)
+        deps = ToolDeps(store=store, records=records, audit=AuditLog(store.db))
+        # The built steps (ingest so far) with stubs for the rest; steps passed in by a test win.
+        steps = agent_nodes if agent_nodes is not None else replace(stub_nodes(records), ingest=make_ingest(deps))
         graph = build_graph(staged(steps, records), checkpointer, max_fix_rounds=settings.agent_max_fix_rounds)
         # Threads of their own, so a long agent run never holds up document reading.
         agent_jobs = JobStore(ttl_seconds=settings.job_ttl_seconds, max_workers=settings.max_parallel_jobs)
