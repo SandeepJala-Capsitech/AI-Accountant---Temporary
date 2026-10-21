@@ -10,18 +10,27 @@ import copy
 import datetime as dt
 import hashlib
 import json
+import logging
 import threading
 from typing import Optional
 
 import pymongo
 from pymongo import ReturnDocument
 from pymongo.database import Database
+from pymongo.errors import OperationFailure
+
+logger = logging.getLogger(__name__)
 
 GENESIS_HASH = "0" * 64   # the "previous hash" of the very first entry
 
 # One lock for the whole process, not one per AuditLog: a log is built for every job, and two of
 # them appending at once must still produce one chain with no two entries on the same previous hash.
 _APPEND_LOCK = threading.Lock()
+
+# Databases whose audit_log indexes were already set up (or refused) in this process, by name. The
+# database user the app runs as may only insert and find, so the index is asked for once per
+# process, not on every AuditLog, which is built for every job. Filled under _APPEND_LOCK.
+_INDEXED_DATABASES: set[str] = set()
 
 
 def _entry_hash(entry: dict) -> str:
@@ -43,7 +52,16 @@ class AuditLog:
     def __init__(self, db: Database):
         self._entries = db["audit_log"]
         self._counters = db["counters"]
-        self._entries.create_index([("seq", pymongo.ASCENDING)], unique=True)
+        with _APPEND_LOCK:
+            if db.name not in _INDEXED_DATABASES:
+                try:
+                    self._entries.create_index([("seq", pymongo.ASCENDING)], unique=True)
+                except OperationFailure as exc:
+                    logger.error(
+                        "Could not create the unique seq index on audit_log (%s). The database user "
+                        "needs the createIndex privilege on audit_log; until someone creates the index, "
+                        "nothing in the database stops two entries sharing a seq.", exc)
+                _INDEXED_DATABASES.add(db.name)   # not reached for any other error, so that is tried again
 
     def append(self, *, actor: str, action: str, client_id: int, job_id: Optional[str], target: dict,
                before: Optional[dict], after: Optional[dict], note: str = "") -> dict:

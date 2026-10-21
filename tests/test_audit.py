@@ -1,6 +1,10 @@
+import logging
 import threading
+from unittest import mock
 
 import pytest
+from pymongo.collection import Collection
+from pymongo.errors import OperationFailure
 
 from ledgersync.records.audit import AuditLog
 
@@ -109,3 +113,33 @@ def test_a_document_with_no_seq_is_reported_not_passed_over(mongo_db):
     log.append(actor="agent", action="x", client_id=1, job_id="j1", target={}, before=None, after=None)
     mongo_db.audit_log.update_one({"seq": 1}, {"$unset": {"seq": ""}})
     assert log.verify() == 0
+
+
+def test_a_second_log_on_the_same_database_makes_no_index_call(mongo_db):
+    AuditLog(mongo_db)   # the first one creates the unique seq index
+    with mock.patch.object(Collection, "create_index") as create_index:
+        log = AuditLog(mongo_db)
+        log.append(actor="agent", action="x", client_id=1, job_id="j1", target={}, before=None, after=None)
+    create_index.assert_not_called()
+
+
+def test_a_refused_index_is_logged_once_and_does_not_stop_the_log(mongo_db, caplog):
+    refused = OperationFailure("not authorized on db to execute command createIndexes", code=13)
+    with caplog.at_level(logging.ERROR, logger="ledgersync.records.audit"):
+        with mock.patch.object(Collection, "create_index", side_effect=refused) as create_index:
+            log = AuditLog(mongo_db)    # must not raise
+            AuditLog(mongo_db)          # already tried for this database, so no second call or message
+    assert create_index.call_count == 1
+    messages = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(messages) == 1
+    assert "seq" in messages[0] and "audit_log" in messages[0] and "createIndex" in messages[0]
+    first = log.append(actor="agent", action="x", client_id=1, job_id="j1", target={}, before=None, after=None)
+    assert first["seq"] == 1 and log.verify() is None
+
+
+def test_any_other_index_error_still_raises_and_is_tried_again_next_time(mongo_db):
+    with mock.patch.object(Collection, "create_index", side_effect=RuntimeError("network down")):
+        with pytest.raises(RuntimeError, match="network down"):
+            AuditLog(mongo_db)
+    AuditLog(mongo_db)   # not remembered as done, so this one creates the index for real
+    assert "seq_1" in mongo_db.audit_log.index_information()
