@@ -9,7 +9,6 @@ Optimized for:
 from __future__ import annotations
 
 import datetime as dt
-import itertools
 import logging
 import re
 from typing import Optional
@@ -52,8 +51,6 @@ class MongoStore:
             socketTimeoutMS=20000,
         )
         self.db = self.client[db_name]
-        self._stamps = itertools.count(1)
-        self._revisions: dict[int, int] = {}
         self._init_indexes()
 
     def _init_indexes(self):
@@ -82,7 +79,10 @@ class MongoStore:
         return counter["seq"] - count + 1
 
     def revision(self, client_id: int) -> int:
-        return self._revisions.get(client_id, 0)
+        """How many writes this client's document has had. It lives in the document, so every
+        store on the same database sees the same number; older documents without one give 0."""
+        doc = self.db.clients.find_one({"id": client_id}, {"revision": 1})
+        return int(doc.get("revision", 0)) if doc else 0
 
     # ─── Clients ───────────────────────────────────────────────────────────────
 
@@ -100,6 +100,7 @@ class MongoStore:
             "archived_at": None,
             "created_at": now,
             "updated_at": now,
+            "revision": 0,
             "uploads": [],
             "rows": []
         }
@@ -177,11 +178,10 @@ class MongoStore:
             set_dict["updated_at"] = now
             updated = self.db.clients.find_one_and_update(
                 {"id": client_id},
-                {"$set": set_dict},
+                {"$set": set_dict, "$inc": {"revision": 1}},
                 projection=_CLIENT_PROJECTION,
                 return_document=ReturnDocument.AFTER
             )
-            self._revisions[client_id] = next(self._stamps)
             if not updated:
                 raise NotFound("This client was not found.")
             return Client(
@@ -247,10 +247,10 @@ class MongoStore:
                     "uploads": upload_doc,
                     "rows": {"$each": row_docs}
                 },
-                "$set": {"updated_at": now}
+                "$set": {"updated_at": now},
+                "$inc": {"revision": 1}
             }
         )
-        self._revisions[client_id] = next(self._stamps)
         return upload_id
 
     def uploads(self, client_id: int) -> list[dict]:
@@ -311,17 +311,17 @@ class MongoStore:
                     "uploads": {"id": upload_id},
                     "rows": {"upload_id": upload_id}
                 },
-                "$set": {"updated_at": now}
+                "$set": {"updated_at": now},
+                "$inc": {"revision": 1}
             }
         )
         if res.matched_count == 0:
             raise NotFound("This upload was not found.")
-        self._revisions[client_id] = next(self._stamps)
 
     def delete_row(self, client_id: int, row_id: int) -> None:
         doc = self.db.clients.find_one(
             {"id": client_id, "rows.id": row_id},
-            {"rows": {"$elemMatch": {"id": row_id}}, "rows.upload_id": 1}
+            {"rows": {"$elemMatch": {"id": row_id}}}
         )
         if not doc or not doc.get("rows"):
             raise NotFound("This row was not found.")
@@ -344,10 +344,10 @@ class MongoStore:
             {"id": client_id},
             {
                 "$pull": pull_dict,
-                "$set": {"updated_at": now}
+                "$set": {"updated_at": now},
+                "$inc": {"revision": 1}
             }
         )
-        self._revisions[client_id] = next(self._stamps)
 
     def rows(self, client_id: int) -> list[StoredRow]:
         doc = self.db.clients.find_one({"id": client_id}, {"rows": 1, "id": 1})
@@ -415,7 +415,7 @@ class MongoStore:
                     "$set": {
                         "rows": rows,
                         "updated_at": now
-                    }
+                    },
+                    "$inc": {"revision": 1}
                 }
             )
-            self._revisions[client_id] = next(self._stamps)
