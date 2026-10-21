@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from ledgersync import ledger
+from ledgersync.checks import issue
 from ledgersync.agent.nodes import make_ingest
 from ledgersync.agent.tools import ToolDeps, row_tools
 from ledgersync.models import ClientFields, RowPatch, Transaction
@@ -114,6 +115,26 @@ def agent_fields(tx):
     """The fields the agent may change, as the audit log would hold them."""
     return {"account_code": tx.account_code, "document_type": tx.document_type, "include": tx.include,
             "link": None if tx.link is None else list(tx.link), "apart_from": list(tx.apart_from)}
+
+
+def assert_the_log_matches_the_rows(audit, mongo_store, client_id, start):
+    """Folds the job's audit entries over the rows' starting fields: each entry's `before` is what the row held at
+    that point, and the result is what the rows hold now."""
+    expected = {i: dict(fields) for i, fields in start.items()}
+    for entry in audit.entries(client_id=client_id, job_id="j1"):
+        row_id = entry["target"]["row_id"]
+        assert {f: expected[row_id][f] for f in entry["before"]} == entry["before"]
+        expected[row_id].update(entry["after"])
+    assert expected == {r.id: agent_fields(r.tx) for r in mongo_store.rows(client_id)}
+
+
+def store_reverts(monkeypatch, mongo_store) -> list:
+    """Notes each time the store is asked to put rows back to the reading (its own revert)."""
+    asked = []
+    real = mongo_store.patch_row
+    monkeypatch.setattr(mongo_store, "patch_row", lambda cid, rid, changes, *, revert=False: (
+        asked.append(rid) if revert else None, real(cid, rid, changes, revert=revert))[1])
+    return asked
 
 
 def update(tools, row_id, reasoning="BT broadband bill", confidence=0.9, **fields):
@@ -492,6 +513,48 @@ def test_reverting_a_change_that_reached_every_line_of_a_document_audits_each_li
         (i, {"document_type": "receipt"}, {"document_type": "invoice"}, "It is an invoice") for i in bill.ids]
 
 
+def test_a_row_put_back_in_suspense_gets_its_reading_warning_back(deps, audit, mongo_store, monkeypatch):
+    client = mongo_store.create_client(CUBE)
+    mongo_store.add_upload(client.id, "BT bill.pdf", "pdf", [
+        row(issues=[issue("account_not_recognised", "Account unclear: put in Suspense. Choose one.")])])
+    tools = row_tools(deps, client.id, "j1")
+    [rid] = [r.id for r in mongo_store.rows(client.id)]
+    start = {rid: agent_fields(saved(mongo_store, client.id, rid).tx)}
+    reverts = store_reverts(monkeypatch, mongo_store)
+
+    def reading():
+        built = ledger.build(mongo_store, client.id)
+        listed = tools["list_rows_to_review"].invoke({})["rows"]
+        return ([(i["code"], i["severity"]) for r in listed for i in r["issues"]],
+                next(r for r in built.transactions if r.id == rid).edited)
+
+    assert reading() == ([("account_not_recognised", "warning")], False)
+    update(tools, rid, account_code="7502")
+    assert reading() == ([], True)                       # the agent's change counts as a review: the warning goes
+    tools["revert_row"].invoke({"row_id": rid, "reasoning": "Not sure it is broadband"})
+    assert reading() == ([("account_not_recognised", "warning")], False)   # back in Suspense, flagged again
+    assert saved(mongo_store, client.id, rid).tx.account_code == "9998"
+    tools["revert_row"].invoke({"row_id": rid, "reasoning": "Again"})      # nothing left to put back
+    assert reverts == [rid]
+    assert [(e["action"], e["after"]) for e in audit.entries(client_id=client.id)] == [
+        ("update_row", {"account_code": "7502"}), ("revert_row", {"account_code": "9998"})]
+    assert_the_log_matches_the_rows(audit, mongo_store, client.id, start)
+
+
+def test_a_persons_pre_job_edit_on_another_line_keeps_the_readings_warnings_cleared(bill, audit, mongo_store, monkeypatch):
+    a, b, c = bill.ids
+    start = {i: agent_fields(saved(mongo_store, bill.client_id, i).tx) for i in bill.ids}
+    ledger.change_row(mongo_store, bill.client_id, b, RowPatch(account_code="7502"))   # a person, before the job
+    reverts = store_reverts(monkeypatch, mongo_store)
+    update(bill.tools, a, account_code="7500")
+    assert bill.tools["revert_row"].invoke({"row_id": a, "reasoning": "Wrong account"})["ok"] is True
+    assert [saved(mongo_store, bill.client_id, i).tx.account_code for i in bill.ids] == ["9998", "7502", "9998"]
+    assert reverts == []                                 # the store's revert would have undone the person's line
+    assert saved(mongo_store, bill.client_id, b).original is not None
+    start[b] = agent_fields(saved(mongo_store, bill.client_id, b).tx)   # the log is about this job's changes
+    assert_the_log_matches_the_rows(audit, mongo_store, bill.client_id, start)
+
+
 def test_a_document_type_change_on_one_row_of_a_three_row_document_is_audited_for_each_row(bill, audit, mongo_store):
     a, b, c = bill.ids
     assert update(bill.tools, a, document_type="receipt")["ok"] is True
@@ -523,13 +586,8 @@ def test_the_audit_log_matches_the_saved_rows_after_updates_and_a_revert(bill, a
     update(bill.tools, b, account_code="7502")
     update(bill.tools, a, include=True, account_code="7500")             # Include reaches all three lines
     bill.tools["revert_row"].invoke({"row_id": a, "reasoning": "Undo it all"})
-    expected = {i: dict(fields) for i, fields in start.items()}
-    for entry in audit.entries(client_id=bill.client_id, job_id="j1"):
-        row_id = entry["target"]["row_id"]
-        assert {f: expected[row_id][f] for f in entry["before"]} == entry["before"]   # it says what the row held
-        expected[row_id].update(entry["after"])
+    assert_the_log_matches_the_rows(audit, mongo_store, bill.client_id, start)
     now = {i: agent_fields(saved(mongo_store, bill.client_id, i).tx) for i in bill.ids}
-    assert expected == now
     assert (now[a]["account_code"], now[b]["account_code"], now[c]["account_code"]) == ("9998", "7502", "9998")
     assert audit.verify() is None
 

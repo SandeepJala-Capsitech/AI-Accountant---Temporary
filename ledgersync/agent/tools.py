@@ -3,8 +3,10 @@
 `row_tools` builds them for one job: the client's ID and the job's ID are closed over, so they never appear in a
 tool's arguments and the model can't name another client's rows. The agent can change only a row's account,
 document type, Include, Link and Not the same. There is no argument for an amount, a date or VAT, and the
-store's own revert (back to the extraction, which would also undo a person's edits) is never used: `revert_row`
-puts back what this job changed, read from this job's audit entries.
+store's own revert (back to the extraction, which would also undo a person's edits) is not how `revert_row` works:
+it puts back what this job changed, read from this job's audit entries. Only once every edited row of the row's
+document holds what it held as read does it call the store's revert, which then puts back equal values and
+restores the reading's warnings, which the store clears when a row is first changed.
 
 No tool raises a LedgerSyncError: each returns {"ok": False, "error": <message>} instead, a message a person (or
 the model) can act on.
@@ -26,7 +28,7 @@ from ledgersync.models import DOCUMENT_TYPES, Ledger, RowPatch, SavedRow, Settle
 from ledgersync.money import to_money
 from ledgersync.records.audit import AuditLog
 from ledgersync.records.jobs import JobRecords
-from ledgersync.store import StoredRow
+from ledgersync.store import EDITABLE, StoredRow
 from ledgersync.store_mongo import MongoStore
 
 # What the agent may change on a row.
@@ -123,6 +125,19 @@ def row_tools(deps: ToolDeps, client_id: int, job_id: str) -> dict[str, BaseTool
     def stored(row_id: int) -> tuple[list[StoredRow], Optional[StoredRow]]:
         rows = store.rows(client_id)
         return rows, next((r for r in rows if r.id == row_id), None)
+
+    def as_read(row_id: int) -> bool:
+        """Whether the row's document is back to how it was read: some row of it was edited (it keeps what it held
+        before its first edit), and every such row holds that again. A document is the rows with the row's
+        document reference, as the store spreads a whole-document change."""
+        rows = store.rows(client_id)
+        mine = next((r for r in rows if r.id == row_id), None)
+        if mine is None:
+            return False
+        ref = mine.tx.document_ref
+        edited = [r for r in rows if r.original is not None and (r.id == row_id or (ref and r.tx.document_ref == ref))]
+        return bool(edited) and not any(_differs(f, r.original.get(f), getattr(r.tx, f)) for r in edited
+                                        for f in EDITABLE)
 
     def record(action: str, note: str, rows_before: list[StoredRow], built: Ledger) -> None:
         """One audit entry for every row whose agent-editable fields differ from before the save, in row ID
@@ -273,11 +288,17 @@ def row_tools(deps: ToolDeps, client_id: int, job_id: str) -> dict[str, BaseTool
                         if field in CHANGEABLE:
                             first.setdefault(field, value)
             undo = {f: v for f, v in first.items() if _differs(f, v, getattr(current.tx, f))}
-            if not undo:   # this job never changed the row, or it is already as it was
-                built = ledger()
-                return {"ok": True, "row": _short(_row(built, row_id), built)}
-            built = books.change_row(store, client_id, row_id, RowPatch(**undo))
-            record("revert_row", reasoning.strip(), rows, built)
+            built = None
+            if undo:
+                built = books.change_row(store, client_id, row_id, RowPatch(**undo))
+                record("revert_row", reasoning.strip(), rows, built)
+            if first and as_read(row_id):
+                # The first change to a row clears the reading's warnings (the store counts it as a person's review).
+                # With every edited row of the document back as read, the store's revert only puts back values that
+                # are already there, so it changes nothing the audit log tracks, and brings the warnings back. When a
+                # person edited a row of the document before the job, this is left alone: it would undo their edit.
+                built = books.change_row(store, client_id, row_id, RowPatch(revert=True))
+            built = built or ledger()
             return {"ok": True, "row": _short(_row(built, row_id), built)}
         except LedgerSyncError as exc:
             return _failed(exc)
