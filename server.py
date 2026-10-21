@@ -12,11 +12,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
 from ledgersync import accounts, adapter, intake, pipeline, posting
+from ledgersync.blobs import BlobStore, GridFSBlobStore, MemoryBlobStore
 from ledgersync import ledger as books
 from ledgersync.accounts import choosable
 from ledgersync.checks import normalise
 from ledgersync.config import Settings
-from ledgersync.errors import LedgerSyncError, RefusedRequest, UnreadableFile
+from ledgersync.errors import LedgerSyncError, NotFound, RefusedRequest, UnreadableFile
 from ledgersync.extractor import TransactionExtractor
 from ledgersync.model_client import ModelClient
 from ledgersync.jobs import JobStore
@@ -38,7 +39,8 @@ def configure_logging(level: str) -> None:
     logging.getLogger("ledgersync").setLevel(level)
 
 
-def create_app(settings: Optional[Settings] = None, *, model_client=None, store: Optional[Store] = None) -> FastAPI:
+def create_app(settings: Optional[Settings] = None, *, model_client=None, store: Optional[Store] = None,
+               blobs: Optional[BlobStore] = None) -> FastAPI:
     """The API; tests pass a stand-in for the model client as model_client, and a store in a temporary folder."""
     settings = settings or Settings.from_env()
     configure_logging(settings.log_level)
@@ -48,6 +50,9 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
             store = MongoStore(settings.mongodb_uri, settings.mongodb_db_name)
         else:
             store = Store(settings.db_path)
+    if blobs is None:
+        # Originals live beside the rows in MongoDB; without it they last until a restart (agent jobs need MongoDB anyway).
+        blobs = GridFSBlobStore(store.db) if isinstance(store, MongoStore) else MemoryBlobStore()
     extractor = TransactionExtractor(model_client, business_name=settings.business_name)
     jobs = JobStore(ttl_seconds=settings.job_ttl_seconds, max_workers=settings.max_parallel_jobs)
 
@@ -123,16 +128,19 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         if client_id is not None:
             client = store.get_client(client_id)
             books.require_active(client)
-        name, sha256 = "Pasted text", ""
+        name, sha256, content_type = "Pasted text", "", ""
         if file is not None and file.filename:
             data = intake.read_limited(file.file, settings.max_upload_bytes)
             item = intake.load_upload(file.filename, data, settings.max_pdf_pages)
             name, sha256 = file.filename, hashlib.sha256(data).hexdigest()
+            content_type = file.content_type or "application/octet-stream"
         elif text is not None:
             item = intake.from_text(text, settings.max_upload_bytes)
         else:
             raise UnreadableFile("Provide text or a file to analyse.")
         model_client.ensure_available()   # fail fast with 503 instead of queueing doomed work
+        if sha256:
+            blobs.put(data, name=name, content_type=content_type)
         job = jobs.submit(lambda ctx: run_analysis(item, ctx, client, name, sha256))
         return {"job_id": job.id, "status": job.status}
 
@@ -201,6 +209,22 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
     @app.delete("/api/clients/{client_id}/uploads/{upload_id}", response_model=Ledger)
     def remove_upload(client_id: int, upload_id: int):
         return books.remove_upload(store, client_id, upload_id)
+
+    @app.get("/api/clients/{client_id}/uploads/{upload_id}/file")
+    def download_original(client_id: int, upload_id: int):
+        """The file an upload was read from, as it was sent; 404 when the upload was pasted text or the file is gone."""
+        store.get_client(client_id)
+        kept = "The original file wasn't kept for this upload."
+        upload = next((u for u in store.uploads(client_id) if u["id"] == upload_id), None)
+        if upload is None:
+            raise NotFound("That upload was not found.")
+        if not upload["sha256"] or not blobs.exists(upload["sha256"]):
+            raise NotFound(kept)
+        blob = blobs.get(upload["sha256"])
+        plain = blob.name.encode("ascii", "replace").decode().replace("?", "_").replace('"', "_")
+        return Response(blob.data, media_type=blob.content_type,
+                        headers={"Content-Disposition": f"attachment; filename=\"{plain}\"; "
+                                                        f"filename*=UTF-8''{quote(blob.name)}"})
 
     @app.get("/api/clients/{client_id}/trial-balance", response_model=TrialBalance)
     def client_trial_balance(client_id: int):

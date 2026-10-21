@@ -8,6 +8,7 @@ from fakes import ROW, FakeModel, transactions_json
 from fastapi.testclient import TestClient
 
 from ledgersync.config import Settings
+from ledgersync.blobs import MemoryBlobStore
 from ledgersync.errors import ModelError
 from ledgersync.store import Store
 from server import create_app
@@ -321,3 +322,27 @@ def test_a_cancel_that_arrives_after_the_rows_were_saved_leaves_the_job_succeede
     release.set()
     assert finish(client, job_id)["status"] == "succeeded"
     assert len(client.get(f"/api/clients/{cid}/ledger").json()["uploads"]) == 1
+
+
+BT_CSV = b"Date,Description,Amount\n01/09/2026,BT Business Broadband,-72.00\n"
+
+
+def test_an_analysed_file_can_be_downloaded_again(tmp_path):
+    app = create_app(Settings(warmup=False), model_client=FakeModel([transactions_json(ROW)]),
+                     store=Store(tmp_path / "ledgersync.db"), blobs=MemoryBlobStore())
+    with TestClient(app, headers={"X-LedgerSync": "1"}) as api:
+        cid = add(api)["id"]
+        resp = api.post("/api/analyze", data={"client_id": str(cid)}, files={"file": ("bt.csv", BT_CSV, "text/csv")})
+        upload_id = finish(api, resp.json()["job_id"])["result"]["upload_id"]
+        resp = api.get(f"/api/clients/{cid}/uploads/{upload_id}/file")
+        assert resp.status_code == 200 and resp.content == BT_CSV
+        assert 'filename="bt.csv"' in resp.headers["content-disposition"]
+        assert resp.headers["content-type"].startswith("text/csv")
+
+
+def test_pasted_text_has_no_file_to_download(api):
+    client = api(FakeModel([transactions_json(ROW)]))
+    cid = add(client)["id"]
+    job = finish(client, client.post("/api/analyze", data={"text": "BT 72.00", "client_id": str(cid)}).json()["job_id"])
+    resp = client.get(f"/api/clients/{cid}/uploads/{job['result']['upload_id']}/file")
+    assert resp.status_code == 404 and resp.json()["detail"]["message"] == "The original file wasn't kept for this upload."
