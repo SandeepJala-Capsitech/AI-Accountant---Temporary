@@ -8,6 +8,7 @@ from typing import Mapping, Optional
 
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env"   # git-ignored; see .env.example
 DEFAULT_DB = Path(__file__).resolve().parent.parent / "data" / "ledgersync.db"   # git-ignored: data/
+MAX_FIX_ROUNDS = 3   # the fix loop never runs more rounds than this, whatever LEDGERSYNC_AGENT_MAX_FIX_ROUNDS says
 
 
 def _flag(value: str) -> bool:
@@ -70,6 +71,10 @@ class Settings:
     # MongoDB storage: if set, MongoStore is used instead of SQLite
     mongodb_uri: str = ""                 # e.g. "mongodb://localhost:27017"
     mongodb_db_name: str = "ledgersync"
+    # The agent that works a client's rows to a trial balance: any OpenRouter model that supports tool
+    # calling. Agent jobs are off until it is set (and they need MongoDB).
+    agent_model: str = ""
+    agent_max_fix_rounds: int = 3         # fix rounds after a failed quality gate: 0 to 3, never more
 
     @property
     def max_upload_bytes(self) -> int:
@@ -132,4 +137,7 @@ class Settings:
                      if env.get("LEDGERSYNC_DB_PATH", "").strip() else d.db_path),
             mongodb_uri=env.get("MONGODB_URI", "").strip(),
             mongodb_db_name=env.get("MONGODB_DB_NAME", "ledgersync").strip(),
+            agent_model=env.get("LEDGERSYNC_AGENT_MODEL", "").strip(),
+            agent_max_fix_rounds=min(MAX_FIX_ROUNDS, max(0, int(env.get("LEDGERSYNC_AGENT_MAX_FIX_ROUNDS",
+                                                                       d.agent_max_fix_rounds)))),
         )

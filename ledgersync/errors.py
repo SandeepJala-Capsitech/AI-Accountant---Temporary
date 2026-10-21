@@ -101,3 +101,17 @@ class StorageError(LedgerSyncError):
 
     status_code = 500
     code = "storage_error"
+
+
+class JobRunning(LedgerSyncError):
+    """Something that has to wait: a client's rows while its agent job runs, or a job while its documents are read."""
+
+    status_code = 409
+    code = "job_running"
+
+
+class AgentNotConfigured(LedgerSyncError):
+    """Agent jobs need MongoDB and a model for the agent, and one of them is missing."""
+
+    status_code = 503
+    code = "agent_not_configured"

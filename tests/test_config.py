@@ -107,3 +107,15 @@ def test_the_database_lives_in_the_projects_data_folder_unless_set_otherwise(tmp
     project = Path(config.__file__).resolve().parent.parent
     assert Settings.from_env({}).db_path == project / "data" / "ledgersync.db"
     assert Settings.from_env({"LEDGERSYNC_DB_PATH": str(tmp_path / "books.db")}).db_path == tmp_path / "books.db"
+
+
+def test_agent_jobs_have_no_model_and_three_fix_rounds_unless_set_otherwise():
+    s = Settings.from_env({})
+    assert (s.agent_model, s.agent_max_fix_rounds) == ("", 3)
+    s = Settings.from_env({"LEDGERSYNC_AGENT_MODEL": " openai/gpt-x ", "LEDGERSYNC_AGENT_MAX_FIX_ROUNDS": "1"})
+    assert (s.agent_model, s.agent_max_fix_rounds) == ("openai/gpt-x", 1)
+
+
+def test_the_fix_loop_never_runs_more_than_three_rounds():
+    assert Settings.from_env({"LEDGERSYNC_AGENT_MAX_FIX_ROUNDS": "10"}).agent_max_fix_rounds == 3
+    assert Settings.from_env({"LEDGERSYNC_AGENT_MAX_FIX_ROUNDS": "-1"}).agent_max_fix_rounds == 0

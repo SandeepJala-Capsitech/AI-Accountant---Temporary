@@ -16,7 +16,8 @@ def _test_uri():
 
 @pytest.fixture
 def mongo_db():
-    """A fresh `ledgersync_test_<hex>` database, dropped after the test."""
+    """A fresh `ledgersync_test_<hex>` database, dropped after the test with the `<name>_checkpoints`
+    database an app on it writes LangGraph's checkpoints to."""
     uri = _test_uri()
     if not uri:
         pytest.skip("Set LEDGERSYNC_TEST_MONGODB_URI to run MongoDB tests")
@@ -26,6 +27,7 @@ def mongo_db():
         yield db
     finally:
         client.drop_database(db.name)
+        client.drop_database(f"{db.name}_checkpoints")
         client.close()
 
 

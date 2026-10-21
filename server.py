@@ -3,21 +3,24 @@ import datetime as dt
 import hashlib
 import logging
 import threading
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from typing import Optional
 from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, Header, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
+from langgraph.checkpoint.mongodb import MongoDBSaver
+from pydantic import BaseModel
 
 from ledgersync import accounts, adapter, intake, pipeline, posting
+from ledgersync.agent import AgentRunner, Busy, Nodes, build_graph, staged, stub_nodes
 from ledgersync.blobs import BlobStore, GridFSBlobStore, MemoryBlobStore
 from ledgersync import ledger as books
 from ledgersync.accounts import choosable
 from ledgersync.checks import normalise
 from ledgersync.config import Settings
-from ledgersync.errors import LedgerSyncError, NotFound, RefusedRequest, UnreadableFile
+from ledgersync.errors import AgentNotConfigured, LedgerSyncError, NotFound, RefusedRequest, UnreadableFile
 from ledgersync.extractor import TransactionExtractor
 from ledgersync.model_client import ModelClient
 from ledgersync.jobs import JobStore
@@ -25,10 +28,18 @@ from ledgersync.matching import match
 from ledgersync.models import (AnalysisResult, BusinessSettings, BusinessType, Client, ClientFields, ClientPatch,
                                ClientSummary, Ledger, LedgerRequest, ManualUpload, RowPatch, TransactionList,
                                TrialBalance)
+from ledgersync.records.jobs import JobEvent, JobRecord, JobRecords
 from ledgersync.store import Store
 from ledgersync.store_mongo import MongoStore
 
 logger = logging.getLogger("ledgersync.server")
+
+
+class JobPeriod(BaseModel):
+    """The period an agent job works on."""
+
+    period_start: dt.date
+    period_end: dt.date
 
 
 def configure_logging(level: str) -> None:
@@ -40,8 +51,9 @@ def configure_logging(level: str) -> None:
 
 
 def create_app(settings: Optional[Settings] = None, *, model_client=None, store: Optional[Store] = None,
-               blobs: Optional[BlobStore] = None) -> FastAPI:
-    """The API; tests pass a stand-in for the model client as model_client, and a store in a temporary folder."""
+               blobs: Optional[BlobStore] = None, agent_nodes: Optional[Nodes] = None) -> FastAPI:
+    """The API; tests pass a stand-in for the model client as model_client, a store in a temporary folder,
+    and stand-ins for the agent job's steps as agent_nodes."""
     settings = settings or Settings.from_env()
     configure_logging(settings.log_level)
     model_client = model_client or ModelClient(settings)
@@ -55,19 +67,51 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         blobs = GridFSBlobStore(store.db) if isinstance(store, MongoStore) else MemoryBlobStore()
     extractor = TransactionExtractor(model_client, business_name=settings.business_name)
     jobs = JobStore(ttl_seconds=settings.job_ttl_seconds, max_workers=settings.max_parallel_jobs)
+    busy = Busy()
+    runner: Optional[AgentRunner] = None
+    agent_jobs: Optional[JobStore] = None
+    if isinstance(store, MongoStore) and (settings.agent_model or agent_nodes is not None):
+        records = JobRecords(store.db)
+        # LangGraph's checkpoints go in a database of their own beside the store's: <name>_checkpoints.
+        checkpointer = MongoDBSaver(store.client, f"{store.db_name}_checkpoints")
+        steps = agent_nodes if agent_nodes is not None else stub_nodes(records)
+        graph = build_graph(staged(steps, records), checkpointer, max_fix_rounds=settings.agent_max_fix_rounds)
+        # Threads of their own, so a long agent run never holds up document reading.
+        agent_jobs = JobStore(ttl_seconds=settings.job_ttl_seconds, max_workers=settings.max_parallel_jobs)
+        runner = AgentRunner(graph, records, store, agent_jobs, busy)
+
+    def agent() -> AgentRunner:
+        if runner is None:
+            raise AgentNotConfigured("Agent jobs need MongoDB and LEDGERSYNC_AGENT_MODEL. Set both in .env.")
+        return runner
+
+    def unlocked(client_id: int) -> None:
+        """Refuses a change to the client's rows while its agent job runs (without agent jobs, nothing is locked)."""
+        if runner is not None:
+            runner.refuse_while_running(client_id)
+
+    def reading(client: Optional[Client]):
+        """Counts an analysis for a client as documents being read, so no job starts for the client meanwhile."""
+        return runner.reading(client.id) if runner is not None and client is not None else nullcontext()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if settings.warmup:
             threading.Thread(target=model_client.warm_up, name="model-warmup", daemon=True).start()
+        if runner is not None:
+            runner.resume_unfinished()   # never raises: a job it can't carry on is logged and marked failed
         yield
         jobs.shutdown()
+        if agent_jobs is not None:
+            agent_jobs.shutdown()        # a job still queued stays preparing and carries on at the next start
 
     app = FastAPI(
         title="Super Accountant API",
         description="Qwen vision model on OpenRouter or Groq → structured accounting data → trial balance",
         lifespan=lifespan,
     )
+    app.state.busy = busy
+    app.state.agent_runner = runner
     app.add_middleware(CORSMiddleware, allow_origins=list(settings.cors_origins),
                        allow_methods=["GET", "POST", "PATCH", "DELETE"], allow_headers=["*"])
 
@@ -128,6 +172,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         if client_id is not None:
             client = store.get_client(client_id)
             books.require_active(client)
+            unlocked(client_id)
         name, sha256, content_type = "Pasted text", "", ""
         if file is not None and file.filename:
             data = intake.read_limited(file.file, settings.max_upload_bytes)
@@ -141,7 +186,12 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         model_client.ensure_available()   # fail fast with 503 instead of queueing doomed work
         if sha256:
             blobs.put(data, name=name, content_type=content_type)
-        job = jobs.submit(lambda ctx: run_analysis(item, ctx, client, name, sha256))
+
+        def work(ctx):
+            with reading(client):
+                return run_analysis(item, ctx, client, name, sha256)
+
+        job = jobs.submit(work)
         return {"job_id": job.id, "status": job.status}
 
     @app.get("/api/jobs/{job_id}")
@@ -196,18 +246,22 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
 
     @app.patch("/api/clients/{client_id}/rows/{row_id}", response_model=Ledger)
     def change_row(client_id: int, row_id: int, patch: RowPatch):
+        unlocked(client_id)
         return books.change_row(store, client_id, row_id, patch)
 
     @app.delete("/api/clients/{client_id}/rows/{row_id}", response_model=Ledger)
     def remove_row(client_id: int, row_id: int):
+        unlocked(client_id)
         return books.remove_row(store, client_id, row_id)
 
     @app.post("/api/clients/{client_id}/uploads", response_model=Ledger, status_code=201)
     def add_manual_rows(client_id: int, upload: ManualUpload):
+        unlocked(client_id)
         return books.add_manual(store, client_id, upload)
 
     @app.delete("/api/clients/{client_id}/uploads/{upload_id}", response_model=Ledger)
     def remove_upload(client_id: int, upload_id: int):
+        unlocked(client_id)
         return books.remove_upload(store, client_id, upload_id)
 
     @app.get("/api/clients/{client_id}/uploads/{upload_id}/file")
@@ -238,6 +292,32 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         return Response(content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         headers={"Content-Disposition": f"attachment; filename=\"{plain}\"; "
                                                         f"filename*=UTF-8''{quote(name)}"})
+
+    # ─── Agent jobs: the client's rows worked to a trial balance for review ─────
+
+    @app.post("/api/clients/{client_id}/agent-jobs", response_model=JobRecord, status_code=202)
+    def start_agent_job(client_id: int, period: JobPeriod):
+        """Starts a job on the client's rows; its thread works through the steps while the page polls."""
+        return agent().start(client_id, period.period_start, period.period_end)
+
+    @app.get("/api/agent-jobs/{job_id}", response_model=JobRecord)
+    def get_agent_job(job_id: str):
+        return agent().records.get(job_id)
+
+    @app.get("/api/agent-jobs/{job_id}/events", response_model=list[JobEvent])
+    def agent_job_events(job_id: str, after: int = 0):
+        """The job's feed after the line numbered `after`, oldest first: the page passes the last seq it showed."""
+        records = agent().records
+        records.get(job_id)   # an unknown job is 404, not an empty feed
+        return records.events(job_id, after)
+
+    @app.post("/api/agent-jobs/{job_id}/cancel", response_model=JobRecord)
+    def cancel_agent_job(job_id: str):
+        return agent().cancel(job_id)
+
+    @app.post("/api/agent-jobs/{job_id}/retry", response_model=JobRecord, status_code=202)
+    def retry_agent_job(job_id: str):
+        return agent().retry(job_id)
 
     return app
 
