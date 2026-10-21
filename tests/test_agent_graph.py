@@ -1,6 +1,7 @@
 """The job's graph: which steps run in which order, the fix loop's limit, carrying on after a crash, and the
 wrapper every step runs in."""
 import datetime as dt
+import itertools
 
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
@@ -15,11 +16,12 @@ START: JobState = {"job_id": "j1", "client_id": 1, "period_start": "2025-04-01",
 CONFIG = {"configurable": {"thread_id": "j1"}}
 
 
-def stub_nodes(calls: list, gate=(), classify_fails_once: bool = False) -> Nodes:
+def stub_nodes(calls: list, gate=(), classify_fails_once: bool = False, fix_counts: bool = True) -> Nodes:
     """Nodes that note their names in `calls`. The gate passes or fails as `gate` says, in turn, and
-    each fix round adds one to fix_rounds."""
+    each fix round adds one to fix_rounds (or, with fix_counts=False, returns nothing)."""
     answers = iter(gate)
     crashes = [RuntimeError("classify crashed")] if classify_fails_once else []
+    fixed = (lambda state: {"fix_rounds": state["fix_rounds"] + 1}) if fix_counts else (lambda state: {})
 
     def stub(name, result=lambda state: {}):
         def node(state):
@@ -31,15 +33,14 @@ def stub_nodes(calls: list, gate=(), classify_fails_once: bool = False) -> Nodes
 
     return Nodes(ingest=stub("ingest"), classify=stub("classify"),
                  gate=stub("gate", lambda state: {"gate_passed": next(answers)}),
-                 fix=stub("fix", lambda state: {"fix_rounds": state["fix_rounds"] + 1}),
-                 requests=stub("requests"), snapshot=stub("snapshot"))
+                 fix=stub("fix", fixed), requests=stub("requests"), snapshot=stub("snapshot"))
 
 
-def prepare(gate, classify_fails_once=False, max_fix_rounds=3):
+def prepare(gate, classify_fails_once=False, max_fix_rounds=3, fix_counts=True):
     """The graph on stub nodes and an in-memory checkpointer, with the list its nodes note their names in."""
     calls = []
-    graph = build_graph(stub_nodes(calls, gate, classify_fails_once), InMemorySaver(), max_fix_rounds=max_fix_rounds)
-    return calls, graph, CONFIG
+    nodes = stub_nodes(calls, gate, classify_fails_once, fix_counts)
+    return calls, build_graph(nodes, InMemorySaver(), max_fix_rounds=max_fix_rounds), CONFIG
 
 
 def run(gate, **options) -> list:
@@ -66,6 +67,21 @@ def test_a_gate_that_passes_after_a_fix_ends_the_loop():
 def test_the_number_of_fix_rounds_can_be_set():
     calls = run(gate=[False] * 2, max_fix_rounds=1)
     assert calls == ["ingest", "classify", "gate", "fix", "gate", "requests", "snapshot"]
+
+
+FIX_THREE_TIMES = ["ingest", "classify", "gate", "fix", "gate", "fix", "gate", "fix", "gate", "requests", "snapshot"]
+
+
+def test_the_graph_counts_fix_rounds_even_when_the_fix_step_doesnt():
+    calls, graph, config = prepare(gate=itertools.repeat(False), fix_counts=False)
+    assert graph.invoke(START, config)["fix_rounds"] == 3
+    assert calls == FIX_THREE_TIMES
+
+
+def test_more_than_three_fix_rounds_is_never_allowed():
+    calls, graph, config = prepare(gate=itertools.repeat(False), max_fix_rounds=10)
+    assert graph.invoke(START, config)["fix_rounds"] == 3
+    assert calls == FIX_THREE_TIMES
 
 
 def test_a_crash_resumes_from_the_last_finished_node():

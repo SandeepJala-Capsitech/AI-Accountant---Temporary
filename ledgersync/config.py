@@ -8,7 +8,7 @@ from typing import Mapping, Optional
 
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env"   # git-ignored; see .env.example
 DEFAULT_DB = Path(__file__).resolve().parent.parent / "data" / "ledgersync.db"   # git-ignored: data/
-MAX_FIX_ROUNDS = 3   # the fix loop never runs more rounds than this, whatever LEDGERSYNC_AGENT_MAX_FIX_ROUNDS says
+MAX_FIX_ROUNDS = 3   # the fix loop never runs more rounds than this: the setting and build_graph both cap at it
 
 
 def _flag(value: str) -> bool:

@@ -10,6 +10,8 @@ from typing import Callable
 
 from langgraph.graph import END, START, StateGraph
 
+from ledgersync.config import MAX_FIX_ROUNDS
+
 from .state import JobState
 
 Node = Callable[[JobState], dict]
@@ -31,14 +33,19 @@ class Nodes:
 
 def build_graph(nodes: Nodes, checkpointer, *, max_fix_rounds: int = 3):
     """The compiled graph. After the gate it goes to fix and back to the gate while the gate fails and fewer
-    than `max_fix_rounds` rounds are done; then on to requests and snapshot, whether the gate passed or not."""
+    than `max_fix_rounds` rounds are done (never more than MAX_FIX_ROUNDS); then on to requests and snapshot,
+    whether the gate passed or not. The graph counts the fix rounds itself, whatever the fix step returns."""
+    max_fix_rounds = min(max_fix_rounds, MAX_FIX_ROUNDS)
 
     def after_gate(state: JobState) -> str:
         return "requests" if state["gate_passed"] or state["fix_rounds"] >= max_fix_rounds else "fix"
 
+    def fix(state: JobState) -> dict:
+        return {**nodes.fix(state), "fix_rounds": state["fix_rounds"] + 1}
+
     graph = StateGraph(JobState)
     for step in STEPS:
-        graph.add_node(step, getattr(nodes, step))
+        graph.add_node(step, fix if step == "fix" else getattr(nodes, step))
     graph.add_edge(START, "ingest")
     graph.add_edge("ingest", "classify")
     graph.add_edge("classify", "gate")
