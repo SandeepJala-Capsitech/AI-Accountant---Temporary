@@ -12,3 +12,16 @@ class PostingResult(BaseModel):
     summary: str = Field(min_length=1, max_length=500,
                          description="One or two plain sentences for the accountant, such as "
                                      "\"Coded 3 rows; 1 left for review.\"")
+
+
+class FixResult(BaseModel):
+    """Call this once, when you have done what you can about the quality gate's failing checks, to say what you
+    did."""
+
+    checks_fixed: list[str] = Field(description="The codes of the failing checks you fixed, such as \"no_suspense\"; "
+                                                "empty if you fixed none.")
+    rows_changed: int = Field(ge=0, description="How many rows you changed with update_row or revert_row.")
+    exceptions_logged: int = Field(ge=0, description="How many exceptions you logged with log_exception.")
+    summary: str = Field(min_length=1, max_length=500,
+                         description="One or two plain sentences for the accountant, such as "
+                                     "\"Moved 2 rows out of Suspense; the bank statement gap is left for review.\"")

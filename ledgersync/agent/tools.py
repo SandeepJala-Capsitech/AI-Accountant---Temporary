@@ -1,5 +1,6 @@
-"""The tools the agent works with: the row tools, the only way it reads or changes a client's rows, and the two
-exception tools, for what it can't settle (see `exception_tools`).
+"""The tools the agent works with: the row tools, the only way it reads or changes a client's rows, the two
+exception tools, for what it can't settle (see `exception_tools`), and the fix agent's three read tools, for what
+the quality gate found (see `fix_tools`).
 
 `row_tools` builds them for one job: the client's ID and the job's ID are closed over, so they never appear in a
 tool's arguments and the model can't name another client's rows. The agent can change only a row's account,
@@ -36,7 +37,8 @@ from ledgersync.accounts import choosable
 from ledgersync.blobs import BlobStore, GridFSBlobStore
 from ledgersync.config import Settings
 from ledgersync.errors import LedgerSyncError, NotFound
-from ledgersync.models import DOCUMENT_TYPES, Ledger, RowPatch, SavedRow, Settlement, Transaction
+from ledgersync.gate import balance_for, gap_rows, gate_for
+from ledgersync.models import DOCUMENT_TYPES, Ledger, RowPatch, SavedRow, Settlement, Transaction, TrialBalance
 from ledgersync.money import to_money
 from ledgersync.notify import ConsoleNotifier, Notifier
 from ledgersync.records.audit import AuditLog
@@ -393,6 +395,63 @@ def row_tools(deps: ToolDeps, client_id: int, job_id: str) -> dict[str, BaseTool
             return _failed(exc)
 
     return {t.name: t for t in (lookup_account, list_rows_to_review, get_row, update_row, revert_row, list_rows)}
+
+
+def fix_tools(deps: ToolDeps, client_id: int, job_id: str) -> dict[str, BaseTool]:
+    """The fix agent's three read tools for one job, keyed by name: the quality gate's results, the trial balance and
+    the bank statements' checks. They change nothing, and give money as exact strings."""
+    store = deps.store
+
+    @tool(parse_docstring=True)
+    def get_gate_results() -> dict:
+        """Give the quality gate's six checks as they stood when the gate last ran, before this round of fixes: each with its code, whether it passed, what is wrong (detail) and the IDs of the rows it is about (row_ids).
+
+        The checks: trial_balance_builds (no booked row has an error), balanced (debits equal credits), statements_reconcile (each bank statement adds up to the balances it prints), no_errors (no row has an error), no_suspense (no booked row is in 9998 Suspense) and dates_in_period (every booked row is dated within the period).
+        """
+        try:
+            job = deps.records.get(job_id)
+            if job.gate is not None:
+                return job.gate
+            return gate_for(store, client_id, job.period_start, job.period_end).model_dump(mode="json")
+        except LedgerSyncError as exc:
+            return _failed(exc)
+
+    @tool(parse_docstring=True)
+    def get_trial_balance() -> dict:
+        """Give the trial balance as the rows are now: its lines (code, name, type, debit and credit), its totals and whether it balances, with money as exact strings such as "12.50".
+
+        When it can't be built, gives {"problems": [...]} instead, one line for each problem. The rows behind them are the no_errors rows of get_gate_results.
+        """
+        try:
+            balance = balance_for(store, client_id)
+            if not isinstance(balance, TrialBalance):
+                return {"problems": balance}
+            return {"lines": [{"code": line.code, "name": line.name, "type": line.type, "debit": str(line.debit),
+                               "credit": str(line.credit)} for line in balance.lines],
+                    "totals": {"debits": str(balance.total_debits), "credits": str(balance.total_credits),
+                               "income": str(balance.total_income), "expenses": str(balance.total_expenses),
+                               "net_profit": str(balance.net_profit), "assets": str(balance.total_assets),
+                               "liabilities": str(balance.total_liabilities)},
+                    "is_balanced": balance.is_balanced}
+        except LedgerSyncError as exc:
+            return _failed(exc)
+
+    @tool(parse_docstring=True)
+    def get_statement_checks() -> list[dict]:
+        """Give each bank statement's check against the balances it prints, as the rows are now: one for each upload with bank lines.
+
+        Each has the upload_id, the upload's file name (upload), its status (ok: it adds up; gap: it doesn't; none: it prints no balances to check), the difference as an exact string (null unless status is gap), and gap_rows: the lines where its balance stops adding up, each with its issues.
+        """
+        try:
+            built = books.build(store, client_id)
+            return [{"upload_id": found.id, "upload": found.name, "status": found.statement.status,
+                     "difference": None if found.statement.difference is None else str(found.statement.difference),
+                     "gap_rows": [_short(row, built) for row in gap_rows(built, found.id)]}
+                    for found in built.uploads if found.statement is not None]
+        except LedgerSyncError as exc:
+            return _failed(exc)
+
+    return {t.name: t for t in (get_gate_results, get_trial_balance, get_statement_checks)}
 
 
 # What the client reads of a request goes into a fixed email, so it must be short plain text: no link or address

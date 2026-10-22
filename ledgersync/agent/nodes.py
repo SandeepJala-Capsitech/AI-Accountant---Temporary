@@ -1,13 +1,14 @@
-"""The job's steps. Ingest, classify and requests are built; until the later tasks build the others, each is a
-stub that only says so in the feed.
+"""The job's steps. Ingest, classify, the quality gate, fix and requests are built; until a later task builds the
+snapshot, it is a stub that only says so in the feed.
 
 `staged` wraps every step, stubs or real: a cancelled job stops before its next step, and otherwise the job
 shows which stage it is at and its feed says the step started.
 
-`make_agent_node` builds a step that an agent runs (classify now, the fix rounds later): LangChain's agent with
-some of the tools, a prompt, a result it returns when it finishes, and limits on its model and tool calls."""
+`make_agent_node` builds a step that an agent runs (classify, and each fix round): LangChain's agent with some of
+the tools, a prompt, a result it returns when it finishes, and limits on its model and tool calls."""
 from __future__ import annotations
 
+import datetime as dt
 import warnings
 from dataclasses import dataclass
 from typing import Callable
@@ -22,15 +23,17 @@ from langchain_core.tools import BaseTool
 from pydantic import BaseModel
 
 from ledgersync import ledger as books
+from ledgersync.config import MAX_FIX_ROUNDS
+from ledgersync.gate import gate_for
 from ledgersync.jobs import JobCancelled
 from ledgersync.notify import no_email_note, send_document_requests
 from ledgersync.records.jobs import JobRecords
 
 from .graph import STEPS, Node, Nodes
-from .prompts import AGENT_REQUEST, CLASSIFY_PROMPT
-from .schemas import PostingResult
+from .prompts import AGENT_REQUEST, CLASSIFY_PROMPT, FIX_PROMPT
+from .schemas import FixResult, PostingResult
 from .state import JobState
-from .tools import ToolDeps, exception_tools, row_tools
+from .tools import ToolDeps, exception_tools, fix_tools, row_tools
 
 NOT_BUILT = "This step isn't built yet, so it did nothing."
 
@@ -126,7 +129,10 @@ AgentFactory = Callable[[Callable[[], BaseChatModel], list[BaseTool], str, type[
 
 CLASSIFY_TOOLS = ("list_rows_to_review", "get_row", "lookup_account", "update_row", "log_exception",
                   "request_client_document")
+FIX_TOOLS = ("get_gate_results", "get_trial_balance", "get_statement_checks", "list_rows", "get_row", "lookup_account",
+             "update_row", "revert_row", "log_exception", "request_client_document")
 LIMIT_ASSUMPTION = "Whatever it hadn't reached is left as it was, for the quality gate and the reviewer."
+GATE_ASSUMPTION = "Left for the reviewer to decide."
 
 
 @dataclass(frozen=True)
@@ -178,15 +184,17 @@ def default_agent_factory(model_factory: Callable[[], BaseChatModel], tools: lis
 def make_agent_node(deps: ToolDeps, *, stage: str, prompt: str, tool_names: tuple[str, ...],
                     result_type: type[BaseModel], model_factory: Callable[[], BaseChatModel], model_calls: int,
                     tool_calls: int, agent_factory: AgentFactory = default_agent_factory) -> Node:
-    """A step that an agent runs. Each time it runs it builds the tools named in `tool_names` for this job's
-    client, job and stage, and the agent from `agent_factory`, with `prompt` formatted with the client's name and
-    the job's period. It gives the agent one message naming the client and the period. The agent's result (a
-    `result_type`, which has a `summary`) goes in the job's feed as its summary. An agent that stopped at a call
-    limit has no result: an exception says so, once per job and stage, and the feed says so. Returns {}."""
+    """A step that an agent runs. Each time it runs it builds the tools named in `tool_names` (from the row tools,
+    the exception tools and the fix tools) for this job's client, job and stage, and the agent from
+    `agent_factory`, with `prompt` formatted with the client's name and the job's period. It gives the agent one
+    message naming the client and the period. The agent's result (a `result_type`, which has a `summary`) goes in
+    the job's feed as its summary. An agent that stopped at a call limit has no result: an exception says so, once
+    per job and stage, and the feed says so. Returns {}."""
 
     def run(state: JobState) -> dict:
         job_id, client_id = state["job_id"], state["client_id"]
-        available = {**row_tools(deps, client_id, job_id), **exception_tools(deps, client_id, job_id, stage)}
+        available = {**row_tools(deps, client_id, job_id), **exception_tools(deps, client_id, job_id, stage),
+                     **fix_tools(deps, client_id, job_id)}
         about = {"client_name": deps.store.get_client(client_id).name, "period_start": state["period_start"],
                  "period_end": state["period_end"]}
         agent = agent_factory(model_factory, [available[name] for name in tool_names], prompt.format(**about),
@@ -208,18 +216,25 @@ def make_agent_node(deps: ToolDeps, *, stage: str, prompt: str, tool_names: tupl
 
 
 def _stopped_at_limit(deps: ToolDeps, state: JobState, stage: str) -> None:
-    """Logs (and audits, as the system) the exception for an agent that stopped at a call limit, unless this job
-    already has it for this stage, and says so in the feed."""
-    job_id, client_id = state["job_id"], state["client_id"]
+    """Logs the exception for an agent that stopped at a call limit (once per job and stage: its description names
+    the stage), and says so in the feed."""
     description = f"The agent stopped at its call limit before finishing {stage}."
+    _system_exception(deps, state, stage, description, LIMIT_ASSUMPTION, [])
+    deps.records.event(state["job_id"], stage, description)
+
+
+def _system_exception(deps: ToolDeps, state: JobState, stage: str, description: str, assumption: str,
+                      row_ids: list[int]) -> None:
+    """Logs an exception the system raises, with confidence 0, and audits it as the system, unless this job already
+    has it (the same description for the same rows), as when a step runs again after a retry."""
+    job_id, client_id = state["job_id"], state["client_id"]
     logged, new = deps.exceptions.log_once(client_id=client_id, job_id=job_id, stage=stage, description=description,
-                                           assumption=LIMIT_ASSUMPTION, confidence=0.0, row_ids=[])
+                                           assumption=assumption, confidence=0.0, row_ids=row_ids)
     if new:
         deps.audit.append(actor="system", action="log_exception", client_id=client_id, job_id=job_id,
                           target={"exception_id": logged["id"]}, before=None,
-                          after={"stage": stage, "description": description, "assumption": LIMIT_ASSUMPTION,
-                                 "confidence": logged["confidence"], "row_ids": []})
-    deps.records.event(job_id, stage, description)
+                          after={"stage": stage, "description": description, "assumption": assumption,
+                                 "confidence": logged["confidence"], "row_ids": logged["row_ids"]})
 
 
 def make_classify(deps: ToolDeps, model_factory: Callable[[], BaseChatModel],
@@ -229,3 +244,50 @@ def make_classify(deps: ToolDeps, model_factory: Callable[[], BaseChatModel],
     return make_agent_node(deps, stage="classify", prompt=CLASSIFY_PROMPT, tool_names=CLASSIFY_TOOLS,
                            result_type=PostingResult, model_factory=model_factory, model_calls=60, tool_calls=150,
                            agent_factory=agent_factory)
+
+
+def make_fix(deps: ToolDeps, model_factory: Callable[[], BaseChatModel],
+             agent_factory: AgentFactory = default_agent_factory) -> Node:
+    """One fix round: an agent that works on the quality gate's failing checks with FIX_TOOLS, in at most 30 model
+    calls and 80 tool calls. Returns the fix rounds done, counting this one (build_graph counts them too, the same
+    way)."""
+    agent = make_agent_node(deps, stage="fix", prompt=FIX_PROMPT, tool_names=FIX_TOOLS, result_type=FixResult,
+                            model_factory=model_factory, model_calls=30, tool_calls=80, agent_factory=agent_factory)
+
+    def fix(state: JobState) -> dict:
+        agent(state)
+        return {"fix_rounds": state["fix_rounds"] + 1}
+
+    return fix
+
+
+# --- the quality gate ---------------------------------------------------------------------------------------
+
+def make_gate(deps: ToolDeps, max_fix_rounds: int) -> Node:
+    """The gate step: runs the quality gate on the client's rows as they are now, saves its result as the job's
+    gate, and says in the feed that it passed or which checks failed. Returns {"gate_passed": ...}.
+
+    Once the fix rounds are used up (`max_fix_rounds`, never more than MAX_FIX_ROUNDS, as build_graph counts them),
+    a failing gate is the last: each failing check becomes an exception for the reviewer, with its rows, logged and
+    audited as the system once per job. The job then goes on to review."""
+    last_round = min(max_fix_rounds, MAX_FIX_ROUNDS)
+
+    def gate(state: JobState) -> dict:
+        job_id, rounds = state["job_id"], state["fix_rounds"]
+        result = gate_for(deps.store, state["client_id"], dt.date.fromisoformat(state["period_start"]),
+                          dt.date.fromisoformat(state["period_end"]))
+        deps.records.update(job_id, gate=result.model_dump(mode="json"))
+        failed = [c for c in result.checks if not c.passed]
+        if not failed:
+            deps.records.event(job_id, "gate", "Quality gate passed.")
+            return {"gate_passed": True}
+        deps.records.event(job_id, "gate", f"Quality gate: {len(failed)} of {len(result.checks)} checks failed "
+                                           f"({', '.join(c.code for c in failed)}).")
+        if rounds >= last_round:
+            for found in failed:
+                _system_exception(deps, state, "gate",
+                                  f"Quality gate check {found.code} still fails after {_count(rounds, 'fix round')}: "
+                                  f"{found.detail}", GATE_ASSUMPTION, found.row_ids)
+        return {"gate_passed": False}
+
+    return gate

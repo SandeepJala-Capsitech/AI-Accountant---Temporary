@@ -15,6 +15,7 @@ from ledgersync.agent.llm import NOT_CONFIGURED as AGENT_NOT_CONFIGURED
 from ledgersync.config import Settings
 from ledgersync.errors import JobRunning
 from ledgersync.models import ClientFields
+from ledgersync.records.exceptions import Exceptions
 from ledgersync.records.jobs import JobRecords
 from ledgersync.store import Store
 from server import create_app
@@ -382,3 +383,25 @@ def test_a_job_that_cant_be_loaded_or_carried_on_doesnt_stop_the_app(mongo_store
     assert (failed["status"], failed["error"]) == (
         "failed", "This job couldn't carry on from where it stopped. Details are in the server log.")
     assert mongo_db.jobs.find_one({"_id": "f" * 32})["status"] == "preparing"   # skipped and left alone
+
+
+@mongo
+def test_with_a_model_set_the_built_in_gate_runs_and_the_fix_rounds_are_the_settings(mongo_store, monkeypatch):
+    # The two agents stand aside (no model is called): classify does nothing, and each fix round notes its number.
+    rounds = []
+    monkeypatch.setattr("server.make_classify", lambda deps, model_factory: lambda state: {})
+    monkeypatch.setattr("server.make_fix",
+                        lambda deps, model_factory: lambda state: rounds.append(state["fix_rounds"]) or {})
+    settings = Settings(warmup=False, agent_model="some/model", agent_max_fix_rounds=1)
+    with TestClient(create_app(settings, model_client=FakeModel([]), store=mongo_store)) as api:
+        cid = add(api)["id"]
+        manual(api, cid, BILL)                         # dated 1 September 2026: after the period
+        job = wait_for(api, start(api, cid)["id"])
+        messages = [e["message"] for e in api.get(f"/api/agent-jobs/{job['id']}/events").json()]
+    failed = "Quality gate: 1 of 6 checks failed (dates_in_period)."
+    assert (job["status"], job["fix_rounds"], job["gate"]["passed"], rounds) == ("awaiting_review", 1, False, [0])
+    assert messages[messages.index("Started classify") + 1:messages.index("Started requests")] == [
+        "Started gate", failed, "Started fix", "Started gate", failed]
+    [logged] = Exceptions(mongo_store.db).for_job(job["id"])
+    assert logged["description"] == ("Quality gate check dates_in_period still fails after 1 fix round: 1 booked row "
+                                     "is dated outside 1 April 2025 to 31 March 2026, or has no date.")
