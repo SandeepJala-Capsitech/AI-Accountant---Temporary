@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from langgraph.checkpoint.mongodb import MongoDBSaver
 
 from ledgersync.agent import Nodes, build_graph
+from ledgersync.agent.llm import NOT_CONFIGURED as AGENT_NOT_CONFIGURED
 from ledgersync.config import Settings
 from ledgersync.errors import JobRunning
 from ledgersync.models import ClientFields
@@ -336,16 +337,16 @@ def test_without_mongodb_jobs_are_not_configured(tmp_path):
 
 
 @mongo
-def test_with_a_model_set_the_built_in_steps_run_the_job_to_review(mongo_store, records):
-    settings = Settings(warmup=False, agent_model="some/model")
-    with TestClient(create_app(settings, model_client=FakeModel([]), store=mongo_store)) as api:
+def test_with_a_model_set_the_built_in_steps_run_and_the_classify_agent_asks_for_the_models_key(mongo_store, records):
+    settings = Settings(warmup=False, agent_model="some/model")   # no OPENROUTER_API_KEY
+    with TestClient(create_app(settings, model_client=FakeModel([]), store=mongo_store)) as api:   # needs no model yet
         cid = add(api)["id"]
         manual(api, cid, BILL)
         job = wait_for(api, start(api, cid)["id"])
         messages = [e["message"] for e in api.get(f"/api/agent-jobs/{job['id']}/events").json()]
-    assert job["status"] == "awaiting_review"
-    assert messages[:3] == ["Started ingest", "Found 1 document and 1 row. No rows need a look.", "Started classify"]
-    assert messages[3] == "This step isn't built yet, so it did nothing."   # the steps after ingest are still stubs
+    assert (job["status"], job["stage"], job["error"]) == ("failed", "classify", AGENT_NOT_CONFIGURED)
+    assert messages == ["Started ingest", "Found 1 document and 1 row. No rows need a look.", "Started classify",
+                        f"Stopped: {AGENT_NOT_CONFIGURED}"]
 
 
 @mongo

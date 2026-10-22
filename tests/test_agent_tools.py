@@ -2,6 +2,8 @@
 that the agent can change only a row's account, document type, Include, Link and Not the same, and that every
 write is audited once."""
 import datetime as dt
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
@@ -286,6 +288,35 @@ def test_the_same_include_replayed_changes_and_audits_nothing(tools, audit, cube
     update(tools, row_id, include=True)
     update(tools, row_id, include=True)
     assert [e["after"] for e in audit.entries(client_id=cube_id)] == [{"include": True}]
+
+
+def test_two_changes_made_at_once_to_one_client_get_one_audit_entry_each(tools, audit, cube_id, mongo_store, monkeypatch):
+    """The model's tool calls from one message run side by side. Unless one change waits for the other, here both
+    read the rows before either saves, and both save before either compares the rows, so each would audit both."""
+    broadband, receipt = [r.id for r in mongo_store.rows(cube_id)][:2]
+    together = threading.Barrier(2, timeout=2)
+    real = mongo_store.patch_row
+
+    def meet():
+        try:
+            together.wait()
+        except threading.BrokenBarrierError:
+            pass                  # the other change is waiting for this one to finish, so it never comes
+
+    def patch_row(client_id, row_id, changes, *, revert=False):
+        meet()
+        real(client_id, row_id, changes, revert=revert)
+        meet()
+
+    monkeypatch.setattr(mongo_store, "patch_row", patch_row)
+    with ThreadPoolExecutor(2) as pool:
+        done = list(pool.map(lambda change: update(tools, change[0], reasoning=change[1], account_code=change[2]),
+                             [(broadband, "BT broadband bill", "7502"), (receipt, "A sandwich", "7406")]))
+    assert [result["ok"] for result in done] == [True, True]
+    assert sorted((e["target"]["row_id"], e["before"], e["after"], e["note"])
+                  for e in audit.entries(client_id=cube_id, job_id="j1")) == [
+        (broadband, {"account_code": "9998"}, {"account_code": "7502"}, "BT broadband bill (confidence 0.9)"),
+        (receipt, {"account_code": "7504"}, {"account_code": "7406"}, "A sandwich (confidence 0.9)")]
 
 
 @pytest.fixture

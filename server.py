@@ -15,8 +15,9 @@ from langgraph.checkpoint.mongodb import MongoDBSaver
 from pydantic import BaseModel
 
 from ledgersync import accounts, adapter, intake, pipeline, posting
-from ledgersync.agent import (AgentRunner, Busy, Nodes, ToolDeps, build_graph, make_ingest, make_requests, staged,
-                              stub_nodes)
+from ledgersync.agent import (AgentRunner, Busy, Nodes, ToolDeps, build_graph, make_classify, make_ingest,
+                              make_requests, staged, stub_nodes)
+from ledgersync.agent.llm import chat_model
 from ledgersync.blobs import BlobStore, GridFSBlobStore, MemoryBlobStore
 from ledgersync import ledger as books
 from ledgersync.accounts import choosable
@@ -101,9 +102,11 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         records = deps.records
         # LangGraph's checkpoints go in a database of their own beside the store's: <name>_checkpoints.
         checkpointer = MongoDBSaver(store.client, f"{store.db_name}_checkpoints")
-        # The built steps (ingest and requests so far) with stubs for the rest; steps passed in by a test win.
+        # The built steps (ingest, classify and requests so far) with stubs for the rest; steps passed in by a test
+        # win. The classify agent builds its model when it runs, so the app starts without one.
         steps = agent_nodes if agent_nodes is not None else replace(
-            stub_nodes(records), ingest=make_ingest(deps), requests=make_requests(deps))
+            stub_nodes(records), ingest=make_ingest(deps),
+            classify=make_classify(deps, model_factory=lambda: chat_model(settings)), requests=make_requests(deps))
         graph = build_graph(staged(steps, records), checkpointer, max_fix_rounds=settings.agent_max_fix_rounds)
         # Threads of their own, so a long agent run never holds up document reading.
         agent_jobs = JobStore(ttl_seconds=settings.job_ttl_seconds, max_workers=settings.max_parallel_jobs)

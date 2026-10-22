@@ -15,9 +15,13 @@ the model) can act on.
 Every change is saved first and then appended to the audit log, one entry for every row it changed (the store
 applies a document type or Include to every row of a document). The entries come from comparing the rows
 before and after the save, so the log says what the rows hold. If the process stops between the save and the
-entries, the rows are changed and have no entry, and the replay finds nothing left to change, so it adds none."""
+entries, the rows are changed and have no entry, and the replay finds nothing left to change, so it adds none.
+The agent's tool calls from one message run side by side, so a change holds its client's lock (`_client_lock`)
+from reading the rows before it to writing its entries: otherwise one change's comparison could take in another's
+save, and both would audit it."""
 import datetime as dt
 import re
+import threading
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -42,6 +46,16 @@ CHANGEABLE = ("account_code", "document_type", "include", "link", "apart_from")
 MAX_ROWS = 100          # the most rows one call returns
 MAX_ACCOUNTS = 10
 NOT_FOUND = "This row was not found."
+
+# One lock per client, made the first time it is asked for. _CLIENT_LOCKS_GUARD guards the dict.
+_CLIENT_LOCKS: dict[int, threading.Lock] = {}
+_CLIENT_LOCKS_GUARD = threading.Lock()
+
+
+def _client_lock(client_id: int) -> threading.Lock:
+    """The lock a change to this client's rows holds from reading the rows before it to its last audit entry."""
+    with _CLIENT_LOCKS_GUARD:
+        return _CLIENT_LOCKS.setdefault(client_id, threading.Lock())
 
 
 @dataclass
@@ -273,17 +287,19 @@ def row_tools(deps: ToolDeps, client_id: int, job_id: str) -> dict[str, BaseTool
                                               + f" or {CHANGEABLE[-1]}."}
             if document_type is not None and document_type not in DOCUMENT_TYPES:
                 return {"ok": False, "error": "Choose a document type from: " + ", ".join(DOCUMENT_TYPES) + "."}
-            rows, current = stored(row_id)
-            if current is None:
-                raise NotFound(NOT_FOUND)
-            # Only what differs from the row now: a replay, or a field already as asked, writes nothing (a document
-            # type or Include is applied to every row of the document, so a field sent again could overwrite theirs).
-            changes = {f: v for f, v in given.items() if _differs(f, v, getattr(current.tx, f))}
-            if not changes:
-                built = ledger()
-                return {"ok": True, "row": _short(_row(built, row_id), built)}
-            built = books.change_row(store, client_id, row_id, RowPatch(**changes))
-            record("update_row", f"{reasoning.strip()} (confidence {confidence})", rows, built)
+            with _client_lock(client_id):
+                rows, current = stored(row_id)
+                if current is None:
+                    raise NotFound(NOT_FOUND)
+                # Only what differs from the row now: a replay, or a field already as asked, writes nothing (a
+                # document type or Include is applied to every row of the document, so a field sent again could
+                # overwrite theirs).
+                changes = {f: v for f, v in given.items() if _differs(f, v, getattr(current.tx, f))}
+                if not changes:
+                    built = ledger()
+                    return {"ok": True, "row": _short(_row(built, row_id), built)}
+                built = books.change_row(store, client_id, row_id, RowPatch(**changes))
+                record("update_row", f"{reasoning.strip()} (confidence {confidence})", rows, built)
             return {"ok": True, "row": _short(_row(built, row_id), built)}
         except LedgerSyncError as exc:
             return _failed(exc)
@@ -302,28 +318,30 @@ def row_tools(deps: ToolDeps, client_id: int, job_id: str) -> dict[str, BaseTool
             problem = _check_why(reasoning)
             if problem:
                 return {"ok": False, "error": problem}
-            rows, current = stored(row_id)
-            if current is None:
-                raise NotFound(NOT_FOUND)
-            # What each field held before this job's first change to the row, from the audit log.
-            first: dict[str, Any] = {}
-            for entry in audit.entries(client_id=client_id, job_id=job_id):
-                if entry["target"] == {"row_id": row_id}:
-                    for field, value in (entry["before"] or {}).items():
-                        if field in CHANGEABLE:
-                            first.setdefault(field, value)
-            undo = {f: v for f, v in first.items() if _differs(f, v, getattr(current.tx, f))}
-            built = None
-            if undo:
-                built = books.change_row(store, client_id, row_id, RowPatch(**undo))
-                record("revert_row", reasoning.strip(), rows, built)
-            if first and as_read(row_id):
-                # The first change to a row clears the reading's warnings (the store counts it as a person's review).
-                # With every edited row of the document back as read, the store's revert only puts back values that
-                # are already there, so it changes nothing the audit log tracks, and brings the warnings back. When a
-                # person edited a row of the document before the job, this is left alone: it would undo their edit.
-                built = books.change_row(store, client_id, row_id, RowPatch(revert=True))
-            built = built or ledger()
+            with _client_lock(client_id):
+                rows, current = stored(row_id)
+                if current is None:
+                    raise NotFound(NOT_FOUND)
+                # What each field held before this job's first change to the row, from the audit log.
+                first: dict[str, Any] = {}
+                for entry in audit.entries(client_id=client_id, job_id=job_id):
+                    if entry["target"] == {"row_id": row_id}:
+                        for field, value in (entry["before"] or {}).items():
+                            if field in CHANGEABLE:
+                                first.setdefault(field, value)
+                undo = {f: v for f, v in first.items() if _differs(f, v, getattr(current.tx, f))}
+                built = None
+                if undo:
+                    built = books.change_row(store, client_id, row_id, RowPatch(**undo))
+                    record("revert_row", reasoning.strip(), rows, built)
+                if first and as_read(row_id):
+                    # The first change to a row clears the reading's warnings (the store counts it as a person's
+                    # review). With every edited row of the document back as read, the store's revert only puts back
+                    # values that are already there, so it changes nothing the audit log tracks, and brings the
+                    # warnings back. When a person edited a row of the document before the job, this is left alone:
+                    # it would undo their edit.
+                    built = books.change_row(store, client_id, row_id, RowPatch(revert=True))
+                built = built or ledger()
             return {"ok": True, "row": _short(_row(built, row_id), built)}
         except LedgerSyncError as exc:
             return _failed(exc)
