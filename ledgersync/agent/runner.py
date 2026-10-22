@@ -1,4 +1,5 @@
-"""Runs agent jobs: starts, cancels and retries them, and carries on the unfinished ones when the server starts.
+"""Runs agent jobs: starts, cancels and retries them, carries on the unfinished ones when the server starts, and
+replaces a client's job with a new run when the client sends documents it was asked for (see `documents_arrived`).
 
 Each job runs its graph on a thread from a JobStore kept for agent jobs alone, so a long run never holds up
 document reading. While a client's job is preparing its rows can't be changed, and a job can't start while
@@ -125,6 +126,25 @@ class AgentRunner:
             logger.info("Resumed %d unfinished agent job(s)", resumed)
         return resumed
 
+    def documents_arrived(self, client_id: int) -> Optional[JobRecord]:
+        """Called once a document the client was asked for is saved. When the client's latest job is awaiting
+        review, it is marked superseded and a new run for the same period starts straight away, superseding it;
+        that run is returned. When the latest job is still running, it is marked as having new documents, and is
+        superseded the same way when it finishes. A failed or cancelled job (or none) is left alone: a person
+        starts the next run."""
+        with _LOCK:
+            job = self.records.latest_for(client_id)
+            if job is None or job.status not in ("preparing", "awaiting_review"):
+                return None
+            if job.status == "preparing":
+                if not job.new_documents:
+                    self.records.update(job.id, new_documents=True)
+                return None
+            self.records.event(job.id, job.stage, "The client sent documents, so a new run replaces this one.")
+            replacement = self._supersede(job)
+        self._submit(replacement)
+        return replacement
+
     def refuse_while_running(self, client_id: int) -> None:
         """Raises JobRunning while the client's job is preparing: its rows can't change until it finishes."""
         if self.records.active_for(client_id) is not None:
@@ -149,6 +169,11 @@ class AgentRunner:
             raise JobRunning("Documents are still being read. Start the job when they're done.")
         if self.records.active_for(client.id) is not None:
             raise JobRunning(f"A job is already running for {client.name}. Wait for it to finish or cancel it.")
+
+    def _supersede(self, job: JobRecord, **changes) -> JobRecord:
+        """Under _LOCK: marks the job superseded and creates the run that replaces it, for the same period."""
+        self.records.update(job.id, status="superseded", **changes)
+        return self.records.create(job.client_id, job.period_start, job.period_end, supersedes=job.id)
 
     def _submit(self, job: JobRecord) -> None:
         self._jobs.submit(lambda ctx: self._run(job))
@@ -178,8 +203,10 @@ class AgentRunner:
 
     def _end(self, job_id: str, *, error: Optional[str] = None, crashed: bool = False) -> None:
         """Saves how the job ended, with a last line in its feed: cancelled when a cancel was asked for (even
-        if the job then finished or failed), otherwise failed with the error, or else awaiting review.
+        if the job then finished or failed), otherwise failed with the error, or else awaiting review; or, when
+        the client sent documents while it ran, superseded by a new run, which starts now.
         The status is written last, so once a job isn't preparing its thread writes nothing more."""
+        replacement = None
         with _LOCK:
             job = self.records.get(job_id)
             if job.cancel_requested:
@@ -189,9 +216,15 @@ class AgentRunner:
                 error = error or f"Something went wrong at the {job.stage} step. Details are in the server log."
                 self.records.event(job_id, job.stage, f"Stopped: {error}")
                 self.records.update(job_id, status="failed", error=error)
+            elif job.new_documents:
+                self.records.event(job_id, "done", "Finished, but the client sent documents meanwhile, so a new run "
+                                                   "replaces this one.")
+                replacement = self._supersede(job, stage="done")
             else:
                 self.records.event(job_id, "done", "Finished. The trial balance is ready for review.")
                 self.records.update(job_id, status="awaiting_review", stage="done")
+        if replacement is not None:
+            self._submit(replacement)
 
 
 def _first_state(job: JobRecord) -> JobState:

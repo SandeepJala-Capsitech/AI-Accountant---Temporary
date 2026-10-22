@@ -119,3 +119,19 @@ def test_agent_jobs_have_no_model_and_three_fix_rounds_unless_set_otherwise():
 def test_the_fix_loop_never_runs_more_than_three_rounds():
     assert Settings.from_env({"LEDGERSYNC_AGENT_MAX_FIX_ROUNDS": "10"}).agent_max_fix_rounds == 3
     assert Settings.from_env({"LEDGERSYNC_AGENT_MAX_FIX_ROUNDS": "-1"}).agent_max_fix_rounds == 0
+
+
+def test_client_emails_go_to_the_log_until_an_smtp_server_is_set():
+    s = Settings.from_env({})
+    assert (s.public_url, s.smtp_host, s.smtp_port, s.smtp_username, s.smtp_password, s.smtp_sender) == (
+        "http://localhost:3000", "", 587, "", "", "")
+
+
+def test_client_email_settings_come_from_the_environment():
+    s = Settings.from_env({"LEDGERSYNC_PUBLIC_URL": " https://accounts.example.test/ ",
+                           "LEDGERSYNC_SMTP_HOST": "smtp.example.test", "LEDGERSYNC_SMTP_PORT": "2525",
+                           "LEDGERSYNC_SMTP_USERNAME": "user", "LEDGERSYNC_SMTP_PASSWORD": "secret",
+                           "LEDGERSYNC_SMTP_SENDER": "accounts@example.test"})
+    assert (s.public_url, s.smtp_host, s.smtp_port, s.smtp_username, s.smtp_sender) == (
+        "https://accounts.example.test", "smtp.example.test", 2525, "user", "accounts@example.test")
+    assert s.smtp_password == "secret" and "secret" not in repr(s)

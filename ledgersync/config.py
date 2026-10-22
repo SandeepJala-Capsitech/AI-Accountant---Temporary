@@ -75,6 +75,14 @@ class Settings:
     # calling. Agent jobs are off until it is set (and they need MongoDB).
     agent_model: str = ""
     agent_max_fix_rounds: int = 3         # fix rounds after a failed quality gate: 0 to 3, never more
+    # Emails to clients (document requests and their reminders). The links in them start with public_url, where
+    # the pages are served. Without an SMTP host each email is written to the log instead of being sent.
+    public_url: str = "http://localhost:3000"
+    smtp_host: str = ""
+    smtp_port: int = 587                  # STARTTLS
+    smtp_username: str = ""
+    smtp_password: str = field(default="", repr=False)   # never printed or logged
+    smtp_sender: str = ""                 # the From address
 
     @property
     def max_upload_bytes(self) -> int:
@@ -140,4 +148,10 @@ class Settings:
             agent_model=env.get("LEDGERSYNC_AGENT_MODEL", "").strip(),
             agent_max_fix_rounds=min(MAX_FIX_ROUNDS, max(0, int(env.get("LEDGERSYNC_AGENT_MAX_FIX_ROUNDS",
                                                                        d.agent_max_fix_rounds)))),
+            public_url=(env.get("LEDGERSYNC_PUBLIC_URL", "").strip() or d.public_url).rstrip("/"),
+            smtp_host=env.get("LEDGERSYNC_SMTP_HOST", "").strip(),
+            smtp_port=int(env.get("LEDGERSYNC_SMTP_PORT", "").strip() or d.smtp_port),
+            smtp_username=env.get("LEDGERSYNC_SMTP_USERNAME", "").strip(),
+            smtp_password=env.get("LEDGERSYNC_SMTP_PASSWORD", ""),
+            smtp_sender=env.get("LEDGERSYNC_SMTP_SENDER", "").strip(),
         )

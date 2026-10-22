@@ -122,3 +122,10 @@ class ChangedMeanwhile(LedgerSyncError):
 
     status_code = 409
     code = "changed_meanwhile"
+
+
+class EmailNotSent(LedgerSyncError):
+    """The SMTP server refused an email or couldn't be reached."""
+
+    status_code = 502
+    code = "email_not_sent"

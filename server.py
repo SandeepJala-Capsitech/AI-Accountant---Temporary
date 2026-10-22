@@ -15,17 +15,20 @@ from langgraph.checkpoint.mongodb import MongoDBSaver
 from pydantic import BaseModel
 
 from ledgersync import accounts, adapter, intake, pipeline, posting
-from ledgersync.agent import AgentRunner, Busy, Nodes, ToolDeps, build_graph, make_ingest, staged, stub_nodes
+from ledgersync.agent import (AgentRunner, Busy, Nodes, ToolDeps, build_graph, make_ingest, make_requests, staged,
+                              stub_nodes)
 from ledgersync.blobs import BlobStore, GridFSBlobStore, MemoryBlobStore
 from ledgersync import ledger as books
 from ledgersync.accounts import choosable
 from ledgersync.checks import normalise
 from ledgersync.config import Settings
-from ledgersync.errors import AgentNotConfigured, LedgerSyncError, NotFound, RefusedRequest, UnreadableFile
+from ledgersync.errors import (AgentNotConfigured, InvalidInput, LedgerSyncError, ModelUnavailable, NotFound,
+                               RefusedRequest, UnreadableFile)
 from ledgersync.extractor import TransactionExtractor
 from ledgersync.model_client import ModelClient
 from ledgersync.jobs import JobStore
 from ledgersync.matching import match
+from ledgersync.notify import Notifier, notifier_for, send_reminders
 from ledgersync.models import (AnalysisResult, BusinessSettings, BusinessType, Client, ClientFields, ClientPatch,
                                ClientSummary, Ledger, LedgerRequest, ManualUpload, RowPatch, TransactionList,
                                TrialBalance)
@@ -35,6 +38,10 @@ from ledgersync.store import Store
 from ledgersync.store_mongo import MongoStore
 
 logger = logging.getLogger("ledgersync.server")
+
+UNKNOWN_LINK = "This link isn't valid. Ask your accountant for a new one."
+RECEIVED_NOTE = "The client sent the document."
+REMINDER_EVERY_SECONDS = 3600.0   # how often the reminder thread looks for document reminders due
 
 
 class JobPeriod(BaseModel):
@@ -53,9 +60,10 @@ def configure_logging(level: str) -> None:
 
 
 def create_app(settings: Optional[Settings] = None, *, model_client=None, store: Optional[Store] = None,
-               blobs: Optional[BlobStore] = None, agent_nodes: Optional[Nodes] = None) -> FastAPI:
+               blobs: Optional[BlobStore] = None, agent_nodes: Optional[Nodes] = None,
+               notifier: Optional[Notifier] = None) -> FastAPI:
     """The API; tests pass a stand-in for the model client as model_client, a store in a temporary folder,
-    and stand-ins for the agent job's steps as agent_nodes."""
+    stand-ins for the agent job's steps as agent_nodes, and a notifier that keeps the emails it is given."""
     settings = settings or Settings.from_env()
     configure_logging(settings.log_level)
     model_client = model_client or ModelClient(settings)
@@ -70,15 +78,31 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
     extractor = TransactionExtractor(model_client, business_name=settings.business_name)
     jobs = JobStore(ttl_seconds=settings.job_ttl_seconds, max_workers=settings.max_parallel_jobs)
     busy = Busy()
+    notifier = notifier or notifier_for(settings)
+    deps_lock = threading.Lock()
+    built: list[ToolDeps] = []
+
+    def tool_deps() -> Optional[ToolDeps]:
+        """What the agent's tools, the client's upload link and the reminders work with, or None without MongoDB.
+        Built on first use, so importing this module (which makes `app`) writes nothing to the database."""
+        if not isinstance(store, MongoStore):
+            return None
+        with deps_lock:
+            if not built:
+                built.append(ToolDeps(store=store, records=JobRecords(store.db), audit=AuditLog(store.db),
+                                      notifier=notifier, blobs=blobs, settings=settings))
+            return built[0]
+
     runner: Optional[AgentRunner] = None
     agent_jobs: Optional[JobStore] = None
     if isinstance(store, MongoStore) and (settings.agent_model or agent_nodes is not None):
-        records = JobRecords(store.db)
+        deps = tool_deps()
+        records = deps.records
         # LangGraph's checkpoints go in a database of their own beside the store's: <name>_checkpoints.
         checkpointer = MongoDBSaver(store.client, f"{store.db_name}_checkpoints")
-        deps = ToolDeps(store=store, records=records, audit=AuditLog(store.db))
-        # The built steps (ingest so far) with stubs for the rest; steps passed in by a test win.
-        steps = agent_nodes if agent_nodes is not None else replace(stub_nodes(records), ingest=make_ingest(deps))
+        # The built steps (ingest and requests so far) with stubs for the rest; steps passed in by a test win.
+        steps = agent_nodes if agent_nodes is not None else replace(
+            stub_nodes(records), ingest=make_ingest(deps), requests=make_requests(deps))
         graph = build_graph(staged(steps, records), checkpointer, max_fix_rounds=settings.agent_max_fix_rounds)
         # Threads of their own, so a long agent run never holds up document reading.
         agent_jobs = JobStore(ttl_seconds=settings.job_ttl_seconds, max_workers=settings.max_parallel_jobs)
@@ -98,13 +122,34 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         """Counts an analysis for a client as documents being read, so no job starts for the client meanwhile."""
         return runner.reading(client.id) if runner is not None and client is not None else nullcontext()
 
+    def remind(stop: threading.Event) -> None:
+        """Sends the document reminders due, then looks again every hour until the app stops. Never raises: an
+        error is logged and the next hour tries again."""
+        while True:
+            try:
+                sent = send_reminders(tool_deps(), dt.datetime.now(dt.timezone.utc))
+                if sent:
+                    logger.info("Sent %d document reminder email(s)", sent)
+            except Exception:
+                logger.exception("Document reminders could not be sent; the next hour tries again")
+            if stop.wait(REMINDER_EVERY_SECONDS):
+                return
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if settings.warmup:
             threading.Thread(target=model_client.warm_up, name="model-warmup", daemon=True).start()
         if runner is not None:
             runner.resume_unfinished()   # never raises: a job it can't carry on is logged and marked failed
+        stop_reminders = threading.Event()
+        reminders = None
+        if isinstance(store, MongoStore):   # requests are kept in MongoDB, so without it there are none to remind
+            reminders = threading.Thread(target=remind, args=(stop_reminders,), name="document-reminders", daemon=True)
+            reminders.start()
         yield
+        stop_reminders.set()
+        if reminders is not None:
+            reminders.join(timeout=10)
         jobs.shutdown()
         if agent_jobs is not None:
             agent_jobs.shutdown()        # a job still queued stays preparing and carries on at the next start
@@ -322,6 +367,94 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
     @app.post("/api/agent-jobs/{job_id}/retry", response_model=JobRecord, status_code=202)
     def retry_agent_job(job_id: str):
         return agent().retry(job_id)
+
+    # ─── The client's upload link: the documents the agent asked for ───────────
+
+    def linked(token: str) -> tuple[ToolDeps, Client, list[dict]]:
+        """The requests one email's link is for, with their client. NotFound (UNKNOWN_LINK) when the link
+        matches none, or its client is gone or archived."""
+        deps = tool_deps()
+        asked = deps.requests.by_token(token) if deps is not None else []
+        if not asked:
+            raise NotFound(UNKNOWN_LINK)
+        try:
+            client = store.get_client(asked[0]["client_id"])
+        except NotFound:
+            raise NotFound(UNKNOWN_LINK) from None
+        if client.archived:
+            raise NotFound(UNKNOWN_LINK)
+        return deps, client, asked
+
+    def take_in(deps: ToolDeps, request: dict, upload_id: int) -> None:
+        """After the client's file is saved as an upload: the request is received and its exception resolved (once
+        every document asked for it has arrived), both audited as the system, and the client's latest job is
+        superseded by a new run, straight away or when the running one finishes."""
+        client_id, job_id = request["client_id"], request["job_id"]
+        deps.requests.mark_received(request["id"], upload_id=upload_id, at=dt.datetime.now(dt.timezone.utc))
+        deps.audit.append(actor="system", action="receive_document", client_id=client_id, job_id=job_id,
+                          target={"request_id": request["id"]}, before={"status": request["status"]},
+                          after={"status": "received", "upload_id": upload_id})
+        exception = deps.exceptions.get(request["exception_id"])
+        waiting = [r for r in deps.requests.for_job(job_id)
+                   if r["exception_id"] == exception["id"] and r["status"] != "received"]
+        if exception["status"] != "resolved" and not waiting:
+            deps.exceptions.resolve(exception["id"], note=RECEIVED_NOTE)
+            deps.audit.append(actor="system", action="resolve_exception", client_id=client_id, job_id=job_id,
+                              target={"exception_id": exception["id"]}, before={"status": exception["status"]},
+                              after={"status": "resolved", "note": RECEIVED_NOTE})
+        if runner is not None:
+            runner.documents_arrived(client_id)
+
+    @app.get("/api/requests/{token}")
+    def requested_documents(token: str):
+        """What the link asks the client for: the client's name and each document with its reason, "pending" until
+        it arrives and then "received". Nothing else from the job."""
+        _, client, asked = linked(token)
+        return {"client_name": client.name,
+                "documents": [{"id": r["id"], "document_type": r["document_type"], "period": r["period"],
+                               "reason": r["reason"], "status": "received" if r["status"] == "received" else "pending"}
+                              for r in asked]}
+
+    @app.post("/api/requests/{token}/{request_id}/file", status_code=202)
+    def send_requested_document(token: str, request_id: str, file: UploadFile = File(...),
+                                x_ledgersync: Optional[str] = Header(None)):
+        """Checks the file as /api/analyze does, keeps it, then reads it in a background job into a new upload for
+        the client: as the system, so past the row lock while a job runs. Once it is saved, the request is
+        received, its exception resolved and the job superseded (see take_in). The page polls /api/jobs/{job_id}."""
+        if not x_ledgersync:
+            raise RefusedRequest("Documents are taken from the Super Accountant pages only: the X-LedgerSync "
+                                 "header is missing.")
+        deps, client, asked = linked(token)
+        request = next((r for r in asked if r["id"] == request_id), None)
+        if request is None:
+            raise NotFound("This link doesn't ask for that document.")
+        if request["status"] != "sent":
+            raise InvalidInput("This document has already arrived. Thank you.")
+        if not file.filename:
+            raise UnreadableFile("Choose a file to send.")
+        data = intake.read_limited(file.file, settings.max_upload_bytes)
+        item = intake.load_upload(file.filename, data, settings.max_pdf_pages)
+        name, sha256 = file.filename, hashlib.sha256(data).hexdigest()
+        try:
+            model_client.ensure_available()   # fail fast instead of queueing doomed work
+        except ModelUnavailable:
+            raise ModelUnavailable("Documents can't be read just now. Try again in a few minutes.") from None
+        blobs.put(data, name=name, content_type=file.content_type or "application/octet-stream")
+
+        def work(ctx):
+            busy.begin(client.id)   # documents being read: no job starts for the client meanwhile
+            try:
+                result = run_analysis(item, ctx, client, name, sha256)
+            finally:
+                busy.end(client.id)   # before take_in, which may start the superseding run
+            if "upload_id" not in result:
+                raise UnreadableFile(f"No transactions were found in '{name}'. Check it's the document asked for, "
+                                     "then send it again.")
+            take_in(deps, request, result["upload_id"])
+            return result
+
+        job = jobs.submit(work)
+        return {"job_id": job.id, "status": job.status}
 
     return app
 

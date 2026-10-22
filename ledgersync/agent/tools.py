@@ -1,4 +1,5 @@
-"""The row tools the agent works with. They are the only way the agent reads or changes a client's rows.
+"""The tools the agent works with: the row tools, the only way it reads or changes a client's rows, and the two
+exception tools, for what it can't settle (see `exception_tools`).
 
 `row_tools` builds them for one job: the client's ID and the job's ID are closed over, so they never appear in a
 tool's arguments and the model can't name another client's rows. The agent can change only a row's account,
@@ -16,6 +17,7 @@ applies a document type or Include to every row of a document). The entries come
 before and after the save, so the log says what the rows hold. If the process stops between the save and the
 entries, the rows are changed and have no entry, and the replay finds nothing left to change, so it adds none."""
 import datetime as dt
+import re
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -23,10 +25,14 @@ from langchain_core.tools import BaseTool, tool
 
 from ledgersync import ledger as books
 from ledgersync.accounts import choosable
+from ledgersync.blobs import BlobStore, GridFSBlobStore
+from ledgersync.config import Settings
 from ledgersync.errors import LedgerSyncError, NotFound
 from ledgersync.models import DOCUMENT_TYPES, Ledger, RowPatch, SavedRow, Settlement, Transaction
 from ledgersync.money import to_money
+from ledgersync.notify import ConsoleNotifier, Notifier
 from ledgersync.records.audit import AuditLog
+from ledgersync.records.exceptions import DocumentRequests, Exceptions
 from ledgersync.records.jobs import JobRecords
 from ledgersync.store import EDITABLE, StoredRow
 from ledgersync.store_mongo import MongoStore
@@ -40,11 +46,30 @@ NOT_FOUND = "This row was not found."
 
 @dataclass
 class ToolDeps:
-    """What the tools (and the steps that use them) are built on."""
+    """What the tools (and the steps that use them) are built on. Left out, the exceptions, the document requests
+    and the original files are kept in the store's database, emails go to the log, and the settings are the
+    defaults."""
 
     store: MongoStore
     records: JobRecords
     audit: AuditLog
+    exceptions: Optional[Exceptions] = None
+    requests: Optional[DocumentRequests] = None
+    notifier: Optional[Notifier] = None
+    blobs: Optional[BlobStore] = None
+    settings: Optional[Settings] = None
+
+    def __post_init__(self):
+        if self.exceptions is None:
+            self.exceptions = Exceptions(self.store.db)
+        if self.requests is None:
+            self.requests = DocumentRequests(self.store.db)
+        if self.notifier is None:
+            self.notifier = ConsoleNotifier()
+        if self.blobs is None:
+            self.blobs = GridFSBlobStore(self.store.db)
+        if self.settings is None:
+            self.settings = Settings()
 
 
 def _failed(exc: LedgerSyncError) -> dict:
@@ -322,3 +347,105 @@ def row_tools(deps: ToolDeps, client_id: int, job_id: str) -> dict[str, BaseTool
             return _failed(exc)
 
     return {t.name: t for t in (lookup_account, list_rows_to_review, get_row, update_row, revert_row, list_rows)}
+
+
+# What the client reads of a request goes into a fixed email, so it must be short plain text: no link or address
+# a document's text could have talked the agent into sending.
+_NOT_PLAIN = re.compile(r"http|www\.|@", re.IGNORECASE)
+REASON_RULE = "Keep the reason under 200 characters, as plain text without links or email addresses."
+TYPE_RULE = "Name the document in 1 to 60 characters, as plain text without links or email addresses."
+PERIOD_RULE = "Give the period in 1 to 40 characters, as plain text without links or email addresses."
+NO_EXCEPTION = "Give the exception_id that log_exception gave you for this job."
+
+
+def _one_line(text: str) -> str:
+    """The text on one line: line breaks, tabs and runs of spaces become single spaces."""
+    return " ".join(text.split())
+
+
+def _plain(text: str, longest: int) -> bool:
+    return 1 <= len(text) <= longest and not _NOT_PLAIN.search(text)
+
+
+def exception_tools(deps: ToolDeps, client_id: int, job_id: str, stage: str) -> dict[str, BaseTool]:
+    """The two tools for what the agent can't settle, keyed by name, for one job's stage: `log_exception` and
+    `request_client_document`. Each new exception or request is audited once; asking again for one already saved
+    returns it and writes nothing."""
+    exceptions, requests, audit = deps.exceptions, deps.requests, deps.audit
+
+    @tool(parse_docstring=True)
+    def log_exception(description: str, assumption: str, confidence: float, row_ids: list[int] = []) -> dict:
+        """Record something you couldn't settle and the assumption you made instead, then carry on with the job.
+
+        Log one whenever you're unsure, with a confidence below 0.7. Logging the same description for the same rows
+        again gives the same exception_id and changes nothing.
+
+        Args:
+            description: What couldn't be settled, in 1 to 500 characters, such as "No invoice for the £1,200.00 paid to Acme". A person reads it.
+            assumption: What you did instead, in 1 to 500 characters, such as "Booked as 5000 Purchases".
+            confidence: How sure you are of the assumption, from 0 to 1.
+            row_ids: The IDs of the rows it is about, if any.
+        """
+        try:
+            description, assumption = description.strip(), assumption.strip()
+            if not 1 <= len(description) <= 500:
+                return {"ok": False, "error": "Describe what couldn't be settled in 1 to 500 characters."}
+            if not 1 <= len(assumption) <= 500:
+                return {"ok": False, "error": "Give the assumption you made in 1 to 500 characters."}
+            if not 0 <= confidence <= 1:
+                return {"ok": False, "error": "Confidence must be from 0 to 1."}
+            unknown = sorted(set(row_ids) - {r.id for r in deps.store.rows(client_id)})
+            if unknown:
+                return {"ok": False, "error": f"These rows weren't found: {', '.join(map(str, unknown))}."}
+            logged, new = exceptions.log_once(client_id=client_id, job_id=job_id, stage=stage,
+                                              description=description, assumption=assumption,
+                                              confidence=confidence, row_ids=row_ids)
+            if new:
+                audit.append(actor="agent", action="log_exception", client_id=client_id, job_id=job_id,
+                             target={"exception_id": logged["id"]}, before=None,
+                             after={"stage": stage, "description": description, "assumption": assumption,
+                                    "confidence": logged["confidence"], "row_ids": logged["row_ids"]})
+            return {"ok": True, "exception_id": logged["id"]}
+        except LedgerSyncError as exc:
+            return _failed(exc)
+
+    @tool(parse_docstring=True)
+    def request_client_document(document_type: str, period: str, reason: str, exception_id: str) -> dict:
+        """Ask the client for a missing document, linked to the exception you logged about it.
+
+        You never write to the client. When the run ends, the system emails the client one link for every document
+        asked for, and the client reads the document type, the period and the reason. Asking again for the same
+        document for the same exception changes nothing.
+
+        Args:
+            document_type: The document, in 1 to 60 characters, such as "Invoice from Acme Ltd".
+            period: The period it covers, in 1 to 40 characters, such as "March 2026".
+            reason: Why it's needed, under 200 characters of plain text without links or email addresses.
+            exception_id: The exception_id that log_exception gave you for this.
+        """
+        try:
+            document_type, period, reason = _one_line(document_type), _one_line(period), _one_line(reason)
+            if not _plain(reason, 200):
+                return {"ok": False, "error": REASON_RULE}
+            if not _plain(document_type, 60):
+                return {"ok": False, "error": TYPE_RULE}
+            if not _plain(period, 40):
+                return {"ok": False, "error": PERIOD_RULE}
+            try:
+                linked = exceptions.get(exception_id)
+            except NotFound:
+                linked = None
+            if linked is None or (linked["job_id"], linked["client_id"]) != (job_id, client_id):
+                return {"ok": False, "error": NO_EXCEPTION}
+            made, new = requests.create_once(client_id=client_id, job_id=job_id, exception_id=exception_id,
+                                             document_type=document_type, period=period, reason=reason)
+            if new:
+                audit.append(actor="agent", action="request_client_document", client_id=client_id, job_id=job_id,
+                             target={"request_id": made["id"]}, before=None,
+                             after={"exception_id": exception_id, "document_type": document_type, "period": period,
+                                    "reason": reason})
+            return {"ok": True, "request_id": made["id"]}
+        except LedgerSyncError as exc:
+            return _failed(exc)
+
+    return {t.name: t for t in (log_exception, request_client_document)}

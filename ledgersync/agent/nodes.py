@@ -1,5 +1,5 @@
-"""The job's steps. Ingest is built; until the later tasks build the others, each is a stub that only says so
-in the feed.
+"""The job's steps. Ingest and requests are built; until the later tasks build the others, each is a stub that
+only says so in the feed.
 
 `staged` wraps every step, stubs or real: a cancelled job stops before its next step, and otherwise the job
 shows which stage it is at and its feed says the step started."""
@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from ledgersync import ledger as books
 from ledgersync.jobs import JobCancelled
+from ledgersync.notify import no_email_note, send_document_requests
 from ledgersync.records.jobs import JobRecords
 
 from .graph import STEPS, Node, Nodes
@@ -72,3 +73,23 @@ def make_ingest(deps: ToolDeps) -> Node:
         return {}
 
     return ingest
+
+
+def make_requests(deps: ToolDeps) -> Node:
+    """The requests step: emails the client one link for every document the run asked for, and says in the feed
+    how many it asked for (or that there was no address to send them to)."""
+
+    def requests(state: JobState) -> dict:
+        job_id, client_id = state["job_id"], state["client_id"]
+        pending = len(deps.requests.pending_for(job_id))
+        sent = send_document_requests(deps, client_id, job_id)
+        if sent:
+            line = f"Asked the client for {_count(sent, 'document')}."
+        elif pending:
+            line = no_email_note(deps.store.get_client(client_id).name, pending)
+        else:
+            line = "No documents to ask the client for."
+        deps.records.event(job_id, "requests", line)
+        return {}
+
+    return requests
