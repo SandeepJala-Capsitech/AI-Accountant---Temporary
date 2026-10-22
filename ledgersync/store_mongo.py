@@ -16,11 +16,14 @@ from typing import Optional
 import pymongo
 from pymongo import MongoClient, ReturnDocument
 
-from .errors import ClientArchived, NotFound
+from .errors import ChangedMeanwhile, ClientArchived, NotFound
 from .models import Client, ClientFields, Transaction
 from .store import EDITABLE, WHOLE_DOCUMENT, StoredRow, _OLD_TOTAL, _now, saved_form
 
 logger = logging.getLogger(__name__)
+
+# How many times patch_row reads and writes again when another write to the client got in between.
+_PATCH_TRIES = 5
 
 _CLIENT_FIELDS = ("name", "business_type", "contact_name", "contact_email", "contact_phone", "vat_registered")
 _CLIENT_PROJECTION = {
@@ -370,11 +373,32 @@ class MongoStore:
         return stored_rows
 
     def patch_row(self, client_id: int, row_id: int, changes: dict, *, revert: bool = False) -> None:
-        doc = self.db.clients.find_one({"id": client_id, "rows.id": row_id}, {"rows": 1})
-        if not doc:
-            raise NotFound("This row was not found.")
+        """Changes a row (and a whole-document field on the rows of its document), or puts them back as read.
 
-        rows = doc.get("rows", [])
+        The rows are read, changed here and written back whole, so the write only goes through when the client's
+        document still has the revision it was read at: an upload or another change saved in between (say, the
+        client's upload while the agent works) would otherwise be overwritten. Then it reads and tries again,
+        and after _PATCH_TRIES lost races it gives up and asks the person to try again."""
+        for _ in range(_PATCH_TRIES):
+            doc = self.db.clients.find_one({"id": client_id, "rows.id": row_id}, {"rows": 1, "revision": 1})
+            if not doc:
+                raise NotFound("This row was not found.")
+            rows = doc.get("rows", [])
+            if not self._patched(rows, row_id, changes, revert):
+                return
+            # A document saved before revisions were kept has none: $inc starts it at 1.
+            read_at = doc["revision"] if "revision" in doc else {"$exists": False}
+            saved = self.db.clients.update_one(
+                {"id": client_id, "revision": read_at},
+                {"$set": {"rows": rows, "updated_at": _now()}, "$inc": {"revision": 1}})
+            if saved.matched_count:
+                return
+        raise ChangedMeanwhile("The client's rows changed while this change was being saved, so it wasn't saved. "
+                               "Try again.")
+
+    @staticmethod
+    def _patched(rows: list[dict], row_id: int, changes: dict, revert: bool) -> bool:
+        """Applies the change to the rows as read, in place, and says whether anything changed."""
         target = next((r for r in rows if r["id"] == row_id), None)
         if not target:
             raise NotFound("This row was not found.")
@@ -406,16 +430,4 @@ class MongoStore:
                     r_data["issues"] = []
                 r_data.update(change)
                 modified = True
-
-        if modified:
-            now = _now()
-            self.db.clients.update_one(
-                {"id": client_id},
-                {
-                    "$set": {
-                        "rows": rows,
-                        "updated_at": now
-                    },
-                    "$inc": {"revision": 1}
-                }
-            )
+        return modified

@@ -115,3 +115,10 @@ class AgentNotConfigured(LedgerSyncError):
 
     status_code = 503
     code = "agent_not_configured"
+
+
+class ChangedMeanwhile(LedgerSyncError):
+    """A change lost the race with other writes to the same client every time it was tried."""
+
+    status_code = 409
+    code = "changed_meanwhile"
