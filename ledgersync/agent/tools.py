@@ -44,6 +44,7 @@ from ledgersync.notify import ConsoleNotifier, Notifier
 from ledgersync.records.audit import AuditLog
 from ledgersync.records.exceptions import DocumentRequests, Exceptions
 from ledgersync.records.jobs import JobRecords
+from ledgersync.records.snapshots import Snapshots
 from ledgersync.store import EDITABLE, StoredRow
 from ledgersync.store_mongo import MongoStore
 
@@ -66,9 +67,9 @@ def _client_lock(client_id: int) -> threading.Lock:
 
 @dataclass
 class ToolDeps:
-    """What the tools (and the steps that use them) are built on. Left out, the exceptions, the document requests
-    and the original files are kept in the store's database, emails go to the log, and the settings are the
-    defaults."""
+    """What the tools (and the steps that use them) are built on. Left out, the exceptions, the document requests,
+    the original files and the trial balance snapshots (with their workbooks, kept as `blobs`) are kept in the
+    store's database, emails go to the log, and the settings are the defaults."""
 
     store: MongoStore
     records: JobRecords
@@ -78,6 +79,7 @@ class ToolDeps:
     notifier: Optional[Notifier] = None
     blobs: Optional[BlobStore] = None
     settings: Optional[Settings] = None
+    snapshots: Optional[Snapshots] = None
 
     def __post_init__(self):
         if self.exceptions is None:
@@ -90,6 +92,8 @@ class ToolDeps:
             self.blobs = GridFSBlobStore(self.store.db)
         if self.settings is None:
             self.settings = Settings()
+        if self.snapshots is None:
+            self.snapshots = Snapshots(self.store.db, self.blobs)
 
 
 def _failed(exc: LedgerSyncError) -> dict:

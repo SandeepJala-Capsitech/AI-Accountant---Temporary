@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from ledgersync import accounts, adapter, intake, pipeline, posting
 from ledgersync.agent import (AgentRunner, Busy, Nodes, ToolDeps, build_graph, make_classify, make_fix, make_gate,
-                              make_ingest, make_requests, staged, stub_nodes)
+                              make_ingest, make_requests, make_snapshot, staged, stub_nodes)
 from ledgersync.agent.llm import chat_model
 from ledgersync.blobs import BlobStore, GridFSBlobStore, MemoryBlobStore
 from ledgersync import ledger as books
@@ -36,6 +36,7 @@ from ledgersync.models import (AnalysisResult, BusinessSettings, BusinessType, C
 from ledgersync.records.audit import AuditLog
 from ledgersync.records.exceptions import link_status
 from ledgersync.records.jobs import JobEvent, JobRecord, JobRecords
+from ledgersync.records.snapshots import XLSX
 from ledgersync.store import Store
 from ledgersync.store_mongo import MongoStore
 
@@ -105,13 +106,13 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         def model():
             return chat_model(settings)
 
-        # The built steps (all but the snapshot so far) with a stub for the rest; steps passed in by a test win. The
-        # agents build their model when they run, so the app starts without one. The gate and the graph are given
-        # the same number of fix rounds, so the gate knows which round is the last.
+        # The built steps; steps passed in by a test win. The agents build their model when they run, so the app
+        # starts without one. The gate and the graph are given the same number of fix rounds, so the gate knows
+        # which round is the last.
         steps = agent_nodes if agent_nodes is not None else replace(
             stub_nodes(records), ingest=make_ingest(deps), classify=make_classify(deps, model_factory=model),
             gate=make_gate(deps, max_fix_rounds=settings.agent_max_fix_rounds),
-            fix=make_fix(deps, model_factory=model), requests=make_requests(deps))
+            fix=make_fix(deps, model_factory=model), requests=make_requests(deps), snapshot=make_snapshot(deps))
         graph = build_graph(staged(steps, records), checkpointer, max_fix_rounds=settings.agent_max_fix_rounds)
         # Threads of their own, so a long agent run never holds up document reading.
         agent_jobs = JobStore(ttl_seconds=settings.job_ttl_seconds, max_workers=settings.max_parallel_jobs)
@@ -342,14 +343,17 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
     def client_trial_balance(client_id: int):
         return books.trial_balance(store, client_id)
 
+    def workbook_download(content: bytes, name: str) -> Response:
+        """An Excel workbook as a download under its file name."""
+        plain = name.encode("ascii", "replace").decode().replace("?", "_")
+        return Response(content, media_type=XLSX,
+                        headers={"Content-Disposition": f"attachment; filename=\"{plain}\"; "
+                                                        f"filename*=UTF-8''{quote(name)}"})
+
     @app.get("/api/clients/{client_id}/export.xlsx")
     def export_client(client_id: int):
         """The client's trial balance and transactions as an Excel workbook (archived clients too)."""
-        content, name = books.export(store, client_id, dt.date.today())
-        plain = name.encode("ascii", "replace").decode().replace("?", "_")
-        return Response(content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        headers={"Content-Disposition": f"attachment; filename=\"{plain}\"; "
-                                                        f"filename*=UTF-8''{quote(name)}"})
+        return workbook_download(*books.export(store, client_id, dt.date.today()))
 
     # ─── Agent jobs: the client's rows worked to a trial balance for review ─────
 
@@ -376,6 +380,25 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
     @app.post("/api/agent-jobs/{job_id}/retry", response_model=JobRecord, status_code=202)
     def retry_agent_job(job_id: str):
         return agent().retry(job_id)
+
+    def snapshots_of(job_id: str):
+        """The job's trial balance snapshots. NotFound for an unknown job; the 503 of the other job routes without
+        agent jobs."""
+        agent().records.get(job_id)
+        return tool_deps().snapshots
+
+    @app.get("/api/agent-jobs/{job_id}/snapshots")
+    def agent_job_snapshots(job_id: str):
+        """The trial balances the job saved, oldest version first: after posting, then after the gate, each with
+        its lines, totals and problems (money as exact strings) and the blob ID of its workbook."""
+        return snapshots_of(job_id).list(job_id)
+
+    @app.get("/api/agent-jobs/{job_id}/snapshots/{version}/export.xlsx")
+    def agent_job_snapshot_workbook(job_id: str, version: int):
+        """The Excel workbook saved with one version of the job's trial balance; 404 for an unknown version."""
+        snapshots = snapshots_of(job_id)
+        blob = tool_deps().blobs.get(snapshots.get(job_id, version)["excel_blob_id"])
+        return workbook_download(blob.data, blob.name)
 
     # ─── The client's upload link: the documents the agent asked for ───────────
 

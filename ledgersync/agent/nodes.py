@@ -1,5 +1,5 @@
-"""The job's steps. Ingest, classify, the quality gate, fix and requests are built; until a later task builds the
-snapshot, it is a stub that only says so in the feed.
+"""The job's steps: ingest, classify, the quality gate, fix, requests and the trial balance snapshot. `stub_nodes` has
+a stub for each, which only says so in the feed, for tests and for filling a step that isn't built.
 
 `staged` wraps every step, stubs or real: a cancelled job stops before its next step, and otherwise the job
 shows which stage it is at and its feed says the step started.
@@ -11,7 +11,7 @@ from __future__ import annotations
 import datetime as dt
 import warnings
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Union
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware, ModelCallLimitMiddleware, ToolCallLimitMiddleware
@@ -24,10 +24,12 @@ from pydantic import BaseModel
 
 from ledgersync import ledger as books
 from ledgersync.config import MAX_FIX_ROUNDS
-from ledgersync.gate import gate_for
+from ledgersync.gate import balance_for, gate_for, gbp
 from ledgersync.jobs import JobCancelled
+from ledgersync.models import TrialBalance
 from ledgersync.notify import no_email_note, send_document_requests
 from ledgersync.records.jobs import JobRecords
+from ledgersync.records.snapshots import SnapshotStage
 
 from .graph import STEPS, Node, Nodes
 from .prompts import AGENT_REQUEST, CLASSIFY_PROMPT, FIX_PROMPT
@@ -240,10 +242,20 @@ def _system_exception(deps: ToolDeps, state: JobState, stage: str, description: 
 def make_classify(deps: ToolDeps, model_factory: Callable[[], BaseChatModel],
                   agent_factory: AgentFactory = default_agent_factory) -> Node:
     """The classify step: an agent that works through every row that needs a look, with CLASSIFY_TOOLS, in at most
-    60 model calls and 150 tool calls."""
-    return make_agent_node(deps, stage="classify", prompt=CLASSIFY_PROMPT, tool_names=CLASSIFY_TOOLS,
-                           result_type=PostingResult, model_factory=model_factory, model_calls=60, tool_calls=150,
-                           agent_factory=agent_factory)
+    60 model calls and 150 tool calls. When it ends, however it ended (with its result, or at a call limit), the
+    trial balance as posting produced it is saved as a snapshot (`after_posting`), so the reviewer sees it. Nothing
+    is saved when the agent raises, as for a cancel; a step that runs again after a crash saves another version.
+    The snapshot adds nothing to the feed."""
+    agent = make_agent_node(deps, stage="classify", prompt=CLASSIFY_PROMPT, tool_names=CLASSIFY_TOOLS,
+                            result_type=PostingResult, model_factory=model_factory, model_calls=60, tool_calls=150,
+                            agent_factory=agent_factory)
+
+    def classify(state: JobState) -> dict:
+        changes = agent(state)
+        _save_snapshot(deps, state, "after_posting")
+        return changes
+
+    return classify
 
 
 def make_fix(deps: ToolDeps, model_factory: Callable[[], BaseChatModel],
@@ -291,3 +303,39 @@ def make_gate(deps: ToolDeps, max_fix_rounds: int) -> Node:
         return {"gate_passed": False}
 
     return gate
+
+
+# --- the trial balance snapshots ----------------------------------------------------------------------------
+
+def _save_snapshot(deps: ToolDeps, state: JobState,
+                   stage: SnapshotStage) -> tuple[dict, Union[TrialBalance, list[str]]]:
+    """Saves the client's ledger and trial balance as they are now as the job's next snapshot. Returns the snapshot
+    and the trial balance it was made from (or the problems that stopped it being built)."""
+    client_id = state["client_id"]
+    balance = balance_for(deps.store, client_id)
+    saved = deps.snapshots.save(job_id=state["job_id"], client_id=client_id, stage=stage,
+                                ledger=books.build(deps.store, client_id), balance=balance, day=dt.date.today())
+    return saved, balance
+
+
+def make_snapshot(deps: ToolDeps) -> Node:
+    """The snapshot step: saves the trial balance as it stands after the gate (`after_gate`) with its Excel workbook,
+    and says in the feed which version it saved and either that debits and credits are both the same total, or how
+    many problems stop it being built, for the reviewer. Returns {}."""
+
+    def snapshot(state: JobState) -> dict:
+        saved, balance = _save_snapshot(deps, state, "after_gate")
+        version = saved["version"]
+        if not isinstance(balance, TrialBalance):
+            line = (f"Trial balance saved as version {version}, with {_count(len(balance), 'problem')} "
+                    "for the reviewer.")
+        elif balance.total_debits == balance.total_credits:
+            line = (f"Trial balance saved as version {version}. Debits and credits are both "
+                    f"{gbp(balance.total_debits)}.")
+        else:   # the gate has failed `balanced` too: say so rather than call two different totals the same
+            line = (f"Trial balance saved as version {version}. Debits are {gbp(balance.total_debits)} and credits "
+                    f"are {gbp(balance.total_credits)}.")
+        deps.records.event(state["job_id"], "snapshot", line)
+        return {}
+
+    return snapshot
