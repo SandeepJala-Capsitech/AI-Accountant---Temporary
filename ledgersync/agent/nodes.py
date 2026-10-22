@@ -159,8 +159,14 @@ def default_agent_factory(model_factory: Callable[[], BaseChatModel], tools: lis
       nor lets the model carry on).
     - A tool call whose arguments don't fit the tool goes back to the model as an error: the ToolNode's default.
     - It keeps no checkpoints of its own (`checkpointer=False`; it would otherwise save every step into the job's
-      checkpoints). The job's graph checkpoints its steps, and a step that stopped part-way runs again from the
-      start: the tools write nothing twice."""
+      checkpoints). The job's graph checkpoints its steps, and a step that stopped part-way (a retry after an
+      error, or a restart) runs again from the start in a fresh conversation. Its row changes are idempotent:
+      update_row writes only what differs, and a row it changed no longer needs a look. The exceptions and
+      document requests it made are not, as a new conversation could word them differently, so get_row and
+      list_rows_to_review show the agent the exceptions this job logged on each row, with the document asked for
+      about each, and the prompt tells it that such a row needs no new exception, and that a document it asks
+      for about the row goes on that exception (asking again for the same document in the same job gets the
+      request already made)."""
     return create_agent(
         model_factory(), tools, system_prompt=prompt, response_format=ToolStrategy(result_type),
         middleware=[StopWhenCancelled(),

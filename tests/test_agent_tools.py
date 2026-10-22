@@ -11,7 +11,7 @@ import pytest
 from ledgersync import ledger
 from ledgersync.checks import issue
 from ledgersync.agent.nodes import make_ingest
-from ledgersync.agent.tools import ToolDeps, row_tools
+from ledgersync.agent.tools import ToolDeps, exception_tools, row_tools
 from ledgersync.models import ClientFields, RowPatch, Transaction
 from ledgersync.records.audit import AuditLog
 from ledgersync.records.jobs import JobRecords
@@ -401,6 +401,43 @@ def test_get_row_gives_the_short_rows_its_issues_are_about(deps, mongo_store):
 
 def test_get_row_of_another_clients_row_is_not_found(tools, other_clients_row_id):
     assert tools["get_row"].invoke({"row_id": other_clients_row_id}) == {"ok": False, "error": "This row was not found."}
+
+
+def log(deps, client_id, job_id, row_ids, description, stage="classify") -> str:
+    """Logs an exception through the agent's tool for the job, and returns its ID."""
+    logged = exception_tools(deps, client_id, job_id, stage)["log_exception"].invoke(
+        {"description": description, "assumption": "Booked as it was read", "confidence": 0.5, "row_ids": row_ids})
+    return logged["exception_id"]
+
+
+def shown(tools, row_id) -> tuple[list, list]:
+    """A row's exceptions as get_row and list_rows_to_review each show them."""
+    listed = next(r for r in tools["list_rows_to_review"].invoke({"limit": 100})["rows"] if r["row_id"] == row_id)
+    return tools["get_row"].invoke({"row_id": row_id})["exceptions"], listed["exceptions"]
+
+
+def test_a_rows_exceptions_in_this_job_are_shown_with_the_document_asked_for(deps, tools, cube_id, three_rows_to_review):
+    """So a step that runs again, in a fresh conversation, sees what the first run logged and asked for."""
+    mystery, other = three_rows_to_review[:2]
+    unasked = log(deps, cube_id, "j1", [mystery], "No date on the Corner Shop receipt")
+    asked = log(deps, cube_id, "j1", [mystery, other], "No receipt behind the two undated payments")
+    exception_tools(deps, cube_id, "j1", "classify")["request_client_document"].invoke(
+        {"document_type": "Receipts from Corner Shop", "period": "March 2026", "reason": "To date the payments",
+         "exception_id": asked})
+    expected = [{"exception_id": unasked, "description": "No date on the Corner Shop receipt", "request": None},
+                {"exception_id": asked, "description": "No receipt behind the two undated payments",
+                 "request": {"document_type": "Receipts from Corner Shop", "period": "March 2026",
+                             "status": "pending"}}]
+    assert shown(tools, mystery) == (expected, expected)
+    assert shown(tools, other) == (expected[1:], expected[1:])
+    assert shown(tools, three_rows_to_review[2]) == ([], [])
+
+
+def test_another_jobs_exceptions_and_a_resolved_one_are_not_shown(deps, tools, cube_id, three_rows_to_review):
+    mystery = three_rows_to_review[0]
+    log(deps, cube_id, "j0", [mystery], "No date on the Corner Shop receipt")      # an earlier job's
+    deps.exceptions.resolve(log(deps, cube_id, "j1", [mystery], "Dated from the bank line"), note="Settled")
+    assert shown(tools, mystery) == ([], [])
 
 
 def test_list_rows_filters_by_account_and_upload_and_limits(tools, mongo_store, cube_id):

@@ -9,6 +9,10 @@ it puts back what this job changed, read from this job's audit entries. Only onc
 document holds what it held as read does it call the store's revert, which then puts back equal values and
 restores the reading's warnings, which the store clears when a row is first changed.
 
+`get_row` and `list_rows_to_review` show each row's open exceptions from this job, each with the document asked
+for about it, so a step that runs again in a fresh conversation (after a retry or a restart) sees what was logged
+and asked for already instead of logging and asking again in other words.
+
 No tool raises a LedgerSyncError: each returns {"ok": False, "error": <message>} instead, a message a person (or
 the model) can act on.
 
@@ -161,6 +165,25 @@ def row_tools(deps: ToolDeps, client_id: int, job_id: str) -> dict[str, BaseTool
     def ledger() -> Ledger:
         return books.build(store, client_id)
 
+    def noted() -> dict[int, list[dict]]:
+        """This job's open exceptions on this client's rows, by row ID, in the order they were logged. Each has the
+        document asked for about it (the first request linked to it, or None). Read once for a call."""
+        asked: dict[str, dict] = {}
+        for request in deps.requests.for_job(job_id):
+            asked.setdefault(request["exception_id"], request)
+        by_row: dict[int, list[dict]] = {}
+        for found in deps.exceptions.for_job(job_id):
+            if found["status"] != "open" or found["client_id"] != client_id:
+                continue
+            request = asked.get(found["id"])
+            note = {"exception_id": found["id"], "description": found["description"],
+                    "request": None if request is None else {
+                        "document_type": request["document_type"], "period": request["period"],
+                        "status": request["status"]}}
+            for row_id in found["row_ids"]:
+                by_row.setdefault(row_id, []).append(note)
+        return by_row
+
     def stored(row_id: int) -> tuple[list[StoredRow], Optional[StoredRow]]:
         rows = store.rows(client_id)
         return rows, next((r for r in rows if r.id == row_id), None)
@@ -213,7 +236,8 @@ def row_tools(deps: ToolDeps, client_id: int, job_id: str) -> dict[str, BaseTool
         """List the rows that still need a look (they have an error or a warning), by row ID, a page at a time.
 
         Gives {"rows": [...], "more": true or false}. When "more" is true, call again with after_row_id set to
-        the last row_id you were given.
+        the last row_id you were given. Each row has its issues, and its exceptions: the open ones logged about it
+        in this job, each with the document asked for about it (its document_type, period and status) or null.
 
         Args:
             after_row_id: Only rows with a higher row ID than this. Use 0 for the first page.
@@ -224,7 +248,9 @@ def row_tools(deps: ToolDeps, client_id: int, job_id: str) -> dict[str, BaseTool
             due = sorted((r for r in built.transactions if books.needs_review(r) and r.id > after_row_id),
                          key=lambda r: r.id)
             size = _page(limit)
-            return {"rows": [_short(r, built) for r in due[:size]], "more": len(due) > size}
+            found = noted()
+            return {"rows": [{**_short(r, built), "exceptions": found.get(r.id, [])} for r in due[:size]],
+                    "more": len(due) > size}
         except LedgerSyncError as exc:
             return _failed(exc)
 
@@ -234,7 +260,8 @@ def row_tools(deps: ToolDeps, client_id: int, job_id: str) -> dict[str, BaseTool
 
         Gives the row's fields, whether it is included, its link and its not-the-same list, then candidates (what a
         bank line could pay), pays (what it pays), paid_by (what paid a document), copy_of, recorded_by and
-        claimed_in, and related_rows: the rows its issues are about.
+        claimed_in, related_rows: the rows its issues are about, and exceptions: the open ones logged about it in
+        this job, each with the document asked for about it (its document_type, period and status) or null.
 
         Args:
             row_id: The row's ID.
@@ -251,7 +278,8 @@ def row_tools(deps: ToolDeps, client_id: int, job_id: str) -> dict[str, BaseTool
                     "copy_of": _settlement(row.copy_of) if row.copy_of else None,
                     "recorded_by": _settlement(row.recorded_by) if row.recorded_by else None,
                     "claimed_in": _settlement(row.claimed_in) if row.claimed_in else None,
-                    "related_rows": [_short(by_id[i], built) for i in related if i in by_id]}
+                    "related_rows": [_short(by_id[i], built) for i in related if i in by_id],
+                    "exceptions": noted().get(row_id, [])}
         except LedgerSyncError as exc:
             return _failed(exc)
 
