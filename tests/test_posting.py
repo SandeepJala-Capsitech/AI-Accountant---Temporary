@@ -204,3 +204,32 @@ def test_trial_balance_financial_summaries():
     assert str(tb.total_income) == "1000.00"
     assert str(tb.total_expenses) == "250.00"
     assert str(tb.net_profit) == "750.00"
+
+
+def receipt_and_card_line():
+    """A receipt and the bank line that pays it: the same shop, amount and day."""
+    return [Transaction(direction="out", gross="36.00", account_code="7400", description="Parking",
+                        counterparty="Southgate Bath Car Park", date=dt.date(2026, 9, 9), document_type="receipt",
+                        document_ref="photo"),
+            Transaction(direction="out", gross="36.00", account_code="7400", description="SOUTHGATE BATH",
+                        counterparty="SOUTHGATE BATH CAR PARK", date=dt.date(2026, 9, 9), document_type="statement",
+                        document_ref="card")]
+
+
+def test_without_decisions_the_trial_balance_is_worked_out_as_it_always_was():
+    # Pasted or unsaved rows have no decisions: the same result as no decisions at all, said either way.
+    rows = receipt_and_card_line()
+    plain = trial_balance(rows, REGISTERED)
+    assert plain == trial_balance(rows, REGISTERED, read=None, apart=None)
+    assert plain == trial_balance(rows, REGISTERED, read=[None, None], apart=[set(), set()])
+    assert [(l.code, str(l.debit), str(l.credit)) for l in plain.lines] == [
+        ("1200", "0.00", "36.00"), ("7400", "36.00", "0.00")]   # the receipt, once
+    assert [l.transaction for l in plain.journal] == [0, 0]
+
+
+def test_rows_said_not_to_be_the_same_are_both_posted():
+    # Passed on to the match: the bank line is not the receipt's payment, so its money is posted too.
+    balance = trial_balance(receipt_and_card_line(), REGISTERED, apart=[{1}, {0}])
+    assert [(l.code, str(l.debit), str(l.credit)) for l in balance.lines] == [
+        ("1200", "0.00", "72.00"), ("7400", "72.00", "0.00")]
+    assert {l.transaction for l in balance.journal} == {0, 1}

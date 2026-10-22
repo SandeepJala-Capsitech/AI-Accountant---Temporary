@@ -1,11 +1,13 @@
 import datetime as dt
+import io
 import re
 from decimal import Decimal
 
 import pytest
+from openpyxl import load_workbook
 
-from ledgersync import ledger
-from ledgersync.checks import issue
+from ledgersync import ledger, posting
+from ledgersync.checks import booked, issue
 from ledgersync.errors import ClientArchived, InvalidInput
 from ledgersync.models import ClientFields, ClientPatch, ManualUpload, RowPatch, Transaction
 from ledgersync.store import Store
@@ -249,6 +251,105 @@ def test_the_trial_balance_comes_from_the_saved_rows(store):
     assert [(l.code, l.debit, l.credit) for l in ledger.trial_balance(store, client.id).lines] == [
         ("1200", Decimal("0.00"), Decimal("72.00")), ("7502", Decimal("60.00"), Decimal("0.00")),
         ("2201", Decimal("12.00"), Decimal("0.00"))]
+
+
+SOUTHGATE = "Southgate Bath Car Park"
+
+
+def receipt_and_its_card_line(store, client=None):
+    """A receipt and the bank line that pays it (the same shop, amount and day), so the ledger takes them as one
+    payment. Saved to the client, or to a new one."""
+    client = client or store.create_client(CUBE)
+    paid = dict(gross="36.00", account_code="7400", date=dt.date(2026, 9, 9))
+    store.add_upload(client.id, "photo.jpg", "image", [row(document_type="receipt", counterparty=SOUTHGATE,
+                                                           document_ref="photo", **paid)])
+    store.add_upload(client.id, "Barclays.csv", "table", [row(document_type="statement", counterparty=SOUTHGATE.upper(),
+                                                              document_ref="card", **paid)])
+    return client
+
+
+def booked_in_the_ledger(store, client_id) -> set[int]:
+    return {r.id for r in ledger.build(store, client_id).transactions if booked(r)}
+
+
+def booked_in_the_trial_balance(store, client_id) -> set[int]:
+    """The rows the trial balance posts, from the places its journal names in the client's rows."""
+    rows = store.rows(client_id)
+    return {rows[line.transaction].id for line in ledger.trial_balance(store, client_id).journal}
+
+
+def test_a_card_line_and_its_receipt_are_one_payment_in_the_ledger_and_the_trial_balance(store):
+    client = receipt_and_its_card_line(store)
+    receipt, _ = store.rows(client.id)
+    assert booked_in_the_ledger(store, client.id) == booked_in_the_trial_balance(store, client.id) == {receipt.id}
+
+
+def test_a_payment_marked_not_the_same_as_a_receipt_is_booked_by_the_trial_balance_too(store):
+    # The ledger booked both rows; the trial balance matched without what the person said and booked only the receipt,
+    # so the bank line's money was missing from the figures while the quality gate, which reads the ledger, passed.
+    client = receipt_and_its_card_line(store)
+    receipt, line = store.rows(client.id)
+    ledger.change_row(store, client.id, line.id, RowPatch(apart_from=[receipt.id]))
+    balance = ledger.trial_balance(store, client.id)
+    assert booked_in_the_ledger(store, client.id) == {receipt.id, line.id}
+    assert booked_in_the_trial_balance(store, client.id) == booked_in_the_ledger(store, client.id)
+    assert [(l.code, l.debit, l.credit) for l in balance.lines if l.code in ("1200", "7400")] == [
+        ("1200", Decimal("0.00"), Decimal("72.00")), ("7400", Decimal("72.00"), Decimal("0.00"))]
+    assert {l.transaction for l in balance.journal if l.credit == Decimal("36.00")} == {0, 1}   # one bank leg each
+
+
+def test_the_exported_trial_balance_sheet_has_the_payment_marked_not_the_same(store):
+    client = receipt_and_its_card_line(store)
+    receipt, line = store.rows(client.id)
+    ledger.change_row(store, client.id, line.id, RowPatch(apart_from=[receipt.id]))
+    content, _ = ledger.export(store, client.id, dt.date(2026, 10, 1))
+    sheet = load_workbook(io.BytesIO(content))["Trial balance"]
+    assert [(r[0], r[2], r[3]) for r in sheet.iter_rows(min_row=3, values_only=True) if r[0] in ("1200", "7400")] == [
+        ("1200", 0, 72), ("7400", 72, 0)]
+
+
+def claim_with_a_corrected_line(store):
+    """A claim whose EE line a person changed from £27.50 to £30.22, so the claim no longer adds up to its total."""
+    client = store.create_client(CUBE)
+    lines = [row(document_type="expense_claim", counterparty="Matt Barnes", description=f"Matt Barnes - {shop}",
+                 gross=gross, account_code=account, date=dt.date(2026, 9, day), document_ref="claim",
+                 document_total="201.25")
+             for shop, gross, account, day in (("Clayton Hotel", "173.75", "7402", 14),
+                                               ("EE, mobile phone bill", "27.50", "7502", 3))]
+    store.add_upload(client.id, "claim.xlsx", "table", lines)
+    ee = store.rows(client.id)[1]
+    ledger.change_row(store, client.id, ee.id, RowPatch(gross="30.22"))
+    return client
+
+
+def test_a_row_a_person_corrected_is_booked_by_the_trial_balance_as_the_ledger_books_it(store):
+    client = claim_with_a_corrected_line(store)
+    assert store.rows(client.id)[1].original["gross"] == "27.50"
+    built = ledger.build(store, client.id)
+    assert [i.code for i in built.transactions[1].issues] == ["total_mismatch"]
+    assert booked_in_the_trial_balance(store, client.id) == booked_in_the_ledger(store, client.id)
+    assert [(l.code, l.debit) for l in ledger.trial_balance(store, client.id).lines if l.type == "expense"] == [
+        ("7402", Decimal("173.75")), ("7502", Decimal("30.22"))]   # the corrected amount, not the one first read
+
+
+def test_the_trial_balance_and_the_ledger_match_with_the_same_decisions(store, monkeypatch):
+    # Amounts a person corrected (read) and rows they said are not the same (apart) reach both matches alike.
+    client = receipt_and_its_card_line(store, claim_with_a_corrected_line(store))
+    receipt, line = store.rows(client.id)[2:]
+    ledger.change_row(store, client.id, line.id, RowPatch(apart_from=[receipt.id]))
+    seen, real = [], ledger.match
+
+    def spy(rows, settings, read=None, apart=None):
+        seen.append((read, apart))
+        return real(rows, settings, read=read, apart=apart)
+
+    monkeypatch.setattr(ledger, "match", spy)
+    monkeypatch.setattr(posting, "match", spy)
+    ledger.build(store, client.id)
+    ledger.trial_balance(store, client.id)
+    (built_read, built_apart), (balance_read, balance_apart) = seen
+    assert built_read == [None, Decimal("27.50"), None, None] and built_apart == [set(), set(), {3}, {2}]
+    assert (balance_read, balance_apart) == (built_read, built_apart)
 
 
 def test_an_edited_suspense_row_leaves_to_review(store):

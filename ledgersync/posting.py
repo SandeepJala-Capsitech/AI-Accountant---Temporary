@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from decimal import Decimal
+from typing import Optional
 
 from .accounts import BY_CODE, PURCHASE_VAT, SALES_VAT, VAT_ACCOUNTS, AccountType
 from .checks import booked, normalise
@@ -37,8 +38,12 @@ def _vat_last(item: tuple[str, Decimal]) -> tuple[bool, str]:
     return item[0] in VAT_ACCOUNTS, item[0]
 
 
-def trial_balance(transactions: list[Transaction], settings: BusinessSettings) -> TrialBalance:
-    ready = match([normalise(tx, settings) for tx in transactions], settings)
+def trial_balance(transactions: list[Transaction], settings: BusinessSettings,
+                  read: Optional[list[Optional[Decimal]]] = None, apart: Optional[list[set[int]]] = None) -> TrialBalance:
+    """The trial balance of the transactions, matched as matching.match does. A client's saved rows pass what people
+    decided (read and apart, as match takes them) so the figures book the rows the ledger books; pasted or unsaved
+    rows have no decisions and pass neither."""
+    ready = match([normalise(tx, settings) for tx in transactions], settings, read=read, apart=apart)
     posted = [(n, tx) for n, tx in enumerate(ready) if booked(tx)]   # a quote or the like waits for Include
     problems = [f"#{n + 1}: {issue.message}" for n, tx in posted
                 for issue in tx.issues if issue.severity == "error"]

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import datetime as dt
 from collections import defaultdict
+from decimal import Decimal
 from typing import Optional
 from weakref import WeakKeyDictionary
 
@@ -19,7 +20,7 @@ from .models import (BusinessSettings, Client, ClientFields, ClientPatch, Client
                      RowPatch, SavedRow, StatementCheck, Transaction, TrialBalance, Upload)
 from .posting import trial_balance as post
 from .statements import check_statement
-from .store import Store
+from .store import Store, StoredRow
 
 
 def settings_for(client: Client) -> BusinessSettings:
@@ -66,14 +67,10 @@ def needs_review(row: Transaction) -> bool:
     return any(found.severity in ("error", "warning") for found in row.issues)
 
 
-def build(store: Store, client_id: int) -> Ledger:
-    """The client's ledger: every saved row booked and matched with the client's settings, then each upload's
-    bank lines checked against the balances its statement prints, and its document's date against its file name's."""
-    client = store.get_client(client_id)
-    stored = store.rows(client_id)
-    settings = settings_for(client)
-    # What people decided, for matching: each row's amount as it was read before a person changed it, and the rows
-    # they said are not the same, from row ids to places in the list (both ways).
+def _decisions(stored: list[StoredRow]) -> tuple[list[Optional[Decimal]], list[set[int]]]:
+    """What people decided about a client's rows, for matching them: each row's amount as it was read before a person
+    changed it (None if unchanged), and, for each row, the rows they said are not the same as it, both ways, from row
+    ids to places in the list. The ledger and the trial balance both match with this, so they book the same rows."""
     read = [to_money(row.original.get("gross")) if row.original else None for row in stored]
     place = {row.id: n for n, row in enumerate(stored)}
     apart: list[set[int]] = [set() for _ in stored]
@@ -81,6 +78,16 @@ def build(store: Store, client_id: int) -> Ledger:
         for other in (place[i] for i in row.tx.apart_from if i in place):
             apart[n].add(other)
             apart[other].add(n)
+    return read, apart
+
+
+def build(store: Store, client_id: int) -> Ledger:
+    """The client's ledger: every saved row booked and matched with the client's settings, then each upload's
+    bank lines checked against the balances its statement prints, and its document's date against its file name's."""
+    client = store.get_client(client_id)
+    stored = store.rows(client_id)
+    settings = settings_for(client)
+    read, apart = _decisions(stored)
     ready = match([normalise(row.tx, settings) for row in stored], settings, read=read, apart=apart)
     positions: dict[int, list[int]] = defaultdict(list)
     for n, row in enumerate(stored):
@@ -197,9 +204,12 @@ def remove_row(store: Store, client_id: int, row_id: int) -> Ledger:
 
 
 def trial_balance(store: Store, client_id: int) -> TrialBalance:
-    """The client's trial balance from its saved rows; InvalidTransactions (422) while rows need fixing."""
+    """The client's trial balance from its saved rows, matched with what people decided as the ledger is, so it books
+    the rows the ledger books; InvalidTransactions (422) while rows need fixing."""
     client = store.get_client(client_id)
-    return post([row.tx for row in store.rows(client_id)], settings_for(client))
+    stored = store.rows(client_id)
+    read, apart = _decisions(stored)
+    return post([row.tx for row in stored], settings_for(client), read=read, apart=apart)
 
 
 def export(store: Store, client_id: int, day: dt.date) -> tuple[bytes, str]:
