@@ -7,7 +7,7 @@ export interface RequestedDocument {
   document_type: string
   period: string
   reason: string
-  status: 'pending' | 'received'
+  status: 'pending' | 'received' | 'replaced'   // replaced: a newer request (another link) asks for it
 }
 
 export interface RequestedDocuments {
@@ -49,7 +49,8 @@ export async function uploadRequested(token: string, requestId: string, file: Fi
   }
 }
 
-// Whether every document the link asks for has arrived.
+// Whether everything the link asks for has arrived: something has, and nothing is still waiting. A replaced
+// request isn't waiting here: a newer link asks for it.
 export function allReceived(documents: RequestedDocument[]): boolean {
-  return documents.length > 0 && documents.every(d => d.status === 'received')
+  return documents.some(d => d.status === 'received') && !documents.some(d => d.status === 'pending')
 }

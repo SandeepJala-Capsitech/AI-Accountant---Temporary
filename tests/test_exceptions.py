@@ -145,7 +145,8 @@ def test_a_reason_with_a_link_is_refused(tools, exception_id):
     assert result == {"ok": False, "error": "Keep the reason under 200 characters, as plain text without links or email addresses."}
 
 
-@pytest.mark.parametrize("reason", ["x" * 201, "Look at WWW.example.com", "Ask jenny@example.com", "HTTPS://x.test", ""])
+@pytest.mark.parametrize("reason", ["x" * 201, "Look at WWW.example.com", "Ask jenny@example.com", "HTTPS://x.test", "",
+                                    "Upload it at acme-invoices.co/pay", "See ACME.COM"])
 def test_a_long_reason_a_link_or_an_email_address_is_refused(tools, deps, job, exception_id, reason):
     assert ask(tools, exception_id, reason=reason) == {"ok": False, "error": REFUSED_REASON}
     assert deps.requests.pending_for(job.id) == []
@@ -156,9 +157,16 @@ def test_a_long_reason_a_link_or_an_email_address_is_refused(tools, deps, job, e
     ({"document_type": "Invoice at www.acme.test"}, "Name the document in 1 to 60 characters, as plain text without links or email addresses."),
     ({"period": "x" * 41}, "Give the period in 1 to 40 characters, as plain text without links or email addresses."),
     ({"period": "@acme"}, "Give the period in 1 to 40 characters, as plain text without links or email addresses."),
+    ({"document_type": "Invoice from acme.co"}, "Name the document in 1 to 60 characters, as plain text without links or email addresses."),
+    ({"period": "see acme-invoices.org"}, "Give the period in 1 to 40 characters, as plain text without links or email addresses."),
 ])
 def test_a_long_document_type_or_period_is_refused(tools, exception_id, changes, error):
     assert ask(tools, exception_id, **changes) == {"ok": False, "error": error}
+
+
+@pytest.mark.parametrize("reason", ["£1,200.00 paid to Acme Ltd", "e.g. the March statement", "Invoice No. 1043 for Acme Ltd."])
+def test_ordinary_text_with_full_stops_is_allowed(tools, exception_id, reason):
+    assert ask(tools, exception_id, reason=reason)["ok"] is True
 
 
 def test_a_request_must_be_for_an_exception_of_this_job(deps, cube_id, tools, row_id):
@@ -183,6 +191,16 @@ def test_a_request_is_pending_until_the_run_ends_and_is_audited_once(tools, deps
     assert [(e["actor"], e["target"]) for e in entries] == [("agent", {"request_id": pending["id"]})]
 
 
+def test_asking_again_for_the_same_document_in_a_job_gives_the_same_request(tools, deps, cube_id, job, exception_id):
+    another = log(tools, [], description="No statement for March")["exception_id"]
+    first = ask(tools, exception_id)
+    again = ask(tools, another, document_type="  INVOICE ", period="march  2026", reason="Another reason.")
+    assert again == first and len(deps.requests.pending_for(job.id)) == 1
+    entries = [e for e in deps.audit.entries(client_id=cube_id, job_id=job.id) if e["action"] == "request_client_document"]
+    assert len(entries) == 1
+    assert ask(tools, exception_id, period="February 2026")["request_id"] != first["request_id"]
+
+
 def test_line_breaks_in_what_the_client_reads_are_flattened(tools, deps, job, exception_id):
     ask(tools, exception_id, reason="It explains\n\nthe payment.", document_type=" Invoice\r\nfrom Acme ")
     [pending] = deps.requests.pending_for(job.id)
@@ -205,6 +223,46 @@ def test_a_request_is_sent_found_by_its_token_and_received(tools, deps, job, exc
     assert deps.requests.pending_for(job.id) == []
     [sent] = deps.requests.by_token("tok")
     assert (sent["id"], sent["status"], sent["sent_at"]) == (request_id, "sent", "2026-04-10T09:00:00.000000+00:00")
+    claimed = deps.requests.claim(request_id, token="tok", now=T + dt.timedelta(days=1))
+    assert (claimed["status"], claimed["receiving_since"]) == ("receiving", "2026-04-11T09:00:00.000000+00:00")
     received = deps.requests.mark_received(request_id, upload_id=7, at=T + dt.timedelta(days=1))
     assert (received["status"], received["upload_id"]) == ("received", 7)
     assert deps.requests.by_token("tok") == [received] and deps.requests.by_token("other") == []
+    assert deps.requests.claim(request_id, token="tok", now=T + dt.timedelta(days=30)) is None
+
+
+def sent(tools, deps, exception_id) -> str:
+    request_id = ask(tools, exception_id)["request_id"]
+    deps.requests.mark_sent([request_id], token="tok", at=T)
+    return request_id
+
+
+def test_only_a_request_being_received_becomes_received(tools, deps, exception_id):
+    request_id = sent(tools, deps, exception_id)
+    assert deps.requests.mark_received(request_id, upload_id=7, at=T) is None
+    assert deps.requests.get(request_id)["status"] == "sent"
+
+
+def test_one_upload_at_a_time_claims_a_request_on_its_own_link(tools, deps, exception_id):
+    request_id = sent(tools, deps, exception_id)
+    assert deps.requests.claim(request_id, token="other", now=T) is None
+    assert deps.requests.claim(request_id, token="tok", now=T)["status"] == "receiving"
+    assert deps.requests.claim(request_id, token="tok", now=T + dt.timedelta(minutes=14)) is None
+
+
+def test_a_claim_older_than_15_minutes_can_be_claimed_again(tools, deps, exception_id):
+    request_id = sent(tools, deps, exception_id)
+    stalled = deps.requests.claim(request_id, token="tok", now=T)          # say, the server stopped mid-read
+    again = deps.requests.claim(request_id, token="tok", now=T + dt.timedelta(minutes=16))
+    assert again["receiving_since"] == "2026-04-10T09:16:00.000000+00:00"
+    deps.requests.release(stalled)                                       # the stalled upload's late failure
+    assert deps.requests.get(request_id)["status"] == "receiving"        # leaves the new claim alone
+    deps.requests.release(again)
+    released = deps.requests.get(request_id)
+    assert released["status"] == "sent" and "receiving_since" not in released
+
+
+def test_resolving_twice_resolves_once(deps, exception_id):
+    first = deps.exceptions.resolve_once(exception_id, note="The client sent the document.")
+    assert (first[0]["status"], first[1]) == ("resolved", True)
+    assert deps.exceptions.resolve_once(exception_id, note="Again.") == (first[0], False)

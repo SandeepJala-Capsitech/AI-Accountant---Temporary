@@ -33,6 +33,7 @@ from ledgersync.models import (AnalysisResult, BusinessSettings, BusinessType, C
                                ClientSummary, Ledger, LedgerRequest, ManualUpload, RowPatch, TransactionList,
                                TrialBalance)
 from ledgersync.records.audit import AuditLog
+from ledgersync.records.exceptions import link_status
 from ledgersync.records.jobs import JobEvent, JobRecord, JobRecords
 from ledgersync.store import Store
 from ledgersync.store_mongo import MongoStore
@@ -385,51 +386,54 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
             raise NotFound(UNKNOWN_LINK)
         return deps, client, asked
 
-    def take_in(deps: ToolDeps, request: dict, upload_id: int) -> None:
-        """After the client's file is saved as an upload: the request is received and its exception resolved (once
-        every document asked for it has arrived), both audited as the system, and the client's latest job is
-        superseded by a new run, straight away or when the running one finishes."""
-        client_id, job_id = request["client_id"], request["job_id"]
-        deps.requests.mark_received(request["id"], upload_id=upload_id, at=dt.datetime.now(dt.timezone.utc))
-        deps.audit.append(actor="system", action="receive_document", client_id=client_id, job_id=job_id,
-                          target={"request_id": request["id"]}, before={"status": request["status"]},
-                          after={"status": "received", "upload_id": upload_id})
-        exception = deps.exceptions.get(request["exception_id"])
-        waiting = [r for r in deps.requests.for_job(job_id)
-                   if r["exception_id"] == exception["id"] and r["status"] != "received"]
-        if exception["status"] != "resolved" and not waiting:
-            deps.exceptions.resolve(exception["id"], note=RECEIVED_NOTE)
-            deps.audit.append(actor="system", action="resolve_exception", client_id=client_id, job_id=job_id,
-                              target={"exception_id": exception["id"]}, before={"status": exception["status"]},
-                              after={"status": "resolved", "note": RECEIVED_NOTE})
+    def take_in(deps: ToolDeps, claimed: dict, upload_id: int) -> None:
+        """After the client's file is saved as an upload: the request this upload claimed is received and its
+        exception resolved (once every document asked for it has arrived), each audited once as the system, and
+        the client's latest job is superseded by a new run (see AgentRunner.documents_arrived)."""
+        client_id, job_id = claimed["client_id"], claimed["job_id"]
+        received = deps.requests.mark_received(claimed["id"], upload_id=upload_id, at=dt.datetime.now(dt.timezone.utc))
+        if received is None:   # its claim stalled and another upload took it: that one records the receipt
+            logger.warning("Request %s was no longer this upload's when upload %s was saved", claimed["id"], upload_id)
+        else:
+            deps.audit.append(actor="system", action="receive_document", client_id=client_id, job_id=job_id,
+                              target={"request_id": claimed["id"]}, before={"status": "receiving"},
+                              after={"status": "received", "upload_id": upload_id})
+            waiting = [r for r in deps.requests.for_job(job_id)
+                       if r["exception_id"] == claimed["exception_id"] and r["status"] not in ("received", "replaced")]
+            if not waiting:
+                _, resolved = deps.exceptions.resolve_once(claimed["exception_id"], note=RECEIVED_NOTE)
+                if resolved:
+                    deps.audit.append(actor="system", action="resolve_exception", client_id=client_id,
+                                      job_id=job_id, target={"exception_id": claimed["exception_id"]},
+                                      before={"status": "open"}, after={"status": "resolved", "note": RECEIVED_NOTE})
         if runner is not None:
-            runner.documents_arrived(client_id)
+            runner.documents_arrived(client_id)   # the rows changed either way
 
     @app.get("/api/requests/{token}")
     def requested_documents(token: str):
-        """What the link asks the client for: the client's name and each document with its reason, "pending" until
-        it arrives and then "received". Nothing else from the job."""
+        """What the link asks the client for: the client's name and each document with its reason, and its status:
+        "pending" until it arrives, then "received" (from the moment an upload of it is being read), or "replaced"
+        once a newer request asks for the same document. Nothing else from the job."""
         _, client, asked = linked(token)
+        now = dt.datetime.now(dt.timezone.utc)
         return {"client_name": client.name,
                 "documents": [{"id": r["id"], "document_type": r["document_type"], "period": r["period"],
-                               "reason": r["reason"], "status": "received" if r["status"] == "received" else "pending"}
-                              for r in asked]}
+                               "reason": r["reason"], "status": link_status(r, now)} for r in asked]}
 
     @app.post("/api/requests/{token}/{request_id}/file", status_code=202)
     def send_requested_document(token: str, request_id: str, file: UploadFile = File(...),
                                 x_ledgersync: Optional[str] = Header(None)):
-        """Checks the file as /api/analyze does, keeps it, then reads it in a background job into a new upload for
-        the client: as the system, so past the row lock while a job runs. Once it is saved, the request is
-        received, its exception resolved and the job superseded (see take_in). The page polls /api/jobs/{job_id}."""
+        """Checks the file as /api/analyze does, claims the request for this upload (one at a time), keeps the
+        file, then reads it in a background job into a new upload for the client: as the system, so past the row
+        lock while a job runs. Once it is saved, the request is received, its exception resolved and the job
+        superseded (see take_in); if the reading fails first, the claim is let go so the file can be sent again.
+        The page polls /api/jobs/{job_id}."""
         if not x_ledgersync:
             raise RefusedRequest("Documents are taken from the Super Accountant pages only: the X-LedgerSync "
                                  "header is missing.")
         deps, client, asked = linked(token)
-        request = next((r for r in asked if r["id"] == request_id), None)
-        if request is None:
+        if not any(r["id"] == request_id for r in asked):
             raise NotFound("This link doesn't ask for that document.")
-        if request["status"] != "sent":
-            raise InvalidInput("This document has already arrived. Thank you.")
         if not file.filename:
             raise UnreadableFile("Choose a file to send.")
         data = intake.read_limited(file.file, settings.max_upload_bytes)
@@ -439,21 +443,32 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
             model_client.ensure_available()   # fail fast instead of queueing doomed work
         except ModelUnavailable:
             raise ModelUnavailable("Documents can't be read just now. Try again in a few minutes.") from None
-        blobs.put(data, name=name, content_type=file.content_type or "application/octet-stream")
+        claimed = deps.requests.claim(request_id, token=token, now=dt.datetime.now(dt.timezone.utc))
+        if claimed is None:   # received, replaced, or another upload of it is being read
+            raise InvalidInput("This document has already arrived. Thank you.")
 
         def work(ctx):
-            busy.begin(client.id)   # documents being read: no job starts for the client meanwhile
             try:
-                result = run_analysis(item, ctx, client, name, sha256)
-            finally:
-                busy.end(client.id)   # before take_in, which may start the superseding run
-            if "upload_id" not in result:
-                raise UnreadableFile(f"No transactions were found in '{name}'. Check it's the document asked for, "
-                                     "then send it again.")
-            take_in(deps, request, result["upload_id"])
+                busy.begin(client.id)   # documents being read: no new run starts for the client meanwhile
+                try:
+                    result = run_analysis(item, ctx, client, name, sha256)
+                finally:
+                    busy.end(client.id)   # before take_in, which may start the superseding run
+                if "upload_id" not in result:
+                    raise UnreadableFile(f"No transactions were found in '{name}'. Check it's the document asked "
+                                         "for, then send it again.")
+            except BaseException:
+                deps.requests.release(claimed)   # nothing was saved: the client can send the file again
+                raise
+            take_in(deps, claimed, result["upload_id"])
             return result
 
-        job = jobs.submit(work)
+        try:
+            blobs.put(data, name=name, content_type=file.content_type or "application/octet-stream")
+            job = jobs.submit(work)
+        except BaseException:
+            deps.requests.release(claimed)
+            raise
         return {"job_id": job.id, "status": job.status}
 
     return app

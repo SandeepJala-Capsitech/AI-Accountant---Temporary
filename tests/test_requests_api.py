@@ -1,6 +1,7 @@
 """The client's upload link: what it shows, and a file sent through it. The file is read into a new upload for
 the client (past the row lock), the request is marked received, its exception is resolved, and a run starts that
-supersedes the job awaiting review, or the running job once it finishes. Also the hourly reminder thread."""
+supersedes the job awaiting review, or the running job once it finishes (and never while other documents of the
+client are still being read). One upload at a time can claim a request. Also the hourly reminder thread."""
 import threading
 from types import SimpleNamespace
 
@@ -10,14 +11,16 @@ from fakes import FakeModel, transactions_json
 from fastapi.testclient import TestClient
 
 import server
+from ledgersync.agent.tools import ToolDeps
 from ledgersync.config import Settings
-from ledgersync.notify import ConsoleNotifier
+from ledgersync.errors import ModelError
+from ledgersync.notify import ConsoleNotifier, send_document_requests
 from ledgersync.records.audit import AuditLog
 from ledgersync.records.exceptions import DocumentRequests, Exceptions
 from ledgersync.records.jobs import JobRecords
 from ledgersync.store import Store
 from server import create_app
-from test_agent_jobs_api import YEAR, poll, start, stubs, wait_for
+from test_agent_jobs_api import DATES, WAIT, poll, start, stubs, wait_for
 from test_clients_api import BILL, add, manual
 
 mongo = pytest.mark.mongo
@@ -34,6 +37,20 @@ def pdf_bytes(text: str) -> bytes:
 
 
 PDF = pdf_bytes("Acme Ltd invoice 1043. Total GBP 1,200.00")
+
+
+class HeldModel(FakeModel):
+    """A FakeModel that holds back reading any document whose text holds `marker` until `go` is set."""
+
+    def __init__(self, replies):
+        super().__init__(replies)
+        self.marker = None
+        self.go = threading.Event()
+
+    def chat_json(self, messages, schema, images=None):
+        if self.marker is not None and self.marker in str(messages) and not self.go.wait(WAIT):
+            raise TimeoutError("The model was held for too long.")
+        return super().chat_json(messages, schema, images)
 
 
 @pytest.fixture
@@ -63,7 +80,7 @@ def doc_requests(mongo_store):
 
 @pytest.fixture
 def model():
-    return FakeModel([transactions_json(ACME)] * 3)
+    return HeldModel([transactions_json(ACME)] * 5)
 
 
 @pytest.fixture
@@ -72,6 +89,7 @@ def api(mongo_store, records, held, notifier, model):
                      notifier=notifier)
     with TestClient(app, headers={"X-LedgerSync": "1"}) as client:
         yield client
+        model.go.set()
         for event in held.values():
             event.set()
         poll(records.unfinished, lambda jobs: not jobs, "every job to finish")   # nothing writes after the drop
@@ -113,12 +131,17 @@ def send(api, sent, data=PDF, name="acme.pdf"):
     return api.post(f"/api/requests/{sent.token}/{sent.request_id}/file", files={"file": (name, data)})
 
 
+def finished(api, analysis_job_id: str) -> dict:
+    """The analysis once it has finished, and all that follows it."""
+    return poll(lambda: api.get(f"/api/jobs/{analysis_job_id}").json(),
+                lambda job: job["status"] not in ("queued", "running"), "the client's file to be read")
+
+
 def sent_and_read(api, sent) -> dict:
     """Sends the PDF through the link and waits for its analysis (and all that follows it) to finish."""
     resp = send(api, sent)
     assert resp.status_code == 202, resp.text
-    done = poll(lambda: api.get(f"/api/jobs/{resp.json()['job_id']}").json(),
-                lambda job: job["status"] not in ("queued", "running"), "the client's file to be read")
+    done = finished(api, resp.json()["job_id"])
     assert done["status"] == "succeeded", done
     return done["result"]
 
@@ -264,3 +287,59 @@ def test_the_reminder_thread_survives_an_error_and_stops_with_the_app(mongo_stor
         assert [t.is_alive() for t in reminder_threads()] == [True]
         assert api.get("/api/health").status_code == 200
     assert reminder_threads() == []
+
+
+@mongo
+def test_a_second_upload_while_the_first_is_being_read_is_refused_and_leaves_one_upload(api, model, sent_request,
+                                                                                       cube_id):
+    model.marker = "Acme"                                  # holds the reading of the client's file
+    first = send(api, sent_request)
+    assert first.status_code == 202, first.text
+    again = send(api, sent_request)                        # a second tab, a reload or the back button
+    assert (again.status_code, again.json()["detail"]["message"]) == (422, "This document has already arrived. Thank you.")
+    assert api.get("/api/requests/tok-1").json()["documents"][0]["status"] == "received"
+    model.go.set()
+    assert finished(api, first.json()["job_id"])["status"] == "succeeded"
+    assert [u["name"] for u in api.get(f"/api/clients/{cube_id}/ledger").json()["uploads"]].count("acme.pdf") == 1
+
+
+@mongo
+def test_a_failed_reading_lets_go_of_the_request_so_the_file_can_be_sent_again(api, model, sent_request):
+    model.replies[:] = [ModelError("The model's answer was cut off."), transactions_json(ACME)]
+    failed = finished(api, send(api, sent_request).json()["job_id"])
+    assert (failed["status"], failed["error"]["message"]) == ("failed", "The model's answer was cut off.")
+    assert api.get("/api/requests/tok-1").json()["documents"][0]["status"] == "pending"
+    sent_and_read(api, sent_request)
+    assert api.get("/api/requests/tok-1").json()["documents"][0]["status"] == "received"
+
+
+@mongo
+def test_the_new_run_waits_for_documents_still_being_read_then_starts_once(api, model, sent_request, finished_job,
+                                                                           records, cube_id, mongo_store):
+    model.marker = "HOLD"                                  # holds the accountant's own analysis
+    reading = api.post("/api/analyze", data={"text": "HOLD BT broadband 72.00", "client_id": str(cube_id)})
+    assert reading.status_code == 202, reading.text
+    poll(lambda: api.app.state.busy.busy(cube_id), bool, "the accountant's analysis to start")
+    sent_and_read(api, sent_request)                       # the client's file is read and saved meanwhile
+    assert records.latest_for(cube_id).id == finished_job
+    assert records.get(finished_job).status == "awaiting_review"
+    model.go.set()
+    assert finished(api, reading.json()["job_id"])["status"] == "succeeded"
+    replacement = poll(lambda: records.latest_for(cube_id), lambda job: job.id != finished_job, "the new run")
+    assert replacement.supersedes == finished_job and records.get(finished_job).status == "superseded"
+    assert wait_for(api, replacement.id)["status"] == "awaiting_review"
+    assert mongo_store.db.jobs.count_documents({"client_id": cube_id}) == 2      # the finished job and one new run
+
+
+@mongo
+def test_a_request_a_newer_run_asked_again_shows_as_replaced_and_takes_no_upload(api, sent_request, exceptions,
+                                                                                   doc_requests, records, cube_id,
+                                                                                   finished_job, mongo_store, notifier):
+    newer = records.create(cube_id, *DATES, supersedes=finished_job)
+    records.update(newer.id, status="awaiting_review", stage="done")
+    ask(exceptions, doc_requests, cube_id, newer.id, None)               # the same document, not emailed yet
+    deps = ToolDeps(store=mongo_store, records=records, audit=AuditLog(mongo_store.db), notifier=notifier)
+    assert send_document_requests(deps, cube_id, newer.id) == 1
+    assert api.get("/api/requests/tok-1").json()["documents"][0]["status"] == "replaced"
+    refused = send(api, sent_request)
+    assert (refused.status_code, refused.json()["detail"]["message"]) == (422, "This document has already arrived. Thank you.")

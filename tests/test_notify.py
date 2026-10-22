@@ -163,8 +163,20 @@ def test_a_links_due_requests_go_in_one_reminder(deps, notifier, cube_id, job, t
 
 @mongo
 def test_a_received_document_gets_no_reminder(deps, notifier, request_sent_at_t):
+    deps.requests.claim(request_sent_at_t, token="tok", now=T + dt.timedelta(days=1))
     deps.requests.mark_received(request_sent_at_t, upload_id=1, at=T + dt.timedelta(days=1))
     assert send_reminders(deps, T + dt.timedelta(days=3)) == 0 and notifier.sent == []
+
+
+@mongo
+@pytest.mark.parametrize("claimed_after, reminders", [
+    (dt.timedelta(days=1), 1),                                  # a read that stalled two days ago: still waiting
+    (dt.timedelta(days=3) - dt.timedelta(minutes=5), 0),        # being read right now: no reminder
+])
+def test_a_document_being_read_gets_no_reminder_unless_the_read_stalled(deps, notifier, request_sent_at_t,
+                                                                         claimed_after, reminders):
+    deps.requests.claim(request_sent_at_t, token="tok", now=T + claimed_after)
+    assert send_reminders(deps, T + dt.timedelta(days=3)) == reminders
 
 
 @mongo
@@ -253,3 +265,65 @@ def test_without_an_smtp_host_emails_go_to_the_log(caplog):
         console.send("a@b.test", "Subject", "Body")
     assert [(e.to, e.subject, e.body) for e in console.sent] == [("a@b.test", "Subject", "Body")]
     assert "Subject" in caplog.text
+
+
+# --- a newer request closes the older one -------------------------------------------------------------------
+
+def newer_run(deps, cube_id, job, *documents):
+    """A run that superseded `job`, with pending requests for the documents given."""
+    newer = deps.records.create(cube_id, *YEAR, supersedes=job.id)
+    return newer, asked(deps, cube_id, newer.id, *documents)
+
+
+@mongo
+def test_sending_a_newer_request_closes_the_older_one_for_the_same_document(deps, notifier, cube_id, job,
+                                                                            request_sent_at_t):
+    newer, [newer_id] = newer_run(deps, cube_id, job, ("invoice from ACME Ltd ", "march 2026", "Still needed."))
+    assert send_document_requests(deps, cube_id, newer.id) == 1
+    old = deps.requests.get(request_sent_at_t)
+    assert (old["status"], old["replaced_by"]) == ("replaced", newer_id)
+    [entry] = [e for e in deps.audit.entries(client_id=cube_id) if e["action"] == "replace_request"]
+    assert (entry["actor"], entry["job_id"], entry["target"], entry["before"], entry["after"]) == (
+        "system", newer.id, {"request_id": request_sent_at_t}, {"status": "sent"},
+        {"status": "replaced", "replaced_by": newer_id})
+    now = dt.datetime.now(dt.timezone.utc)
+    assert deps.requests.claim(request_sent_at_t, token="tok", now=now) is None     # its upload is refused
+    notifier.sent.clear()
+    assert send_reminders(deps, now + dt.timedelta(days=3)) == 1                    # the newer one's only
+    assert notifier.sent[0].body.count("\n- ") == 1 and f"{PUBLIC_URL}/requests/tok\n" not in notifier.sent[0].body
+
+
+@mongo
+def test_a_request_for_another_period_is_not_closed(deps, cube_id, job, request_sent_at_t):
+    newer, _ = newer_run(deps, cube_id, job, ("Invoice from Acme Ltd", "February 2026", "Also needed."))
+    send_document_requests(deps, cube_id, newer.id)
+    assert deps.requests.get(request_sent_at_t)["status"] == "sent"
+
+
+@mongo
+def test_an_older_request_never_emailed_is_closed_too(deps, cube_id, job):
+    [never_sent] = asked(deps, cube_id, job.id, INVOICE)                 # its run failed before the email
+    newer, _ = newer_run(deps, cube_id, job, INVOICE)
+    send_document_requests(deps, cube_id, newer.id)
+    assert deps.requests.get(never_sent)["status"] == "replaced"
+
+
+@mongo
+@pytest.mark.parametrize("claimed_ago, status", [(dt.timedelta(minutes=5), "receiving"),     # uploading now
+                                                 (dt.timedelta(minutes=16), "replaced")])    # a stalled upload
+def test_a_request_being_uploaded_right_now_is_not_closed(deps, cube_id, job, request_sent_at_t, claimed_ago, status):
+    deps.requests.claim(request_sent_at_t, token="tok", now=dt.datetime.now(dt.timezone.utc) - claimed_ago)
+    newer, _ = newer_run(deps, cube_id, job, INVOICE)
+    send_document_requests(deps, cube_id, newer.id)
+    assert deps.requests.get(request_sent_at_t)["status"] == status
+
+
+@mongo
+def test_without_an_email_to_send_the_newer_request_the_older_one_stays_live(deps, mongo_store):
+    client_id = client_with_rows(mongo_store, contact_email="")
+    old_job = deps.records.create(client_id, *YEAR)
+    [old] = asked(deps, client_id, old_job.id, INVOICE)
+    deps.requests.mark_sent([old], token="tok", at=T)                   # sent before the address was removed
+    newer, _ = newer_run(deps, client_id, old_job, INVOICE)
+    assert send_document_requests(deps, client_id, newer.id) == 0
+    assert deps.requests.get(old)["status"] == "sent"

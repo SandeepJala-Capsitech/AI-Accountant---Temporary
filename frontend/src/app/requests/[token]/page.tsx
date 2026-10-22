@@ -76,6 +76,8 @@ export default function RequestedDocumentsPage() {
               <div className="muted small">{doc.reason}</div>
               {doc.status === 'received' ? (
                 <div className="small text-ok">✓ Received</div>
+              ) : doc.status === 'replaced' ? (
+                <div className="small muted">Replaced by a newer request.</div>
               ) : sending === doc.id ? (
                 <div className="small" role="status">Uploading…</div>
               ) : (

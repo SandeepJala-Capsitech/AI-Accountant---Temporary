@@ -2,8 +2,10 @@
 
 An exception says what couldn't be settled, the assumption the agent made instead and how sure it is; the job
 carries on. A document request is linked to an exception: it waits as `pending` until the run ends, when the
-system emails the client one link for all of the run's requests (`sent`), and is `received` once the client
-uploads the file through that link.
+system emails the client one link for all of the run's requests (`sent`). An upload through that link claims it
+(`receiving`, one upload at a time) while the file is read, and it is `received` once the file is saved. When a
+later run emails a request for the same document, the older one still waiting is closed (`replaced`), so the
+client has one live request for each document.
 
 Both are keyed by what they say, so a step that runs again after a restart and logs the same exception, or asks
 for the same document, gets the one already saved instead of a second.
@@ -26,10 +28,11 @@ from ledgersync.errors import NotFound
 logger = logging.getLogger(__name__)
 
 ExceptionStatus = Literal["open", "resolved"]
-RequestStatus = Literal["pending", "sent", "received"]
+RequestStatus = Literal["pending", "sent", "receiving", "received", "replaced"]
 
 FIRST_REMINDER = dt.timedelta(days=3)     # after the email, while the document hasn't arrived
 SECOND_REMINDER = dt.timedelta(days=7)    # and the last one
+CLAIM_EXPIRES = dt.timedelta(minutes=15)  # an upload's claim this old is taken as stalled (say, the server stopped)
 
 # Databases whose indexes were already set up (or refused) in this process, by name, as in records/jobs.py: the
 # database user the app runs as may not be allowed to create indexes, so they are asked for once per process.
@@ -81,6 +84,29 @@ def _public(doc: dict) -> dict:
     return {"id": doc["_id"], **{k: v for k, v in doc.items() if k != "_id"}}
 
 
+def document_key(document_type: str, period: str) -> str:
+    """What makes two of a client's requests ask for the same document: its type and period, trimmed, with runs of
+    spaces as one, and in lower case."""
+    return f"{' '.join(document_type.split()).lower()}\x1f{' '.join(period.split()).lower()}"
+
+
+def _waiting(now: dt.datetime) -> dict:
+    """The query for requests still waiting for the client's file: sent, or claimed by an upload that stalled."""
+    return {"$or": [{"status": "sent"},
+                    {"status": "receiving", "receiving_since": {"$lte": _iso(now - CLAIM_EXPIRES)}}]}
+
+
+def link_status(request: dict, now: dt.datetime) -> str:
+    """A request as the client's page shows it: "pending" while it waits for the file (a stalled upload's claim
+    counts as waiting), "replaced" once a newer request asks for the same document, otherwise "received" (from
+    the moment an upload claims it)."""
+    status = request["status"]
+    if status == "replaced":
+        return "replaced"
+    stalled = status == "receiving" and request.get("receiving_since", "") <= _iso(now - CLAIM_EXPIRES)
+    return "pending" if status in ("pending", "sent") or stalled else "received"
+
+
 def _insert_once(collection, doc: dict) -> tuple[dict, bool]:
     """Saves the record unless one with its id is already saved; gives the saved record and whether this
     call saved it."""
@@ -126,18 +152,25 @@ class Exceptions:
         return [_public(doc) for doc in docs]
 
     def resolve(self, exception_id: str, *, note: str) -> dict:
-        """Marks the exception resolved with a note saying how, and returns it."""
+        """Marks the exception resolved with a note saying how, and returns it (one already resolved is returned
+        as it is)."""
+        return self.resolve_once(exception_id, note=note)[0]
+
+    def resolve_once(self, exception_id: str, *, note: str) -> tuple[dict, bool]:
+        """As `resolve`, and also whether this call resolved it: only an open exception is resolved, so two callers
+        at once can't both resolve it."""
         doc = self._exceptions.find_one_and_update(
-            {"_id": exception_id}, {"$set": {"status": "resolved", "note": note, "resolved_at": _now()}},
-            return_document=ReturnDocument.AFTER)
-        if doc is None:
-            raise NotFound("This exception was not found.")
-        return _public(doc)
+            {"_id": exception_id, "status": "open"},
+            {"$set": {"status": "resolved", "note": note, "resolved_at": _now()}}, return_document=ReturnDocument.AFTER)
+        if doc is not None:
+            return _public(doc), True
+        return self.get(exception_id), False   # NotFound when there is no such exception
 
 
 class DocumentRequests:
-    """The documents asked of the client: `pending` until the run's email goes, `sent` with the email's link
-    (its token) until the client uploads the file, then `received`."""
+    """The documents asked of the client: `pending` until the run's email goes, `sent` with the email's link (its
+    token) until an upload claims it (`receiving`), then `received`; or `replaced` by a later run's request for the
+    same document."""
 
     def __init__(self, db: Database):
         self._requests = db["document_requests"]
@@ -145,18 +178,20 @@ class DocumentRequests:
 
     def create(self, *, client_id: int, job_id: str, exception_id: str, document_type: str, period: str,
                reason: str) -> dict:
-        """Saves a pending request and returns it; asking again in the same job for the same document for the
-        same exception gets the request already saved."""
+        """Saves a pending request and returns it. A job asks for each document once: asking again in the same
+        job for the same document (see `document_key`), for whatever exception, gets the request already saved."""
         return self.create_once(client_id=client_id, job_id=job_id, exception_id=exception_id,
                                 document_type=document_type, period=period, reason=reason)[0]
 
     def create_once(self, *, client_id: int, job_id: str, exception_id: str, document_type: str, period: str,
                     reason: str) -> tuple[dict, bool]:
         """As `create`, and also whether this call saved it."""
-        doc = {"_id": _key(job_id, exception_id, document_type, period), "client_id": client_id, "job_id": job_id,
+        key = document_key(document_type, period)
+        doc = {"_id": _key(job_id, client_id, key), "client_id": client_id, "job_id": job_id,
                "exception_id": exception_id, "document_type": document_type, "period": period, "reason": reason,
-               "status": "pending", "token": None, "sent_at": None, "reminders": 0, "reminded_at": None,
-               "received_at": None, "upload_id": None, "created_at": _now()}
+               "document_key": key, "status": "pending", "token": None, "sent_at": None, "reminders": 0,
+               "reminded_at": None, "received_at": None, "upload_id": None, "replaced_by": None,
+               "created_at": _now()}
         return _insert_once(self._requests, doc)
 
     def get(self, request_id: str) -> dict:
@@ -182,21 +217,56 @@ class DocumentRequests:
         """The requests one email's link is for, in the order they were made; none for an unknown token."""
         return self._find({"token": token}) if token else []
 
-    def mark_received(self, request_id: str, *, upload_id: int, at: dt.datetime) -> dict:
-        """Marks the request received, with the upload the client's file was saved as, and returns it."""
+    def claim(self, request_id: str, *, token: str, now: dt.datetime) -> Optional[dict]:
+        """Marks a request waiting on this link as being received by one upload, and returns it. None when it
+        isn't waiting on this link: received, replaced, or claimed by another upload in the last 15 minutes."""
         doc = self._requests.find_one_and_update(
-            {"_id": request_id}, {"$set": {"status": "received", "upload_id": upload_id, "received_at": _iso(at)}},
+            {"_id": request_id, "token": token, **_waiting(now)},
+            {"$set": {"status": "receiving", "receiving_since": _iso(now)}}, return_document=ReturnDocument.AFTER)
+        return _public(doc) if doc is not None else None
+
+    def release(self, claimed: dict) -> None:
+        """Puts a claimed request back to sent when its upload failed. Only the claim given is released: one that
+        stalled and was claimed again by a later upload is left to that upload."""
+        self._requests.update_one(
+            {"_id": claimed["id"], "status": "receiving", "receiving_since": claimed["receiving_since"]},
+            {"$set": {"status": "sent"}, "$unset": {"receiving_since": ""}})
+
+    def mark_received(self, request_id: str, *, upload_id: int, at: dt.datetime) -> Optional[dict]:
+        """Marks a request being received as received, with the upload the client's file was saved as, and
+        returns it. None when it wasn't being received (say, received already)."""
+        doc = self._requests.find_one_and_update(
+            {"_id": request_id, "status": "receiving"},
+            {"$set": {"status": "received", "upload_id": upload_id, "received_at": _iso(at)}},
             return_document=ReturnDocument.AFTER)
-        if doc is None:
-            raise NotFound("This document request was not found.")
-        return _public(doc)
+        return _public(doc) if doc is not None else None
+
+    def replace_older(self, request: dict, *, now: dt.datetime) -> list[dict]:
+        """Closes the client's older requests for the same document from other jobs that are still waiting
+        (pending, sent, or claimed by an upload that stalled) as replaced by this one, and returns them as they
+        were. A request an upload is reading right now is left to finish."""
+        closable = {"$or": [{"status": {"$in": ["pending", "sent"]}},
+                            {"status": "receiving", "receiving_since": {"$lte": _iso(now - CLAIM_EXPIRES)}}]}
+        older = self._requests.find({"client_id": request["client_id"], "document_key": request["document_key"],
+                                     "job_id": {"$ne": request["job_id"]},
+                                     "created_at": {"$lt": request["created_at"]}, **closable}, {"_id": 1})
+        closed = []
+        for doc in older:
+            was = self._requests.find_one_and_update(
+                {"_id": doc["_id"], **closable},
+                {"$set": {"status": "replaced", "replaced_by": request["id"], "replaced_at": _iso(now)},
+                 "$unset": {"receiving_since": ""}}, return_document=ReturnDocument.BEFORE)
+            if was is not None:   # not claimed by an upload in the meantime
+                closed.append(_public(was))
+        return closed
 
     def due_reminders(self, now: dt.datetime) -> list[dict]:
-        """Sent requests whose document hasn't arrived and that are due a reminder: the first from 3 days after
-        the email, the second from 7 days after, and never a third."""
+        """Requests still waiting for the client's file that are due a reminder: the first from 3 days after the
+        email, the second from 7 days after, and never a third. A stalled upload's claim counts as waiting; a
+        request being received or replaced gets none."""
         first, second = _iso(now - FIRST_REMINDER), _iso(now - SECOND_REMINDER)
-        return self._find({"status": "sent", "$or": [{"reminders": 0, "sent_at": {"$lte": first}},
-                                                     {"reminders": 1, "sent_at": {"$lte": second}}]})
+        return self._find({"$and": [_waiting(now), {"$or": [{"reminders": 0, "sent_at": {"$lte": first}},
+                                                            {"reminders": 1, "sent_at": {"$lte": second}}]}]})
 
     def mark_reminded(self, request: dict, *, now: dt.datetime) -> bool:
         """Counts a reminder for a request from `due_reminders`, and says whether this call did (False when
@@ -204,7 +274,7 @@ class DocumentRequests:
         for a week sends one reminder, not two an hour apart."""
         both_due = request["sent_at"] <= _iso(now - SECOND_REMINDER)
         saved = self._requests.update_one(
-            {"_id": request["id"], "status": "sent", "reminders": request["reminders"]},
+            {"_id": request["id"], "reminders": request["reminders"], **_waiting(now)},
             {"$set": {"reminders": 2 if both_due else request["reminders"] + 1, "reminded_at": _iso(now)}})
         return saved.modified_count == 1
 

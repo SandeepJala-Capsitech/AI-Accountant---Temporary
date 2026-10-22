@@ -42,10 +42,19 @@ test('getRequests passes on the unknown-link message', async () => {
   assert.equal(sent?.get('X-LedgerSync'), '1')
 })
 
-test('everything has arrived only once every document asked for has', () => {
-  const doc = (status: RequestedDocument['status']): RequestedDocument =>
-    ({ id: 'r', document_type: 'Invoice', period: 'March 2026', reason: 'Why', status })
+const doc = (status: RequestedDocument['status']): RequestedDocument =>
+  ({ id: 'r', document_type: 'Invoice', period: 'March 2026', reason: 'Why', status })
+
+test('getRequests passes a replaced request through', async () => {
+  const page = { client_name: 'Business Cube Ltd', documents: [{ ...doc('replaced'), id: 'r1' }] }
+  globalThis.fetch = (async () => reply(page)) as typeof fetch
+  assert.deepEqual(await getRequests('tok-1'), page)
+})
+
+test('everything has arrived only once nothing asked for is still waiting', () => {
   assert.equal(allReceived([doc('received'), doc('received')]), true)
   assert.equal(allReceived([doc('received'), doc('pending')]), false)
+  assert.equal(allReceived([doc('received'), doc('replaced')]), true)    // a newer request asks for that one
+  assert.equal(allReceived([doc('replaced')]), false)                    // nothing has arrived through this link
   assert.equal(allReceived([]), false)
 })

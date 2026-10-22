@@ -350,8 +350,9 @@ def row_tools(deps: ToolDeps, client_id: int, job_id: str) -> dict[str, BaseTool
 
 
 # What the client reads of a request goes into a fixed email, so it must be short plain text: no link or address
-# a document's text could have talked the agent into sending.
-_NOT_PLAIN = re.compile(r"http|www\.|@", re.IGNORECASE)
+# a document's text could have talked the agent into sending, including a bare domain such as acme-pay.co/x, which
+# mail programs turn into a link. A full stop between letters ("e.g.", "Ltd.") or in money is still fine.
+_NOT_PLAIN = re.compile(r"http|www\.|@|\b[a-z0-9-]+\.[a-z]{2,}\b", re.IGNORECASE)
 REASON_RULE = "Keep the reason under 200 characters, as plain text without links or email addresses."
 TYPE_RULE = "Name the document in 1 to 60 characters, as plain text without links or email addresses."
 PERIOD_RULE = "Give the period in 1 to 40 characters, as plain text without links or email addresses."
@@ -414,8 +415,8 @@ def exception_tools(deps: ToolDeps, client_id: int, job_id: str, stage: str) -> 
         """Ask the client for a missing document, linked to the exception you logged about it.
 
         You never write to the client. When the run ends, the system emails the client one link for every document
-        asked for, and the client reads the document type, the period and the reason. Asking again for the same
-        document for the same exception changes nothing.
+        asked for, and the client reads the document type, the period and the reason. Ask for each document once:
+        asking again for the same document type and period gives the same request_id and changes nothing.
 
         Args:
             document_type: The document, in 1 to 60 characters, such as "Invoice from Acme Ltd".

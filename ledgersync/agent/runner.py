@@ -11,7 +11,7 @@ import logging
 import threading
 from collections import Counter
 from contextlib import contextmanager
-from typing import Iterator, Optional
+from typing import Callable, Iterator, Optional
 
 from ledgersync import ledger as books
 from ledgersync.errors import InvalidInput, JobRunning, LedgerSyncError
@@ -33,11 +33,13 @@ NOT_CARRIED_ON = "This job couldn't carry on from where it stopped. Details are 
 
 
 class Busy:
-    """Counts the analyses reading documents for each client right now."""
+    """Counts the analyses reading documents for each client right now. `on_idle`, when set (the runner sets it),
+    is called with the client's ID each time the client's count comes back to zero, outside this lock."""
 
     def __init__(self):
         self._lock = threading.Lock()
         self._reading: Counter[int] = Counter()
+        self.on_idle: Optional[Callable[[int], None]] = None
 
     def begin(self, client_id: int) -> None:
         with self._lock:
@@ -46,8 +48,11 @@ class Busy:
     def end(self, client_id: int) -> None:
         with self._lock:
             self._reading[client_id] -= 1
-            if self._reading[client_id] <= 0:
+            idle = self._reading[client_id] <= 0
+            if idle:
                 del self._reading[client_id]
+        if idle and self.on_idle is not None:
+            self.on_idle(client_id)
 
     def busy(self, client_id: int) -> bool:
         with self._lock:
@@ -61,6 +66,8 @@ class AgentRunner:
         self._store = store
         self._jobs = jobs
         self._busy = busy
+        self._held_back: set[int] = set()   # clients whose new run waits for their documents to be read (_LOCK)
+        busy.on_idle = self._documents_read
 
     def start(self, client_id: int, period_start: dt.date, period_end: dt.date) -> JobRecord:
         """Starts a job on the client's rows for the period. Refused while the client has no uploads, while
@@ -131,8 +138,10 @@ class AgentRunner:
         review, it is marked superseded and a new run for the same period starts straight away, superseding it;
         that run is returned. When the latest job is still running, it is marked as having new documents, and is
         superseded the same way when it finishes. A failed or cancelled job (or none) is left alone: a person
-        starts the next run."""
+        starts the next run. A new run never starts while the client's documents are being read: it is held back
+        until the last of them is saved (see _documents_read), then this is asked again."""
         with _LOCK:
+            self._held_back.discard(client_id)
             job = self.records.latest_for(client_id)
             if job is None or job.status not in ("preparing", "awaiting_review"):
                 return None
@@ -140,10 +149,24 @@ class AgentRunner:
                 if not job.new_documents:
                     self.records.update(job.id, new_documents=True)
                 return None
+            if self._busy.busy(client_id):
+                self._held_back.add(client_id)
+                return None
             self.records.event(job.id, job.stage, "The client sent documents, so a new run replaces this one.")
             replacement = self._supersede(job)
         self._submit(replacement)
         return replacement
+
+    def _documents_read(self, client_id: int) -> None:
+        """Busy's on_idle: nothing is being read for the client any more, so a new run held back for it starts now.
+        Never raises (it runs in the `finally` of whoever finished reading): a failure is logged."""
+        with _LOCK:
+            held = client_id in self._held_back
+        if held:
+            try:
+                self.documents_arrived(client_id)
+            except Exception:
+                logger.exception("The new run held back for client %s could not be started", client_id)
 
     def refuse_while_running(self, client_id: int) -> None:
         """Raises JobRunning while the client's job is preparing: its rows can't change until it finishes."""

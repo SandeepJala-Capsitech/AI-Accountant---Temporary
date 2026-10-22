@@ -121,7 +121,8 @@ def _period(deps: ToolDeps, job_id: str) -> str:
 
 def send_document_requests(deps: ToolDeps, client_id: int, job_id: str) -> int:
     """Emails the client contact one link for every request the job made that hasn't been sent, marks them sent,
-    and returns how many there were. Without a contact email nothing is sent: an exception says so, and 0 is
+    closes the client's older requests for the same documents (each audited as replaced), and returns how many
+    were sent. Without a contact email nothing is sent and nothing closed: an exception says so, and 0 is
     returned."""
     pending = deps.requests.pending_for(job_id)
     if not pending:
@@ -141,7 +142,13 @@ def send_document_requests(deps: ToolDeps, client_id: int, job_id: str) -> int:
     token = secrets.token_urlsafe(24)
     subject, body = _email(SUBJECT, client, _period(deps, job_id), pending, token, deps.settings.public_url)
     deps.notifier.send(client.contact_email, subject, body)
-    deps.requests.mark_sent([r["id"] for r in pending], token=token, at=dt.datetime.now(dt.timezone.utc))
+    now = dt.datetime.now(dt.timezone.utc)
+    deps.requests.mark_sent([r["id"] for r in pending], token=token, at=now)
+    for request in pending:   # closed only now the new one is out, so the client always has a live request
+        for old in deps.requests.replace_older(request, now=now):
+            deps.audit.append(actor="system", action="replace_request", client_id=client_id, job_id=job_id,
+                              target={"request_id": old["id"]}, before={"status": old["status"]},
+                              after={"status": "replaced", "replaced_by": request["id"]})
     return len(pending)
 
 
