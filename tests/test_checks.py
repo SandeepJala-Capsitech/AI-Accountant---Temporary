@@ -5,7 +5,7 @@ from decimal import Decimal
 import pytest
 from pydantic import ValidationError
 
-from helpers import normalise_and_match, only_issue, row
+from helpers import SETTINGS as HELPER_SETTINGS, net, normalise_and_match, only_issue, row
 
 from ledgersync.accounts import BANK, CHART
 from ledgersync.checks import normalise
@@ -330,3 +330,33 @@ def test_a_payroll_report_keeps_the_account_it_is_owed_on_and_is_never_paid_as_a
     assert report_after.contra_account_code == "2220" and report_after.owed is None
     assert not line_after.pays and not line_after.candidates
     assert not [i for i in line_after.issues if i.code in ("open_document", "possible_payment", "choose_payment")]
+
+
+def test_a_payroll_line_without_owed_to_is_owed_not_paid_and_flagged():
+    line = row(date=dt.date(2026, 3, 28), gross=Decimal("3000.00"), account_code="7000", document_type="payroll")
+    [checked] = normalise_and_match([line])
+    assert checked.contra_account_code == "2220"
+    assert only_issue(checked, "payroll_owed_to").message == (
+        "Check what this payroll line is owed to: booked to Net Wages for now.")
+    assert only_issue(checked, "payroll_owed_to").severity == "warning"
+    bank = row(date=dt.date(2026, 3, 28), gross=Decimal("3000.00"), account_code="2220", document_type="statement")
+    tb = trial_balance([line, bank], HELPER_SETTINGS)
+    assert (net(tb, "7000"), net(tb, "2220"), net(tb, "1200")) == (Decimal("3000.00"), 0, Decimal("-3000.00"))
+
+
+def test_a_saved_payroll_line_on_the_bank_or_another_account_is_moved_to_what_it_owes():
+    for contra in ("1200", "2250"):
+        line = row(gross=Decimal("3000.00"), account_code="7000", document_type="payroll", contra_account_code=contra)
+        checked = normalise(line, HELPER_SETTINGS)
+        assert checked.contra_account_code == "2220" and only_issue(checked, "payroll_owed_to")
+
+
+def test_employers_ni_and_pension_default_to_their_own_liabilities():
+    for account, owed in (("7006", "2210"), ("7007", "2230")):
+        checked = normalise(row(gross=Decimal("100.00"), account_code=account, document_type="payroll"), HELPER_SETTINGS)
+        assert checked.contra_account_code == owed and only_issue(checked, "payroll_owed_to")
+
+
+def test_a_payroll_line_with_its_owed_to_has_no_warning():
+    line = row(gross=Decimal("100.00"), account_code="7006", document_type="payroll", contra_account_code="2210")
+    assert not [i for i in normalise(line, HELPER_SETTINGS).issues if i.code == "payroll_owed_to"]

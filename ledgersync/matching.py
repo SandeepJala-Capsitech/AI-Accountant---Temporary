@@ -11,8 +11,8 @@ from decimal import Decimal
 from itertools import combinations
 from typing import Optional
 
-from .accounts import DEBTORS, NET_WAGES, PAYE, PENSION, STAFF_EXPENSES
-from .checks import MATCHING_ISSUES, booked, issue, long_date, reclaims_vat
+from .accounts import DEBTORS, STAFF_EXPENSES
+from .checks import MATCHING_ISSUES, PAYROLL_OWED, booked, issue, long_date, reclaims_vat
 from .models import BusinessSettings, Direction, Issue, Settlement, Transaction
 from .money import ZERO
 
@@ -169,7 +169,7 @@ def _without_payroll(rows: list[Transaction]) -> list[Transaction]:
     months = {(tx.date.year, tx.date.month) for tx in rows if tx.document_type == "payroll" and tx.date}
     result = []
     for tx in rows:
-        if tx.document_type == "statement" and tx.date and tx.account_code in _WAGES_OWED:
+        if tx.document_type == "statement" and tx.date and tx.account_code in PAYROLL_OWED:
             before = (tx.date.year, tx.date.month - 1) if tx.date.month > 1 else (tx.date.year - 1, 12)
             if not months & {(tx.date.year, tx.date.month), before}:
                 found = issue("no_payroll", f"No payroll report for {tx.date:%B %Y}: add it so wages are booked in "
@@ -279,7 +279,6 @@ def _record(rows: list[Transaction], changes: list[dict], n: int, receipt: _Docu
 
 # Rows that move money and so can pay a document: a bank line, and each item of an agent's statement (the rent it
 # collected can pay a sales invoice, a repair it paid the plumber's bill).
-_WAGES_OWED = frozenset({NET_WAGES, PAYE, PENSION})
 _PAYMENT_LINES = frozenset({"statement", "agent_statement"})
 # Notes on the VAT a row books: a claim line its receipt books books none, so they say nothing there.
 _VAT_NOTES = frozenset({"vat_rate_mismatch", "vat_blocked"})

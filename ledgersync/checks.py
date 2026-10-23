@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Optional, Sequence
 
 from .accounts import (BY_CODE, CAPITAL, CREDITORS, DEBTORS, DIRECTORS_LOAN, DIVIDENDS, DRAWINGS, HOTELS, SHARES,
-                       STAFF_EXPENSES, WAGES, Account, AccountType)
+                       NET_WAGES, PAYE, PENSION, STAFF_EXPENSES, WAGES, Account, AccountType)
 from .models import NOT_TRANSACTIONS, BusinessSettings, Direction, Issue, Transaction
 from .money import PENNY, ZERO, VatTreatment, vat_in_gross
 
@@ -22,7 +22,8 @@ MATCHING_ISSUES = {"choose_payment", "part_payment", "overpayment", "possible_pa
 STATEMENT_ISSUES = {"statement_gap", "statement_total", "file_date"}
 _DERIVED = {"unknown_account", "same_account", "non_gbp_currency", "vat_not_applicable", "vat_estimated",
             "vat_arithmetic", "vat_rate_mismatch", "date_missing", "date_out_of_period", "unusual_direction",
-            "not_booked", "vat_blocked", "director_loan", "wages_from_bank"} | MATCHING_ISSUES | STATEMENT_ISSUES
+            "not_booked", "vat_blocked", "director_loan", "wages_from_bank",
+            "payroll_owed_to"} | MATCHING_ISSUES | STATEMENT_ISSUES
 
 
 def issue(code: str, message: str, severity: str = "warning", related: Sequence[int] = ()) -> Issue:
@@ -56,6 +57,9 @@ def booked(tx: Transaction) -> bool:
     return tx.include or (tx.document_type not in NOT_TRANSACTIONS and tx.copy_of is None)
 
 
+PAYROLL_OWED = frozenset({NET_WAGES, PAYE, PENSION})   # where a payroll report's rows are held until paid
+
+
 def other_side(tx: Transaction, settings: BusinessSettings) -> str:
     """The other side of a posting. A receipt or a bank line moved money through the bank. An invoice,
     a claim or an included document is owed until a bank line pays it: a sale to the customer's account
@@ -65,6 +69,8 @@ def other_side(tx: Transaction, settings: BusinessSettings) -> str:
         return STAFF_EXPENSES
     if tx.document_type == "agent_statement":
         return DEBTORS
+    if tx.document_type == "payroll":   # never the bank: the bank payment clears what is owed
+        return {"7006": PAYE, "7007": PENSION}.get(tx.account_code, NET_WAGES)
     if tx.document_type == "invoice" or tx.document_type in NOT_TRANSACTIONS:
         account = BY_CODE.get(tx.account_code)
         return DEBTORS if account is not None and account.type == AccountType.INCOME else CREDITORS
@@ -113,7 +119,14 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
     # The bank and the accounts for what is owed are worked out afresh on every pass, so a row whose
     # account or document type changes moves with it; any other account sent in (petty cash, say) is kept.
     worked_out = {None, settings.bank_account, DEBTORS, CREDITORS, STAFF_EXPENSES}
-    contra = other_side(tx, settings) if tx.contra_account_code in worked_out else tx.contra_account_code
+    # A payroll row is held on 2220, 2210 or 2230 until the bank pays it; any other account is worked out from its own.
+    keep = (tx.contra_account_code in PAYROLL_OWED if tx.document_type == "payroll"
+            else tx.contra_account_code not in worked_out)
+    payroll_default = tx.document_type == "payroll" and not keep
+    contra = tx.contra_account_code if keep else other_side(tx, settings)
+    if payroll_default:
+        issues.append(issue("payroll_owed_to", f"Check what this payroll line is owed to: booked to "
+                                               f"{BY_CODE[contra].name} for now."))
     if account is None:
         issues.append(issue("unknown_account", "This account isn't in the chart.", "error"))
     if contra not in BY_CODE:
