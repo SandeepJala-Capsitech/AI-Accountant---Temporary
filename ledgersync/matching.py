@@ -146,6 +146,13 @@ def match(rows: list[Transaction], settings: BusinessSettings, read: Optional[li
                 _pay(n, rows[n], exact, changes[n], automatic[n])
                 _note(changes[n], rows[n], automatic.pop(n))
                 paid_exactly = True
+    # A card payment that a receipt records is that receipt's, not a part payment, a set, an overpayment or a payment
+    # to an open account: pair those lines first. Lines that exact amounts or a person's choice decide stay as they are.
+    card_lines = [n for n in automatic if rows[n].document_type == "statement"
+                  and _outcome(rows[n], documents)[0] in ("pay", "none", "open_document")]
+    _pair_receipts(rows, changes, card_lines, apart, first_pass_only=True)
+    for n in [n for n in automatic if changes[n].get("recorded_by")]:
+        _note(changes[n], rows[n], automatic.pop(n))
     for n, found in automatic.items():
         _settle(n, rows[n], documents, changes[n], found)
     _pair_receipts(rows, changes, [n for n in lines if rows[n].document_type == "statement"], apart)
@@ -163,18 +170,22 @@ def _cleared(tx: Transaction) -> Transaction:
                                  "issues": [i for i in tx.issues if i.code not in MATCHING_ISSUES]})
 
 
-def _pair_receipts(rows: list[Transaction], changes: list[dict], lines: list[int], apart: list[set[int]]) -> None:
+def _pair_receipts(rows: list[Transaction], changes: list[dict], lines: list[int], apart: list[set[int]],
+                   first_pass_only: bool = False) -> None:
     """Each card payment that a receipt records: a bank line nothing else was matched to, for the receipt's total,
     the same way and dated within a few days of it, the nearest receipt first and one from its shop before any
     other. The receipt is booked and the line is not, so the payment counts once and its VAT is the receipt's. A
     person's Link or Unlink on the line keeps them apart, as does saying they are not the same; one receipt records
-    one line."""
+    one line. With first_pass_only, only the pairs found by amount, date and name (or amount and date alone) are
+    made; a receipt already paired is never paired again."""
 
     def kept_apart(n: int, receipt: _Document) -> bool:
         return any(r in apart[n] for r in receipt.rows)
 
     receipts = list(_grouped(rows, lambda tx: tx.document_type == "receipt" and booked(tx)
                              and tx.claimed_in is None and tx.date_found is None).values())
+    receipts = [r for r in receipts if not any(changes[k].get("paid_by") or changes[k].get("recorded_by")
+                                               for k in r.rows)]
     for by_name in (True, False):   # names first; then the amount and the date alone, which a bank's name can't spoil
         for n in lines:   # oldest first
             line, change = rows[n], changes[n]
@@ -189,6 +200,8 @@ def _pair_receipts(rows: list[Transaction], changes: list[dict], lines: list[int
             receipt = min(fits, key=lambda r: (abs(line.date - r.date), r.date, r.ref))
             receipts.remove(receipt)
             _record(rows, changes, n, receipt)
+    if first_pass_only:
+        return
     # What is left: a receipt and a bank line that agree on all but the date, and only with each other. A receipt
     # without a date takes the bank's; one with another date asks, the bank's own date being taken as right.
     open_lines = [n for n in lines if rows[n].link is None and rows[n].date is not None
@@ -592,7 +605,9 @@ def _exact(line: Transaction, docs: list[_Document]) -> list[_Document]:
             and d.open == line.gross]
 
 
-def _settle(n: int, line: Transaction, documents: dict[str, _Document], change: dict, found: list[Issue]) -> None:
+def _outcome(line: Transaction, documents: dict[str, _Document]) -> tuple[str, list[list[_Document]], str]:
+    """What _settle does with an automatic line: its kind (pay, choose, suggest, open_document or none), the
+    documents it concerns, and why a suggestion or open_document was not a match."""
     kind, options = _decide(line, [d for d in documents.values() if _could_pay(line, d)])
     why = "the names do not match"
     if kind == "none":
@@ -605,6 +620,11 @@ def _settle(n: int, line: Transaction, documents: dict[str, _Document], change: 
         if open_documents:
             kind, options = "open_document", [[d] for d in open_documents]
             why = _why_not_matched(line, open_documents)
+    return kind, options, why
+
+
+def _settle(n: int, line: Transaction, documents: dict[str, _Document], change: dict, found: list[Issue]) -> None:
+    kind, options, why = _outcome(line, documents)
     if kind == "pay":
         _pay(n, line, options[0], change, found)
     elif kind == "choose":

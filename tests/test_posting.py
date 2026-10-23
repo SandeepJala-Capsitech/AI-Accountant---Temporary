@@ -7,6 +7,7 @@ import pytest
 from helpers import SETTINGS as HELPER_SETTINGS, net, row
 from ledgersync import accounts
 from ledgersync.checks import normalise
+from ledgersync.matching import match
 from ledgersync.errors import InvalidTransactions
 from ledgersync.models import BusinessSettings, Transaction
 from ledgersync.posting import journal_for, trial_balance
@@ -244,3 +245,28 @@ def test_an_exact_payment_clears_an_invoice_paid_45_days_later():
                document_type="statement", document_ref="b1")
     tb = trial_balance([invoice, paid], HELPER_SETTINGS)
     assert net(tb, "7600") == Decimal("1000.00") and net(tb, "2100") == 0
+
+
+def _amazon_invoice_receipt_and_card_line(invoice_date):
+    invoice = row(date=invoice_date, counterparty="Amazon", gross=Decimal("500.00"), document_type="invoice",
+                  document_ref="inv")
+    receipt = row(date=dt.date(2026, 3, 1), counterparty="Amazon", gross=Decimal("30.00"), document_ref="rcpt")
+    card = row(date=dt.date(2026, 3, 2), counterparty="AMAZON", gross=Decimal("30.00"), document_type="statement",
+               document_ref="card")
+    rows = [invoice, receipt, card]
+    matched_card = match([normalise(t, HELPER_SETTINGS) for t in rows], HELPER_SETTINGS)[2]
+    return trial_balance(rows, HELPER_SETTINGS), matched_card
+
+
+def test_a_card_payment_pairs_with_its_receipt_despite_an_old_open_invoice_from_the_shop():
+    tb, card = _amazon_invoice_receipt_and_card_line(dt.date(2025, 9, 10))
+    assert net(tb, "7600") == Decimal("530.00") and net(tb, "2100") == Decimal("-500.00")   # the invoice, the receipt
+    assert card.recorded_by is not None and card.recorded_by.ref == "rcpt"
+    assert not [i for i in card.issues if i.code == "open_document"]
+
+
+def test_a_card_payment_pairs_with_its_receipt_rather_than_part_paying_a_recent_invoice():
+    tb, card = _amazon_invoice_receipt_and_card_line(dt.date(2026, 2, 1))
+    assert net(tb, "7600") == Decimal("530.00") and net(tb, "2100") == Decimal("-500.00")
+    assert card.recorded_by is not None and card.recorded_by.ref == "rcpt" and not card.pays
+    assert not [i for i in card.issues if i.code in ("part_payment", "open_document")]
