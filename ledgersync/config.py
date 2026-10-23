@@ -8,7 +8,6 @@ from typing import Mapping, Optional
 
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env"   # git-ignored; see .env.example
 DEFAULT_DB = Path(__file__).resolve().parent.parent / "data" / "ledgersync.db"   # git-ignored: data/
-MAX_FIX_ROUNDS = 3   # the fix loop never runs more rounds than this: the setting and build_graph both cap at it
 
 
 def _flag(value: str) -> bool:
@@ -71,18 +70,6 @@ class Settings:
     # MongoDB storage: if set, MongoStore is used instead of SQLite
     mongodb_uri: str = ""                 # e.g. "mongodb://localhost:27017"
     mongodb_db_name: str = "ledgersync"
-    # The agent that works a client's rows to a trial balance: any OpenRouter model that supports tool
-    # calling. Agent jobs are off until it is set (and they need MongoDB).
-    agent_model: str = ""
-    agent_max_fix_rounds: int = 3         # fix rounds after a failed quality gate: 0 to 3, never more
-    # Emails to clients (document requests and their reminders). The links in them start with public_url, where
-    # the pages are served. Without an SMTP host each email is written to the log instead of being sent.
-    public_url: str = "http://localhost:3000"
-    smtp_host: str = ""
-    smtp_port: int = 587                  # STARTTLS
-    smtp_username: str = ""
-    smtp_password: str = field(default="", repr=False)   # never printed or logged
-    smtp_sender: str = ""                 # the From address
 
     @property
     def max_upload_bytes(self) -> int:
@@ -145,13 +132,4 @@ class Settings:
                      if env.get("LEDGERSYNC_DB_PATH", "").strip() else d.db_path),
             mongodb_uri=env.get("MONGODB_URI", "").strip(),
             mongodb_db_name=env.get("MONGODB_DB_NAME", "ledgersync").strip(),
-            agent_model=env.get("LEDGERSYNC_AGENT_MODEL", "").strip(),
-            agent_max_fix_rounds=min(MAX_FIX_ROUNDS, max(0, int(env.get("LEDGERSYNC_AGENT_MAX_FIX_ROUNDS",
-                                                                       d.agent_max_fix_rounds)))),
-            public_url=(env.get("LEDGERSYNC_PUBLIC_URL", "").strip() or d.public_url).rstrip("/"),
-            smtp_host=env.get("LEDGERSYNC_SMTP_HOST", "").strip(),
-            smtp_port=int(env.get("LEDGERSYNC_SMTP_PORT", "").strip() or d.smtp_port),
-            smtp_username=env.get("LEDGERSYNC_SMTP_USERNAME", "").strip(),
-            smtp_password=env.get("LEDGERSYNC_SMTP_PASSWORD", ""),
-            smtp_sender=env.get("LEDGERSYNC_SMTP_SENDER", "").strip(),
         )

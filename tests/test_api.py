@@ -262,3 +262,8 @@ def test_trial_balance_waits_for_a_person_to_choose_a_payment(make_client):
             "document_ref": "l"}
     resp = make_client().post("/api/trial-balance", json={"transactions": [*bills, line]})
     assert resp.status_code == 422 and "Choose one" in resp.json()["detail"]["message"]
+
+
+def test_the_agent_and_request_routes_are_gone(make_client):
+    paths = {route.path for route in make_client().app.routes}
+    assert not any(p.startswith(("/api/agent-jobs", "/api/requests")) or "agent-jobs" in p for p in paths)

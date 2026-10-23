@@ -2,7 +2,6 @@
 
 import Image from 'next/image'
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import { getHealth, type Health } from '@/lib/api'
 import { startTheme, THEME_KEY, type Theme } from '@/lib/theme'
@@ -10,15 +9,12 @@ import logo from '@/assets/acting-office-logo.png'
 
 // The bar on every page: the Acting Office logo and the app's name (back to the clients), whether the AI model
 // can be reached, and the light/dark switch. The switch's choice is kept in this browser; the layout applies it before painting.
-// On a client's upload page (/requests/...) it shows only the logo, the name and the switch: no way into the firm's pages.
 export default function AppHeader() {
-  const forClient = usePathname()?.startsWith('/requests/') ?? false
   const [health, setHealth] = useState<Health | null>(null)
   const [healthError, setHealthError] = useState('')
   const [theme, setTheme] = useState<Theme>('light')
 
   useEffect(() => {
-    if (forClient) return
     let alive = true
     const check = () => getHealth()
       .then(h => { if (alive) { setHealth(h); setHealthError('') } })
@@ -26,7 +22,7 @@ export default function AppHeader() {
     check()
     const timer = setInterval(check, 30_000)
     return () => { alive = false; clearInterval(timer) }
-  }, [forClient])
+  }, [])
 
   useEffect(() => {
     let saved: string | null = null
@@ -53,13 +49,11 @@ export default function AppHeader() {
   )
   return (
     <header className="app-header">
-      {forClient ? <span className="brand">{brand}</span> : <Link href="/" className="brand">{brand}</Link>}
+      <Link href="/" className="brand">{brand}</Link>
       <div className="header-end">
-        {!forClient && (
-          <span className={`ai-status ${online ? 'ai-on' : 'ai-off'}`} title={health?.ai_error || healthError}>
-            <span className="ai-status-text">{status}</span>
-          </span>
-        )}
+        <span className={`ai-status ${online ? 'ai-on' : 'ai-off'}`} title={health?.ai_error || healthError}>
+          <span className="ai-status-text">{status}</span>
+        </span>
         <button type="button" className="icon-btn" onClick={flip} aria-label={switchTo} title={switchTo}>
           {theme === 'dark' ? '☀' : '☾'}
         </button>

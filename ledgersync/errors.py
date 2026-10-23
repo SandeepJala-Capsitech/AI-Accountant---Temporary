@@ -103,29 +103,9 @@ class StorageError(LedgerSyncError):
     code = "storage_error"
 
 
-class JobRunning(LedgerSyncError):
-    """Something that has to wait: a client's rows while its agent job runs, or a job while its documents are read."""
-
-    status_code = 409
-    code = "job_running"
-
-
-class AgentNotConfigured(LedgerSyncError):
-    """Agent jobs need MongoDB and a model for the agent, and one of them is missing."""
-
-    status_code = 503
-    code = "agent_not_configured"
-
-
 class ChangedMeanwhile(LedgerSyncError):
     """A change lost the race with other writes to the same client every time it was tried."""
 
     status_code = 409
     code = "changed_meanwhile"
 
-
-class EmailNotSent(LedgerSyncError):
-    """The SMTP server refused an email or couldn't be reached."""
-
-    status_code = 502
-    code = "email_not_sent"

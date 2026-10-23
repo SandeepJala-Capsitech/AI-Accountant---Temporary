@@ -107,31 +107,3 @@ def test_the_database_lives_in_the_projects_data_folder_unless_set_otherwise(tmp
     project = Path(config.__file__).resolve().parent.parent
     assert Settings.from_env({}).db_path == project / "data" / "ledgersync.db"
     assert Settings.from_env({"LEDGERSYNC_DB_PATH": str(tmp_path / "books.db")}).db_path == tmp_path / "books.db"
-
-
-def test_agent_jobs_have_no_model_and_three_fix_rounds_unless_set_otherwise():
-    s = Settings.from_env({})
-    assert (s.agent_model, s.agent_max_fix_rounds) == ("", 3)
-    s = Settings.from_env({"LEDGERSYNC_AGENT_MODEL": " openai/gpt-x ", "LEDGERSYNC_AGENT_MAX_FIX_ROUNDS": "1"})
-    assert (s.agent_model, s.agent_max_fix_rounds) == ("openai/gpt-x", 1)
-
-
-def test_the_fix_loop_never_runs_more_than_three_rounds():
-    assert Settings.from_env({"LEDGERSYNC_AGENT_MAX_FIX_ROUNDS": "10"}).agent_max_fix_rounds == 3
-    assert Settings.from_env({"LEDGERSYNC_AGENT_MAX_FIX_ROUNDS": "-1"}).agent_max_fix_rounds == 0
-
-
-def test_client_emails_go_to_the_log_until_an_smtp_server_is_set():
-    s = Settings.from_env({})
-    assert (s.public_url, s.smtp_host, s.smtp_port, s.smtp_username, s.smtp_password, s.smtp_sender) == (
-        "http://localhost:3000", "", 587, "", "", "")
-
-
-def test_client_email_settings_come_from_the_environment():
-    s = Settings.from_env({"LEDGERSYNC_PUBLIC_URL": " https://accounts.example.test/ ",
-                           "LEDGERSYNC_SMTP_HOST": "smtp.example.test", "LEDGERSYNC_SMTP_PORT": "2525",
-                           "LEDGERSYNC_SMTP_USERNAME": "user", "LEDGERSYNC_SMTP_PASSWORD": "secret",
-                           "LEDGERSYNC_SMTP_SENDER": "accounts@example.test"})
-    assert (s.public_url, s.smtp_host, s.smtp_port, s.smtp_username, s.smtp_sender) == (
-        "https://accounts.example.test", "smtp.example.test", 2525, "user", "accounts@example.test")
-    assert s.smtp_password == "secret" and "secret" not in repr(s)
