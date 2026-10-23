@@ -45,6 +45,8 @@ logger = logging.getLogger("ledgersync.server")
 UNKNOWN_LINK = "This link isn't valid. Ask your accountant for a new one."
 RECEIVED_NOTE = "The client sent the document."
 REMINDER_EVERY_SECONDS = 3600.0   # how often the reminder thread looks for document reminders due
+# What the accountant's page may see of a document request. Never the upload token: it is the client's bearer secret.
+REQUEST_FIELDS = ("id", "document_type", "period", "reason", "status", "sent_at", "received_at")
 
 
 class JobPeriod(BaseModel):
@@ -381,11 +383,36 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
     def retry_agent_job(job_id: str):
         return agent().retry(job_id)
 
+    @app.get("/api/clients/{client_id}/agent-jobs/latest", response_model=Optional[JobRecord])
+    def latest_agent_job(client_id: int):
+        """The client's newest job, whatever its status, or null when it has had none: the page shows it when it
+        opens. Without agent jobs this is null too, not the 503 of the other job routes, so the page still opens
+        with "No job yet" and Start job gives the reason."""
+        deps = tool_deps()
+        return deps.records.latest_for(client_id) if deps is not None else None
+
+    def job_deps(job_id: str) -> ToolDeps:
+        """What the job's records are kept with. NotFound for an unknown job; the 503 of the other job routes without
+        agent jobs."""
+        agent().records.get(job_id)
+        return tool_deps()
+
+    @app.get("/api/agent-jobs/{job_id}/exceptions")
+    def agent_job_exceptions(job_id: str):
+        """What the agent couldn't settle in the job, in the order it logged it: the description, the assumption
+        it made instead, its confidence (0 to 1) and whether it is still open."""
+        return job_deps(job_id).exceptions.for_job(job_id)
+
+    @app.get("/api/agent-jobs/{job_id}/requests")
+    def agent_job_requests(job_id: str):
+        """The documents the job asked the client for, in the order it asked, with where each has got to. Only the
+        fields in REQUEST_FIELDS: the upload token is never given out here."""
+        return [{field: asked[field] for field in REQUEST_FIELDS} for asked in job_deps(job_id).requests.for_job(job_id)]
+
     def snapshots_of(job_id: str):
         """The job's trial balance snapshots. NotFound for an unknown job; the 503 of the other job routes without
         agent jobs."""
-        agent().records.get(job_id)
-        return tool_deps().snapshots
+        return job_deps(job_id).snapshots
 
     @app.get("/api/agent-jobs/{job_id}/snapshots")
     def agent_job_snapshots(job_id: str):

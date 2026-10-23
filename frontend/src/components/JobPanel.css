@@ -1,0 +1,17 @@
+/* The job panel's own styles: only what globals.css has no class for, in the page's theme colours. JobPanel.tsx
+   imports this file, and the panel is what locks the table and the upload area, so the locked look is here too. */
+
+.job-subhead { font-size: 15px; margin: 22px 0 8px; }
+.job-dates { margin-top: 14px; }
+.job-dates .field { margin-bottom: 0; }
+.job-feed { list-style: none; margin: 0; padding: 0; max-height: 240px; overflow-y: auto; font-size: 13px; }
+.job-feed li { display: grid; grid-template-columns: 5.5em minmax(0, 1fr) minmax(0, 11em); gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--rule); }
+.job-feed li:last-child { border-bottom: 0; }
+.job-ready { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.job-ready p { font-weight: 500; }
+.job-confidence { white-space: nowrap; }
+
+/* A control locked while a job runs must look locked: .link-btn and .dropzone have no disabled look of their own. */
+.link-btn:disabled, .link-btn.danger:disabled { color: var(--muted); cursor: not-allowed; text-decoration: none; }
+.dropzone[aria-disabled="true"] { opacity: 0.55; cursor: not-allowed; }
+.dropzone[aria-disabled="true"]:hover { border-color: var(--rule); background: none; }

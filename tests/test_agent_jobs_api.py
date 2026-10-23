@@ -15,7 +15,7 @@ from ledgersync.agent.llm import NOT_CONFIGURED as AGENT_NOT_CONFIGURED
 from ledgersync.config import Settings
 from ledgersync.errors import JobRunning
 from ledgersync.models import ClientFields
-from ledgersync.records.exceptions import Exceptions
+from ledgersync.records.exceptions import DocumentRequests, Exceptions
 from ledgersync.records.jobs import JobRecords
 from ledgersync.store import Store
 from server import create_app
@@ -238,8 +238,57 @@ def test_a_finished_job_is_awaiting_review_with_its_events(api, client_with_uplo
 def test_an_unknown_job_is_not_found(api):
     unknown = "0" * 32
     for resp in (api.get(f"/api/agent-jobs/{unknown}"), api.get(f"/api/agent-jobs/{unknown}/events"),
+                 api.get(f"/api/agent-jobs/{unknown}/exceptions"), api.get(f"/api/agent-jobs/{unknown}/requests"),
                  api.post(f"/api/agent-jobs/{unknown}/cancel"), api.post(f"/api/agent-jobs/{unknown}/retry")):
         assert (resp.status_code, resp.json()["detail"]["message"]) == (404, "This job was not found.")
+
+
+@mongo
+def test_the_latest_job_is_null_until_a_client_has_one(api, client_with_upload, hold):
+    cid = client_with_upload
+    resp = api.get(f"/api/clients/{cid}/agent-jobs/latest")
+    assert (resp.status_code, resp.json()) == (200, None)
+    first = start(api, cid)
+    running = api.get(f"/api/clients/{cid}/agent-jobs/latest").json()
+    assert (running["id"], running["status"]) == (first["id"], "preparing")
+    hold.set()
+    wait_for(api, first["id"])
+    assert api.get(f"/api/clients/{cid}/agent-jobs/latest").json()["status"] == "awaiting_review"
+    second = start(api, cid)
+    assert api.get(f"/api/clients/{cid}/agent-jobs/latest").json()["id"] == second["id"]   # the newest, whatever its status
+    wait_for(api, second["id"])
+
+
+@mongo
+def test_a_jobs_exceptions_and_requests_are_listed_and_requests_never_show_their_upload_token(
+        api, client_with_upload, mongo_store):
+    cid = client_with_upload
+    job = wait_for(api, start(api, cid)["id"])
+    exception = Exceptions(mongo_store.db).log(
+        client_id=cid, job_id=job["id"], stage="classify", description="No invoice for the £1,200.00 paid to Acme",
+        assumption="Booked as 5000 Purchases", confidence=0.4, row_ids=[1])
+    asked = DocumentRequests(mongo_store.db)
+    request = asked.create(client_id=cid, job_id=job["id"], exception_id=exception["id"],
+                           document_type="Invoice from Acme Ltd", period="March 2026", reason="It explains the payment.")
+    assert api.get(f"/api/agent-jobs/{job['id']}/requests").json() == [
+        {"id": request["id"], "document_type": "Invoice from Acme Ltd", "period": "March 2026",
+         "reason": "It explains the payment.", "status": "pending", "sent_at": None, "received_at": None}]
+    sent_at = dt.datetime(2026, 10, 21, 9, 30, tzinfo=dt.timezone.utc)
+    asked.mark_sent([request["id"]], token="tok-secret-link", at=sent_at)
+    resp = api.get(f"/api/agent-jobs/{job['id']}/requests")
+    assert resp.json()[0]["status"] == "sent" and resp.json()[0]["sent_at"].startswith("2026-10-21T09:30:00")
+    assert set(resp.json()[0]) == {"id", "document_type", "period", "reason", "status", "sent_at", "received_at"}
+    assert "tok-secret-link" not in resp.text      # the link's token is a bearer secret: never on the accountant's page
+    listed = api.get(f"/api/agent-jobs/{job['id']}/exceptions").json()
+    assert [(e["id"], e["description"], e["assumption"], e["confidence"], e["status"]) for e in listed] == [
+        (exception["id"], "No invoice for the £1,200.00 paid to Acme", "Booked as 5000 Purchases", 0.4, "open")]
+
+
+@mongo
+def test_a_job_with_no_exceptions_or_requests_lists_none(api, client_with_upload):
+    job = wait_for(api, start(api, client_with_upload)["id"])
+    assert api.get(f"/api/agent-jobs/{job['id']}/exceptions").json() == []
+    assert api.get(f"/api/agent-jobs/{job['id']}/requests").json() == []
 
 
 @mongo
@@ -322,8 +371,12 @@ def test_documents_being_read_hold_back_a_job_until_they_are_saved(api, client_w
 def test_without_a_model_or_injected_steps_jobs_are_not_configured(mongo_store):
     with TestClient(create_app(Settings(warmup=False), model_client=FakeModel([]), store=mongo_store)) as api:
         resp = api.post("/api/clients/1/agent-jobs", json=YEAR)
+        latest = api.get("/api/clients/1/agent-jobs/latest")
+        details = [api.get(f"/api/agent-jobs/{'0' * 32}/{route}") for route in ("exceptions", "requests")]
     assert resp.status_code == 503
     assert resp.json()["detail"] == {"code": "agent_not_configured", "message": NOT_CONFIGURED}
+    assert (latest.status_code, latest.json()) == (200, None)   # the page opens with "No job yet"; Start job says why not
+    assert [(r.status_code, r.json()["detail"]["message"]) for r in details] == [(503, NOT_CONFIGURED)] * 2
 
 
 def test_without_mongodb_jobs_are_not_configured(tmp_path):
@@ -332,9 +385,12 @@ def test_without_mongodb_jobs_are_not_configured(tmp_path):
     with TestClient(app) as api:
         cid = add(api)["id"]
         manual(api, cid, BILL)
-        responses = [api.post(f"/api/clients/{cid}/agent-jobs", json=YEAR), api.get(f"/api/agent-jobs/{'0' * 32}")]
+        responses = [api.post(f"/api/clients/{cid}/agent-jobs", json=YEAR), api.get(f"/api/agent-jobs/{'0' * 32}"),
+                     api.get(f"/api/agent-jobs/{'0' * 32}/exceptions"), api.get(f"/api/agent-jobs/{'0' * 32}/requests")]
         assert api.patch(f"/api/clients/{cid}/rows/1", json={"include": True}).status_code == 200   # no row lock
-    assert [(r.status_code, r.json()["detail"]["message"]) for r in responses] == [(503, NOT_CONFIGURED)] * 2
+        latest = api.get(f"/api/clients/{cid}/agent-jobs/latest")
+    assert [(r.status_code, r.json()["detail"]["message"]) for r in responses] == [(503, NOT_CONFIGURED)] * 4
+    assert (latest.status_code, latest.json()) == (200, None)
 
 
 @mongo

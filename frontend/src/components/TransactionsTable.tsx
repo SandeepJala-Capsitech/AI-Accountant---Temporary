@@ -35,10 +35,11 @@ function originalText(row: SavedRow): string {
 
 // What is wrong with a row, in words, under its description: errors first, then warnings, then notes. A warning
 // about this row and others offers Show both, and one where two records may be one offers Not the same.
-function IssueList({ issues, onShowBoth, onNotSame }: {
+function IssueList({ issues, onShowBoth, onNotSame, locked }: {
   issues: Issue[]
   onShowBoth?: (related: number[]) => void   // each issue shows the rows it is about
   onNotSame?: (related: number[]) => void
+  locked: boolean                            // Not the same changes a row, so it waits for the job to finish
 }) {
   if (!issues.length) return null
   const sorted = [...issues].sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity])
@@ -55,7 +56,7 @@ function IssueList({ issues, onShowBoth, onNotSame }: {
               </button>
             )}
             {onNotSame && canBeApart(issue.code) && !!issue.related?.length && (
-              <button type="button" className="link-btn" onClick={() => onNotSame(issue.related!)}>Not the same</button>
+              <button type="button" className="link-btn" disabled={locked} onClick={() => onNotSame(issue.related!)}>Not the same</button>
             )}
           </span>
         </li>
@@ -65,10 +66,12 @@ function IssueList({ issues, onShowBoth, onNotSame }: {
 }
 
 // The client's saved rows: what needs review and why, statuses with Link, Unlink and Include, Edit, Add line,
-// Remove and Revert, and totals.
-export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, onAdd, onRemove }: {
+// Remove and Revert, and totals. While the client's job runs the rows are locked: every control that changes one is
+// there but disabled (the API refuses the change anyway), and Show both and the filters still work.
+export default function TransactionsTable({ ledger, readOnly, locked = false, onChange, onEdit, onAdd, onRemove }: {
   ledger: Ledger
   readOnly: boolean
+  locked?: boolean
   onChange: (rowId: number, change: RowChange) => void
   onEdit?: (row: SavedRow) => void
   onAdd?: (lineOf: SavedRow | null) => void     // a new transaction, or a line of the row's document
@@ -111,8 +114,9 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
       <div className="section-head">
         <h2>Transactions</h2>
         <span className="muted small">{transactionCount(rows.length)}</span>
+        {locked && <span className="badge badge-warn">Locked while the job runs</span>}
         {!readOnly && onAdd && (
-          <button type="button" className="btn btn-small" onClick={() => onAdd(null)}>Add transaction</button>
+          <button type="button" className="btn btn-small" onClick={() => onAdd(null)} disabled={locked}>Add transaction</button>
         )}
       </div>
       {together.length > 0 ? (
@@ -166,7 +170,7 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
                     {[...rowStatus(row, id => byId.get(id)), ...[apartStatus(row, id => described.get(id))].filter(s => s !== null)]
                       .map((status, k) => (status.include !== undefined ? (
                       <label key={k} className="row-status">
-                        <input type="checkbox" checked={status.include} disabled={readOnly}
+                        <input type="checkbox" checked={status.include} disabled={readOnly || locked}
                                onChange={e => onChange(row.id, { include: e.target.checked })} />
                         {status.text}
                       </label>
@@ -174,13 +178,14 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
                       <div key={k} className="row-status">
                         {status.text}
                         {!readOnly && status.actions.map((action, j) => (
-                          <button key={j} type="button" className="link-btn" onClick={() => onChange(action.row ?? row.id, action.change)}>
+                          <button key={j} type="button" className="link-btn" disabled={locked}
+                                  onClick={() => onChange(action.row ?? row.id, action.change)}>
                             {action.label}
                           </button>
                         ))}
                       </div>
                     )))}
-                    <IssueList issues={issues} onShowBoth={related => showBoth(row, related)}
+                    <IssueList issues={issues} onShowBoth={related => showBoth(row, related)} locked={locked}
                                onNotSame={readOnly ? undefined : related => onChange(row.id, apartChange(row, related))} />
                   </td>
                   <td>
@@ -194,15 +199,16 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
                   <td>{accountName(row)}</td>
                   <td className={`check ${check.cls}`} title={check.title}>{check.mark}</td>
                   <td className="row-actions">
-                    {!readOnly && onEdit && <button type="button" className="link-btn" onClick={() => onEdit(row)}>Edit</button>}
+                    {!readOnly && onEdit && <button type="button" className="link-btn" disabled={locked} onClick={() => onEdit(row)}>Edit</button>}
                     {!readOnly && onAdd && takesLines(row) && (
-                      <button type="button" className="link-btn" onClick={() => onAdd(row)}>Add line</button>
+                      <button type="button" className="link-btn" disabled={locked} onClick={() => onAdd(row)}>Add line</button>
                     )}
                     {!readOnly && row.edited && (
-                      <button type="button" className="link-btn" onClick={() => onChange(row.id, { revert: true })}>Revert</button>
+                      <button type="button" className="link-btn" disabled={locked}
+                              onClick={() => onChange(row.id, { revert: true })}>Revert</button>
                     )}
                     {!readOnly && onRemove && (
-                      <button type="button" className="link-btn danger" onClick={() => onRemove(row)}>Remove</button>
+                      <button type="button" className="link-btn danger" disabled={locked} onClick={() => onRemove(row)}>Remove</button>
                     )}
                   </td>
                 </tr>

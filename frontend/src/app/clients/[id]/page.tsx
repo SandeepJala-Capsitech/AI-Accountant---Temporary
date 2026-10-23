@@ -2,11 +2,12 @@
 
 import Link from 'next/link'
 import { useParams } from 'next/navigation'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import AddDocuments from '@/components/AddDocuments'
 import ClientDialog from '@/components/ClientDialog'
 import EditRowDialog from '@/components/EditRowDialog'
 import { useConfirm } from '@/components/ConfirmDialog'
+import JobPanel from '@/components/JobPanel'
 import TransactionsTable from '@/components/TransactionsTable'
 import TrialBalancePanel from '@/components/TrialBalancePanel'
 import UploadsList from '@/components/UploadsList'
@@ -21,7 +22,7 @@ import { money } from '@/lib/ledger'
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
-// One client: its details, its figures, its saved transactions and uploads, and its trial balance.
+// One client: its details, its figures, its agent job, its saved transactions and uploads, and its trial balance.
 export default function ClientPage() {
   const params = useParams<{ id: string }>()
   const clientId = Number(params.id)
@@ -33,6 +34,8 @@ export default function ClientPage() {
   const [editingRow, setEditingRow] = useState<SavedRow | null>(null)
   const [adding, setAdding] = useState<{ template: Transaction; title: string } | null>(null)   // a row being added
   const [version, setVersion] = useState(0)   // bumped whenever the rows change: a trial balance shown is cleared
+  const [jobRunning, setJobRunning] = useState(false)   // the agent job is working: rows and documents are locked
+  const wasRunning = useRef(false)
 
   const show = useCallback((next: Ledger) => {
     setLedger(next)
@@ -54,6 +57,13 @@ export default function ClientPage() {
   }, [clientId, show])
 
   useEffect(() => { load() }, [load])
+
+  // The job panel says when the job starts or stops. When it stops the agent has changed the rows: show them.
+  const jobRunningChanged = useCallback((running: boolean) => {
+    setJobRunning(running)
+    if (wasRunning.current && !running) load()
+    wasRunning.current = running
+  }, [load])
 
   // A change the API answers with the whole ledger, worked out again.
   const act = useCallback(async (change: () => Promise<Ledger>) => {
@@ -146,11 +156,16 @@ export default function ClientPage() {
         <div className="card figure"><div className="figure-label">To pay</div><div className="figure-value">{money(figures.toPay)}</div></div>
         <div className="card figure"><div className="figure-label">To receive</div><div className="figure-value">{money(figures.toReceive)}</div></div>
       </div>
-      {!client.archived && <AddDocuments clientId={client.id} uploads={ledger.uploads} onSaved={load} onLedger={show} />}
+      {!client.archived && (
+        <AddDocuments clientId={client.id} uploads={ledger.uploads} locked={jobRunning} onSaved={load} onLedger={show} />
+      )}
+      {!client.archived && (
+        <JobPanel clientId={client.id} hasUploads={ledger.uploads.length > 0} onRunningChange={jobRunningChanged} />
+      )}
       <div className="workspace">
-        <TransactionsTable ledger={ledger} readOnly={client.archived} onChange={change} onEdit={setEditingRow}
-                           onAdd={startAdding} onRemove={removeOne} />
-        <UploadsList uploads={ledger.uploads} readOnly={client.archived} onRemove={remove} />
+        <TransactionsTable ledger={ledger} readOnly={client.archived} locked={jobRunning} onChange={change}
+                           onEdit={setEditingRow} onAdd={startAdding} onRemove={removeOne} />
+        <UploadsList uploads={ledger.uploads} readOnly={client.archived} locked={jobRunning} onRemove={remove} />
       </div>
       <TrialBalancePanel clientId={client.id} version={version} hasRows={ledger.transactions.length > 0} />
       {/* The last step, in name only for now: it will add the books to the client's accounts, and does nothing yet. */}

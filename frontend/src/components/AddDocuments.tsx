@@ -20,10 +20,12 @@ const form = (fields: Record<string, string | Blob>) => {
 
 // Upload, Paste and Add by hand for one client. Each analysis runs as a job that the API saves to the client
 // when it finishes, so onSaved reloads the ledger; a row added by hand is saved here, once the model has
-// suggested its account.
-export default function AddDocuments({ clientId, uploads, onSaved, onLedger }: {
+// suggested its account. While the client's job runs the area is locked: nothing can be added, because the API
+// refuses it (and the job is working on the rows as they are).
+export default function AddDocuments({ clientId, uploads, locked = false, onSaved, onLedger }: {
   clientId: number
   uploads: Upload[]
+  locked?: boolean
   onSaved: () => void
   onLedger: (ledger: Ledger) => void
 }) {
@@ -172,7 +174,8 @@ export default function AddDocuments({ clientId, uploads, onSaved, onLedger }: {
     }
   }
 
-  const canRetry = !busy && batch.some(item => item.status === 'failed' || item.status === 'cancelled')
+  const canRetry = !busy && !locked && batch.some(item => item.status === 'failed' || item.status === 'cancelled')
+  const closed = busy || locked   // nothing new can be started: files are being read, or the job runs
   return (
     <section className="card section">
       <div className="section-head">
@@ -186,16 +189,18 @@ export default function AddDocuments({ clientId, uploads, onSaved, onLedger }: {
           </button>
         ))}
       </div>
+      {locked && <p className="muted small">Locked while the job runs: documents can be added once it finishes.</p>}
       {tab === 'upload' && (
         <>
-          <input ref={fileInput} type="file" multiple hidden onChange={e => pickFiles(e.target.files)}
+          <input ref={fileInput} type="file" multiple hidden disabled={locked} onChange={e => pickFiles(e.target.files)}
                  accept=".csv,.tsv,.txt,.xlsx,.xls,.pdf,.png,.jpg,.jpeg,.webp,.bmp,.tiff" />
-          <div className={`dropzone${dragOver ? ' drag-over' : ''}`} role="button" tabIndex={0}
-               onClick={() => { if (!busy) fileInput.current?.click() }}
-               onKeyDown={e => { if ((e.key === 'Enter' || e.key === ' ') && !busy) fileInput.current?.click() }}
+          <div className={`dropzone${dragOver && !locked ? ' drag-over' : ''}`} role="button" tabIndex={locked ? -1 : 0}
+               aria-disabled={locked}
+               onClick={() => { if (!closed) fileInput.current?.click() }}
+               onKeyDown={e => { if ((e.key === 'Enter' || e.key === ' ') && !closed) fileInput.current?.click() }}
                onDragOver={e => { e.preventDefault(); setDragOver(true) }}
                onDragLeave={() => setDragOver(false)}
-               onDrop={e => { e.preventDefault(); setDragOver(false); if (!busy) pickFiles(e.dataTransfer.files) }}>
+               onDrop={e => { e.preventDefault(); setDragOver(false); if (!closed) pickFiles(e.dataTransfer.files) }}>
             <strong>Drop files here or click to choose</strong>
             Up to {MAX_BATCH_FILES} at a time: PDFs, photos, CSV and Excel files, up to {limits.maxMb} MB each
           </div>
@@ -206,7 +211,7 @@ export default function AddDocuments({ clientId, uploads, onSaved, onLedger }: {
           <textarea className="input" value={pasteText} onChange={e => setPasteText(e.target.value)} aria-label="Text to analyse"
                     placeholder={'BT Business broadband, 05/09/2026, £72.00 including £12.00 VAT\nBank: 25/09/2026 BT GROUP PLC DD -72.00'} />
           <div className="form-actions">
-            <button type="button" className="btn btn-primary" onClick={analyseText} disabled={busy || !pasteText.trim()}>
+            <button type="button" className="btn btn-primary" onClick={analyseText} disabled={closed || !pasteText.trim()}>
               Analyse
             </button>
           </div>
@@ -236,7 +241,7 @@ export default function AddDocuments({ clientId, uploads, onSaved, onLedger }: {
           </div>
           <div className="form-actions">
             <button type="button" className="btn btn-primary" onClick={addByHand}
-                    disabled={busy || !manual.description.trim() || !manual.amount}>
+                    disabled={closed || !manual.description.trim() || !manual.amount}>
               Add row
             </button>
           </div>

@@ -3,10 +3,12 @@
 import type { Upload } from '@/lib/clients'
 import { dayMonth, statementText, transactionCount } from '@/lib/clientRules'
 
-// What was added to the client, newest first, with each bank statement's balance check and Remove.
-export default function UploadsList({ uploads, readOnly, onRemove }: {
+// What was added to the client, newest first, with each bank statement's balance check and Remove (disabled while
+// the client's job runs: the API refuses it).
+export default function UploadsList({ uploads, readOnly, locked = false, onRemove }: {
   uploads: Upload[]
   readOnly: boolean
+  locked?: boolean
   onRemove: (upload: Upload) => void
 }) {
   return (
@@ -34,7 +36,7 @@ export default function UploadsList({ uploads, readOnly, onRemove }: {
                   </details>
                 )}
                 {!readOnly && (
-                  <button type="button" className="link-btn danger" onClick={() => onRemove(upload)}>Remove</button>
+                  <button type="button" className="link-btn danger" disabled={locked} onClick={() => onRemove(upload)}>Remove</button>
                 )}
               </li>
             )
