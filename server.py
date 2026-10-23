@@ -104,7 +104,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
             codes = books.bank_codes(client)
             own = bank_account or (codes[0] if len(codes) == 1 else None)
             reader = TransactionExtractor(model_client, business_name=client.name, business_type=client.business_type,
-                                          bank_codes=tuple(c for c in codes if c != (own or rules.bank_account)))
+                                          bank_codes=books.bank_choices(client, own or rules.bank_account))
         extraction = pipeline.analyze(item, reader, ctx)
         # A line coded to the statement's own account goes to Suspense; one coded to another is a transfer.
         reading = rules.model_copy(update={"bank_account": own or rules.bank_account})
@@ -180,7 +180,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         those a row of that client can be coded to, its own bank accounts and cards among them."""
         if client_id is not None:
             client = store.get_client(client_id)
-            chosen = choosable(client.business_type, books.bank_codes(client))
+            chosen = choosable(client.business_type, books.bank_choices(client))
         else:
             chosen = choosable(business_type) if business_type else accounts.CHART
         return [{"code": a.code, "name": a.name, "type": a.type.value, "vat": a.vat.value} for a in chosen]

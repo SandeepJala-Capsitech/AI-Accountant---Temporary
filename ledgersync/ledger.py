@@ -38,9 +38,19 @@ def settings_for(client: Client) -> BusinessSettings:
                             business_type=client.business_type, bank_accounts=codes, bank_account=default)
 
 
+def bank_choices(client: Client, upload_bank: Optional[str] = None) -> tuple[str, ...]:
+    """The client's bank accounts a row may be coded to, for accounts.choosable: none for a client with one account,
+    which keeps the chart's usual offer; for a client with several, all of them (a transfer between two), and when
+    reading an upload, all but the upload's own."""
+    codes = bank_codes(client)
+    if len(codes) == 1:
+        return ()
+    return tuple(c for c in codes if c != upload_bank)
+
+
 def _choosable_codes(client: Client) -> set[str]:
     """The accounts a row of this client can be coded to."""
-    return {a.code for a in choosable(client.business_type, bank_codes(client))}
+    return {a.code for a in choosable(client.business_type, bank_choices(client))}
 
 
 def check_bank_account(client: Client, code: str) -> None:

@@ -369,6 +369,12 @@ def test_a_client_is_saved_with_its_bank_accounts_and_cards(api):
     assert {"1200", "1240"} <= codes and "1241" not in codes
 
 
+def test_a_one_account_client_is_offered_the_accounts_it_was_before(api):
+    client = api()
+    codes = {a["code"] for a in client.get(f"/api/accounts?client_id={add(client)['id']}").json()}
+    assert "1210" in codes and "1200" not in codes
+
+
 def test_a_statement_for_a_client_with_two_accounts_must_say_which(api):
     # the fake model answers with one bank statement line
     client = api(FakeModel([STATEMENT_LINE]))

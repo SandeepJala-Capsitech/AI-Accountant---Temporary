@@ -452,3 +452,23 @@ def test_a_row_may_be_coded_to_another_of_the_clients_own_accounts(store):
     assert (line.account_code, line.contra_account_code) == ("1240", "1200")
     with pytest.raises(InvalidInput, match="This account can't be chosen"):
         ledger.change_row(store, client.id, line.id, RowPatch(account_code="1241"))
+
+
+def test_a_one_account_client_keeps_the_old_account_offer(store):
+    client = ledger.add_client(store, CUBE)
+    built = ledger.add_manual(store, client.id, ManualUpload(transactions=[row(document_type="statement")]))
+    [line] = built.transactions
+    assert ledger.change_row(store, client.id, line.id, RowPatch(account_code="1210")).transactions[0].account_code == "1210"
+    with pytest.raises(InvalidInput, match=re.escape("This account can't be chosen for Business Cube Ltd.")):
+        ledger.change_row(store, client.id, line.id, RowPatch(account_code="1200"))
+    with pytest.raises(InvalidInput, match=re.escape("This account can't be chosen for Business Cube Ltd.")):
+        ledger.add_manual(store, client.id, ManualUpload(transactions=[row(document_type="statement", account_code="1200")]))
+
+
+def test_a_client_with_two_accounts_is_offered_both_in_edits(store):
+    savings = BankAccount(name="Savings", kind="savings", code="1210")
+    client = ledger.add_client(store, CUBE.model_copy(update={"bank_accounts": [MAIN, savings]}))
+    [line] = ledger.add_manual(store, client.id, ManualUpload(transactions=[
+        row(document_type="statement", bank_account="1210")])).transactions
+    for code in ("1200", "1210"):
+        assert ledger.change_row(store, client.id, line.id, RowPatch(account_code=code)).transactions[0].account_code == code
