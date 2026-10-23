@@ -31,6 +31,22 @@ NOT_TRANSACTIONS = frozenset(DOCUMENT_TYPES[6:])
 BusinessType = Literal["limited_company", "sole_trader", "partnership", "llp"]
 BUSINESS_TYPES: tuple[str, ...] = get_args(BusinessType)
 
+# The kinds of account money moves through: each of a client's has its own code, from accounts.BANK_SLOTS.
+BankAccountKind = Literal["current", "savings", "credit_card", "petty_cash"]
+
+
+class BankAccount(BaseModel):
+    """One of a client's bank accounts or cards: its name, its kind, and its code in the chart ("" until
+    ledger.assign_codes gives it the next free one of its kind)."""
+    code: str = ""
+    name: str
+    kind: BankAccountKind
+
+    @field_validator("code", "name", mode="before")
+    @classmethod
+    def _trimmed(cls, value):
+        return "" if value is None else str(value).strip()
+
 
 class Issue(BaseModel):
     code: str
@@ -46,7 +62,8 @@ class BusinessSettings(BaseModel):
     business_type: Optional[BusinessType] = None   # None: not known, as for an analysis without a client
     period_start: Optional[dt.date] = None
     period_end: Optional[dt.date] = None
-    bank_account: str = BANK
+    bank_account: str = BANK                   # the default bank: a receipt's, and a bank line's without its own
+    bank_accounts: tuple[str, ...] = (BANK,)   # the client's bank accounts and cards, by code
 
 
 class Settlement(BaseModel):
@@ -80,6 +97,8 @@ class Transaction(BaseModel):
     net: Optional[Decimal] = None                  # gross minus vat_posted
     account_code: str
     contra_account_code: Optional[str] = None      # None = the business's bank account
+    bank_account: Optional[str] = None             # an input on a bank line: the account or card its statement is
+                                                   # for; None = the business's default bank
     currency: str = "GBP"
     source: str = "text"
     method: Literal["parsed", "llm", "vlm", "user"] = "llm"
@@ -217,6 +236,8 @@ class ClientFields(BaseModel):
     contact_email: str = ""
     contact_phone: str = ""
     vat_registered: bool = True
+    bank_accounts: list[BankAccount] = Field(
+        default_factory=lambda: [BankAccount(code=BANK, name="Bank current account", kind="current")])
 
     @field_validator("name", "contact_name", "contact_email", "contact_phone", mode="before")
     @classmethod
@@ -240,6 +261,7 @@ class ClientPatch(BaseModel):
     contact_email: Optional[str] = None
     contact_phone: Optional[str] = None
     vat_registered: Optional[bool] = None
+    bank_accounts: Optional[list[BankAccount]] = None
     archived: Optional[bool] = None
 
 
@@ -258,6 +280,12 @@ class Upload(BaseModel):
     created_at: str
     rows: int = 0
     statement: Optional[StatementCheck] = None   # a bank statement's balance check; None for other uploads
+    bank_account: Optional[str] = None           # the account or card its statement lines are on; None: the default
+
+
+class UploadPatch(BaseModel):
+    """A change to an upload: the bank account or card its statement is for."""
+    bank_account: str
 
 
 class SavedRow(Transaction):

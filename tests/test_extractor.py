@@ -79,7 +79,9 @@ def test_model_failure_raises_instead_of_guessing():
 def test_the_model_must_pick_an_account_from_the_chart():
     account = ExtractedTransactions.model_json_schema()["$defs"]["AccountingTransaction"]["properties"]["account"]
     assert account["enum"] == list(ACCOUNT_CHOICES) and "7502 Telephone and Internet" in account["enum"]
-    assert not [choice for choice in account["enum"] if choice[:4] in ("1200", "2200", "2201")]
+    assert not [choice for choice in account["enum"] if choice[:4] in ("2200", "2201")]
+    # 1200 is there for a transfer from another of the client's accounts; a line coded to its own bank goes to Suspense.
+    assert "1200 Bank Current Account" in account["enum"]
 
 
 def test_instructions_and_the_document_travel_separately():

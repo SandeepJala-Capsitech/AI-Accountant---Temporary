@@ -44,11 +44,12 @@ def test_names_that_do_not_match(a, b):
 import datetime as dt
 from decimal import Decimal
 
-from helpers import match_one, only_issue
+from helpers import SETTINGS as HELPER_SETTINGS, match_one, net, normalise_and_match, only_issue
 from helpers import row as helper_row
 from ledgersync.checks import booked, normalise
 from ledgersync.matching import match
 from ledgersync.models import BusinessSettings, Direction, Transaction
+from ledgersync.posting import trial_balance
 
 SETTINGS = BusinessSettings()
 
@@ -815,3 +816,66 @@ def test_an_unmatched_line_to_someone_with_an_open_invoice_is_never_silent():
                       document_type="statement")
     issue = only_issue(match_one(invoice, line), "open_document")
     assert issue.severity == "warning" and "Smith" in issue.message
+
+
+# ─── Transfers between the client's own accounts ──────────────────────────────
+
+TWO_BANKS = HELPER_SETTINGS.model_copy(update={"bank_accounts": ("1200", "1210")})
+
+
+def transfer(**out_changes):
+    """£5,000 moved from the current account (1200) to the savings account (1210), on both statements."""
+    out = helper_row(**{**dict(gross=Decimal("5000.00"), account_code="1210", bank_account="1200",
+                               document_type="statement", description="To savings", document_ref="a"), **out_changes})
+    into = helper_row(direction="in", gross=Decimal("5000.00"), account_code="1200", bank_account="1210",
+                      document_type="statement", description="From current", document_ref="b",
+                      date=dt.date(2026, 1, 2))
+    return out, into
+
+
+def test_a_transfer_between_the_clients_own_accounts_books_once():
+    out, into = transfer()
+    tb = trial_balance([out, into], TWO_BANKS)
+    assert net(tb, "1200") == Decimal("-5000.00") and net(tb, "1210") == Decimal("5000.00")
+
+
+def test_the_second_side_of_a_transfer_says_it_is_booked_from_the_first():
+    out, into = transfer()
+    for rows in ([out, into], [into, out]):   # whichever order the statements arrived in
+        ready = {tx.document_ref: tx for tx in normalise_and_match(rows, TWO_BANKS)}
+        assert booked(ready["a"]) and not booked(ready["b"]) and ready["b"].recorded_by.ref == "a"
+        found = only_issue(ready["b"], "transfer")
+        assert (found.severity, found.message) == ("info", "The other side of To savings on 1 Jan 2026: booked once, "
+                                                           "from that line.")
+        assert not [i for i in ready["a"].issues + ready["b"].issues if i.severity == "error"]
+
+
+@pytest.mark.parametrize("changes", [{"gross": Decimal("4999.00")}, {"date": dt.date(2025, 12, 29)},
+                                     {"direction": "in"}])
+def test_lines_that_differ_in_amount_date_or_direction_are_not_a_transfer(changes):
+    out, into = transfer(**changes)
+    ready = normalise_and_match([out, into], TWO_BANKS)
+    assert all(tx.recorded_by is None for tx in ready)
+
+
+def test_a_transfer_line_is_not_taken_as_a_payment_of_an_invoice():
+    invoice = helper_row(gross=Decimal("5000.00"), account_code="7600", document_type="invoice", document_ref="i",
+                         counterparty="Savings", date=dt.date(2025, 12, 1))
+    out, into = transfer(counterparty="Savings")
+    ready = {tx.document_ref: tx for tx in normalise_and_match([invoice, out, into], TWO_BANKS)}
+    assert ready["a"].pays == [] and ready["i"].owed == Decimal("5000.00")
+
+
+def test_a_transfer_for_a_client_with_one_account_is_not_paired():
+    out, into = transfer()
+    ready = normalise_and_match([out, into], HELPER_SETTINGS)
+    assert all(tx.recorded_by is None for tx in ready)
+
+
+def test_a_card_payment_paired_with_its_receipt_is_booked_against_the_card():
+    receipt = helper_row(gross=Decimal("24.00"), account_code="7504", counterparty="Ryman", document_ref="r")
+    card = helper_row(gross=Decimal("24.00"), account_code="7504", counterparty="RYMAN", document_type="statement",
+                      bank_account="1240", document_ref="c")
+    settings = HELPER_SETTINGS.model_copy(update={"bank_accounts": ("1200", "1240")})
+    tb = trial_balance([receipt, card], settings)
+    assert net(tb, "1240") == Decimal("-24.00") and net(tb, "1200") == Decimal("0")

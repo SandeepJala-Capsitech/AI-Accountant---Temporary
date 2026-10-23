@@ -16,7 +16,7 @@ _NO_VAT = {AccountType.LIABILITY, AccountType.EQUITY}
 MATCHING_ISSUES = {"choose_payment", "part_payment", "overpayment", "possible_payment", "stale_link",
                    "mixed_link", "duplicate_document", "total_mismatch", "claim_vat", "vat_worked_out",
                    "not_vat_invoice", "date_conflict", "date_from_claim", "date_from_bank", "booked_twice",
-                   "amount_conflict", "open_document", "no_payroll"}
+                   "amount_conflict", "open_document", "no_payroll", "transfer"}
 # Issues statements.check_statement adds to bank lines, and file_dates.check_file_date to a document; derived too,
 # so checking again replaces them.
 STATEMENT_ISSUES = {"statement_gap", "statement_total", "file_date"}
@@ -63,7 +63,8 @@ PAYROLL_OWED = frozenset(OWED_TO.values())
 
 
 def other_side(tx: Transaction, settings: BusinessSettings) -> str:
-    """The other side of a posting. A receipt or a bank line moved money through the bank. An invoice,
+    """The other side of a posting. A receipt or a bank line moved money through the bank: a bank line through the
+    account or card its statement is for, anything else through the default bank. An invoice,
     a claim or an included document is owed until a bank line pays it: a sale to the customer's account
     (Debtors), anything else to the supplier's (Creditors), and a claim to the employee. What an agent
     collected and paid for the business is held by the agent (Debtors) until it pays over the net."""
@@ -76,7 +77,7 @@ def other_side(tx: Transaction, settings: BusinessSettings) -> str:
     if tx.document_type == "invoice" or tx.document_type in NOT_TRANSACTIONS:
         account = BY_CODE.get(tx.account_code)
         return DEBTORS if account is not None and account.type == AccountType.INCOME else CREDITORS
-    return settings.bank_account
+    return tx.bank_account or settings.bank_account
 
 
 def reclaims_vat(tx: Transaction, settings: BusinessSettings) -> bool:
@@ -118,9 +119,9 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
     kept = [i for i in tx.issues if i.code not in _DERIVED]   # re-validating must not duplicate
     issues: list[Issue] = []
     account = BY_CODE.get(tx.account_code)
-    # The bank and the accounts for what is owed are worked out afresh on every pass, so a row whose
-    # account or document type changes moves with it; any other account sent in (petty cash, say) is kept.
-    worked_out = {None, settings.bank_account, DEBTORS, CREDITORS, STAFF_EXPENSES}
+    # The client's banks and the accounts for what is owed are worked out afresh on every pass, so a row whose
+    # account, document type or bank account changes moves with it; any other account sent in is kept.
+    worked_out = {None, settings.bank_account, *settings.bank_accounts, DEBTORS, CREDITORS, STAFF_EXPENSES}
     # A payroll row is held on 2220, 2210 or 2230 until the bank pays it, by what it is owed to, whatever contra was
     # saved; with no owed_to the account guesses, and says so on every pass.
     payroll = tx.document_type == "payroll"

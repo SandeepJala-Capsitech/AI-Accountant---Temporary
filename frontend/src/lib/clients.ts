@@ -4,6 +4,14 @@ import { request, type Transaction, type TrialBalanceResult } from './api'
 
 export type BusinessType = 'limited_company' | 'sole_trader' | 'partnership' | 'llp'
 
+export type BankAccountKind = 'current' | 'savings' | 'credit_card' | 'petty_cash'
+
+export interface BankAccount {
+  code: string               // its account in the chart; '' until the server gives it the next free one
+  name: string
+  kind: BankAccountKind
+}
+
 export interface ClientFields {
   name: string
   business_type: BusinessType
@@ -11,6 +19,7 @@ export interface ClientFields {
   contact_email: string
   contact_phone: string
   vat_registered: boolean
+  bank_accounts?: BankAccount[]   // the server starts a client with one current account, 1200
 }
 
 export interface Client extends ClientFields {
@@ -41,6 +50,7 @@ export interface Upload {
   created_at: string
   rows: number
   statement: StatementCheck | null
+  bank_account?: string | null   // the account or card its statement lines are on; null: the default bank
 }
 
 export type EditableField =

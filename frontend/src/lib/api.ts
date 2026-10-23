@@ -28,6 +28,7 @@ export interface Transaction {
   account_code: string
   account_name?: string | null
   contra_account_code: string | null
+  bank_account?: string | null      // a bank line: the account or card its statement is for
   currency: string
   source: string
   method: string

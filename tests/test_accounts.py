@@ -34,17 +34,17 @@ def test_debtors_and_creditors_have_their_own_codes():
     assert (BY_CODE["2100"].name, BY_CODE["2100"].type) == ("Creditors", AccountType.LIABILITY)
 
 
-def test_a_model_may_choose_any_account_but_the_bank_and_the_control_accounts():
-    # The bank is the other side of every posting, and the ledger splits VAT itself. What is owed
-    # (Debtors, Creditors, Expenses Owed to Staff) is picked by the ledger from the document type.
-    # So are the accounts only year-end work posts to, and where a year's profit closes.
-    ledger_only = {"1200", "2200", "2201", "1100", "2100", "2110", "0031", "0041", "0051", "0056", "1103", "2109",
+def test_a_model_may_choose_any_account_but_the_control_accounts():
+    # The ledger splits VAT itself. What is owed (Debtors, Creditors, Expenses Owed to Staff) is picked by the
+    # ledger from the document type. So are the accounts only year-end work posts to, and where a year's profit
+    # closes. The bank, 1200, is offered only to a client with another account, for a transfer between them.
+    ledger_only = {"2200", "2201", "1100", "2100", "2110", "0031", "0041", "0051", "0056", "1103", "2109",
                    "3100", "3200", "8000", "8800"}
     assert {a.code for a in model_accounts()} == set(BY_CODE) - ledger_only
     # Without a business type (an analysis with no client) a company's own accounts are left out, and so are
     # the bank accounts and cards beyond the first.
     company_only = {"2250", "2320", "3000", "3250", "7001"}
-    extra_banks = {"1201", "1202", "1211", "1240", "1241"}
+    extra_banks = {"1200", "1201", "1202", "1211", "1240", "1241"}
     assert {a.code for a in choosable()} == set(BY_CODE) - ledger_only - company_only - extra_banks
 
 
@@ -85,7 +85,7 @@ def test_a_sole_trader_is_offered_capital_and_drawings_only():
 
 def test_only_the_clients_own_bank_accounts_are_offered():
     codes = {a.code for a in choosable("limited_company", bank_codes=("1200", "1240"))}
-    assert {"1240"} <= codes and not {"1201", "1211", "1241"} & codes
+    assert {"1200", "1240"} <= codes and not {"1201", "1211", "1241"} & codes
     assert "1230" in codes   # petty cash is always offered
 
 
@@ -97,7 +97,7 @@ def test_profit_closes_to_retained_earnings_or_the_owners_capital():
 def test_the_bank_slots_are_all_in_the_chart_and_in_the_schema():
     assert ALL_BANK_CODES == {c for codes in BANK_SLOTS.values() for c in codes} and ALL_BANK_CODES <= set(BY_CODE)
     assert BY_CODE["1240"].type == BY_CODE["1241"].type == AccountType.LIABILITY
-    assert ALL_BANK_CODES - {BANK} <= {a.code for a in model_accounts()}
+    assert ALL_BANK_CODES <= {a.code for a in model_accounts()}
 
 
 def test_the_new_accounts_have_the_codes_names_and_types_the_site_uses():

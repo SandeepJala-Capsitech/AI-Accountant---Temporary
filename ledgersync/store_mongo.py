@@ -17,7 +17,7 @@ import pymongo
 from pymongo import MongoClient, ReturnDocument
 
 from .errors import ChangedMeanwhile, ClientArchived, NotFound
-from .models import Client, ClientFields, Transaction
+from .models import BankAccount, Client, ClientFields, Transaction
 from .rows import EDITABLE, OLD_TOTAL, WHOLE_DOCUMENT, StoredRow, now_iso, saved_form
 
 logger = logging.getLogger(__name__)
@@ -25,7 +25,8 @@ logger = logging.getLogger(__name__)
 # How many times patch_row reads and writes again when another write to the client got in between.
 _PATCH_TRIES = 5
 
-_CLIENT_FIELDS = ("name", "business_type", "contact_name", "contact_email", "contact_phone", "vat_registered")
+_CLIENT_FIELDS = ("name", "business_type", "contact_name", "contact_email", "contact_phone", "vat_registered",
+                  "bank_accounts")
 _CLIENT_PROJECTION = {
     "id": 1,
     "name": 1,
@@ -34,10 +35,33 @@ _CLIENT_PROJECTION = {
     "contact_email": 1,
     "contact_phone": 1,
     "vat_registered": 1,
+    "bank_accounts": 1,
     "archived_at": 1,
     "created_at": 1,
     "updated_at": 1,
 }
+
+
+def _client(doc: dict) -> Client:
+    """A client as its document keeps it; one saved before it had bank accounts has the one current account."""
+    return Client(
+        id=doc["id"],
+        name=doc["name"],
+        business_type=doc["business_type"],
+        contact_name=doc["contact_name"],
+        contact_email=doc.get("contact_email", ""),
+        contact_phone=doc.get("contact_phone", ""),
+        vat_registered=bool(doc.get("vat_registered", True)),
+        **({"bank_accounts": doc["bank_accounts"]} if doc.get("bank_accounts") else {}),
+        archived=doc.get("archived_at") is not None,
+        archived_at=doc.get("archived_at"),
+        created_at=doc["created_at"],
+        updated_at=doc["updated_at"],
+    )
+
+
+def _stored_accounts(accounts: list[BankAccount]) -> list[dict]:
+    return [a.model_dump() for a in accounts]
 
 
 class MongoStore:
@@ -100,6 +124,7 @@ class MongoStore:
             "contact_email": fields.contact_email,
             "contact_phone": fields.contact_phone,
             "vat_registered": bool(fields.vat_registered),
+            "bank_accounts": _stored_accounts(fields.bank_accounts),
             "archived_at": None,
             "created_at": now,
             "updated_at": now,
@@ -107,38 +132,14 @@ class MongoStore:
             "uploads": [],
             "rows": []
         }
-        self.db.clients.insert_one(doc)
-        return Client(
-            id=client_id,
-            name=doc["name"],
-            business_type=doc["business_type"],
-            contact_name=doc["contact_name"],
-            contact_email=doc["contact_email"],
-            contact_phone=doc["contact_phone"],
-            vat_registered=doc["vat_registered"],
-            archived=False,
-            archived_at=None,
-            created_at=now,
-            updated_at=now,
-        )
+        self.db.clients.insert_one(dict(doc))   # a copy: insert_one adds the _id
+        return _client(doc)
 
     def get_client(self, client_id: int) -> Client:
         doc = self.db.clients.find_one({"id": client_id}, _CLIENT_PROJECTION)
         if not doc:
             raise NotFound("This client was not found.")
-        return Client(
-            id=doc["id"],
-            name=doc["name"],
-            business_type=doc["business_type"],
-            contact_name=doc["contact_name"],
-            contact_email=doc.get("contact_email", ""),
-            contact_phone=doc.get("contact_phone", ""),
-            vat_registered=bool(doc.get("vat_registered", True)),
-            archived=doc.get("archived_at") is not None,
-            archived_at=doc.get("archived_at"),
-            created_at=doc["created_at"],
-            updated_at=doc["updated_at"]
-        )
+        return _client(doc)
 
     def list_clients(self, archived: bool = False) -> list[Client]:
         query = {"archived_at": {"$ne": None}} if archived else {"archived_at": None}
@@ -148,22 +149,7 @@ class MongoStore:
             collation={"locale": "en", "strength": 2}
         ).sort([("name", pymongo.ASCENDING), ("id", pymongo.ASCENDING)])
 
-        return [
-            Client(
-                id=d["id"],
-                name=d["name"],
-                business_type=d["business_type"],
-                contact_name=d["contact_name"],
-                contact_email=d.get("contact_email", ""),
-                contact_phone=d.get("contact_phone", ""),
-                vat_registered=bool(d.get("vat_registered", True)),
-                archived=d.get("archived_at") is not None,
-                archived_at=d.get("archived_at"),
-                created_at=d["created_at"],
-                updated_at=d["updated_at"]
-            )
-            for d in docs
-        ]
+        return [_client(d) for d in docs]
 
     def update_client(self, client_id: int, changes: dict) -> Client:
         client = self.get_client(client_id)
@@ -173,6 +159,9 @@ class MongoStore:
 
         now = now_iso()
         set_dict = {k: bool(v) if isinstance(v, bool) else v for k, v in fields.items()}
+        if "bank_accounts" in set_dict:
+            set_dict["bank_accounts"] = _stored_accounts(
+                [BankAccount.model_validate(a) for a in set_dict["bank_accounts"]])
         archived = changes.get("archived")
         if archived is not None and archived != client.archived:
             set_dict["archived_at"] = now if archived else None
@@ -187,26 +176,16 @@ class MongoStore:
             )
             if not updated:
                 raise NotFound("This client was not found.")
-            return Client(
-                id=updated["id"],
-                name=updated["name"],
-                business_type=updated["business_type"],
-                contact_name=updated["contact_name"],
-                contact_email=updated.get("contact_email", ""),
-                contact_phone=updated.get("contact_phone", ""),
-                vat_registered=bool(updated.get("vat_registered", True)),
-                archived=updated.get("archived_at") is not None,
-                archived_at=updated.get("archived_at"),
-                created_at=updated["created_at"],
-                updated_at=updated["updated_at"]
-            )
+            return _client(updated)
 
         return client
 
     # ─── Uploads and rows ──────────────────────────────────────────────────────
 
     def add_upload(self, client_id: int, name: str, kind: str, rows: list[Transaction], *, sha256: str = "",
-                   model: str = "", warnings=()) -> int:
+                   model: str = "", warnings=(), bank_account: Optional[str] = None) -> int:
+        """Saves an upload and its rows; bank_account: the account or card its statement is for, which its statement
+        lines are on."""
         self.get_client(client_id)
         upload_id = self._next_id("upload_id")
         now = now_iso()
@@ -218,6 +197,7 @@ class MongoStore:
             "sha256": sha256,
             "model": model or "",
             "warnings": list(warnings),
+            "bank_account": bank_account,
             "created_at": now
         }
 
@@ -227,11 +207,14 @@ class MongoStore:
 
         row_docs = []
         for n, tx in enumerate(rows):
+            data = saved_form(tx)
+            if bank_account and data["document_type"] == "statement":
+                data["bank_account"] = bank_account
             row_docs.append({
                 "id": start_row_id + n,
                 "upload_id": upload_id,
                 "position": n,
-                "data": saved_form(tx)
+                "data": data
             })
 
         self.db.clients.update_one(
@@ -291,10 +274,25 @@ class MongoStore:
                 "sha256": u.get("sha256", ""),
                 "model": u.get("model", ""),
                 "warnings": u.get("warnings", []),
+                "bank_account": u.get("bank_account"),
                 "created_at": u["created_at"],
                 "row_count": counts.get(u["id"], 0)
             })
         return results
+
+    def set_upload_bank(self, client_id: int, upload_id: int, code: str) -> None:
+        """Puts the upload, and its statement lines, on another bank account or card."""
+        res = self.db.clients.update_one(
+            {"id": client_id, "uploads.id": upload_id},
+            {
+                "$set": {"uploads.$[u].bank_account": code, "rows.$[r].data.bank_account": code,
+                         "updated_at": now_iso()},
+                "$inc": {"revision": 1}
+            },
+            array_filters=[{"u.id": upload_id}, {"r.upload_id": upload_id, "r.data.document_type": "statement"}]
+        )
+        if res.matched_count == 0:
+            raise NotFound("This upload was not found.")
 
     def delete_upload(self, client_id: int, upload_id: int) -> None:
         now = now_iso()

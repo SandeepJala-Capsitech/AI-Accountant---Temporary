@@ -148,10 +148,11 @@ BANK_SLOTS: dict[str, tuple[str, ...]] = {"current": ("1200", "1201", "1202"), "
 ALL_BANK_CODES = frozenset(code for codes in BANK_SLOTS.values() for code in codes)
 # The VAT accounts, which the trial balance lists last, after every other account.
 VAT_ACCOUNTS = frozenset({SALES_VAT, PURCHASE_VAT, VAT_LIABILITY})
-# Picked by the ledger, never chosen for a row: the bank (the other side of each posting), the VAT control
-# accounts (the ledger splits VAT itself), the accounts for what is owed (from the document type), and the
-# accounts only year-end work posts to (depreciation, accruals, prepayments, the tax charge and where profit closes).
-_LEDGER_ONLY = frozenset({BANK, SALES_VAT, PURCHASE_VAT, DEBTORS, CREDITORS, STAFF_EXPENSES,
+# Picked by the ledger, never chosen for a row: the VAT control accounts (the ledger splits VAT itself), the
+# accounts for what is owed (from the document type), and the accounts only year-end work posts to (depreciation,
+# accruals, prepayments, the tax charge and where profit closes). The bank accounts, 1200 too, are the other side of
+# each posting; a row is coded to one only as a transfer from another of the client's own (see choosable).
+_LEDGER_ONLY = frozenset({SALES_VAT, PURCHASE_VAT, DEBTORS, CREDITORS, STAFF_EXPENSES,
                           "0031", "0041", "0051", "0056", "1103", "2109", OWNERS_CAPITAL, RETAINED, "8000", "8800"})
 # Accounts that exist for a limited company only, and those that exist for everyone else.
 _COMPANY_ONLY = frozenset({DIRECTORS_LOAN, "2320", SHARES, DIVIDENDS, "7001", "8800"})
@@ -167,7 +168,8 @@ def choosable(business_type: Optional[str] = None, bank_codes: tuple[str, ...] =
     """The accounts offered for one client. A limited company's owners go through the director's loan account,
     shares and dividends; anyone else's through Drawings and Capital Introduced, as when the kind of business
     isn't known (an analysis without a client). Of the bank accounts and cards only the client's own are
-    offered (petty cash always); without a client, the first deposit account too."""
+    offered (petty cash always), 1200 too, for a transfer from another of them; without a client, the first deposit
+    account too."""
     hidden = _NOT_COMPANY if business_type == "limited_company" else _COMPANY_ONLY
     offered_banks = set(bank_codes) if bank_codes else {"1210"}
     hidden = hidden | (ALL_BANK_CODES - offered_banks - {"1230"})

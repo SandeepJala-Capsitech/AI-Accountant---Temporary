@@ -17,14 +17,14 @@ from ledgersync import ledger as books
 from ledgersync.accounts import choosable
 from ledgersync.checks import normalise
 from ledgersync.config import Settings
-from ledgersync.errors import LedgerSyncError, NotFound, RefusedRequest, StorageError, UnreadableFile
+from ledgersync.errors import InvalidInput, LedgerSyncError, NotFound, RefusedRequest, StorageError, UnreadableFile
 from ledgersync.extractor import TransactionExtractor
 from ledgersync.model_client import ModelClient
 from ledgersync.jobs import JobStore
 from ledgersync.matching import match
 from ledgersync.models import (AnalysisResult, BusinessSettings, BusinessType, Client, ClientFields, ClientPatch,
                                ClientSummary, Ledger, LedgerRequest, ManualUpload, RowPatch, TransactionList,
-                               TrialBalance)
+                               TrialBalance, UploadPatch)
 from ledgersync.store_mongo import MongoStore
 
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -90,32 +90,49 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
 
     # ─── Step 2 — Analyze (background job) ─────────────────────────────────────
 
-    def run_analysis(item, ctx, client: Optional[Client] = None, name: str = "Pasted text", sha256: str = "") -> dict:
-        """Reads one input. For a client: the model is told its name and kind of business, the rows are booked
-        with its settings, and they are saved to it as an upload when any were found (not after a cancel)."""
+    def run_analysis(item, ctx, client: Optional[Client] = None, name: str = "Pasted text", sha256: str = "",
+                     bank_account: Optional[str] = None) -> dict:
+        """Reads one input. For a client: the model is told its name, kind of business and its other bank accounts,
+        the rows are booked with its settings, and they are saved to it as an upload when any were found (not after
+        a cancel). A statement is for bank_account, or the client's only account; a client with several must say
+        which, and is refused once the reading shows it is a statement."""
+        own = None
         if client is None:
             reader, rules = extractor, BusinessSettings(business_name=settings.business_name)
         else:
             rules = books.settings_for(client)
-            reader = TransactionExtractor(model_client, business_name=client.name, business_type=client.business_type)
+            codes = books.bank_codes(client)
+            own = bank_account or (codes[0] if len(codes) == 1 else None)
+            reader = TransactionExtractor(model_client, business_name=client.name, business_type=client.business_type,
+                                          bank_codes=tuple(c for c in codes if c != (own or rules.bank_account)))
         extraction = pipeline.analyze(item, reader, ctx)
+        # A line coded to the statement's own account goes to Suspense; one coded to another is a transfer.
+        reading = rules.model_copy(update={"bank_account": own or rules.bank_account})
         transactions = adapter.to_transactions([row.model_dump() for row in extraction.data], source=item.kind,
-                                               settings=rules, opening_balance=extraction.opening_balance,
+                                               settings=reading, opening_balance=extraction.opening_balance,
                                                closing_balance=extraction.closing_balance, agent=extraction.agent)
+        statement = any(tx.document_type == "statement" for tx in transactions)
+        if client is not None and statement and own is None:
+            raise InvalidInput("Choose which bank account this statement is for.")
+        if client is not None:   # booked as the ledger books them: the statement's lines on its account
+            transactions = [normalise(tx.model_copy(update={"bank_account": own}) if tx.document_type == "statement"
+                                      else tx, rules) for tx in transactions]
         result = AnalysisResult(transactions=transactions, warnings=extraction.warnings,
                                 model=extraction.model).model_dump(mode="json")
         if client is not None and transactions:
             ctx.commit()   # from here a cancel can't discard the job: the rows are being saved
             result["client_id"] = client.id
             result["upload_id"] = store.add_upload(client.id, name, item.kind, transactions, sha256=sha256,
-                                                   model=extraction.model or "", warnings=extraction.warnings)
+                                                   model=extraction.model or "", warnings=extraction.warnings,
+                                                   bank_account=own if statement else None)
         return result
 
     @app.post("/api/analyze", status_code=202)
     def analyze_transaction(text: Optional[str] = Form(None), file: Optional[UploadFile] = File(None),
-                            client_id: Optional[int] = Form(None), x_ledgersync: Optional[str] = Header(None)):
+                            client_id: Optional[int] = Form(None), bank_account: Optional[str] = Form(None),
+                            x_ledgersync: Optional[str] = Header(None)):
         """Validates the input now (403/404/413/415/422), then analyses it in a background job; with a
-        client_id, the job saves the rows it finds to that client."""
+        client_id, the job saves the rows it finds to that client, a statement's on bank_account (one of its codes)."""
         if not x_ledgersync:
             # A form on any web page can post here without the browser asking the API first. The LedgerSync
             # pages send this header, which a form can't, and another site's script can't unless CORS allows it.
@@ -125,6 +142,8 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         if client_id is not None:
             client = store.get_client(client_id)
             books.require_active(client)
+            if bank_account:
+                books.check_bank_account(client, bank_account)
         name, sha256, content_type = "Pasted text", "", ""
         if file is not None and file.filename:
             data = intake.read_limited(file.file, settings.max_upload_bytes)
@@ -140,7 +159,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
             blobs.put(data, name=name, content_type=content_type)
 
         def work(ctx):
-            return run_analysis(item, ctx, client, name, sha256)
+            return run_analysis(item, ctx, client, name, sha256, bank_account or None)
 
         job = jobs.submit(work)
         return {"job_id": job.id, "status": job.status}
@@ -156,9 +175,14 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
     # ─── Ledger ─────────────────────────────────────────────────────────────────
 
     @app.get("/api/accounts")
-    def list_accounts(business_type: Optional[BusinessType] = None):
-        """The chart; with a business type, only the accounts a row of that business can be coded to."""
-        chosen = choosable(business_type) if business_type else accounts.CHART
+    def list_accounts(business_type: Optional[BusinessType] = None, client_id: Optional[int] = None):
+        """The chart; with a business type, only the accounts a row of that business can be coded to; with a client,
+        those a row of that client can be coded to, its own bank accounts and cards among them."""
+        if client_id is not None:
+            client = store.get_client(client_id)
+            chosen = choosable(client.business_type, books.bank_codes(client))
+        else:
+            chosen = choosable(business_type) if business_type else accounts.CHART
         return [{"code": a.code, "name": a.name, "type": a.type.value, "vat": a.vat.value} for a in chosen]
 
     @app.post("/api/transactions/validate", response_model=TransactionList)
@@ -206,6 +230,10 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
     @app.post("/api/clients/{client_id}/uploads", response_model=Ledger, status_code=201)
     def add_manual_rows(client_id: int, upload: ManualUpload):
         return books.add_manual(store, client_id, upload)
+
+    @app.patch("/api/clients/{client_id}/uploads/{upload_id}", response_model=Ledger)
+    def change_upload(client_id: int, upload_id: int, patch: UploadPatch):
+        return books.set_upload_bank(store, client_id, upload_id, patch.bank_account)
 
     @app.delete("/api/clients/{client_id}/uploads/{upload_id}", response_model=Ledger)
     def remove_upload(client_id: int, upload_id: int):

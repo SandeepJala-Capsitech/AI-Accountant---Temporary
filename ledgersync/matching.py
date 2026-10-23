@@ -19,6 +19,7 @@ from .money import ZERO
 WINDOW = dt.timedelta(days=31)   # a payment may be suggested for a document dated within 31 days of it
 PART_WINDOW = dt.timedelta(days=120)  # a part payment, an overpayment or a set of documents: at most 120 days after
 CARD_DAYS = dt.timedelta(days=3)  # a card payment reaches the bank within a few days of its receipt
+TRANSFER_DAYS = dt.timedelta(days=3)  # money moved between two of the client's accounts arrives within a few days
 YEAR = dt.timedelta(days=366)     # records further apart than this are different purchases, whatever else agrees
 MAX_SET = 5                      # one payment clears at most five documents from one counterparty
 
@@ -130,7 +131,9 @@ def match(rows: list[Transaction], settings: BusinessSettings, read: Optional[li
     rows = _checked_totals(_with_claims(_without_copies([_cleared(tx) for tx in rows]), settings, apart), read)
     documents = _documents(rows)
     changes: list[dict] = [{} for _ in rows]
-    lines = sorted((n for n, tx in enumerate(rows) if tx.document_type in _PAYMENT_LINES),
+    # Both sides of a transfer between the client's own accounts are the transfer's, never a payment of a document.
+    transfers = _pair_transfers(rows, settings, changes, apart)
+    lines = sorted((n for n, tx in enumerate(rows) if tx.document_type in _PAYMENT_LINES and n not in transfers),
                    key=lambda n: (rows[n].link is None, rows[n].date or dt.date.max, n))
     automatic: dict[int, list[Issue]] = {}   # the lines left to match automatically, with their issues so far
     for n in lines:
@@ -161,6 +164,39 @@ def match(rows: list[Transaction], settings: BusinessSettings, read: Optional[li
             changes[n].update(owed=doc.open, document_direction=Direction(doc.direction), paid_by=list(doc.paid_by))
     matched = [tx.model_copy(update=change) if change else tx for tx, change in zip(rows, changes)]
     return _without_payroll(matched)
+
+
+def _pair_transfers(rows: list[Transaction], settings: BusinessSettings, changes: list[dict],
+                    apart: list[set[int]]) -> set[int]:
+    """The transfers between the client's own accounts with both statements in: a line out of one of its accounts
+    coded to another, and a line into that other account coded back to the first, for the same amount and dated within
+    a few days, the nearest dates first. The line out books the transfer; the line in is recorded by it and not
+    booked, so the money moves once. A line a person linked to documents, or said is not the same as the other, stays
+    apart. The places of the lines paired."""
+    own = set(settings.bank_accounts)
+
+    def bank(tx: Transaction) -> str:
+        return tx.bank_account or settings.bank_account
+
+    lines = [n for n, tx in enumerate(rows) if tx.document_type == "statement" and not tx.link and tx.date
+             and tx.account_code in own and bank(tx) in own and tx.account_code != bank(tx)]
+    pairs = sorted((abs(rows[a].date - rows[b].date), rows[a].date, a, b) for a in lines for b in lines
+                   if rows[a].direction == Direction.OUT and rows[b].direction == Direction.IN
+                   and rows[a].account_code == bank(rows[b]) and rows[b].account_code == bank(rows[a])
+                   and rows[a].gross == rows[b].gross and abs(rows[a].date - rows[b].date) <= TRANSFER_DAYS
+                   and b not in apart[a])
+    paired: set[int] = set()
+    for _, _, a, b in pairs:
+        if a in paired or b in paired:
+            continue
+        paired |= {a, b}
+        out = rows[a]
+        changes[b]["recorded_by"] = Settlement(ref=out.document_ref or f"row-{a}", amount=out.gross, date=out.date,
+                                               description=out.description, kind=out.document_type)
+        changes[b]["issues"] = rows[b].issues + [issue(
+            "transfer", f"The other side of {out.description} on {long_date(out.date)}: booked once, from that line.",
+            "info", related=[a])]
+    return paired
 
 
 def _without_payroll(rows: list[Transaction]) -> list[Transaction]:
@@ -269,12 +305,14 @@ def _pair_receipts(rows: list[Transaction], changes: list[dict], lines: list[int
 
 
 def _record(rows: list[Transaction], changes: list[dict], n: int, receipt: _Document) -> None:
-    """Bank line n is the card payment the receipt records: the receipt is booked, paid by it, and the line is not."""
+    """Bank line n is the card payment the receipt records: the receipt is booked, paid by it, and the line is not.
+    The receipt is paid from the line's account or card, which may not be the default bank."""
     line = rows[n]
     changes[n]["recorded_by"] = receipt.settlement(receipt.total)
     for r in receipt.rows:
         changes[r]["paid_by"] = [Settlement(ref=line.document_ref or f"row-{n}", amount=line.gross,
                                             date=line.date, description=line.description, kind=line.document_type)]
+        changes[r]["contra_account_code"] = line.contra_account_code
 
 
 # Rows that move money and so can pay a document: a bank line, and each item of an agent's statement (the rent it

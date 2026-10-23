@@ -9,7 +9,8 @@ from openpyxl import load_workbook
 from ledgersync import ledger, posting
 from ledgersync.checks import booked, issue
 from ledgersync.errors import ClientArchived, InvalidInput
-from ledgersync.models import ClientFields, ClientPatch, ManualUpload, RowPatch, Transaction
+from ledgersync.ledger import assign_codes
+from ledgersync.models import BankAccount, Client, ClientFields, ClientPatch, ManualUpload, RowPatch, Transaction
 
 CUBE = ClientFields(name="Business Cube Ltd", business_type="limited_company", contact_name="Jenny Clarke")
 
@@ -362,3 +363,92 @@ def test_an_edited_suspense_row_leaves_to_review(store):
     assert ledger.summaries(store)[0].to_review == 1
     ledger.change_row(store, client.id, rid, RowPatch(account_code="7500"))
     assert ledger.summaries(store)[0].to_review == 0
+
+
+# ─── Bank accounts and credit cards ──────────────────────────────────────────
+
+MAIN = BankAccount(name="Barclays current", kind="current", code="1200")
+AMEX = BankAccount(name="Amex card", kind="credit_card")
+
+
+def test_a_client_starts_with_one_current_account():
+    assert CUBE.bank_accounts == [BankAccount(code="1200", name="Bank current account", kind="current")]
+    settings = ledger.settings_for(Client(**CUBE.model_dump(), id=1, created_at="", updated_at=""))
+    assert (settings.bank_accounts, settings.bank_account) == (("1200",), "1200")
+
+
+def test_new_accounts_get_the_next_free_code_of_their_kind():
+    got = assign_codes([BankAccount(name="Main", kind="current", code="1200"), BankAccount(name="Second", kind="current"),
+                        BankAccount(name="Amex", kind="credit_card")], kept=[])
+    assert [a.code for a in got] == ["1200", "1201", "1240"]
+
+
+def test_an_account_whose_code_is_sent_keeps_it():
+    got = assign_codes([BankAccount(name="Savings", kind="savings"), BankAccount(name="Old", kind="savings", code="1210")],
+                       kept=[])
+    assert [a.code for a in got] == ["1211", "1210"]
+
+
+def test_an_account_rows_still_use_cannot_be_dropped():
+    with pytest.raises(InvalidInput, match=re.escape("Amex card has transactions: move them to another account first.")):
+        assign_codes([MAIN], kept=[AMEX.model_copy(update={"code": "1240"})])
+
+
+@pytest.mark.parametrize("accounts, message", [
+    ([], "Add at least one bank account."),
+    ([BankAccount(name=" ", kind="current")], "Name each bank account."),
+    ([MAIN, MAIN.model_copy(update={"code": ""})], "Two bank accounts are called Barclays current: give each its own name."),
+    ([BankAccount(name=f"Card {n}", kind="credit_card") for n in range(3)], "You can add up to 2 credit card accounts."),
+])
+def test_a_clients_bank_accounts_are_checked(store, accounts, message):
+    with pytest.raises(InvalidInput, match=re.escape(message)):
+        ledger.add_client(store, CUBE.model_copy(update={"bank_accounts": accounts}))
+
+
+def test_a_clients_bank_accounts_are_saved_with_their_codes_and_its_first_current_account_is_the_bank(store):
+    client = ledger.add_client(store, CUBE.model_copy(update={"bank_accounts": [AMEX, MAIN]}))
+    assert [(a.code, a.name, a.kind) for a in store.get_client(client.id).bank_accounts] == [
+        ("1240", "Amex card", "credit_card"), ("1200", "Barclays current", "current")]
+    settings = ledger.settings_for(client)
+    assert (settings.bank_accounts, settings.bank_account) == (("1240", "1200"), "1200")
+
+
+def test_an_account_with_transactions_stays_until_they_are_moved(store):
+    client = ledger.add_client(store, CUBE.model_copy(update={"bank_accounts": [MAIN, AMEX]}))
+    upload = store.add_upload(client.id, "Amex.pdf", "pdf", [row(document_type="statement")], bank_account="1240")
+    with pytest.raises(InvalidInput, match="Amex card has transactions"):
+        ledger.change_client(store, client.id, ClientPatch(bank_accounts=[MAIN]))
+    ledger.set_upload_bank(store, client.id, upload, "1200")
+    assert [a.code for a in ledger.change_client(store, client.id, ClientPatch(bank_accounts=[MAIN])).bank_accounts] == [
+        "1200"]
+
+
+def test_an_uploads_bank_account_moves_its_statement_lines(store):
+    client = ledger.add_client(store, CUBE.model_copy(update={"bank_accounts": [MAIN, AMEX]}))
+    upload = store.add_upload(client.id, "Amex.pdf", "pdf", [row(document_type="statement"), row(document_type="receipt", gross="10.00")],
+                              bank_account="1200")
+    built = ledger.set_upload_bank(store, client.id, upload, "1240")
+    assert [u.bank_account for u in built.uploads] == ["1240"]
+    assert [(t.bank_account, t.contra_account_code) for t in built.transactions] == [("1240", "1240"), (None, "1200")]
+    with pytest.raises(InvalidInput, match="Choose one of Business Cube Ltd's bank accounts."):
+        ledger.set_upload_bank(store, client.id, upload, "1210")
+
+
+def test_a_credit_card_upload_is_checked_as_a_card_statement(store):
+    client = ledger.add_client(store, CUBE.model_copy(update={"bank_accounts": [MAIN, AMEX]}))
+    lines = [row(document_type="statement", gross="40.00", balance="140.00", opening_balance="100.00"),
+             row(document_type="statement", gross="10.00", balance="150.00", closing_balance="150.00")]
+    store.add_upload(client.id, "Amex.pdf", "pdf", lines, bank_account="1240")
+    store.add_upload(client.id, "Barclays.pdf", "pdf", lines, bank_account="1200")
+    assert [(u.name, u.statement.status) for u in ledger.build(store, client.id).uploads] == [
+        ("Barclays.pdf", "gap"), ("Amex.pdf", "ok")]
+
+
+def test_a_row_may_be_coded_to_another_of_the_clients_own_accounts(store):
+    client = ledger.add_client(store, CUBE.model_copy(update={"bank_accounts": [MAIN, AMEX]}))
+    built = ledger.add_manual(store, client.id, ManualUpload(transactions=[
+        row(document_type="statement", account_code="1240", bank_account="1200")]))
+    [line] = built.transactions
+    assert (line.account_code, line.contra_account_code) == ("1240", "1200")
+    with pytest.raises(InvalidInput, match="This account can't be chosen"):
+        ledger.change_row(store, client.id, line.id, RowPatch(account_code="1241"))

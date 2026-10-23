@@ -346,3 +346,65 @@ def test_pasted_text_has_no_file_to_download(api):
     job = finish(client, client.post("/api/analyze", data={"text": "BT 72.00", "client_id": str(cid)}).json()["job_id"])
     resp = client.get(f"/api/clients/{cid}/uploads/{job['result']['upload_id']}/file")
     assert resp.status_code == 404 and resp.json()["detail"]["message"] == "The original file wasn't kept for this upload."
+
+
+# ─── Bank accounts and credit cards ──────────────────────────────────────────
+
+TWO_ACCOUNTS = [{"code": "1200", "name": "Barclays current", "kind": "current"},
+                {"name": "Amex card", "kind": "credit_card"}]
+STATEMENT_LINE = json.dumps({"transactions": [dict(ROW, document_type="statement")]})
+
+
+def client_with_two_accounts(client) -> int:
+    return add(client, bank_accounts=TWO_ACCOUNTS)["id"]
+
+
+def test_a_client_is_saved_with_its_bank_accounts_and_cards(api):
+    client = api()
+    added = add(client, bank_accounts=TWO_ACCOUNTS)
+    assert [(a["code"], a["name"], a["kind"]) for a in added["bank_accounts"]] == [
+        ("1200", "Barclays current", "current"), ("1240", "Amex card", "credit_card")]
+    assert add(client)["bank_accounts"] == [{"code": "1200", "name": "Bank current account", "kind": "current"}]
+    codes = {a["code"] for a in client.get(f"/api/accounts?client_id={added['id']}").json()}
+    assert {"1200", "1240"} <= codes and "1241" not in codes
+
+
+def test_a_statement_for_a_client_with_two_accounts_must_say_which(api):
+    # the fake model answers with one bank statement line
+    client = api(FakeModel([STATEMENT_LINE]))
+    cid = client_with_two_accounts(client)
+    job = client.post("/api/analyze", data={"client_id": str(cid), "text": "Bank lines"}).json()
+    failed = finish(client, job["job_id"])
+    assert failed["status"] == "failed" and "Choose which bank account" in failed["error"]["message"]
+    assert failed["error"]["message"] == "Choose which bank account this statement is for."
+    assert client.get(f"/api/clients/{cid}/ledger").json()["uploads"] == []   # Task 7 moves this to the year route
+
+
+def test_a_statement_sent_with_its_account_is_saved_on_it_and_can_be_moved(api):
+    model = FakeModel([STATEMENT_LINE])
+    client = api(model)
+    cid = client_with_two_accounts(client)
+    job = client.post("/api/analyze", data={"client_id": str(cid), "text": "Amex lines", "bank_account": "1240"}).json()
+    assert finish(client, job["job_id"])["status"] == "succeeded"
+    ledger = client.get(f"/api/clients/{cid}/ledger").json()
+    [upload], [line] = ledger["uploads"], ledger["transactions"]
+    assert (upload["bank_account"], line["bank_account"], line["contra_account_code"]) == ("1240", "1240", "1240")
+    assert "1200 Bank Current Account" in model.calls[0]["messages"][0]["content"]   # paying the card off
+    moved = client.patch(f"/api/clients/{cid}/uploads/{upload['id']}", json={"bank_account": "1200"}).json()
+    assert (moved["uploads"][0]["bank_account"], moved["transactions"][0]["contra_account_code"]) == ("1200", "1200")
+
+
+def test_a_bank_account_the_client_does_not_have_is_refused(api):
+    client = api(FakeModel([STATEMENT_LINE]))
+    cid = client_with_two_accounts(client)
+    resp = client.post("/api/analyze", data={"client_id": str(cid), "text": "x", "bank_account": "1210"})
+    assert (resp.status_code, resp.json()["detail"]["message"]) == (
+        422, "Choose one of Business Cube Ltd's bank accounts.")
+
+
+def test_a_client_with_one_account_has_its_statements_put_on_it(api):
+    client = api(FakeModel([STATEMENT_LINE]))
+    cid = add(client)["id"]
+    finish(client, client.post("/api/analyze", data={"client_id": str(cid), "text": "x"}).json()["job_id"])
+    [line] = client.get(f"/api/clients/{cid}/ledger").json()["transactions"]
+    assert (line["bank_account"], line["contra_account_code"]) == ("1200", "1200")
