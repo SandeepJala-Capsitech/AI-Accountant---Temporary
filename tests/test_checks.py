@@ -11,6 +11,7 @@ from ledgersync.accounts import BANK, CHART
 from ledgersync.checks import normalise
 from ledgersync.models import BusinessSettings, Issue, Transaction
 from ledgersync.posting import trial_balance
+from ledgersync.rows import saved_form
 
 REGISTERED = BusinessSettings()
 NOT_REGISTERED = BusinessSettings(vat_registered=False)
@@ -296,7 +297,7 @@ def test_a_wages_payment_with_no_payroll_report_is_flagged():
 
 
 def test_a_payroll_report_of_this_month_or_the_one_before_answers_a_payment():
-    report = row(date=dt.date(2026, 3, 28), gross=Decimal("1000.00"), account_code="7000", contra_account_code="2210",
+    report = row(date=dt.date(2026, 3, 28), gross=Decimal("1000.00"), account_code="7000", owed_to="paye_ni",
                  document_type="payroll")
     for paid, wanted in ((dt.date(2026, 3, 31), False), (dt.date(2026, 4, 19), False), (dt.date(2026, 5, 2), True),
                          (dt.date(2026, 2, 27), True)):
@@ -317,12 +318,12 @@ def test_a_bank_line_coded_to_wages_is_told_to_use_the_report():
 
 
 def test_wages_on_a_report_or_a_receipt_are_not_told_to_use_the_report():
-    report = row(gross=Decimal("3000.00"), account_code="7000", contra_account_code="2220", document_type="payroll")
+    report = row(gross=Decimal("3000.00"), account_code="7000", owed_to="net_pay", document_type="payroll")
     assert not [i for i in normalise_and_match([report])[0].issues if i.code in ("wages_from_bank", "no_payroll")]
 
 
 def test_a_payroll_report_keeps_the_account_it_is_owed_on_and_is_never_paid_as_an_invoice():
-    report = row(date=dt.date(2026, 3, 28), gross=Decimal("3000.00"), account_code="7000", contra_account_code="2220",
+    report = row(date=dt.date(2026, 3, 28), gross=Decimal("3000.00"), account_code="7000", owed_to="net_pay",
                  document_type="payroll", counterparty="Staff")
     line = row(date=dt.date(2026, 3, 28), gross=Decimal("3000.00"), account_code="2220", document_type="statement",
                counterparty="Staff")
@@ -344,11 +345,12 @@ def test_a_payroll_line_without_owed_to_is_owed_not_paid_and_flagged():
     assert (net(tb, "7000"), net(tb, "2220"), net(tb, "1200")) == (Decimal("3000.00"), 0, Decimal("-3000.00"))
 
 
-def test_a_saved_payroll_line_on_the_bank_or_another_account_is_moved_to_what_it_owes():
-    for contra in ("1200", "2250"):
-        line = row(gross=Decimal("3000.00"), account_code="7000", document_type="payroll", contra_account_code=contra)
+def test_a_saved_payroll_contra_is_ignored_for_what_the_row_is_owed_to():
+    for contra in ("1200", "2250", "2220"):
+        line = row(gross=Decimal("3000.00"), account_code="7000", document_type="payroll", owed_to="pension",
+                   contra_account_code=contra)
         checked = normalise(line, HELPER_SETTINGS)
-        assert checked.contra_account_code == "2220" and only_issue(checked, "payroll_owed_to")
+        assert checked.contra_account_code == "2230" and not [i for i in checked.issues if i.code == "payroll_owed_to"]
 
 
 def test_employers_ni_and_pension_default_to_their_own_liabilities():
@@ -358,5 +360,22 @@ def test_employers_ni_and_pension_default_to_their_own_liabilities():
 
 
 def test_a_payroll_line_with_its_owed_to_has_no_warning():
-    line = row(gross=Decimal("100.00"), account_code="7006", document_type="payroll", contra_account_code="2210")
+    line = row(gross=Decimal("100.00"), account_code="7006", document_type="payroll", owed_to="paye_ni")
     assert not [i for i in normalise(line, HELPER_SETTINGS).issues if i.code == "payroll_owed_to"]
+
+
+def test_the_payroll_owed_to_warning_survives_saving():
+    line = row(gross=Decimal("3000.00"), account_code="7000", document_type="payroll")
+    first = normalise(line, HELPER_SETTINGS)
+    saved = saved_form(first)   # only the row's inputs, and the issues the ledger does not work out itself
+    assert saved["owed_to"] is None and saved["contra_account_code"] == "2220"
+    second = normalise(Transaction(**saved), HELPER_SETTINGS)
+    assert second.contra_account_code == "2220" and only_issue(second, "payroll_owed_to")
+
+
+def test_owed_to_decides_the_other_side_on_every_pass():
+    line = row(gross=Decimal("3000.00"), account_code="7000", document_type="payroll", owed_to="pension")
+    first = normalise(line, HELPER_SETTINGS)
+    second = normalise(Transaction(**saved_form(first)), HELPER_SETTINGS)
+    for checked in (first, second):
+        assert checked.contra_account_code == "2230" and not [i for i in checked.issues if i.code == "payroll_owed_to"]

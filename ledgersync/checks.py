@@ -57,7 +57,9 @@ def booked(tx: Transaction) -> bool:
     return tx.include or (tx.document_type not in NOT_TRANSACTIONS and tx.copy_of is None)
 
 
-PAYROLL_OWED = frozenset({NET_WAGES, PAYE, PENSION})   # where a payroll report's rows are held until paid
+# Where a payroll report's rows are held until the bank pays them, by what each is owed to.
+OWED_TO = {"net_pay": NET_WAGES, "paye_ni": PAYE, "pension": PENSION}
+PAYROLL_OWED = frozenset(OWED_TO.values())
 
 
 def other_side(tx: Transaction, settings: BusinessSettings) -> str:
@@ -70,7 +72,7 @@ def other_side(tx: Transaction, settings: BusinessSettings) -> str:
     if tx.document_type == "agent_statement":
         return DEBTORS
     if tx.document_type == "payroll":   # never the bank: the bank payment clears what is owed
-        return {"7006": PAYE, "7007": PENSION}.get(tx.account_code, NET_WAGES)
+        return OWED_TO.get(tx.owed_to) or {"7006": PAYE, "7007": PENSION}.get(tx.account_code, NET_WAGES)
     if tx.document_type == "invoice" or tx.document_type in NOT_TRANSACTIONS:
         account = BY_CODE.get(tx.account_code)
         return DEBTORS if account is not None and account.type == AccountType.INCOME else CREDITORS
@@ -119,11 +121,12 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
     # The bank and the accounts for what is owed are worked out afresh on every pass, so a row whose
     # account or document type changes moves with it; any other account sent in (petty cash, say) is kept.
     worked_out = {None, settings.bank_account, DEBTORS, CREDITORS, STAFF_EXPENSES}
-    # A payroll row is held on 2220, 2210 or 2230 until the bank pays it; any other account is worked out from its own.
-    keep = (tx.contra_account_code in PAYROLL_OWED if tx.document_type == "payroll"
-            else tx.contra_account_code not in worked_out)
-    payroll_default = tx.document_type == "payroll" and not keep
-    contra = tx.contra_account_code if keep else other_side(tx, settings)
+    # A payroll row is held on 2220, 2210 or 2230 until the bank pays it, by what it is owed to, whatever contra was
+    # saved; with no owed_to the account guesses, and says so on every pass.
+    payroll = tx.document_type == "payroll"
+    payroll_default = payroll and tx.owed_to is None
+    contra = (other_side(tx, settings) if payroll or tx.contra_account_code in worked_out
+              else tx.contra_account_code)
     if payroll_default:
         issues.append(issue("payroll_owed_to", f"Check what this payroll line is owed to: booked to "
                                                f"{BY_CODE[contra].name} for now."))

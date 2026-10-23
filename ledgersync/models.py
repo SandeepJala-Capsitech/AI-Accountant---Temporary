@@ -91,6 +91,7 @@ class Transaction(BaseModel):
     counterparty: Optional[str] = None
     document_number: Optional[str] = None          # the invoice, receipt or claim number printed on it
     agent: Optional[str] = None                    # on an agent's statement: the agent, who holds the money
+    owed_to: Optional[Literal["net_pay", "paye_ni", "pension"]] = None   # on a payroll report: what the row is owed to
     document_total: Optional[Decimal] = None       # the total printed on its document (an agent's statement: the
                                                    # net paid over), which matching checks its rows against
     document_net: Optional[Decimal] = None         # the total before VAT printed on its document, if it prints one

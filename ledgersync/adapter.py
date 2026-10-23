@@ -8,8 +8,8 @@ import uuid
 from decimal import Decimal
 from typing import Optional
 
-from .accounts import BY_CODE, NET_WAGES, PAYE, PENSION, SUSPENSE
-from .checks import issue, normalise
+from .accounts import BY_CODE, SUSPENSE
+from .checks import OWED_TO, issue, normalise
 from .models import DOCUMENT_TYPES, BusinessSettings, Direction, Transaction
 from .money import to_money
 
@@ -25,10 +25,6 @@ def parse_date(text) -> Optional[dt.date]:
         except ValueError:
             continue
     return None
-
-
-# What a payroll report's row is owed to: the account that holds it until the bank payment clears it.
-_OWED_TO = {"net_pay": NET_WAGES, "paye_ni": PAYE, "pension": PENSION}
 
 
 def _document_type(row: dict) -> str:
@@ -122,11 +118,11 @@ def to_transactions(rows: list[dict], source: str, settings: BusinessSettings, o
                          direction=Direction.IN if said_in and amount > 0 else Direction.OUT,
                          gross=abs(amount), vat=abs(vat) if vat is not None else None,   # sign: direction
                          account_code=code, currency=row.get("currency"), source=source,
-                         method="llm", issues=issues, document_type=_document_type(row),
+                         method="llm", issues=issues, document_type=kind,
                          counterparty=str(row.get("counterparty") or "").strip() or None,
                          document_number=None if statement else str(row.get("document_number") or "").strip() or None,
                          agent=str(row.get("agent") or "").strip() or None,
-                         contra_account_code=_OWED_TO.get(row.get("owed_to")) if kind == "payroll" else None,
+                         owed_to=row.get("owed_to") if kind == "payroll" and row.get("owed_to") in OWED_TO else None,
                          document_total=_printed_total(row) if key else None,
                          document_net=abs(net) if net is not None and not statement else None,
                          not_vat_invoice=not statement and bool(row.get("not_vat_invoice")),

@@ -229,6 +229,7 @@ def test_balances_on_any_other_row_are_dropped():
 def test_owed_to_sets_the_payroll_rows_other_account():
     rows = to_transactions([payroll_row(owed_to="net_pay"), payroll_row(owed_to="pension", account="7007"),
                             payroll_row(owed_to="paye_ni", account="7006")], "text", BusinessSettings())
+    assert [r.owed_to for r in rows] == ["net_pay", "pension", "paye_ni"]
     assert [r.contra_account_code for r in rows] == ["2220", "2230", "2210"]
     assert all(r.document_type == "payroll" and not r.issues for r in rows)
 

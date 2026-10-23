@@ -274,9 +274,9 @@ def test_a_card_payment_pairs_with_its_receipt_rather_than_part_paying_a_recent_
 
 def test_net_pay_and_paye_from_the_report_and_the_bank_book_wages_in_full():
     pay = dict(date=dt.date(2026, 3, 28), document_type="payroll", document_ref="p1")
-    report = [row(**pay, gross=Decimal("3000.00"), account_code="7000", contra_account_code="2220"),
-              row(**pay, gross=Decimal("1000.00"), account_code="7000", contra_account_code="2210"),
-              row(**pay, gross=Decimal("100.00"), account_code="7006", contra_account_code="2210")]
+    report = [row(**pay, gross=Decimal("3000.00"), account_code="7000", owed_to="net_pay"),
+              row(**pay, gross=Decimal("1000.00"), account_code="7000", owed_to="paye_ni"),
+              row(**pay, gross=Decimal("100.00"), account_code="7006", owed_to="paye_ni")]
     bank = [row(date=dt.date(2026, 3, 28), gross=Decimal("3000.00"), account_code="2220", document_type="statement"),
             row(date=dt.date(2026, 4, 19), gross=Decimal("1100.00"), account_code="2210", document_type="statement")]
     tb = trial_balance(report + bank, HELPER_SETTINGS)
