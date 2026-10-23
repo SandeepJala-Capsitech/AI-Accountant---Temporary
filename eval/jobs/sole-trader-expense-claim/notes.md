@@ -54,7 +54,7 @@ The lines total 18.00 + 32.00 = 50.00, which agrees with the printed "Total £50
 | B7 | 07/10/2026 | ETSY | out | 24.50 | 3260 Drawings (judgement 4) | 3260 24.50 | 1200 24.50 |
 | B8 | 08/10/2026 | ARGOS - LAPTOP FOR NEW STARTER | out | 549.00 | 0030 Office Equipment | 0030 549.00 | 1200 549.00 |
 | B9 | 09/10/2026 | IBIS LONDON | out | 94.00 | 7402 Hotels | 7402 94.00 | 1200 94.00 |
-| B10 | 12/10/2026 | LINKEDIN ADS | out | 200.00 | 9998 Suspense (judgement 5) | 9998 200.00 | 1200 200.00 |
+| B10 | 12/10/2026 | LINKEDIN ADS | out | 200.00 | 8201 Subscriptions and Software (judgement 5) | 8201 200.00 | 1200 200.00 |
 | B11 | 13/10/2026 | MORRISONS | out | 21.75 | 8205 Refreshments | 8205 21.75 | 1200 21.75 |
 | B12 | 14/10/2026 | MARKS & SPENCER - SANDWICHES FOR CLIENT MEETING | out | 38.20 | 7403 Entertainment | 7403 38.20 | 1200 38.20 |
 | B13 | 15/10/2026 | CANVA | out | 10.99 | 8201 Subscriptions and Software | 8201 10.99 | 1200 10.99 |
@@ -117,12 +117,13 @@ The statement reconciles. Its movement is 10,495.93 − 9,000.00 = +1,495.93, wh
 | 7502 Telephone and Internet | 30.00 (B6) | | **30.00** |
 | 7504 Office Stationery | 32.40 (B1) + 27.99 (B20) = 60.39 | | **60.39** |
 | 7800 Repairs and Renewals | 86.30 (B3) | | **86.30** |
-| 8201 Subscriptions and Software | 10.99 (B13) | | **10.99** |
+| 8201 Subscriptions and Software | 10.99 (B13) + 200.00 (B10) = 210.99 | | **210.99** |
 | 8205 Refreshments | 21.75 (B11) + 46.80 (B17) = 68.55 | | **68.55** |
-| 9998 Suspense | 200.00 (B10) | | **200.00** |
+
+Nothing is left in 9998 Suspense, so it has no line.
 
 Check, adding the debit nets in table order: 549.00, then 669.00, 2164.93, 2464.43, 2525.48, 2575.48, 2669.48,
-2707.68, 2731.28, 2743.77, 2773.77, 2834.16, 2920.46, 2931.45, 3000.00 and 3200.00. The credit nets are
+2707.68, 2731.28, 2743.77, 2773.77, 2834.16, 2920.46, 3131.45 and 3200.00. The credit nets are
 50.00 + 3150.00 = 3200.00. The expected trial balance sums to zero.
 
 ## Judgement calls
@@ -148,11 +149,17 @@ Check, adding the debit nets in table order: 549.00, then 669.00, 2164.93, 2464.
    - **B19 CAMDEN COUNCIL PENALTY CHARGE £65.00 → 3260 Drawings.** A fine is not a business expense. A sole
      trader's own fine is a personal cost, so it goes to Drawings. The alternative, 7400 Travel added back for
      tax, is rejected.
-5. **B10 LINKEDIN ADS £200.00 → 9998 Suspense, as the fixture has it.** It is plainly a business cost
-   (advertising), but the chart has no advertising account. 8201 Subscriptions and Software and 7603 Professional
-   Fees would both misdescribe it, so "nothing else fits" applies. The agent should leave it in Suspense with an
-   exception, which means the gate's no_suspense check is expected to fail for this case. An agent that codes it
-   to 8201 or 7603 will differ on 9998 and that account. Read its exception before calling that a mistake.
+5. **B10 LINKEDIN ADS £200.00 → 8201 Subscriptions and Software.** This departs from the fixture's
+   `expected.json`, which has 9998. LinkedIn Ads is a known, allowable business cost (advertising), so a careful
+   accountant wouldn't leave it in Suspense at the period end. That would also fail the gate's no_suspense check,
+   which the fix loop is built to clear.
+   - The chart has no advertising account. The nearest fit is 8201, whose definition covers "online services";
+     LinkedIn Ads is a self-serve online advertising service.
+   - The alternative is 7603 Professional Fees ("other professional services"), which fits less well: no
+     professional is engaged.
+   - An agent that picks 7603 will differ on 8201 (−200.00) and 7603 (+200.00). Read its exception before calling
+     that a mistake.
+   - With every row out of Suspense, the gate is expected to pass for this case.
 6. **Accounts that follow the chart's own definitions and the fixture's labels:**
    - B4 GREGGS → 7406 Subsistence: a bakery or takeaway.
    - B11 MORRISONS → 8205 Refreshments: a supermarket with no item detail is workplace groceries.
