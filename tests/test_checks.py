@@ -253,6 +253,8 @@ def test_a_limited_companys_owners_go_through_the_directors_loan_account():
     drawings = normalise(tx(account="3260", gross="500.00"), LIMITED)
     assert codes(drawings) == [("director_loan", "warning")]
     assert drawings.issues[0].message == "Use Director's Loan Account, not Drawings, for a limited company."
+    capital = normalise(tx(account="3010", gross="500.00"), LIMITED)
+    assert capital.issues[0].message == "Use Director's Loan Account, not Capital Introduced, for a limited company."
     assert codes(normalise(tx(account="2250", gross="500.00"), LIMITED)) == []
 
 
@@ -261,6 +263,14 @@ def test_a_sole_trader_has_no_directors_loan_account():
     assert codes(loan) == [("director_loan", "warning")]
     assert loan.issues[0].message == "Director's Loan Account is for companies only. Use Drawings or Capital Introduced."
     assert codes(normalise(tx(account="3260", gross="500.00"), TRADER)) == []
+
+
+def test_a_sole_trader_has_no_shares_or_dividends():
+    for code, name in (("3000", "Ordinary Shares"), ("3250", "Dividends")):
+        t = normalise(tx(account=code, gross="500.00"), TRADER)
+        assert codes(t) == [("director_loan", "warning")]
+        assert t.issues[0].message == f"{name} is for companies only. Use Drawings or Capital Introduced."
+        assert codes(normalise(tx(account=code, gross="500.00"), LIMITED)) == []
 
 
 def test_without_a_business_type_the_owners_accounts_are_not_questioned():

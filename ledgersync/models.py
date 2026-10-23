@@ -26,7 +26,7 @@ DOCUMENT_TYPES: tuple[str, ...] = get_args(DocumentType)
 NOT_TRANSACTIONS = frozenset(DOCUMENT_TYPES[5:])
 
 # The kind of business a client is: a limited company's owners go through 2250 Director's Loan Account,
-# anyone else's through 3260 Drawings and 3000 Capital Introduced.
+# anyone else's through 3260 Drawings and 3010 Capital Introduced.
 BusinessType = Literal["limited_company", "sole_trader", "partnership", "llp"]
 BUSINESS_TYPES: tuple[str, ...] = get_args(BusinessType)
 

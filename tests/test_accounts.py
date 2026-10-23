@@ -1,7 +1,8 @@
 import json
 from pathlib import Path
 
-from ledgersync.accounts import BANK, BY_CODE, CHART, AccountType, choosable, model_accounts
+from ledgersync.accounts import (ALL_BANK_CODES, BANK, BANK_SLOTS, BY_CODE, CHART, AccountType, choosable, model_accounts,
+                                 reserve_for)
 
 FIXTURES = Path(__file__).parent.parent / "eval" / "fixtures"
 
@@ -36,10 +37,15 @@ def test_debtors_and_creditors_have_their_own_codes():
 def test_a_model_may_choose_any_account_but_the_bank_and_the_control_accounts():
     # The bank is the other side of every posting, and the ledger splits VAT itself. What is owed
     # (Debtors, Creditors, Expenses Owed to Staff) is picked by the ledger from the document type.
-    ledger_only = {"1200", "2200", "2201", "1100", "2100", "2110"}
+    # So are the accounts only year-end work posts to, and where a year's profit closes.
+    ledger_only = {"1200", "2200", "2201", "1100", "2100", "2110", "0031", "0041", "0051", "0056", "1103", "2109",
+                   "3100", "3200", "8000", "8800"}
     assert {a.code for a in model_accounts()} == set(BY_CODE) - ledger_only
-    # Without a business type (an analysis with no client) the director's loan account is left out.
-    assert {a.code for a in choosable()} == set(BY_CODE) - ledger_only - {"2250"}
+    # Without a business type (an analysis with no client) a company's own accounts are left out, and so are
+    # the bank accounts and cards beyond the first.
+    company_only = {"2250", "2320", "3000", "3250", "7001"}
+    extra_banks = {"1201", "1202", "1211", "1240", "1241"}
+    assert {a.code for a in choosable()} == set(BY_CODE) - ledger_only - company_only - extra_banks
 
 
 def test_expenses_owed_to_staff_is_a_liability_of_its_own():
@@ -60,8 +66,43 @@ def test_vat_on_entertainment_and_cars_is_blocked_but_vans_reclaim_it():
 
 def test_a_limited_company_books_its_owners_through_the_directors_loan_account():
     company = {a.code for a in choosable("limited_company")}
-    assert "2250" in company and not {"3000", "3260"} & company
+    assert "2250" in company and not {"3010", "3260"} & company
     for kind in ("sole_trader", "partnership", "llp"):
         others = {a.code for a in choosable(kind)}
-        assert {"3000", "3260"} <= others and "2250" not in others
+        assert {"3010", "3260"} <= others and "2250" not in others
     assert (BY_CODE["2250"].name, BY_CODE["2250"].type) == ("Director's Loan Account", AccountType.LIABILITY)
+
+
+def test_a_company_is_offered_shares_dividends_and_directors_salaries():
+    codes = {a.code for a in choosable("limited_company")}
+    assert {"3000", "3250", "7001", "2250", "2320"} <= codes and not {"3010", "3260", "3100", "3200"} & codes
+
+
+def test_a_sole_trader_is_offered_capital_and_drawings_only():
+    codes = {a.code for a in choosable("sole_trader")}
+    assert {"3010", "3260"} <= codes and not {"3000", "3250", "7001", "2250", "2320"} & codes
+
+
+def test_only_the_clients_own_bank_accounts_are_offered():
+    codes = {a.code for a in choosable("limited_company", bank_codes=("1200", "1240"))}
+    assert {"1240"} <= codes and not {"1201", "1211", "1241"} & codes
+    assert "1230" in codes   # petty cash is always offered
+
+
+def test_profit_closes_to_retained_earnings_or_the_owners_capital():
+    assert reserve_for("limited_company") == reserve_for("llp") == "3200"
+    assert reserve_for("sole_trader") == reserve_for("partnership") == "3100"
+
+
+def test_the_bank_slots_are_all_in_the_chart_and_in_the_schema():
+    assert ALL_BANK_CODES == {c for codes in BANK_SLOTS.values() for c in codes} and ALL_BANK_CODES <= set(BY_CODE)
+    assert BY_CODE["1240"].type == BY_CODE["1241"].type == AccountType.LIABILITY
+    assert ALL_BANK_CODES - {BANK} <= {a.code for a in model_accounts()}
+
+
+def test_the_new_accounts_have_the_codes_names_and_types_the_site_uses():
+    expected = {"3000": ("Ordinary Shares", AccountType.EQUITY), "3010": ("Capital Introduced", AccountType.EQUITY),
+                "3250": ("Dividends", AccountType.EQUITY), "2220": ("Net Wages", AccountType.LIABILITY),
+                "2320": ("Corporation Tax", AccountType.LIABILITY), "8250": ("Fines and Penalties", AccountType.EXPENSE),
+                "7006": ("Employer's National Insurance", AccountType.EXPENSE)}
+    assert {c: (BY_CODE[c].name, BY_CODE[c].type) for c in expected} == expected

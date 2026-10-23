@@ -134,7 +134,7 @@ closing the browser loses nothing. Archive hides a client and keeps everything; 
 - Export to Excel downloads the client's trial balance and transactions as one workbook.
 - VAT on client entertainment (7403) and on cars (0050 Cars) is not reclaimed; vans (0055 Vans) are. A
   limited company's owners use 2250 Director's Loan Account; other businesses use 3260 Drawings and
-  3000 Capital Introduced. Rent from tenants goes to 4904 Rent Income, and cash from a cash machine to 1230
+  3010 Capital Introduced. Rent from tenants goes to 4904 Rent Income, and cash from a cash machine to 1230
   Petty Cash. VAT at the 5% rate (a small business's energy) and £0.00 VAT are not flagged.
 
 Everything is kept in MongoDB: the clients, their rows and the original files. Set `MONGODB_URI` in `.env`

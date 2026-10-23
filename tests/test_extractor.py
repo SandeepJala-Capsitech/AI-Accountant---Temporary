@@ -229,7 +229,16 @@ def test_a_sole_trader_is_offered_drawings_and_no_directors_loan():
 
 def test_the_schema_accepts_any_account_a_business_could_use():
     account = ExtractedTransactions.model_json_schema()["$defs"]["AccountingTransaction"]["properties"]["account"]
-    assert {"2250 Director's Loan Account", "3260 Drawings", "0055 Vans"} <= set(account["enum"])
+    assert {"2250 Director's Loan Account", "3260 Drawings", "0055 Vans", "3000 Ordinary Shares",
+            "3010 Capital Introduced", "1241 Company Credit Card 2", "1202 Bank Current Account 3"} <= set(account["enum"])
+
+
+def test_the_prompt_offers_only_the_clients_own_bank_accounts():
+    client = FakeModel([transactions_json(ROW)])
+    TransactionExtractor(client, business_name="Business Cube Ltd", business_type="limited_company",
+                         bank_codes=("1200", "1240")).extract_accounting_data("x")
+    system = client.calls[0]["messages"][0]["content"]
+    assert "1240 Company Credit Card:" in system and "1241 Company Credit Card 2:" not in system
 
 
 def test_statement_balances_come_once_with_the_answer_and_running_balances_per_row():

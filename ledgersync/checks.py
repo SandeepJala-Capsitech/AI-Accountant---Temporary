@@ -6,8 +6,8 @@ import datetime as dt
 from decimal import Decimal
 from typing import Optional, Sequence
 
-from .accounts import (BY_CODE, CAPITAL, CREDITORS, DEBTORS, DIRECTORS_LOAN, DRAWINGS, HOTELS, STAFF_EXPENSES,
-                       Account, AccountType)
+from .accounts import (BY_CODE, CAPITAL, CREDITORS, DEBTORS, DIRECTORS_LOAN, DIVIDENDS, DRAWINGS, HOTELS, SHARES,
+                       STAFF_EXPENSES, Account, AccountType)
 from .models import NOT_TRANSACTIONS, BusinessSettings, Direction, Issue, Transaction
 from .money import PENNY, ZERO, VatTreatment, vat_in_gross
 
@@ -177,8 +177,9 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
     if settings.business_type == "limited_company" and account is not None and tx.account_code in (CAPITAL, DRAWINGS):
         issues.append(issue("director_loan", f"Use Director's Loan Account, not {account.name}, for a limited "
                                              "company."))
-    elif settings.business_type not in (None, "limited_company") and tx.account_code == DIRECTORS_LOAN:
-        issues.append(issue("director_loan", "Director's Loan Account is for companies only. Use Drawings or "
+    elif (settings.business_type not in (None, "limited_company") and account is not None
+          and tx.account_code in (DIRECTORS_LOAN, SHARES, DIVIDENDS)):
+        issues.append(issue("director_loan", f"{account.name} is for companies only. Use Drawings or "
                                              "Capital Introduced."))
     if tx.document_type in NOT_TRANSACTIONS and not tx.include:   # copies and card payments: matching says so
         issues.append(issue("not_booked", f"Looks like {_NOT_TRANSACTION_NAMES[tx.document_type]}: not booked. "
