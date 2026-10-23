@@ -64,15 +64,18 @@ def _error_code(resp) -> str:
     return detail["code"] if isinstance(detail, dict) and "code" in detail else f"http_{resp.status_code}"
 
 
-def run_document(client, path: Path, timeout: float) -> tuple[Optional[dict], Optional[str]]:
-    """Sends one document through POST /api/analyze and the job API. .txt goes in as pasted text."""
+def run_document(client, path: Path, timeout: float,
+                 client_id: Optional[int] = None) -> tuple[Optional[dict], Optional[str]]:
+    """Sends one document through POST /api/analyze and the job API. .txt goes in as pasted text. With a
+    client_id, the API saves the rows it reads to that client."""
+    form = {} if client_id is None else {"client_id": str(client_id)}
     # The upload is not retried: if it reached the API, a retry would start a second job.
     if path.suffix == ".txt":
-        resp = _call(client.post, "/api/analyze", data={"text": path.read_text(encoding="utf-8")}, headers=PAGES,
-                     retries=1)
+        resp = _call(client.post, "/api/analyze", data={"text": path.read_text(encoding="utf-8"), **form},
+                     headers=PAGES, retries=1)
     else:
-        resp = _call(client.post, "/api/analyze", files={"file": (path.name, path.read_bytes())}, headers=PAGES,
-                     retries=1)
+        resp = _call(client.post, "/api/analyze", files={"file": (path.name, path.read_bytes())}, data=form,
+                     headers=PAGES, retries=1)
     if resp.status_code != 202:
         return None, _error_code(resp)
     job_id = resp.json()["job_id"]
