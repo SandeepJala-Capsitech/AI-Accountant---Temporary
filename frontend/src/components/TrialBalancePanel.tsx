@@ -44,28 +44,25 @@ export default function TrialBalancePanel({ clientId, version, hasRows }: {
       {error && <div className="notice notice-error">{error}</div>}
       {result && (
         <>
-          <div className="tb-summary-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '10px', marginBottom: '16px' }}>
-            <div className="tb-card" style={{ padding: '10px 12px', background: 'var(--surface-color, #1e293b)', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.1)' }}>
-              <div style={{ fontSize: '11px', textTransform: 'uppercase', opacity: 0.7 }}>Net Profit / Loss</div>
-              <div style={{ fontSize: '16px', fontWeight: 'bold', color: netProfit >= 0 ? '#10b981' : '#f43f5e', marginTop: '2px' }}>
+          {/* The figures in the page's own cards and theme colours, so they read in light and dark mode alike. */}
+          <div className="figures">
+            <div className="card figure">
+              <div className="figure-label">Net profit / loss</div>
+              <div className={`figure-value ${netProfit >= 0 ? 'text-ok' : 'text-error'}`}>
                 {money(result.net_profit ?? '0.00')}
               </div>
             </div>
-            <div className="tb-card" style={{ padding: '10px 12px', background: 'var(--surface-color, #1e293b)', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.1)' }}>
-              <div style={{ fontSize: '11px', textTransform: 'uppercase', opacity: 0.7 }}>Total Income</div>
-              <div style={{ fontSize: '16px', fontWeight: 'bold', color: '#10b981', marginTop: '2px' }}>
-                {money(result.total_income ?? '0.00')}
-              </div>
+            <div className="card figure">
+              <div className="figure-label">Total income</div>
+              <div className="figure-value text-ok">{money(result.total_income ?? '0.00')}</div>
             </div>
-            <div className="tb-card" style={{ padding: '10px 12px', background: 'var(--surface-color, #1e293b)', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.1)' }}>
-              <div style={{ fontSize: '11px', textTransform: 'uppercase', opacity: 0.7 }}>Total Expenses</div>
-              <div style={{ fontSize: '16px', fontWeight: 'bold', color: '#6366f1', marginTop: '2px' }}>
-                {money(result.total_expenses ?? '0.00')}
-              </div>
+            <div className="card figure">
+              <div className="figure-label">Total expenses</div>
+              <div className="figure-value">{money(result.total_expenses ?? '0.00')}</div>
             </div>
-            <div className="tb-card" style={{ padding: '10px 12px', background: 'var(--surface-color, #1e293b)', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.1)' }}>
-              <div style={{ fontSize: '11px', textTransform: 'uppercase', opacity: 0.7 }}>Assets / Liabilities</div>
-              <div style={{ fontSize: '13px', fontWeight: '600', marginTop: '2px' }}>
+            <div className="card figure">
+              <div className="figure-label">Assets / liabilities</div>
+              <div className="figure-value">
                 {money(result.total_assets ?? '0.00')} / {money(result.total_liabilities ?? '0.00')}
               </div>
             </div>
