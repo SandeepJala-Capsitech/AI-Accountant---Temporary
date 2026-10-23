@@ -16,7 +16,8 @@ from .checks import MATCHING_ISSUES, booked, issue, long_date, reclaims_vat
 from .models import BusinessSettings, Direction, Issue, Settlement, Transaction
 from .money import ZERO
 
-WINDOW = dt.timedelta(days=31)   # a payment pays a document dated at most 31 days before it
+WINDOW = dt.timedelta(days=31)   # a payment may be suggested for a document dated within 31 days of it
+PART_WINDOW = dt.timedelta(days=120)  # a part payment, an overpayment or a set of documents: at most 120 days after
 CARD_DAYS = dt.timedelta(days=3)  # a card payment reaches the bank within a few days of its receipt
 YEAR = dt.timedelta(days=366)     # records further apart than this are different purchases, whatever else agrees
 MAX_SET = 5                      # one payment clears at most five documents from one counterparty
@@ -547,9 +548,15 @@ def _another(line: Transaction, doc: _Document) -> bool:
 
 
 def _could_pay(line: Transaction, doc: _Document) -> bool:
-    """Another open document the same way, and the payment dated on or after it and within 31 days."""
+    """Another open document the same way, and the payment dated on or after it, however long after. A payment of
+    exactly what is owed clears the document whenever it comes; other payments also need to be within PART_WINDOW."""
     return (_another(line, doc) and doc.date is not None and line.date is not None
-            and doc.date <= line.date <= doc.date + WINDOW)
+            and doc.date <= line.date)
+
+
+def _recent(line: Transaction, doc: _Document) -> bool:
+    """The payment dated within PART_WINDOW of the document it could pay."""
+    return line.date <= doc.date + PART_WINDOW
 
 
 def _paid_before(line: Transaction, doc: _Document) -> bool:
@@ -592,10 +599,20 @@ def _settle(n: int, line: Transaction, documents: dict[str, _Document], change: 
         early = [d for d in documents.values() if _paid_before(line, d) and d.open == line.gross]
         if early:
             kind, options, why = "suggest", [[d] for d in early], "the payment is dated before the document"
+    if kind == "none":     # never silent: someone this line is paid to or from has an open document
+        open_documents = [d for d in documents.values() if _another(line, d) and line.date and line.counterparty
+                          and names_match(line.counterparty, d.counterparty)]
+        if open_documents:
+            kind, options = "open_document", [[d] for d in open_documents]
+            why = _why_not_matched(line, open_documents)
     if kind == "pay":
         _pay(n, line, options[0], change, found)
     elif kind == "choose":
         found.append(issue("choose_payment", f"Could pay: {_choices(options)}. Choose one.", "error"))
+        change["candidates"] = [[d.settlement(d.open) for d in option] for option in options]
+    elif kind == "open_document":
+        found.append(issue("open_document", f"May pay {_choices(options)}: not matched because {why}. Link it if "
+                                            "so."))
         change["candidates"] = [[d.settlement(d.open) for d in option] for option in options]
     elif kind == "suggest":
         found.append(issue("possible_payment", f"May pay {_choices(options)}: same amount, but {why}. Link it if "
@@ -604,14 +621,25 @@ def _settle(n: int, line: Transaction, documents: dict[str, _Document], change: 
     _note(change, line, found)
 
 
+def _why_not_matched(line: Transaction, docs: list[_Document]) -> str:
+    """Why a line to someone with these open documents pays none of them: the first reason that applies."""
+    if not any(d.open == line.gross for d in docs):
+        return "the amount differs"
+    if line.date and any(d.date and line.date > d.date + PART_WINDOW for d in docs):
+        return "it is more than 120 days after the document"
+    return "the payment is dated before the document"
+
+
 def _decide(line: Transaction, docs: list[_Document]) -> tuple[str, list[list[_Document]]]:
-    """What to do with a bank line, given the open documents it could pay (same direction, within 31 days):
+    """What to do with a bank line, given the open documents it could pay (same direction, dated on or before it):
     pay them, ask a person to choose, suggest them, or nothing. Only documents from the same counterparty
-    are ever paid automatically."""
+    are ever paid automatically, and only those within 120 days unless they owe exactly what the line pays."""
     named = [d for d in docs if line.counterparty and names_match(line.counterparty, d.counterparty)]
     exact = _exact(line, named)
     if exact:
         return ("pay", [exact]) if len(exact) == 1 else ("choose", [[d] for d in exact])
+    named = [d for d in named if _recent(line, d)]
+    docs = [d for d in docs if line.date <= d.date + WINDOW]
     sets = _sets_adding_up_to(line.gross, named)
     if sets:
         return ("pay", sets) if len(sets) == 1 else ("choose", sets)

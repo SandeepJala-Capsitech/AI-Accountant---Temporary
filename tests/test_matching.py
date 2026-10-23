@@ -44,6 +44,8 @@ def test_names_that_do_not_match(a, b):
 import datetime as dt
 from decimal import Decimal
 
+from helpers import match_one, only_issue
+from helpers import row as helper_row
 from ledgersync.checks import booked, normalise
 from ledgersync.matching import match
 from ledgersync.models import BusinessSettings, Direction, Transaction
@@ -99,10 +101,14 @@ def test_two_bills_that_fit_ask_a_person_to_choose():
     assert october.owed == later.owed == Decimal("12000.00")
 
 
-@pytest.mark.parametrize("paid_on", ["2026-09-30", "2026-11-02"])
-def test_a_payment_before_the_bill_or_more_than_31_days_after_is_not_matched(paid_on):
-    open_bill, line = matched(bill(), bank(date=paid_on))
+def test_a_payment_before_the_bill_is_not_matched():
+    open_bill, line = matched(bill(), bank(date="2026-09-30"))
     assert line.pays == [] and open_bill.owed == Decimal("12000.00")
+
+
+def test_an_exact_payment_more_than_31_days_after_the_bill_is_still_matched():
+    open_bill, line = matched(bill(), bank(date="2026-11-02"))
+    assert [p.ref for p in line.pays] == ["bill-oct"] and open_bill.owed == Decimal("0.00")
 
 
 def test_a_payment_on_the_31st_day_is_matched():
@@ -137,10 +143,12 @@ def test_a_claim_is_paid_by_its_reimbursement():
 
 def test_a_claim_is_dated_by_its_latest_dated_line():
     first = row("expense_claim", "out", "100.00", "2026-09-01", "Jenny Hogg", "claim")
-    undated = row("expense_claim", "out", "50.00", "2026-09-20", "Jenny Hogg", "claim").model_copy(update={"date": None})
-    *_, late = matched(first, undated, bank("150.00", "2026-10-03", "J HOGG EXPENSES"))
-    *_, in_time = matched(first, undated, bank("150.00", "2026-10-02", "J HOGG EXPENSES"))
-    assert late.pays == [] and [p.ref for p in in_time.pays] == ["claim"]
+    second = row("expense_claim", "out", "50.00", "2026-09-20", "Jenny Hogg", "claim")
+    undated = second.model_copy(update={"date": None})
+    paid = bank("150.00", "2026-09-10", "J HOGG EXPENSES")
+    *_, before_the_latest_line = matched(first, second, paid)
+    *_, no_later_line = matched(first, undated, paid)
+    assert before_the_latest_line.pays == [] and [p.ref for p in no_later_line.pays] == ["claim"]
 
 
 def test_unlink_makes_an_ordinary_bank_line():
@@ -788,3 +796,22 @@ def test_adding_the_missing_line_clears_the_total_warning():
 def test_a_document_with_too_much_says_so():
     [only] = matched(bill("130.00", document_total="120.90", who="BT"))
     assert only.issues[0].message == "Rows total £130.00; the invoice's total is £120.90. £9.10 over: remove a duplicate or fix an amount."
+
+
+def test_a_part_payment_matches_only_within_120_days():
+    invoice = helper_row(date=dt.date(2026, 1, 10), counterparty="Smith Solicitors Ltd", gross=Decimal("1200.00"),
+                         document_type="invoice", document_ref="d1")
+    part = helper_row(date=dt.date(2026, 4, 1), counterparty="Smith Solicitors", gross=Decimal("600.00"),
+                      document_type="statement")
+    late = part.model_copy(update={"date": dt.date(2026, 6, 1)})
+    assert match_one(invoice, part).pays
+    assert not match_one(invoice, late).pays
+
+
+def test_an_unmatched_line_to_someone_with_an_open_invoice_is_never_silent():
+    invoice = helper_row(date=dt.date(2026, 1, 10), counterparty="Smith Solicitors Ltd", gross=Decimal("1200.00"),
+                         description="Smith Solicitors invoice", document_type="invoice", document_ref="d1")
+    line = helper_row(date=dt.date(2026, 8, 1), counterparty="Smith Solicitors", gross=Decimal("450.00"),
+                      document_type="statement")
+    issue = only_issue(match_one(invoice, line), "open_document")
+    assert issue.severity == "warning" and "Smith" in issue.message

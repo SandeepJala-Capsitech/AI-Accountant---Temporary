@@ -199,7 +199,7 @@ function lineStatus(tx: Transaction): RowStatus[] {
 // What each kind of issue is called where the table lists it; the message says the rest.
 const ISSUE_TITLES: Record<string, string> = {
   total_mismatch: "Total doesn't add up", possible_duplicate: 'Possible duplicate', duplicate_document: 'Copy of a document',
-  choose_payment: 'Choose what it pays', possible_payment: 'May pay a document', part_payment: 'Part payment',
+  choose_payment: 'Choose what it pays', possible_payment: 'May pay a document', open_document: 'May pay an open invoice', part_payment: 'Part payment',
   overpayment: 'Overpaid', stale_link: 'Link no longer found', mixed_link: "Links can't be combined",
   claim_vat: 'VAT not on the receipt', vat_worked_out: 'VAT worked out', not_vat_invoice: 'Not a VAT invoice',
   vat_arithmetic: 'Impossible VAT', vat_rate_mismatch: 'Unusual VAT',

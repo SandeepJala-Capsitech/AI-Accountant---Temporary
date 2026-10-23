@@ -1,8 +1,10 @@
 import datetime as dt
 import random
+from decimal import Decimal
 
 import pytest
 
+from helpers import SETTINGS as HELPER_SETTINGS, net, row
 from ledgersync import accounts
 from ledgersync.checks import normalise
 from ledgersync.errors import InvalidTransactions
@@ -233,3 +235,12 @@ def test_rows_said_not_to_be_the_same_are_both_posted():
     assert [(l.code, str(l.debit), str(l.credit)) for l in balance.lines] == [
         ("1200", "0.00", "72.00"), ("7400", "72.00", "0.00")]
     assert {l.transaction for l in balance.journal} == {0, 1}
+
+
+def test_an_exact_payment_clears_an_invoice_paid_45_days_later():
+    invoice = row(date=dt.date(2026, 1, 10), counterparty="Smith Solicitors Ltd", gross=Decimal("1200.00"),
+                  vat=Decimal("200.00"), document_type="invoice", document_ref="d1")
+    paid = row(date=dt.date(2026, 2, 24), counterparty="Smith Solicitors", gross=Decimal("1200.00"),
+               document_type="statement", document_ref="b1")
+    tb = trial_balance([invoice, paid], HELPER_SETTINGS)
+    assert net(tb, "7600") == Decimal("1000.00") and net(tb, "2100") == 0
