@@ -19,7 +19,7 @@ eval/private/
 .claude
 .gitignore_add_on
 
-# The local database of clients and their saved rows (LEDGERSYNC_DB_PATH)
+# The old SQLite database of clients and their saved rows (no longer used)
 data/
 
 models/

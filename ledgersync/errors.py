@@ -97,7 +97,7 @@ class RefusedRequest(LedgerSyncError):
 
 
 class StorageError(LedgerSyncError):
-    """The local database could not be read or written; the server log says why."""
+    """The database could not be used, or its address is not set; the server log says why."""
 
     status_code = 500
     code = "storage_error"

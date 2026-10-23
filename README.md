@@ -121,7 +121,7 @@ design is in `docs/superpowers/specs/2026-10-06-unpaid-documents-and-payment-mat
 The first page lists your clients. Add one with its company name, its business type (limited company,
 sole trader, partnership or LLP), its responsible person (the client's own contact, with email and phone)
 and whether it is VAT registered. Open a client to add its documents: each analysis is saved to that
-client in a local database when it finishes, with the decisions you make (Link, Include, edits), so
+client in MongoDB when it finishes, with the decisions you make (Link, Include, edits), so
 closing the browser loses nothing. Archive hides a client and keeps everything; Restore brings it back.
 
 - Edit corrects a row: date, description, counterparty, money in or out, amount, VAT shown, account and
@@ -137,8 +137,10 @@ closing the browser loses nothing. Archive hides a client and keeps everything; 
   3000 Capital Introduced. Rent from tenants goes to 4904 Rent Income, and cash from a cash machine to 1230
   Petty Cash. VAT at the 5% rate (a small business's energy) and £0.00 VAT are not flagged.
 
-The database is one SQLite file, `data/ledgersync.db` (git-ignored), or wherever `LEDGERSYNC_DB_PATH`
-points; deleting it removes every client. The endpoints are under `/api/clients`, and the design is in
+Everything is kept in MongoDB: the clients, their rows and the original files. Set `MONGODB_URI` in `.env`
+(for example `mongodb://localhost:27017`) and, if you want another database than `ledgersync`,
+`MONGODB_DB_NAME`; with no `MONGODB_URI` the API refuses to start. Dropping the database removes every
+client. The endpoints are under `/api/clients`, and the design is in
 `docs/superpowers/specs/2026-10-06-clients-and-local-database-design.md`.
 
 ## The AI model (OpenRouter or Groq)
@@ -202,13 +204,17 @@ Settings come from environment variables or `.env` (environment variables win).
 | `LEDGERSYNC_MAX_PDF_PAGES` | `30` | Most pages accepted in one PDF |
 | `LEDGERSYNC_MAX_PARALLEL_JOBS` | `5` | Documents read at once; `1` reads them one at a time |
 | `LEDGERSYNC_LOG_LEVEL` | `INFO` | Log level (document contents are never logged) |
-| `LEDGERSYNC_DB_PATH` | `data/ledgersync.db` | The local database of clients and their saved rows |
+| `MONGODB_URI` | — | Where everything is kept (required), e.g. `mongodb://localhost:27017` |
+| `MONGODB_DB_NAME` | `ledgersync` | The MongoDB database holding clients, rows and original files |
 | `API_URL` (frontend) | `http://127.0.0.1:8085` | Where the Next.js `/api` rewrite sends requests |
 
 ## Tests
 
+The tests need a local MongoDB (`brew services start mongodb-community`); they use throwaway databases
+there. Without `LEDGERSYNC_TEST_MONGODB_URI` the MongoDB tests are skipped.
+
 ```bash
-.venv/bin/python -m pytest                # fast tests, no network
+LEDGERSYNC_TEST_MONGODB_URI=mongodb://localhost:27017 .venv/bin/python -m pytest   # fast tests, no network
 .venv/bin/python -m pytest -m llm         # live test against the model (needs OPENROUTER_API_KEY or GROQ_API_KEY)
 ```
 

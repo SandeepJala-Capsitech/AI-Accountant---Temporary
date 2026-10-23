@@ -7,15 +7,17 @@ from openpyxl import load_workbook
 from ledgersync import ledger
 from ledgersync.export import MONEY, file_name
 from ledgersync.models import ClientFields, RowPatch, Transaction
-from ledgersync.store import Store
 
 DAY = dt.date(2026, 10, 6)
 CUBE = ClientFields(name="Business Cube Ltd", business_type="limited_company", contact_name="Jenny Clarke")
 
 
+pytestmark = pytest.mark.mongo
+
+
 @pytest.fixture
-def store(tmp_path):
-    return Store(tmp_path / "ledgersync.db")
+def store(mongo_store):
+    return mongo_store
 
 
 def receipt(**changes):

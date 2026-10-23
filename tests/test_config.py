@@ -1,7 +1,9 @@
+import inspect
+import re
 from pathlib import Path
 
 from ledgersync import config
-from ledgersync.config import Settings, read_env_file
+from ledgersync.config import ENV_FILE, ENV_NAMES, Settings, read_env_file
 
 
 def test_defaults_are_local_and_bounded():
@@ -103,7 +105,28 @@ def test_five_files_are_read_at_once_unless_set_otherwise():
     assert Settings.from_env({"LEDGERSYNC_MAX_PARALLEL_JOBS": "0"}).max_parallel_jobs == 1   # never below one
 
 
-def test_the_database_lives_in_the_projects_data_folder_unless_set_otherwise(tmp_path):
-    project = Path(config.__file__).resolve().parent.parent
-    assert Settings.from_env({}).db_path == project / "data" / "ledgersync.db"
-    assert Settings.from_env({"LEDGERSYNC_DB_PATH": str(tmp_path / "books.db")}).db_path == tmp_path / "books.db"
+def test_a_blank_number_setting_uses_its_default():
+    blank = {name: "" for name in ("LEDGERSYNC_PORT", "LEDGERSYNC_MAX_UPLOAD_MB", "LEDGERSYNC_MAX_PDF_PAGES",
+                                   "LEDGERSYNC_MAX_PARALLEL_JOBS", "OPENROUTER_MAX_OUTPUT_TOKENS", "GROQ_TIMEOUT",
+                                   "GROQ_MAX_OUTPUT_TOKENS", "GROQ_MAX_IMAGES")}
+    assert Settings.from_env(blank) == Settings.from_env({})
+    assert Settings.from_env({"LEDGERSYNC_PORT": " 9000 "}).port == 9000
+
+
+def test_env_names_are_the_variables_from_env_reads():
+    source = inspect.getsource(Settings.from_env)
+    assert set(ENV_NAMES) == set(re.findall(r'(?:env\.get\(|_number\(env, )"([A-Z][A-Z0-9_]+)"', source))
+
+
+def example_values() -> dict[str, str]:
+    """NAME=value for each setting .env.example lists, commented out or not."""
+    lines = (ENV_FILE.parent / ".env.example").read_text(encoding="utf-8").splitlines()
+    return dict(line.lstrip("# ").split("=", 1) for line in lines if re.match(r"#? ?[A-Z][A-Z0-9_]+=", line))
+
+
+def test_env_example_lists_every_setting():
+    assert set(ENV_NAMES) <= set(example_values())
+
+
+def test_the_defaults_in_env_example_are_the_defaults():
+    assert Settings.from_env(example_values()) == Settings.from_env({})

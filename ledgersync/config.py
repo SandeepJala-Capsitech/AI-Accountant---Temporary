@@ -7,7 +7,23 @@ from pathlib import Path
 from typing import Mapping, Optional
 
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env"   # git-ignored; see .env.example
-DEFAULT_DB = Path(__file__).resolve().parent.parent / "data" / "ledgersync.db"   # git-ignored: data/
+# Every variable `Settings.from_env` reads; .env.example lists each of them.
+ENV_NAMES = (
+    "LEDGERSYNC_HOST", "LEDGERSYNC_PORT", "LEDGERSYNC_RELOAD", "LEDGERSYNC_WARMUP", "LEDGERSYNC_CORS_ORIGINS",
+    "LEDGERSYNC_MAX_UPLOAD_MB", "LEDGERSYNC_MAX_PDF_PAGES", "LEDGERSYNC_MAX_PARALLEL_JOBS", "LEDGERSYNC_LOG_LEVEL",
+    "LEDGERSYNC_BUSINESS_NAME",
+    "OPENROUTER_API_KEY", "OPENROUTER_MODEL", "OPENROUTER_BASE_URL", "OPENROUTER_MAX_OUTPUT_TOKENS",
+    "OPENROUTER_PROVIDERS", "OPENROUTER_QUANTIZATIONS",
+    "GROQ_API_KEY", "GROQ_MODEL", "GROQ_BASE_URL", "GROQ_TIMEOUT", "GROQ_MAX_OUTPUT_TOKENS",
+    "GROQ_REASONING_EFFORT", "GROQ_MAX_IMAGES",
+    "MONGODB_URI", "MONGODB_DB_NAME",
+)
+
+
+def _number(env: Mapping[str, str], name: str, default, kind=int):
+    """A number setting: unset or blank gives the default."""
+    value = env.get(name, "").strip()
+    return kind(value) if value else default
 
 
 def _flag(value: str) -> bool:
@@ -66,8 +82,7 @@ class Settings:
     groq_max_images: int = 3
     health_ttl: float = 300.0
     business_name: str = ""
-    db_path: Path = DEFAULT_DB            # the local database of clients and their saved rows
-    # MongoDB storage: if set, MongoStore is used instead of SQLite
+    # Everything is kept in MongoDB; the API refuses to start without the address.
     mongodb_uri: str = ""                 # e.g. "mongodb://localhost:27017"
     mongodb_db_name: str = "ledgersync"
 
@@ -101,35 +116,34 @@ class Settings:
                  env_file: Optional[Path] = ENV_FILE) -> "Settings":
         """Settings from `env`, or else from the process environment laid over the .env file."""
         env = {**read_env_file(env_file), **os.environ} if env is None else env
+        env = {name: env[name] for name in ENV_NAMES if name in env}   # only what is listed in ENV_NAMES
         d = cls()
         origins = env.get("LEDGERSYNC_CORS_ORIGINS")
         return cls(
             host=env.get("LEDGERSYNC_HOST", d.host),
-            port=int(env.get("LEDGERSYNC_PORT", d.port)),
+            port=_number(env, "LEDGERSYNC_PORT", d.port),
             reload=_flag(env.get("LEDGERSYNC_RELOAD", "0")),
             warmup=_flag(env.get("LEDGERSYNC_WARMUP", "1")),
             cors_origins=(tuple(o.strip() for o in origins.split(",") if o.strip())
                           if origins else d.cors_origins),
-            max_upload_mb=int(env.get("LEDGERSYNC_MAX_UPLOAD_MB", d.max_upload_mb)),
-            max_pdf_pages=int(env.get("LEDGERSYNC_MAX_PDF_PAGES", d.max_pdf_pages)),
-            max_parallel_jobs=max(1, int(env.get("LEDGERSYNC_MAX_PARALLEL_JOBS", d.max_parallel_jobs))),
+            max_upload_mb=_number(env, "LEDGERSYNC_MAX_UPLOAD_MB", d.max_upload_mb),
+            max_pdf_pages=_number(env, "LEDGERSYNC_MAX_PDF_PAGES", d.max_pdf_pages),
+            max_parallel_jobs=max(1, _number(env, "LEDGERSYNC_MAX_PARALLEL_JOBS", d.max_parallel_jobs)),
             log_level=env.get("LEDGERSYNC_LOG_LEVEL", d.log_level).upper(),
             openrouter_api_key=env.get("OPENROUTER_API_KEY", "").strip(),
             openrouter_model=env.get("OPENROUTER_MODEL", d.openrouter_model).strip(),
             openrouter_base_url=env.get("OPENROUTER_BASE_URL", d.openrouter_base_url).strip().rstrip("/"),
-            openrouter_max_output_tokens=int(env.get("OPENROUTER_MAX_OUTPUT_TOKENS", d.openrouter_max_output_tokens)),
+            openrouter_max_output_tokens=_number(env, "OPENROUTER_MAX_OUTPUT_TOKENS", d.openrouter_max_output_tokens),
             openrouter_providers=_names(env.get("OPENROUTER_PROVIDERS"), d.openrouter_providers),
             openrouter_quantizations=_names(env.get("OPENROUTER_QUANTIZATIONS"), d.openrouter_quantizations),
             groq_api_key=env.get("GROQ_API_KEY", "").strip(),
             groq_model=env.get("GROQ_MODEL", d.groq_model).strip(),
             groq_base_url=env.get("GROQ_BASE_URL", d.groq_base_url).strip().rstrip("/"),
-            groq_timeout=float(env.get("GROQ_TIMEOUT", d.groq_timeout)),
-            groq_max_output_tokens=int(env.get("GROQ_MAX_OUTPUT_TOKENS", d.groq_max_output_tokens)),
+            groq_timeout=_number(env, "GROQ_TIMEOUT", d.groq_timeout, float),
+            groq_max_output_tokens=_number(env, "GROQ_MAX_OUTPUT_TOKENS", d.groq_max_output_tokens),
             groq_reasoning_effort=env.get("GROQ_REASONING_EFFORT", d.groq_reasoning_effort).strip(),
-            groq_max_images=int(env.get("GROQ_MAX_IMAGES", d.groq_max_images)),
+            groq_max_images=_number(env, "GROQ_MAX_IMAGES", d.groq_max_images),
             business_name=env.get("LEDGERSYNC_BUSINESS_NAME", "").strip(),
-            db_path=(Path(env["LEDGERSYNC_DB_PATH"].strip()).expanduser()
-                     if env.get("LEDGERSYNC_DB_PATH", "").strip() else d.db_path),
             mongodb_uri=env.get("MONGODB_URI", "").strip(),
             mongodb_db_name=env.get("MONGODB_DB_NAME", "ledgersync").strip(),
         )

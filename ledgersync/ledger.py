@@ -20,7 +20,8 @@ from .models import (BusinessSettings, Client, ClientFields, ClientPatch, Client
                      RowPatch, SavedRow, StatementCheck, Transaction, TrialBalance, Upload)
 from .posting import trial_balance as post
 from .statements import check_statement
-from .store import Store, StoredRow
+from .rows import StoredRow
+from .store_mongo import MongoStore
 
 
 def settings_for(client: Client) -> BusinessSettings:
@@ -44,12 +45,12 @@ def check_client(fields: ClientFields) -> None:
         raise InvalidInput("Enter a valid email.")
 
 
-def add_client(store: Store, fields: ClientFields) -> Client:
+def add_client(store: MongoStore, fields: ClientFields) -> Client:
     check_client(fields)
     return store.create_client(fields)
 
 
-def change_client(store: Store, client_id: int, patch: ClientPatch) -> Client:
+def change_client(store: MongoStore, client_id: int, patch: ClientPatch) -> Client:
     """Edits, archives or restores a client; an edited client must still be complete."""
     client = store.get_client(client_id)
     sent = patch.model_dump(exclude_unset=True)
@@ -81,7 +82,7 @@ def _decisions(stored: list[StoredRow]) -> tuple[list[Optional[Decimal]], list[s
     return read, apart
 
 
-def build(store: Store, client_id: int) -> Ledger:
+def build(store: MongoStore, client_id: int) -> Ledger:
     """The client's ledger: every saved row booked and matched with the client's settings, then each upload's
     bank lines checked against the balances its statement prints, and its document's date against its file name's."""
     client = store.get_client(client_id)
@@ -114,10 +115,10 @@ def build(store: Store, client_id: int) -> Ledger:
 
 
 # Each store's clients: (revision, rows, rows to review), as the clients page last worked them out.
-_counted: WeakKeyDictionary[Store, dict[int, tuple[int, int, int]]] = WeakKeyDictionary()
+_counted: WeakKeyDictionary[MongoStore, dict[int, tuple[int, int, int]]] = WeakKeyDictionary()
 
 
-def summaries(store: Store, archived: bool = False) -> list[ClientSummary]:
+def summaries(store: MongoStore, archived: bool = False) -> list[ClientSummary]:
     """The clients page: each client with how many rows it has and how many need a look. A client's ledger is
     built again only once its work has changed (its revision moved)."""
     counted = _counted.setdefault(store, {})
@@ -158,7 +159,7 @@ def _check_edit(patch: RowPatch, sent: set[str], tx: Transaction, client: Client
         raise InvalidInput("VAT must be below the amount.")
 
 
-def change_row(store: Store, client_id: int, row_id: int, patch: RowPatch) -> Ledger:
+def change_row(store: MongoStore, client_id: int, row_id: int, patch: RowPatch) -> Ledger:
     """Saves a person's change to a row once it makes sense, and returns the ledger worked out again."""
     client = store.get_client(client_id)
     require_active(client)
@@ -178,7 +179,7 @@ def change_row(store: Store, client_id: int, row_id: int, patch: RowPatch) -> Le
     return build(store, client_id)
 
 
-def add_manual(store: Store, client_id: int, upload: ManualUpload) -> Ledger:
+def add_manual(store: MongoStore, client_id: int, upload: ManualUpload) -> Ledger:
     client = store.get_client(client_id)
     require_active(client)
     if not upload.transactions:
@@ -190,20 +191,20 @@ def add_manual(store: Store, client_id: int, upload: ManualUpload) -> Ledger:
     return build(store, client_id)
 
 
-def remove_upload(store: Store, client_id: int, upload_id: int) -> Ledger:
+def remove_upload(store: MongoStore, client_id: int, upload_id: int) -> Ledger:
     require_active(store.get_client(client_id))
     store.delete_upload(client_id, upload_id)
     return build(store, client_id)
 
 
-def remove_row(store: Store, client_id: int, row_id: int) -> Ledger:
+def remove_row(store: MongoStore, client_id: int, row_id: int) -> Ledger:
     """Removes one row a person no longer wants, and returns the ledger worked out again without it."""
     require_active(store.get_client(client_id))
     store.delete_row(client_id, row_id)
     return build(store, client_id)
 
 
-def trial_balance(store: Store, client_id: int) -> TrialBalance:
+def trial_balance(store: MongoStore, client_id: int) -> TrialBalance:
     """The client's trial balance from its saved rows, matched with what people decided as the ledger is, so it books
     the rows the ledger books; InvalidTransactions (422) while rows need fixing."""
     client = store.get_client(client_id)
@@ -212,7 +213,7 @@ def trial_balance(store: Store, client_id: int) -> TrialBalance:
     return post([row.tx for row in stored], settings_for(client), read=read, apart=apart)
 
 
-def export(store: Store, client_id: int, day: dt.date) -> tuple[bytes, str]:
+def export(store: MongoStore, client_id: int, day: dt.date) -> tuple[bytes, str]:
     """The client's workbook and its file name; while rows need fixing, the trial balance sheet says what."""
     built = build(store, client_id)
     try:

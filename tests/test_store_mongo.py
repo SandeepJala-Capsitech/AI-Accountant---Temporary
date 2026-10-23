@@ -1,9 +1,11 @@
 import datetime as dt
+import threading
 from decimal import Decimal
 
 import pytest
 
-from ledgersync.errors import LedgerSyncError
+from ledgersync.checks import issue
+from ledgersync.errors import ChangedMeanwhile, ClientArchived, LedgerSyncError, NotFound
 from ledgersync.models import ClientFields, Transaction
 from ledgersync.store_mongo import MongoStore
 
@@ -91,3 +93,238 @@ def test_a_row_change_that_keeps_losing_the_race_asks_the_person_to_try_again(mo
         mongo_store.patch_row(client.id, row_id, {"account_code": "7500"})
     assert len(other.rows(client.id)) == 6
     assert all(r.tx.account_code == "7502" for r in other.rows(client.id))
+
+
+def test_a_client_is_saved_and_read_back(mongo_store):
+    client = mongo_store.create_client(CUBE)
+    assert mongo_store.get_client(client.id) == client
+    assert (client.name, client.vat_registered, client.archived, client.contact_phone) == (
+        "Business Cube Ltd", True, False, "")
+
+
+def test_clients_are_listed_by_name_and_archived_ones_apart(mongo_store):
+    cube = mongo_store.create_client(CUBE)
+    for name in ("Zeta Ltd", "acme trading"):
+        mongo_store.create_client(CUBE.model_copy(update={"name": name}))
+    assert [c.name for c in mongo_store.list_clients()] == ["acme trading", "Business Cube Ltd", "Zeta Ltd"]
+    mongo_store.update_client(cube.id, {"archived": True})
+    assert [c.name for c in mongo_store.list_clients()] == ["acme trading", "Zeta Ltd"]
+    assert [c.name for c in mongo_store.list_clients(archived=True)] == ["Business Cube Ltd"]
+
+
+def test_an_archived_client_can_only_be_restored(mongo_store):
+    client = mongo_store.update_client(mongo_store.create_client(CUBE).id, {"archived": True})
+    assert client.archived and client.archived_at
+    with pytest.raises(ClientArchived):
+        mongo_store.update_client(client.id, {"name": "Renamed"})
+    assert mongo_store.update_client(client.id, {"archived": False}).archived is False
+
+
+def test_editing_a_client_changes_only_what_is_sent_and_moves_updated(mongo_store, monkeypatch):
+    client = mongo_store.create_client(CUBE)
+    monkeypatch.setattr("ledgersync.store_mongo.now_iso", lambda: "2030-01-01T00:00:00+00:00")
+    changed = mongo_store.update_client(client.id, {"contact_phone": "07700 900123", "vat_registered": False})
+    assert (changed.contact_phone, changed.vat_registered, changed.name) == ("07700 900123", False, "Business Cube Ltd")
+    assert (changed.updated_at, changed.created_at) == ("2030-01-01T00:00:00+00:00", client.created_at)
+
+
+def test_an_unknown_client_is_not_found(mongo_store):
+    with pytest.raises(NotFound):
+        mongo_store.get_client(99)
+
+
+def bill(**changes) -> Transaction:
+    fields = dict(direction="out", gross="72.00", account_code="7502", date=dt.date(2026, 9, 1),
+                  description="BT Business, broadband", document_type="invoice", counterparty="BT Business")
+    return Transaction(**{**fields, **changes})
+
+
+def test_an_upload_keeps_its_rows_in_order_and_only_their_inputs(mongo_store):
+    client = mongo_store.create_client(CUBE)
+    worked_out = bill(document_ref="bt", document_number="BT-0905", agent="R+R PR Ltd", vat_posted="12.00",
+                      net="60.00", owed="72.00", document_net="60.00", not_vat_invoice=True, vat_found="12.00",
+                      apart_from=[7],
+                      issues=[issue("mixed_items", "One VAT total."), issue("not_booked", "x", "info")])
+    upload_id = mongo_store.add_upload(client.id, "BT-0905.pdf", "pdf", [worked_out, bill(document_ref="bt", gross="10.00")],
+                                 sha256="ab12", model="fake-model", warnings=["Row 3 skipped"])
+    first, second = mongo_store.rows(client.id)
+    assert (first.upload_id, first.tx.gross, second.tx.gross) == (upload_id, Decimal("72.00"), Decimal("10.00"))
+    assert (first.tx.vat_posted, first.tx.net, first.tx.owed, first.tx.vat_found) == (None,) * 4   # worked out
+    assert (first.tx.document_number, first.tx.agent) == ("BT-0905", "R+R PR Ltd")    # read from the document
+    assert (first.tx.document_net, first.tx.not_vat_invoice) == (Decimal("60.00"), True)
+    assert first.tx.apart_from == [7]                                   # a person's decision, kept
+    assert [i.code for i in first.tx.issues] == ["mixed_items"]                         # the adapter's own check
+    [upload] = mongo_store.uploads(client.id)
+    assert (upload["name"], upload["kind"], upload["sha256"], upload["model"], upload["warnings"],
+            upload["row_count"]) == ("BT-0905.pdf", "pdf", "ab12", "fake-model", ["Row 3 skipped"], 2)
+
+
+def test_a_row_saved_before_totals_were_kept_takes_its_total_from_its_old_warning(mongo_store):
+    # Rows read before 2026-10-08 kept a document's printed total only in the words of their warning.
+    client = mongo_store.create_client(CUBE)
+    mongo_store.add_upload(client.id, "claim.xlsx", "table", [bill(document_ref="claim")])
+    old = {**_raw(mongo_store), "issues": [{"code": "total_mismatch", "severity": "warning", "message":
+           "The rows from this document add up to £994.52 but its total is £1048.52; check the amounts against the "
+           "document."}]}
+    _raw(mongo_store, old)
+    [row] = mongo_store.rows(client.id)
+    assert row.tx.document_total == Decimal("1048.52")
+
+
+def _raw(mongo_store, data=None):
+    """The first row's saved JSON, or replaces it: data as an older version of the store wrote it."""
+    [doc] = mongo_store.db.clients.find({}, {"rows": 1})
+    if data is None:
+        return doc["rows"][0]["data"]
+    mongo_store.db.clients.update_one({"_id": doc["_id"]}, {"$set": {"rows.0.data": data}})
+
+
+def test_removing_a_row_removes_only_it_and_an_upload_left_empty(mongo_store):
+    client = mongo_store.create_client(CUBE)
+    first_upload = mongo_store.add_upload(client.id, "a.pdf", "pdf", [bill(document_ref="a"), bill(document_ref="b")])
+    mongo_store.add_upload(client.id, "c.pdf", "pdf", [bill(document_ref="c")])
+    a, b, c = mongo_store.rows(client.id)
+    mongo_store.delete_row(client.id, a.id)
+    assert [r.tx.document_ref for r in mongo_store.rows(client.id)] == ["b", "c"]
+    mongo_store.delete_row(client.id, c.id)
+    assert [u["id"] for u in mongo_store.uploads(client.id)] == [first_upload]   # c.pdf had nothing left
+    with pytest.raises(NotFound):
+        mongo_store.delete_row(client.id, c.id)
+
+
+def test_a_row_saved_without_a_document_reference_gets_one(mongo_store):
+    client = mongo_store.create_client(CUBE)
+    mongo_store.add_upload(client.id, "Manual entry", "manual", [bill(document_ref=None)])
+    assert mongo_store.rows(client.id)[0].tx.document_ref
+
+
+def test_uploads_are_listed_newest_first(mongo_store):
+    client = mongo_store.create_client(CUBE)
+    older = mongo_store.add_upload(client.id, "a.pdf", "pdf", [bill()])
+    newer = mongo_store.add_upload(client.id, "b.pdf", "pdf", [bill()])
+    assert [u["id"] for u in mongo_store.uploads(client.id)] == [newer, older]
+
+
+def test_removing_an_upload_removes_its_rows_and_nothing_else(mongo_store):
+    client = mongo_store.create_client(CUBE)
+    keep = mongo_store.add_upload(client.id, "a.pdf", "pdf", [bill()])
+    gone = mongo_store.add_upload(client.id, "b.pdf", "pdf", [bill(), bill()])
+    mongo_store.delete_upload(client.id, gone)
+    assert [r.upload_id for r in mongo_store.rows(client.id)] == [keep]
+    with pytest.raises(NotFound):
+        mongo_store.delete_upload(client.id, gone)
+
+
+def test_another_clients_rows_and_uploads_are_not_found(mongo_store):
+    mine, theirs = mongo_store.create_client(CUBE), mongo_store.create_client(CUBE)
+    upload = mongo_store.add_upload(theirs.id, "b.pdf", "pdf", [bill()])
+    row = mongo_store.rows(theirs.id)[0].id
+    with pytest.raises(NotFound):
+        mongo_store.delete_upload(mine.id, upload)
+    with pytest.raises(NotFound):
+        mongo_store.patch_row(mine.id, row, {"include": True})
+
+
+def test_include_and_document_wide_fields_change_every_row_of_the_document(mongo_store):
+    client = mongo_store.create_client(CUBE)
+    quote = dict(document_type="quote", document_ref="q1")
+    mongo_store.add_upload(client.id, "q.pdf", "pdf", [bill(**quote), bill(**quote, gross="5.00"), bill(document_ref="other")])
+    first = mongo_store.rows(client.id)[0].id
+    mongo_store.patch_row(client.id, first, {"include": True, "counterparty": "BT plc", "gross": "70.00"})
+    assert [(r.tx.include, r.tx.counterparty, r.tx.gross) for r in mongo_store.rows(client.id)] == [
+        (True, "BT plc", Decimal("70.00")), (True, "BT plc", Decimal("5.00")), (False, "BT Business", Decimal("72.00"))]
+
+
+def test_include_on_an_expense_claim_books_only_that_line(mongo_store):
+    # Ticking "book this line as well" on one line of Jenny's claim ticked all twelve, and each line's receipt was
+    # booked twice.
+    client = mongo_store.create_client(CUBE)
+    claim = dict(document_type="expense_claim", document_ref="claim", counterparty="Jenny Hogg")
+    mongo_store.add_upload(client.id, "claim.xlsx", "table", [bill(**claim), bill(**claim, gross="5.00")])
+    first, second = (r.id for r in mongo_store.rows(client.id))
+    mongo_store.patch_row(client.id, second, {"include": True, "counterparty": "J Hogg"})
+    assert [(r.tx.include, r.tx.counterparty) for r in mongo_store.rows(client.id)] == [(False, "J Hogg"), (True, "J Hogg")]
+    mongo_store.patch_row(client.id, second, {"include": False})
+    assert [r.tx.include for r in mongo_store.rows(client.id)] == [False, False]
+
+
+def test_a_rows_first_edit_keeps_what_it_held_and_revert_brings_the_document_back(mongo_store):
+    client = mongo_store.create_client(CUBE)
+    mongo_store.add_upload(client.id, "a.pdf", "pdf", [bill(document_ref="a"), bill(document_ref="a", gross="10.00")])
+    first, second = (r.id for r in mongo_store.rows(client.id))
+    mongo_store.patch_row(client.id, first, {"gross": "70.00"})
+    mongo_store.patch_row(client.id, first, {"account_code": "7504"})
+    mongo_store.patch_row(client.id, second, {"document_type": "receipt"})   # a whole-document field
+    one, two = mongo_store.rows(client.id)
+    assert (one.tx.gross, one.tx.account_code, one.tx.document_type, two.tx.document_type) == (
+        Decimal("70.00"), "7504", "receipt", "receipt")
+    assert (one.original["gross"], one.original["account_code"], one.original["document_type"]) == (
+        "72.00", "7502", "invoice")
+    mongo_store.patch_row(client.id, second, {}, revert=True)
+    one, two = mongo_store.rows(client.id)
+    assert (one.tx.gross, one.tx.account_code, one.tx.document_type, one.original) == (
+        Decimal("72.00"), "7502", "invoice", None)
+    assert (two.tx.document_type, two.original) == ("invoice", None)
+
+
+def test_a_link_is_not_an_edit(mongo_store):
+    client = mongo_store.create_client(CUBE)
+    mongo_store.add_upload(client.id, "s.csv", "table", [bill(document_type="statement")])
+    row = mongo_store.rows(client.id)[0].id
+    mongo_store.patch_row(client.id, row, {"link": []})
+    [saved] = mongo_store.rows(client.id)
+    assert (saved.tx.link, saved.original) == ([], None)
+
+
+def test_saving_rows_moves_the_clients_updated_time(mongo_store, monkeypatch):
+    client = mongo_store.create_client(CUBE)
+    monkeypatch.setattr("ledgersync.store_mongo.now_iso", lambda: "2030-01-01T00:00:00+00:00")
+    mongo_store.add_upload(client.id, "a.pdf", "pdf", [bill()])
+    assert mongo_store.get_client(client.id).updated_at == "2030-01-01T00:00:00+00:00"
+
+
+def test_jobs_and_people_can_write_at_the_same_time(mongo_store):
+    # Review focus: a background job saves uploads while a person links a row; no row is lost and nothing fails
+    # but a change that is asked to be tried again.
+    client = mongo_store.create_client(CUBE)
+    mongo_store.add_upload(client.id, "s.csv", "table", [bill(document_type="statement")])
+    row = mongo_store.rows(client.id)[0].id
+    failures = []
+
+    def save():
+        try:
+            for _ in range(15):
+                mongo_store.add_upload(client.id, "s.csv", "table", [bill()])
+        except Exception as exc:   # the assertion below reports it
+            failures.append(exc)
+
+    def link():
+        try:
+            for n in range(15):
+                while True:
+                    try:
+                        mongo_store.patch_row(client.id, row, {"link": [] if n % 2 else None})
+                        break
+                    except ChangedMeanwhile:   # lost five races to the saves: the person tries again
+                        pass
+        except Exception as exc:
+            failures.append(exc)
+
+    threads = [threading.Thread(target=save) for _ in range(3)] + [threading.Thread(target=link)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert failures == [] and len(mongo_store.rows(client.id)) == 46
+
+
+def test_a_persons_edit_clears_the_warnings_from_the_reading_and_revert_brings_them_back(mongo_store):
+    # Final review #1: a Suspense row recoded by hand still said it went to Suspense, so it stayed in To review.
+    client = mongo_store.create_client(CUBE)
+    mongo_store.add_upload(client.id, "a.pdf", "pdf", [bill(account_code="9998",
+                                                      issues=[issue("account_not_recognised", "Went to Suspense.")])])
+    row = mongo_store.rows(client.id)[0].id
+    mongo_store.patch_row(client.id, row, {"account_code": "7500"})
+    assert mongo_store.rows(client.id)[0].tx.issues == []
+    mongo_store.patch_row(client.id, row, {}, revert=True)
+    assert [i.code for i in mongo_store.rows(client.id)[0].tx.issues] == ["account_not_recognised"]

@@ -10,14 +10,16 @@ from ledgersync import ledger, posting
 from ledgersync.checks import booked, issue
 from ledgersync.errors import ClientArchived, InvalidInput
 from ledgersync.models import ClientFields, ClientPatch, ManualUpload, RowPatch, Transaction
-from ledgersync.store import Store
 
 CUBE = ClientFields(name="Business Cube Ltd", business_type="limited_company", contact_name="Jenny Clarke")
 
 
+pytestmark = pytest.mark.mongo
+
+
 @pytest.fixture
-def store(tmp_path):
-    return Store(tmp_path / "ledgersync.db")
+def store(mongo_store):
+    return mongo_store
 
 
 def row(**changes) -> Transaction:

@@ -1,4 +1,4 @@
-﻿"""High-performance MongoDB implementation of the Store (Embedded Client Document pattern).
+﻿"""The MongoDB store of clients, uploads and rows (Embedded Client Document pattern).
 Optimized for:
 1. Batch Sequence Counter (single DB call instead of N calls during bulk upload)
 2. Field-level projection (never pulling rows when only client or upload metadata is needed)
@@ -18,7 +18,7 @@ from pymongo import MongoClient, ReturnDocument
 
 from .errors import ChangedMeanwhile, ClientArchived, NotFound
 from .models import Client, ClientFields, Transaction
-from .store import EDITABLE, WHOLE_DOCUMENT, StoredRow, _OLD_TOTAL, _now, saved_form
+from .rows import EDITABLE, OLD_TOTAL, WHOLE_DOCUMENT, StoredRow, now_iso, saved_form
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +91,7 @@ class MongoStore:
 
     def create_client(self, fields: ClientFields) -> Client:
         client_id = self._next_id("client_id")
-        now = _now()
+        now = now_iso()
         doc = {
             "id": client_id,
             "name": fields.name,
@@ -171,7 +171,7 @@ class MongoStore:
         if client.archived and fields:
             raise ClientArchived(f"Restore {client.name} to change it.")
 
-        now = _now()
+        now = now_iso()
         set_dict = {k: bool(v) if isinstance(v, bool) else v for k, v in fields.items()}
         archived = changes.get("archived")
         if archived is not None and archived != client.archived:
@@ -209,16 +209,7 @@ class MongoStore:
                    model: str = "", warnings=()) -> int:
         self.get_client(client_id)
         upload_id = self._next_id("upload_id")
-        now = _now()
-
-        warn_list = []
-        for w in warnings:
-            if hasattr(w, "model_dump"):
-                warn_list.append(w.model_dump())
-            elif isinstance(w, dict):
-                warn_list.append(w)
-            else:
-                warn_list.append(dict(w))
+        now = now_iso()
 
         upload_doc = {
             "id": upload_id,
@@ -226,7 +217,7 @@ class MongoStore:
             "kind": kind,
             "sha256": sha256,
             "model": model or "",
-            "warnings": warn_list,
+            "warnings": list(warnings),
             "created_at": now
         }
 
@@ -306,7 +297,7 @@ class MongoStore:
         return results
 
     def delete_upload(self, client_id: int, upload_id: int) -> None:
-        now = _now()
+        now = now_iso()
         res = self.db.clients.update_one(
             {"id": client_id, "uploads.id": upload_id},
             {
@@ -338,7 +329,7 @@ class MongoStore:
         )
         remaining = sibling is not None
 
-        now = _now()
+        now = now_iso()
         pull_dict = {"rows": {"id": row_id}}
         if not remaining:
             pull_dict["uploads"] = {"id": upload_id}
@@ -366,7 +357,7 @@ class MongoStore:
             original = data.pop("original", None)
             data.pop("original_issues", None)
             if data.get("document_total") is None:
-                old = [_OLD_TOTAL.search(i.get("message", "")) for i in data.get("issues", []) if i.get("code") == "total_mismatch"]
+                old = [OLD_TOTAL.search(i.get("message", "")) for i in data.get("issues", []) if i.get("code") == "total_mismatch"]
                 if old and old[0]:
                     data["document_total"] = old[0].group(1).replace(",", "")
             stored_rows.append(StoredRow(r["id"], r["upload_id"], Transaction.model_validate(data), original))
@@ -376,9 +367,9 @@ class MongoStore:
         """Changes a row (and a whole-document field on the rows of its document), or puts them back as read.
 
         The rows are read, changed here and written back whole, so the write only goes through when the client's
-        document still has the revision it was read at: an upload or another change saved in between (say, the
-        client's upload while the agent works) would otherwise be overwritten. Then it reads and tries again,
-        and after _PATCH_TRIES lost races it gives up and asks the person to try again."""
+        document still has the revision it was read at: an upload or another change saved in between (say, a
+        job saving an upload while a person edits a row) would otherwise be overwritten. Then it reads and
+        tries again, and after _PATCH_TRIES lost races it gives up and asks the person to try again."""
         for _ in range(_PATCH_TRIES):
             doc = self.db.clients.find_one({"id": client_id, "rows.id": row_id}, {"rows": 1, "revision": 1})
             if not doc:
@@ -390,7 +381,7 @@ class MongoStore:
             read_at = doc["revision"] if "revision" in doc else {"$exists": False}
             saved = self.db.clients.update_one(
                 {"id": client_id, "revision": read_at},
-                {"$set": {"rows": rows, "updated_at": _now()}, "$inc": {"revision": 1}})
+                {"$set": {"rows": rows, "updated_at": now_iso()}, "$inc": {"revision": 1}})
             if saved.matched_count:
                 return
         raise ChangedMeanwhile("The client's rows changed while this change was being saved, so it wasn't saved. "

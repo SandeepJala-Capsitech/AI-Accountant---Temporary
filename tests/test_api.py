@@ -8,18 +8,24 @@ from fakes import ROW, FakeModel, FakeUrlopen, http_error, transactions_json
 from fastapi.testclient import TestClient
 
 from ledgersync.config import Settings
-from ledgersync.errors import ModelTimeout, ModelUnavailable
+from ledgersync.errors import ModelTimeout, ModelUnavailable, StorageError
 from ledgersync.model_client import ModelClient
 from server import create_app
 
 
+def test_without_mongodb_the_api_refuses_to_start():
+    with pytest.raises(StorageError, match="Set MONGODB_URI in .env"):
+        create_app(Settings(mongodb_uri=""), model_client=FakeModel())
+
+
 @pytest.fixture
-def make_client():
+def make_client(mongo_store):
     clients = []
 
     def _make(model=None):
         settings = Settings(warmup=False, max_upload_mb=1, max_pdf_pages=3)
-        app = create_app(settings, model_client=model or FakeModel([transactions_json(ROW)]))
+        app = create_app(settings, model_client=model or FakeModel([transactions_json(ROW)]),
+                         store=mongo_store)
         client = TestClient(app, headers={"X-LedgerSync": "1"})   # as the LedgerSync pages send
         client.__enter__()
         clients.append(client)
@@ -223,9 +229,10 @@ def test_health_never_shows_the_api_key(make_client):
     assert "gsk-secret" not in body and "rejected the API key" in body
 
 
-def test_the_business_name_setting_reaches_the_model():
+def test_the_business_name_setting_reaches_the_model(mongo_store):
     model = FakeModel([transactions_json(ROW)])
-    with TestClient(create_app(Settings(warmup=False, business_name="Acme Ltd"), model_client=model),
+    with TestClient(create_app(Settings(warmup=False, business_name="Acme Ltd"), model_client=model,
+                               store=mongo_store),
                     headers={"X-LedgerSync": "1"}) as client:
         run_text_job(client)
     assert "Acme Ltd" in model.calls[0]["messages"][0]["content"]

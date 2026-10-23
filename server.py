@@ -12,12 +12,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
 from ledgersync import accounts, adapter, intake, pipeline, posting
-from ledgersync.blobs import BlobStore, GridFSBlobStore, MemoryBlobStore
+from ledgersync.blobs import BlobStore, GridFSBlobStore
 from ledgersync import ledger as books
 from ledgersync.accounts import choosable
 from ledgersync.checks import normalise
 from ledgersync.config import Settings
-from ledgersync.errors import LedgerSyncError, NotFound, RefusedRequest, UnreadableFile
+from ledgersync.errors import LedgerSyncError, NotFound, RefusedRequest, StorageError, UnreadableFile
 from ledgersync.extractor import TransactionExtractor
 from ledgersync.model_client import ModelClient
 from ledgersync.jobs import JobStore
@@ -25,7 +25,6 @@ from ledgersync.matching import match
 from ledgersync.models import (AnalysisResult, BusinessSettings, BusinessType, Client, ClientFields, ClientPatch,
                                ClientSummary, Ledger, LedgerRequest, ManualUpload, RowPatch, TransactionList,
                                TrialBalance)
-from ledgersync.store import Store
 from ledgersync.store_mongo import MongoStore
 
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -39,20 +38,18 @@ def configure_logging(level: str) -> None:
     logging.getLogger("ledgersync").setLevel(level)
 
 
-def create_app(settings: Optional[Settings] = None, *, model_client=None, store: Optional[Store] = None,
+def create_app(settings: Optional[Settings] = None, *, model_client=None, store: Optional[MongoStore] = None,
                blobs: Optional[BlobStore] = None) -> FastAPI:
-    """The API; tests pass a stand-in for the model client as model_client and a store in a temporary folder."""
+    """The API; tests pass a stand-in for the model client as model_client and a store on a test database."""
     settings = settings or Settings.from_env()
     configure_logging(settings.log_level)
     model_client = model_client or ModelClient(settings)
     if store is None:
-        if settings.mongodb_uri:
-            store = MongoStore(settings.mongodb_uri, settings.mongodb_db_name)
-        else:
-            store = Store(settings.db_path)
+        if not settings.mongodb_uri:
+            raise StorageError("Set MONGODB_URI in .env: Super Accountant keeps its data in MongoDB.")
+        store = MongoStore(settings.mongodb_uri, settings.mongodb_db_name)
     if blobs is None:
-        # Originals live beside the rows in MongoDB; without it they last until a restart.
-        blobs = GridFSBlobStore(store.db) if isinstance(store, MongoStore) else MemoryBlobStore()
+        blobs = GridFSBlobStore(store.db)   # originals live beside the rows
     extractor = TransactionExtractor(model_client, business_name=settings.business_name)
     jobs = JobStore(ttl_seconds=settings.job_ttl_seconds, max_workers=settings.max_parallel_jobs)
 
@@ -249,10 +246,9 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
     return app
 
 
-app = create_app()
-
 if __name__ == "__main__":
     import uvicorn
 
     s = Settings.from_env()
-    uvicorn.run("server:app", host=s.host, port=s.port, reload=s.reload)
+    # A factory, so importing this module opens no database; the API starts (or refuses to) here.
+    uvicorn.run("server:create_app", factory=True, host=s.host, port=s.port, reload=s.reload)

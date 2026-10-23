@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from ledgersync.config import Settings
 from ledgersync.blobs import MemoryBlobStore
 from ledgersync.errors import ModelError
-from ledgersync.store import Store
+from ledgersync.store_mongo import MongoStore
 from server import create_app
 
 CUBE = {"name": "Business Cube Ltd", "business_type": "limited_company", "contact_name": "Jenny Clarke",
@@ -22,12 +22,12 @@ LINE = {**BILL, "date": "2026-09-05", "document_type": "statement", "counterpart
 
 
 @pytest.fixture
-def api(tmp_path):
+def api(mongo_store):
     opened = []
 
     def _make(model=None):
         app = create_app(Settings(warmup=False), model_client=model or FakeModel([]),
-                         store=Store(tmp_path / "ledgersync.db"))
+                         store=mongo_store)
         client = TestClient(app, headers={"X-LedgerSync": "1"})   # as the LedgerSync pages send
         client.__enter__()
         opened.append(client)
@@ -305,7 +305,7 @@ def test_a_statements_balances_reach_the_saved_rows_and_are_checked(api):
 def test_a_cancel_that_arrives_after_the_rows_were_saved_leaves_the_job_succeeded(api, monkeypatch):
     # Final review #2: the job was marked cancelled after its rows were saved, so Retry booked them twice.
     saving, release = threading.Event(), threading.Event()
-    real_add = Store.add_upload
+    real_add = MongoStore.add_upload
 
     def slow_add(self, *args, **kwargs):
         upload_id = real_add(self, *args, **kwargs)
@@ -313,7 +313,7 @@ def test_a_cancel_that_arrives_after_the_rows_were_saved_leaves_the_job_succeede
         release.wait(5)
         return upload_id
 
-    monkeypatch.setattr(Store, "add_upload", slow_add)
+    monkeypatch.setattr(MongoStore, "add_upload", slow_add)
     client = api(FakeModel([transactions_json(ROW)]))
     cid = add(client)["id"]
     job_id = client.post("/api/analyze", data={"text": "x", "client_id": str(cid)}).json()["job_id"]
@@ -327,9 +327,9 @@ def test_a_cancel_that_arrives_after_the_rows_were_saved_leaves_the_job_succeede
 BT_CSV = b"Date,Description,Amount\n01/09/2026,BT Business Broadband,-72.00\n"
 
 
-def test_an_analysed_file_can_be_downloaded_again(tmp_path):
+def test_an_analysed_file_can_be_downloaded_again(mongo_store):
     app = create_app(Settings(warmup=False), model_client=FakeModel([transactions_json(ROW)]),
-                     store=Store(tmp_path / "ledgersync.db"), blobs=MemoryBlobStore())
+                     store=mongo_store, blobs=MemoryBlobStore())
     with TestClient(app, headers={"X-LedgerSync": "1"}) as api:
         cid = add(api)["id"]
         resp = api.post("/api/analyze", data={"client_id": str(cid)}, files={"file": ("bt.csv", BT_CSV, "text/csv")})
