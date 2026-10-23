@@ -250,3 +250,16 @@ def test_statement_balances_come_once_with_the_answer_and_running_balances_per_r
     result, client = extract(reply)
     assert (result.data[0].balance, result.opening_balance, result.closing_balance) == (1240.5, 1500.0, -20.0)
     assert "opening_balance and closing_balance once" in client.calls[0]["messages"][0]["content"]
+
+
+def test_the_instructions_explain_a_payroll_report():
+    _, client = extract(transactions_json(ROW), "x")
+    system = client.calls[0]["messages"][0]["content"]
+    assert '"payroll"' in system and "owed_to" in system
+    assert ("net pay to staff is coded 2220 Net Wages, payments to HMRC for PAYE and NI 2210, and payments to the "
+            "pension provider 2230") in system
+
+
+def test_owed_to_comes_with_a_payroll_row_and_is_null_otherwise():
+    result, _ = extract(transactions_json(dict(ROW, document_type="payroll", owed_to="paye_ni"), ROW))
+    assert [r.owed_to for r in result.data] == ["paye_ni", None]

@@ -10,7 +10,7 @@ export const BUSINESS_TYPES: Record<BusinessType, string> = {
 
 export const DOCUMENT_TYPES: Record<string, string> = {
   receipt: 'Receipt', invoice: 'Invoice', expense_claim: 'Expense claim', statement: 'Bank statement line',
-  agent_statement: "Agent's statement",
+  agent_statement: "Agent's statement", payroll: 'Payroll report',
   quote: 'Quote', pro_forma: 'Pro forma invoice', purchase_order: 'Purchase order',
   remittance_advice: 'Remittance advice', supplier_statement: "Supplier's statement", other: 'Other document',
 }

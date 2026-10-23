@@ -210,7 +210,7 @@ const ISSUE_TITLES: Record<string, string> = {
   non_gbp_currency: 'Not in pounds', date_missing: 'No date', date_out_of_period: 'Outside the period',
   unusual_direction: 'Unusual direction', director_loan: 'Owner account', not_booked: 'Not booked',
   statement_gap: "Balance doesn't follow", statement_total: "Statement doesn't add up", mixed_items: 'Mixed items',
-  direction_conflict: 'Direction changed',
+  direction_conflict: 'Direction changed', no_payroll: 'No payroll report', wages_from_bank: 'Wages from the bank',
 }
 
 export const issueTitle = (code: string) => ISSUE_TITLES[code] ?? 'Check this'

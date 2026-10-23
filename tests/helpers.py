@@ -31,3 +31,15 @@ def only_issue(tx: Transaction, code: str):
     found = [i for i in tx.issues if i.code == code]
     assert len(found) == 1, f"expected one {code} issue, found {[i.code for i in tx.issues]}"
     return found[0]
+
+
+def normalise_and_match(rows: list[Transaction], settings: BusinessSettings = SETTINGS) -> list[Transaction]:
+    """The rows as the ledger shows them: each one normalised, then matched together."""
+    return match([normalise(tx, settings) for tx in rows], settings)
+
+
+def payroll_row(**overrides) -> dict:
+    """One row of a payroll report as the model answers it: net pay out on 7000, dated the pay date."""
+    fields = dict(description="Net pay", date="2026-03-28", amount=3000.0, direction="out", account="7000",
+                  currency="GBP", document_type="payroll", owed_to="net_pay")
+    return {**fields, **overrides}

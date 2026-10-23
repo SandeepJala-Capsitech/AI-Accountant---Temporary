@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Optional, Sequence
 
 from .accounts import (BY_CODE, CAPITAL, CREDITORS, DEBTORS, DIRECTORS_LOAN, DIVIDENDS, DRAWINGS, HOTELS, SHARES,
-                       STAFF_EXPENSES, Account, AccountType)
+                       STAFF_EXPENSES, WAGES, Account, AccountType)
 from .models import NOT_TRANSACTIONS, BusinessSettings, Direction, Issue, Transaction
 from .money import PENNY, ZERO, VatTreatment, vat_in_gross
 
@@ -16,13 +16,13 @@ _NO_VAT = {AccountType.LIABILITY, AccountType.EQUITY}
 MATCHING_ISSUES = {"choose_payment", "part_payment", "overpayment", "possible_payment", "stale_link",
                    "mixed_link", "duplicate_document", "total_mismatch", "claim_vat", "vat_worked_out",
                    "not_vat_invoice", "date_conflict", "date_from_claim", "date_from_bank", "booked_twice",
-                   "amount_conflict", "open_document"}
+                   "amount_conflict", "open_document", "no_payroll"}
 # Issues statements.check_statement adds to bank lines, and file_dates.check_file_date to a document; derived too,
 # so checking again replaces them.
 STATEMENT_ISSUES = {"statement_gap", "statement_total", "file_date"}
 _DERIVED = {"unknown_account", "same_account", "non_gbp_currency", "vat_not_applicable", "vat_estimated",
             "vat_arithmetic", "vat_rate_mismatch", "date_missing", "date_out_of_period", "unusual_direction",
-            "not_booked", "vat_blocked", "director_loan"} | MATCHING_ISSUES | STATEMENT_ISSUES
+            "not_booked", "vat_blocked", "director_loan", "wages_from_bank"} | MATCHING_ISSUES | STATEMENT_ISSUES
 
 
 def issue(code: str, message: str, severity: str = "warning", related: Sequence[int] = ()) -> Issue:
@@ -181,6 +181,8 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
           and tx.account_code in (DIRECTORS_LOAN, SHARES, DIVIDENDS)):
         issues.append(issue("director_loan", f"{account.name} is for companies only. Use Drawings or "
                                              "Capital Introduced."))
+    if tx.document_type == "statement" and tx.account_code in WAGES:
+        issues.append(issue("wages_from_bank", "Book wages from the payroll report: code net pay to 2220 Net Wages."))
     if tx.document_type in NOT_TRANSACTIONS and not tx.include:   # copies and card payments: matching says so
         issues.append(issue("not_booked", f"Looks like {_NOT_TRANSACTION_NAMES[tx.document_type]}: not booked. "
                                           "Tick Include to book it.", "info"))

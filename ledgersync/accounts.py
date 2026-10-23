@@ -139,6 +139,7 @@ DEBTORS, CREDITORS, STAFF_EXPENSES = "1100", "2100", "2110"
 DIRECTORS_LOAN, CAPITAL, DRAWINGS = "2250", "3010", "3260"
 SHARES, DIVIDENDS, RETAINED, OWNERS_CAPITAL = "3000", "3250", "3200", "3100"
 NET_WAGES, PAYE, PENSION = "2220", "2210", "2230"
+WAGES = frozenset({"7000", "7001"})   # Gross Wages, Directors' Salaries: booked from the payroll report
 VAT_LIABILITY = "2202"
 HOTELS = "7402"
 # The bank accounts and cards a client may have, in the order they are added. Only a client's own are offered.

@@ -11,7 +11,7 @@ from decimal import Decimal
 from itertools import combinations
 from typing import Optional
 
-from .accounts import DEBTORS, STAFF_EXPENSES
+from .accounts import DEBTORS, NET_WAGES, PAYE, PENSION, STAFF_EXPENSES
 from .checks import MATCHING_ISSUES, booked, issue, long_date, reclaims_vat
 from .models import BusinessSettings, Direction, Issue, Settlement, Transaction
 from .money import ZERO
@@ -159,7 +159,24 @@ def match(rows: list[Transaction], settings: BusinessSettings, read: Optional[li
     for doc in documents.values():
         for n in doc.rows:
             changes[n].update(owed=doc.open, document_direction=Direction(doc.direction), paid_by=list(doc.paid_by))
-    return [tx.model_copy(update=change) if change else tx for tx, change in zip(rows, changes)]
+    matched = [tx.model_copy(update=change) if change else tx for tx, change in zip(rows, changes)]
+    return _without_payroll(matched)
+
+
+def _without_payroll(rows: list[Transaction]) -> list[Transaction]:
+    """A payment on Net Wages, PAYE and NI or Pension Fund whose wages no payroll report books: the report must be
+    dated in the payment's month or the one before."""
+    months = {(tx.date.year, tx.date.month) for tx in rows if tx.document_type == "payroll" and tx.date}
+    result = []
+    for tx in rows:
+        if tx.document_type == "statement" and tx.date and tx.account_code in _WAGES_OWED:
+            before = (tx.date.year, tx.date.month - 1) if tx.date.month > 1 else (tx.date.year - 1, 12)
+            if not months & {(tx.date.year, tx.date.month), before}:
+                found = issue("no_payroll", f"No payroll report for {tx.date:%B %Y}: add it so wages are booked in "
+                                            "full.")
+                tx = tx.model_copy(update={"issues": tx.issues + [found]})
+        result.append(tx)
+    return result
 
 
 def _cleared(tx: Transaction) -> Transaction:
@@ -262,6 +279,7 @@ def _record(rows: list[Transaction], changes: list[dict], n: int, receipt: _Docu
 
 # Rows that move money and so can pay a document: a bank line, and each item of an agent's statement (the rent it
 # collected can pay a sales invoice, a repair it paid the plumber's bill).
+_WAGES_OWED = frozenset({NET_WAGES, PAYE, PENSION})
 _PAYMENT_LINES = frozenset({"statement", "agent_statement"})
 # Notes on the VAT a row books: a claim line its receipt books books none, so they say nothing there.
 _VAT_NOTES = frozenset({"vat_rate_mismatch", "vat_blocked"})
@@ -269,8 +287,10 @@ _VAT_NOTES = frozenset({"vat_rate_mismatch", "vat_blocked"})
 
 def _documents(rows: list[Transaction]) -> dict[str, _Document]:
     """The open documents: booked invoices, claims and included documents. A claim still asks for the lines its
-    receipts book; an invoice on a claim is owed to the claimant, on the claim, not to its supplier."""
-    return _grouped(rows, lambda tx: tx.document_type not in ("receipt", "statement") and tx.claimed_in is None
+    receipts book; an invoice on a claim is owed to the claimant, on the claim, not to its supplier. A payroll
+    report is not one: what it owes is on 2220, 2210 and 2230, which the bank payments clear."""
+    return _grouped(rows, lambda tx: tx.document_type not in ("receipt", "statement", "payroll")
+                    and tx.claimed_in is None
                     and (booked(tx) or (tx.document_type == "expense_claim" and tx.recorded_by is not None)))
 
 

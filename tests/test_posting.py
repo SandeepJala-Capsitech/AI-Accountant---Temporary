@@ -270,3 +270,15 @@ def test_a_card_payment_pairs_with_its_receipt_rather_than_part_paying_a_recent_
     assert net(tb, "7600") == Decimal("530.00") and net(tb, "2100") == Decimal("-500.00")
     assert card.recorded_by is not None and card.recorded_by.ref == "rcpt" and not card.pays
     assert not [i for i in card.issues if i.code in ("part_payment", "open_document")]
+
+
+def test_net_pay_and_paye_from_the_report_and_the_bank_book_wages_in_full():
+    pay = dict(date=dt.date(2026, 3, 28), document_type="payroll", document_ref="p1")
+    report = [row(**pay, gross=Decimal("3000.00"), account_code="7000", contra_account_code="2220"),
+              row(**pay, gross=Decimal("1000.00"), account_code="7000", contra_account_code="2210"),
+              row(**pay, gross=Decimal("100.00"), account_code="7006", contra_account_code="2210")]
+    bank = [row(date=dt.date(2026, 3, 28), gross=Decimal("3000.00"), account_code="2220", document_type="statement"),
+            row(date=dt.date(2026, 4, 19), gross=Decimal("1100.00"), account_code="2210", document_type="statement")]
+    tb = trial_balance(report + bank, HELPER_SETTINGS)
+    assert net(tb, "7000") == Decimal("4000.00") and net(tb, "7006") == Decimal("100.00")
+    assert net(tb, "2220") == net(tb, "2210") == 0 and net(tb, "1200") == Decimal("-4100.00")

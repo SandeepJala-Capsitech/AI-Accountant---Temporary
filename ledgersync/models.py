@@ -18,12 +18,13 @@ class Direction(str, Enum):
 
 
 # The kind of document a row comes from. "agent_statement" is a letting or managing agent's statement: what
-# it collected and paid for the business, and the net it paid over. The last six are not transactions: a person
-# ticks Include to book one as an invoice. "other" is what the adapter makes of a type it does not know.
-DocumentType = Literal["receipt", "invoice", "expense_claim", "statement", "agent_statement", "quote", "pro_forma",
-                       "purchase_order", "remittance_advice", "supplier_statement", "other"]
+# it collected and paid for the business, and the net it paid over. "payroll" is a payroll report: the wages the
+# business owes for a pay date. The last six are not transactions: a person ticks Include to book one as an
+# invoice. "other" is what the adapter makes of a type it does not know.
+DocumentType = Literal["receipt", "invoice", "expense_claim", "statement", "agent_statement", "payroll", "quote",
+                       "pro_forma", "purchase_order", "remittance_advice", "supplier_statement", "other"]
 DOCUMENT_TYPES: tuple[str, ...] = get_args(DocumentType)
-NOT_TRANSACTIONS = frozenset(DOCUMENT_TYPES[5:])
+NOT_TRANSACTIONS = frozenset(DOCUMENT_TYPES[6:])
 
 # The kind of business a client is: a limited company's owners go through 2250 Director's Loan Account,
 # anyone else's through 3260 Drawings and 3010 Capital Introduced.

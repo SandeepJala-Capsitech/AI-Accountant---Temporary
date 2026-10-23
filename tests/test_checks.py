@@ -5,6 +5,8 @@ from decimal import Decimal
 import pytest
 from pydantic import ValidationError
 
+from helpers import normalise_and_match, only_issue, row
+
 from ledgersync.accounts import BANK, CHART
 from ledgersync.checks import normalise
 from ledgersync.models import BusinessSettings, Issue, Transaction
@@ -284,3 +286,47 @@ def test_a_row_sent_back_with_its_matching_outputs_validates_again(output):
     earlier = {"ref": "bill", "amount": "120.00", "date": "2026-09-01", "description": "BT"}
     t = normalise(tx(document_type="invoice" if output == "copy_of" else "statement", **{output: earlier}), REGISTERED)
     assert "not_booked" not in [code for code, _ in codes(t)]
+
+
+def test_a_wages_payment_with_no_payroll_report_is_flagged():
+    line = row(date=dt.date(2026, 3, 28), gross=Decimal("3000.00"), account_code="2220", document_type="statement")
+    found = only_issue(normalise_and_match([line])[0], "no_payroll")
+    assert found.message == "No payroll report for March 2026: add it so wages are booked in full."
+    assert found.severity == "warning"
+
+
+def test_a_payroll_report_of_this_month_or_the_one_before_answers_a_payment():
+    report = row(date=dt.date(2026, 3, 28), gross=Decimal("1000.00"), account_code="7000", contra_account_code="2210",
+                 document_type="payroll")
+    for paid, wanted in ((dt.date(2026, 3, 31), False), (dt.date(2026, 4, 19), False), (dt.date(2026, 5, 2), True),
+                         (dt.date(2026, 2, 27), True)):
+        line = row(date=paid, gross=Decimal("1000.00"), account_code="2210", document_type="statement")
+        found = [i for i in normalise_and_match([report, line])[1].issues if i.code == "no_payroll"]
+        assert bool(found) is wanted, paid
+    january = row(date=dt.date(2026, 1, 28), gross=Decimal("1000.00"), account_code="2230", document_type="statement")
+    december = report.model_copy(update={"date": dt.date(2025, 12, 31)})
+    assert not [i for i in normalise_and_match([december, january])[1].issues if i.code == "no_payroll"]
+
+
+def test_a_bank_line_coded_to_wages_is_told_to_use_the_report():
+    line = row(gross=Decimal("3000.00"), account_code="7000", document_type="statement")
+    assert only_issue(normalise_and_match([line])[0], "wages_from_bank").message == (
+        "Book wages from the payroll report: code net pay to 2220 Net Wages.")
+    director = row(gross=Decimal("3000.00"), account_code="7001", document_type="statement")
+    assert only_issue(normalise_and_match([director])[0], "wages_from_bank")
+
+
+def test_wages_on_a_report_or_a_receipt_are_not_told_to_use_the_report():
+    report = row(gross=Decimal("3000.00"), account_code="7000", contra_account_code="2220", document_type="payroll")
+    assert not [i for i in normalise_and_match([report])[0].issues if i.code in ("wages_from_bank", "no_payroll")]
+
+
+def test_a_payroll_report_keeps_the_account_it_is_owed_on_and_is_never_paid_as_an_invoice():
+    report = row(date=dt.date(2026, 3, 28), gross=Decimal("3000.00"), account_code="7000", contra_account_code="2220",
+                 document_type="payroll", counterparty="Staff")
+    line = row(date=dt.date(2026, 3, 28), gross=Decimal("3000.00"), account_code="2220", document_type="statement",
+               counterparty="Staff")
+    report_after, line_after = normalise_and_match([report, line])
+    assert report_after.contra_account_code == "2220" and report_after.owed is None
+    assert not line_after.pays and not line_after.candidates
+    assert not [i for i in line_after.issues if i.code in ("open_document", "possible_payment", "choose_payment")]

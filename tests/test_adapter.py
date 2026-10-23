@@ -3,6 +3,7 @@ from decimal import Decimal
 
 import pytest
 
+from helpers import payroll_row
 from ledgersync.adapter import parse_date, to_transactions
 from ledgersync.matching import match
 from ledgersync.models import BusinessSettings
@@ -223,3 +224,11 @@ def test_balances_on_any_other_row_are_dropped():
     [t] = to_transactions([dict(ROW, document_type="receipt", balance=10)], source="table",
                           settings=BusinessSettings(), opening_balance=5, closing_balance=1)
     assert (t.balance, t.opening_balance, t.closing_balance) == (None, None, None)
+
+
+def test_owed_to_sets_the_payroll_rows_other_account():
+    rows = to_transactions([payroll_row(owed_to="net_pay"), payroll_row(owed_to="pension", account="7007"),
+                            payroll_row(owed_to="paye_ni", account="7006")], "text", BusinessSettings())
+    assert [r.contra_account_code for r in rows] == ["2220", "2230", "2210"]
+    assert all(r.document_type == "payroll" and not r.issues for r in rows)
+
