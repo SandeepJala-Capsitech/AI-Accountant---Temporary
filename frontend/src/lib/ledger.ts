@@ -208,7 +208,7 @@ const ISSUE_TITLES: Record<string, string> = {
   date_from_bank: 'Date from the bank', booked_twice: 'Booked twice', amount_conflict: 'Which amount?',
   account_not_recognised: 'Account to check', unknown_account: 'Unknown account', same_account: 'Same account twice',
   non_gbp_currency: 'Not in pounds', date_missing: 'No date', date_out_of_period: 'Outside the period',
-  unusual_direction: 'Unusual direction', director_loan: 'Owner account', not_booked: 'Not booked',
+  unusual_direction: 'Unusual direction', director_loan: 'Owner account', not_booked: 'Not booked', before_first_year: 'Before the first year',
   statement_gap: "Balance doesn't follow", statement_total: "Statement doesn't add up", mixed_items: 'Mixed items',
   direction_conflict: 'Direction changed', no_payroll: 'No payroll report', wages_from_bank: 'Wages from the bank',
   payroll_owed_to: 'Check the payroll line',

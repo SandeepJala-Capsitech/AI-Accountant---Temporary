@@ -23,7 +23,7 @@ STATEMENT_ISSUES = {"statement_gap", "statement_total", "file_date"}
 _DERIVED = {"unknown_account", "same_account", "non_gbp_currency", "vat_not_applicable", "vat_estimated",
             "vat_arithmetic", "vat_rate_mismatch", "date_missing", "date_out_of_period", "unusual_direction",
             "not_booked", "vat_blocked", "director_loan", "wages_from_bank",
-            "payroll_owed_to"} | MATCHING_ISSUES | STATEMENT_ISSUES
+            "payroll_owed_to", "before_first_year"} | MATCHING_ISSUES | STATEMENT_ISSUES
 
 
 def issue(code: str, message: str, severity: str = "warning", related: Sequence[int] = ()) -> Issue:
@@ -49,10 +49,11 @@ _NOT_TRANSACTION_NAMES = {
 
 def booked(tx: Transaction) -> bool:
     """A quote, a pro forma or another document that is not a transaction, or a copy of a document already in
-    the table, is booked only when a person ticks Include. A card payment is booked from its receipt, which shows
+    the table, or a row dated before the client's first year, whose amount is in the opening balances, is booked
+    only when a person ticks Include. A card payment is booked from its receipt, which shows
     the VAT, and not again from the bank line; a claim line is booked from its receipt too, and as well only when a
     person ticks Include. (matching.match finds copies and receipts.)"""
-    if tx.recorded_by is not None:
+    if tx.recorded_by is not None or tx.in_opening:
         return tx.include
     return tx.include or (tx.document_type not in NOT_TRANSACTIONS and tx.copy_of is None)
 
@@ -182,8 +183,13 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
         kept = [i for i in kept if i.code != "mixed_items"]
         issues.append(_mixed_items(account, vat, tx.gross, untaxed))
 
+    in_opening = bool(settings.books_start and tx.date and tx.date < settings.books_start)
     if tx.date is None:
         issues.append(issue("date_missing", "No date. Add one."))
+    elif in_opening:
+        if not tx.include:
+            issues.append(issue("before_first_year", "Dated before the first year: already in the opening balances, "
+                                                     "so not booked. Tick Include to book it."))
     elif ((settings.period_start and tx.date < settings.period_start)
           or (settings.period_end and tx.date > settings.period_end)):
         issues.append(issue("date_out_of_period", f"{tx.date} is outside the accounting period."))
@@ -205,4 +211,4 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
                                           "Tick Include to book it.", "info"))
     net = tx.gross - posted if posted is not None else None
     return tx.model_copy(update={"vat_posted": posted, "net": net, "contra_account_code": contra,
-                                 "issues": kept + issues})
+                                 "in_opening": in_opening, "issues": kept + issues})

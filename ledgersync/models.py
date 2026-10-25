@@ -62,6 +62,8 @@ class BusinessSettings(BaseModel):
     business_type: Optional[BusinessType] = None   # None: not known, as for an analysis without a client
     period_start: Optional[dt.date] = None
     period_end: Optional[dt.date] = None
+    books_start: Optional[dt.date] = None      # the first day of the client's first year: a row dated before it is
+                                               # already in the opening balances
     bank_account: str = BANK                   # the default bank: a receipt's, and a bank line's without its own
     bank_accounts: tuple[str, ...] = (BANK,)   # the client's bank accounts and cards, by code
 
@@ -134,6 +136,8 @@ class Transaction(BaseModel):
     document_direction: Optional[Direction] = None  # a document's row: which way what it owes goes (in: they owe
                                                    # the business), which the rows of an agent's statement don't share
     paid_by: list[Settlement] = Field(default_factory=list)           # a document's row: what paid it
+    in_opening: bool = False                       # dated before the client's first year (checks.normalise): its
+                                                   # amount is in the opening balances, so booked only if included
     copy_of: Optional[Settlement] = None           # a document's row: the earlier document it repeats (a
                                                    # reminder, a receipt read twice); not booked unless included
     recorded_by: Optional[Settlement] = None       # a bank line or a claim line: the receipt or invoice for the

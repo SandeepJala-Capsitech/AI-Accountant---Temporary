@@ -160,7 +160,8 @@ def match_documents(rows: list[Transaction], settings: BusinessSettings,
     changes: list[dict] = [{} for _ in rows]
     # Both sides of a transfer between the client's own accounts are the transfer's, never a payment of a document.
     transfers = _pair_transfers(rows, settings, changes, apart)
-    lines = sorted((n for n, tx in enumerate(rows) if tx.document_type in _PAYMENT_LINES and n not in transfers),
+    lines = sorted((n for n, tx in enumerate(rows) if tx.document_type in _PAYMENT_LINES and n not in transfers
+                    and booked_line(tx)),
                    key=lambda n: (rows[n].link is None, rows[n].date or dt.date.max, n))
     automatic: dict[int, list[Issue]] = {}   # the lines left to match automatically, with their issues so far
     for n in lines:
@@ -194,6 +195,12 @@ def match_documents(rows: list[Transaction], settings: BusinessSettings,
     return _without_payroll(matched), statuses
 
 
+def booked_line(tx: Transaction) -> bool:
+    """A bank line or an agent's item that moves money in the books: not one dated before the client's first year,
+    which the opening balances already hold, unless a person ticked Include."""
+    return tx.include or not tx.in_opening
+
+
 def _pair_transfers(rows: list[Transaction], settings: BusinessSettings, changes: list[dict],
                     apart: list[set[int]]) -> set[int]:
     """The transfers between the client's own accounts with both statements in: a line out of one of its accounts
@@ -207,7 +214,7 @@ def _pair_transfers(rows: list[Transaction], settings: BusinessSettings, changes
         return tx.bank_account or settings.bank_account
 
     lines = [n for n, tx in enumerate(rows) if tx.document_type == "statement" and not tx.link and tx.date
-             and tx.account_code in own and bank(tx) in own and tx.account_code != bank(tx)]
+             and booked_line(tx) and tx.account_code in own and bank(tx) in own and tx.account_code != bank(tx)]
     pairs = sorted((abs(rows[a].date - rows[b].date), rows[a].date, a, b) for a in lines for b in lines
                    if rows[a].direction == Direction.OUT and rows[b].direction == Direction.IN
                    and rows[a].account_code == bank(rows[b]) and rows[b].account_code == bank(rows[a])

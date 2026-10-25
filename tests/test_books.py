@@ -78,11 +78,45 @@ def test_an_unknown_year_is_not_found(store, acme):
         books.ledger(store, acme, date(2025, 4, 2))
 
 
-def test_a_row_dated_before_the_first_year_shows_in_it_and_says_so(store, acme):
-    add_rows(store, acme, row(date=date(2025, 1, 10), gross=D("12.00")))
-    [early] = books.ledger(store, acme, YEAR_1).transactions
-    assert [i.code for i in early.issues] == ["date_out_of_period"]
-    assert net(books.trial_balance(store, acme, YEAR_1), "7600") == D("12.00")
+OPENING_BANK = OpeningBalances(lines=[OpeningLine(code="1200", debit=D("1000.00")),
+                                      OpeningLine(code="3000", credit=D("1000.00"))])
+
+
+def statement_across_the_first_year_start(store, acme, **march):
+    """A statement with a £100.00 stationery line on 15 Mar 2025, before the first year, and a £50.00 one on 10 Apr."""
+    line = dict(document_type="statement", account_code="7504", counterparty="Ryman")
+    add_rows(store, acme, row(**line, date=date(2025, 3, 15), gross=D("100.00"), **march),
+             row(**line, date=date(2025, 4, 10), gross=D("50.00")))
+
+
+def test_a_statement_straddling_the_first_year_start_is_not_counted_twice(store, acme):
+    books.set_opening(store, acme, OPENING_BANK)
+    statement_across_the_first_year_start(store, acme)
+    tb = books.trial_balance(store, acme, YEAR_1)
+    assert (net(tb, "1200"), net(tb, "7504")) == (D("950.00"), D("50.00"))
+    march, _ = books.ledger(store, acme, YEAR_1).transactions
+    assert [(i.code, i.message) for i in march.issues] == [("before_first_year", (
+        "Dated before the first year: already in the opening balances, so not booked. Tick Include to book it."))]
+
+
+def test_ticking_include_books_a_row_dated_before_the_first_year(store, acme):
+    books.set_opening(store, acme, OPENING_BANK)
+    statement_across_the_first_year_start(store, acme, include=True)
+    tb = books.trial_balance(store, acme, YEAR_1)
+    assert (net(tb, "1200"), net(tb, "7504")) == (D("850.00"), D("150.00"))
+
+
+def test_a_pre_year_invoice_doesnt_duplicate_its_brought_forward_item(store, acme):
+    books.set_opening(store, acme, OpeningBalances(
+        lines=[OpeningLine(code="1200", debit=D("500.00")), OpeningLine(code="2100", credit=D("500.00"))],
+        unpaid=[OpenItem(id="1", direction="out", counterparty="Smith Solicitors Ltd", amount=D("500.00"))]))
+    add_rows(store, acme, row(date=date(2025, 3, 1), gross=D("500.00"), document_type="invoice",
+                              counterparty="Smith Solicitors Ltd", document_ref="bill"),
+             row(date=date(2025, 5, 2), gross=D("500.00"), document_type="statement", counterparty="Smith Solicitors"))
+    tb = books.trial_balance(store, acme, YEAR_1)
+    assert (net(tb, "2100"), net(tb, "7600"), net(tb, "1200")) == (0, 0, 0)
+    _, line = books.ledger(store, acme, YEAR_1).transactions
+    assert [s.ref for s in line.pays] == ["ob-1"]
 
 
 def test_an_invoice_unpaid_at_the_year_end_is_owed_in_its_year_and_paid_in_the_next(store, acme):

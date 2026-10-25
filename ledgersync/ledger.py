@@ -12,7 +12,7 @@ from .models import (BankAccount, BusinessSettings, Client, ClientFields, Client
                      ManualUpload, RowPatch, Transaction)
 from .rows import StoredRow
 from .store_mongo import MongoStore
-from .years import year_index
+from .years import year_bounds, year_index
 
 
 def bank_codes(client: Client) -> tuple[str, ...]:
@@ -26,7 +26,8 @@ def settings_for(client: Client) -> BusinessSettings:
     codes = bank_codes(client)
     default = next((a.code for a in client.bank_accounts if a.kind == "current"), codes[0])
     return BusinessSettings(business_name=client.name, vat_registered=client.vat_registered,
-                            business_type=client.business_type, bank_accounts=codes, bank_account=default)
+                            business_type=client.business_type, bank_accounts=codes, bank_account=default,
+                            books_start=year_bounds(client.first_year_end, 0)[0])
 
 
 def bank_choices(client: Client, upload_bank: Optional[str] = None) -> tuple[str, ...]:
