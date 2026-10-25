@@ -1,6 +1,7 @@
 """Small helpers shared by tests: a row with sensible defaults, the figures a test asks about."""
 import datetime as dt
 from decimal import Decimal
+from typing import Optional
 
 from ledgersync.checks import normalise
 from ledgersync.matching import match
@@ -43,3 +44,10 @@ def payroll_row(**overrides) -> dict:
     fields = dict(description="Net pay", date="2026-03-28", amount=3000.0, direction="out", account="7000",
                   currency="GBP", document_type="payroll", owed_to="net_pay")
     return {**fields, **overrides}
+
+
+def add_rows(store, client_id: int, *rows: Transaction, year_start: Optional[dt.date] = None,
+             bank_account: Optional[str] = None) -> int:
+    """Saves the rows to the client as one upload, added to the year starting year_start; its id."""
+    return store.add_upload(client_id, "rows.csv", "table", list(rows), year_start=year_start,
+                            bank_account=bank_account)

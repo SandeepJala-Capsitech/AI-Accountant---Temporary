@@ -216,7 +216,8 @@ class TrialBalanceLine(BaseModel):
 
 
 class TrialBalance(BaseModel):
-    lines: list[TrialBalanceLine]
+    lines: list[TrialBalanceLine]          # the opening balances plus the movements
+    opening: list[TrialBalanceLine] = Field(default_factory=list)   # the opening balances alone
     total_debits: Decimal
     total_credits: Decimal
     is_balanced: bool
@@ -233,6 +234,8 @@ class ClientFields(BaseModel):
     name: str
     business_type: BusinessType
     contact_name: str                  # the responsible person: the client's own contact
+    first_year_end: Optional[dt.date]  # the end of the first year the client's books are kept for; sent always, and
+                                       # check_client refuses it empty
     contact_email: str = ""
     contact_phone: str = ""
     vat_registered: bool = True
@@ -243,6 +246,11 @@ class ClientFields(BaseModel):
     @classmethod
     def _trimmed(cls, value):
         return "" if value is None else str(value).strip()
+
+    @field_validator("first_year_end", mode="before")
+    @classmethod
+    def _empty_date(cls, value):
+        return None if value == "" else value
 
 
 class Client(ClientFields):
@@ -262,6 +270,7 @@ class ClientPatch(BaseModel):
     contact_phone: Optional[str] = None
     vat_registered: Optional[bool] = None
     bank_accounts: Optional[list[BankAccount]] = None
+    first_year_end: Optional[dt.date] = None
     archived: Optional[bool] = None
 
 
@@ -281,6 +290,7 @@ class Upload(BaseModel):
     rows: int = 0
     statement: Optional[StatementCheck] = None   # a bank statement's balance check; None for other uploads
     bank_account: Optional[str] = None           # the account or card its statement lines are on; None: the default
+    year_start: Optional[dt.date] = None         # the year it was added to, which its undated rows wait in
 
 
 class UploadPatch(BaseModel):
@@ -296,8 +306,70 @@ class SavedRow(Transaction):
     original: Optional[dict] = None
 
 
+class Year(BaseModel):
+    """One of a client's accounting years."""
+    start: dt.date
+    end: dt.date
+    label: str                 # "Year to 31 Mar 2026"
+    closed: bool = False
+
+
+def _money(value) -> Decimal:
+    money = to_money(value if value not in (None, "") else "0")
+    if money is None:
+        raise ValueError("not an amount")
+    return money
+
+
+class OpeningLine(BaseModel):
+    """A first year's opening balance on one balance sheet account, from the client's last accounts."""
+    code: str
+    debit: Decimal = ZERO
+    credit: Decimal = ZERO
+
+    @field_validator("debit", "credit", mode="before")
+    @classmethod
+    def _pennies(cls, value):
+        return _money(value)
+
+
+class OpenItem(BaseModel):
+    """An invoice unpaid when the first year starts, behind Debtors (in: a customer owes the client) or Creditors
+    (out: the client owes a supplier). A payment in any year can clear it."""
+    id: str
+    direction: Direction
+    counterparty: str
+    amount: Decimal
+    number: Optional[str] = None
+    date: Optional[dt.date] = None
+
+    @field_validator("amount", mode="before")
+    @classmethod
+    def _pennies(cls, value):
+        return _money(value)
+
+    @field_validator("id", "counterparty", mode="before")
+    @classmethod
+    def _trimmed(cls, value):
+        return "" if value is None else str(value).strip()
+
+    @field_validator("number", mode="before")
+    @classmethod
+    def _trimmed_number(cls, value):
+        return None if value is None else (str(value).strip() or None)
+
+
+class OpeningBalances(BaseModel):
+    """A client's first year's opening balances: the amounts and the unpaid invoices behind Debtors and Creditors."""
+    lines: list[OpeningLine] = Field(default_factory=list)
+    unpaid: list[OpenItem] = Field(default_factory=list)
+
+
 class Ledger(BaseModel):
+    """One of a client's years: its rows, and the uploads that hold them or were added to it."""
     client: Client
+    year: Year
+    years: list[Year]
     uploads: list[Upload]
     transactions: list[SavedRow]
 

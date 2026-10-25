@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from collections import defaultdict
 from decimal import Decimal
-from typing import Optional
+from typing import Optional, Sequence
 
 from .accounts import BY_CODE, PURCHASE_VAT, SALES_VAT, VAT_ACCOUNTS, AccountType
 from .checks import booked, normalise
 from .errors import InvalidTransactions
 from .matching import match
-from .models import BusinessSettings, Direction, JournalLine, Transaction, TrialBalance, TrialBalanceLine
+from .models import (BusinessSettings, Direction, JournalLine, OpenItem, Transaction, TrialBalance,
+                     TrialBalanceLine)
 from .money import ZERO
 
 
@@ -38,25 +39,36 @@ def _vat_last(item: tuple[str, Decimal]) -> tuple[bool, str]:
     return item[0] in VAT_ACCOUNTS, item[0]
 
 
+def _line(code: str, balance: Decimal) -> TrialBalanceLine:
+    return TrialBalanceLine(code=code, name=BY_CODE[code].name, type=BY_CODE[code].type.value,
+                            debit=balance if balance > 0 else ZERO, credit=-balance if balance < 0 else ZERO)
+
+
 def trial_balance(transactions: list[Transaction], settings: BusinessSettings,
-                  read: Optional[list[Optional[Decimal]]] = None, apart: Optional[list[set[int]]] = None) -> TrialBalance:
+                  read: Optional[list[Optional[Decimal]]] = None, apart: Optional[list[set[int]]] = None, *,
+                  keep: Optional[list[bool]] = None, opening: Optional[dict[str, Decimal]] = None,
+                  open_items: Sequence[OpenItem] = ()) -> TrialBalance:
     """The trial balance of the transactions, matched as matching.match does. A client's saved rows pass what people
     decided (read and apart, as match takes them) so the figures book the rows the ledger books; pasted or unsaved
-    rows have no decisions and pass neither."""
-    ready = match([normalise(tx, settings) for tx in transactions], settings, read=read, apart=apart)
-    posted = [(n, tx) for n, tx in enumerate(ready) if booked(tx)]   # a quote or the like waits for Include
+    rows have no decisions and pass neither. A year of a client's passes all its rows, so a payment in one year can
+    clear an invoice of another (and the open items brought into its first year), and keep: the rows of that year,
+    the only ones posted and checked for errors; and its opening balances, signed with debits positive, which are
+    added before the movements."""
+    ready = match([normalise(tx, settings) for tx in transactions], settings, read=read, apart=apart,
+                  open_items=open_items)
+    posted = [(n, tx) for n, tx in enumerate(ready)   # a quote or the like waits for Include
+              if booked(tx) and (keep is None or keep[n])]
     problems = [f"#{n + 1}: {issue.message}" for n, tx in posted
                 for issue in tx.issues if issue.severity == "error"]
     if problems:
         raise InvalidTransactions(f"{len(problems)} problem(s) must be fixed before the trial balance: "
                                   + " ".join(problems[:5]), problems=problems)
     journal = [line for n, tx in posted for line in journal_for(tx, n)]
-    balances: dict[str, Decimal] = defaultdict(lambda: ZERO)
+    opening = opening or {}
+    balances: dict[str, Decimal] = defaultdict(lambda: ZERO, opening)
     for line in journal:
         balances[line.code] += line.debit - line.credit
-    lines = [TrialBalanceLine(code=code, name=BY_CODE[code].name, type=BY_CODE[code].type.value,
-                              debit=balance if balance > 0 else ZERO, credit=-balance if balance < 0 else ZERO)
-             for code, balance in sorted(balances.items(), key=_vat_last) if balance != 0]
+    lines = [_line(code, balance) for code, balance in sorted(balances.items(), key=_vat_last) if balance != 0]
     total_debits = sum((l.debit for l in lines), ZERO)
     total_credits = sum((l.credit for l in lines), ZERO)
     total_income = sum((l.credit - l.debit for l in lines if l.type == AccountType.INCOME.value), ZERO)
@@ -65,6 +77,8 @@ def trial_balance(transactions: list[Transaction], settings: BusinessSettings,
     total_assets = sum((l.debit - l.credit for l in lines if l.type == AccountType.ASSET.value), ZERO)
     total_liabilities = sum((l.credit - l.debit for l in lines if l.type == AccountType.LIABILITY.value), ZERO)
     return TrialBalance(lines=lines, total_debits=total_debits, total_credits=total_credits,
+                        opening=[_line(code, balance) for code, balance in sorted(opening.items(), key=_vat_last)
+                                 if balance != 0],
                         is_balanced=total_debits == total_credits, journal=journal,
                         total_income=total_income, total_expenses=total_expenses,
                         net_profit=net_profit, total_assets=total_assets, total_liabilities=total_liabilities)

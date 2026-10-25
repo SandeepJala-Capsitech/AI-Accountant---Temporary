@@ -6,13 +6,15 @@ from decimal import Decimal
 import pytest
 from openpyxl import load_workbook
 
-from ledgersync import ledger, posting
+from ledgersync import books, ledger, posting
 from ledgersync.checks import booked, issue
 from ledgersync.errors import ClientArchived, InvalidInput
 from ledgersync.ledger import assign_codes
 from ledgersync.models import BankAccount, Client, ClientFields, ClientPatch, ManualUpload, RowPatch, Transaction
 
-CUBE = ClientFields(name="Business Cube Ltd", business_type="limited_company", contact_name="Jenny Clarke")
+CUBE = ClientFields(name="Business Cube Ltd", business_type="limited_company", contact_name="Jenny Clarke",
+                    first_year_end=dt.date(2027, 3, 31))
+YEAR = dt.date(2026, 4, 1)   # the year its rows are in
 
 
 pytestmark = pytest.mark.mongo
@@ -34,7 +36,7 @@ def test_a_bill_and_its_payment_saved_apart_are_paired_in_the_ledger(store):
     store.add_upload(client.id, "BT-0905.pdf", "pdf", [row(document_ref="bt")])
     store.add_upload(client.id, "Barclays.csv", "table", [row(date=dt.date(2026, 9, 5), document_type="statement",
                                                               counterparty="BT BUSINESS DD", document_ref="l1")])
-    built = ledger.build(store, client.id)
+    built = books.ledger(store, client.id, YEAR)
     bill, line = built.transactions
     assert ([s.ref for s in line.pays], line.paid_against, bill.owed) == (["bt"], "2100", Decimal("0.00"))
     assert [u.name for u in built.uploads] == ["Barclays.csv", "BT-0905.pdf"]
@@ -45,7 +47,7 @@ def test_a_receipt_dated_away_from_its_file_names_date_asks_and_using_it_settles
     store.add_upload(client.id, "Southgate_Bath_Car_Park-2026-09-09_19_52_00.jpg", "image",
                      [row(document_type="receipt", gross="36.00", account_code="7400", date=dt.date(2026, 8, 9),
                           counterparty="Southgate Bath Car Park", document_ref="photo")])
-    [photo] = ledger.build(store, client.id).transactions
+    [photo] = books.ledger(store, client.id, YEAR).transactions
     assert (photo.date_found, [i.code for i in photo.issues]) == (dt.date(2026, 9, 9), ["file_date"])
     [photo] = ledger.change_row(store, client.id, photo.id, RowPatch(date=dt.date(2026, 9, 9))).transactions   # Use
     assert (photo.date, photo.date_found, photo.issues, photo.edited) == (dt.date(2026, 9, 9), None, [], True)
@@ -59,7 +61,7 @@ def test_rows_a_question_is_about_are_given_by_their_row_ids(store):
                      date=dt.date(2026, 9, 9), document_ref="claim")])
     store.add_upload(client.id, "photo.jpg", "image", [row(document_type="receipt", counterparty="Southgate Bath Car Park",
                      gross="36.00", account_code="7400", date=dt.date(2026, 8, 9), document_ref="photo")])
-    line, receipt = ledger.build(store, client.id).transactions
+    line, receipt = books.ledger(store, client.id, YEAR).transactions
     assert (line.issues[0].related, receipt.issues[0].related) == ([receipt.id], [line.id])
 
 
@@ -75,7 +77,7 @@ def claim_and_photo(store):
 
 def test_not_the_same_is_kept_on_the_row_and_ends_the_question_until_undone(store):
     client = claim_and_photo(store)
-    line, photo = ledger.build(store, client.id).transactions
+    line, photo = books.ledger(store, client.id, YEAR).transactions
     line, photo = ledger.change_row(store, client.id, photo.id, RowPatch(apart_from=[line.id])).transactions
     assert (photo.apart_from, photo.edited, photo.date_found, line.date_found) == ([line.id], False, None, None)
     assert [i.code for i in line.issues + photo.issues] == []
@@ -86,7 +88,7 @@ def test_not_the_same_is_kept_on_the_row_and_ends_the_question_until_undone(stor
 @pytest.mark.parametrize("names", ["itself", "another client's row"])
 def test_not_the_same_names_only_another_row_of_the_client(store, names):
     client = claim_and_photo(store)
-    _, photo = ledger.build(store, client.id).transactions
+    _, photo = books.ledger(store, client.id, YEAR).transactions
     other = store.create_client(CUBE)
     store.add_upload(other.id, "x.pdf", "pdf", [row(document_ref="x")])
     wrong = photo.id if names == "itself" else store.rows(other.id)[0].id
@@ -100,7 +102,7 @@ def test_a_total_put_out_by_a_persons_change_is_said_on_the_line_they_changed(st
                  gross=gross, account_code="7400", document_ref="claim", document_total="201.25")
              for shop, gross in (("Clayton Hotel", "173.75"), ("EE, mobile phone bill", "27.50"))]
     store.add_upload(client.id, "Matt.xlsx", "table", lines)
-    hotel, ee = ledger.build(store, client.id).transactions
+    hotel, ee = books.ledger(store, client.id, YEAR).transactions
     hotel, ee = ledger.change_row(store, client.id, ee.id, RowPatch(gross=Decimal("30.22"))).transactions
     assert ([i.code for i in hotel.issues], [i.code for i in ee.issues], ee.issues[0].related) == (
         [], ["total_mismatch"], [hotel.id])
@@ -109,7 +111,7 @@ def test_a_total_put_out_by_a_persons_change_is_said_on_the_line_they_changed(st
 def test_the_clients_vat_setting_and_kind_of_business_are_applied(store):
     client = store.create_client(CUBE.model_copy(update={"vat_registered": False}))
     store.add_upload(client.id, "a.pdf", "pdf", [row(vat="12.00"), row(account_code="3260", document_type="receipt")])
-    bill, drawings = ledger.build(store, client.id).transactions
+    bill, drawings = books.ledger(store, client.id, YEAR).transactions
     assert (bill.vat_posted, bill.net) == (Decimal("0.00"), Decimal("72.00"))
     assert "director_loan" in [i.code for i in drawings.issues]
 
@@ -121,7 +123,7 @@ def test_each_statement_upload_gets_its_balance_check(store):
         row(**line, gross="20.00", balance="980.00", document_ref="l1"),
         row(**line, gross="30.00", balance="900.00", document_ref="l2")])
     receipt = store.add_upload(client.id, "r.jpg", "image", [row(document_type="receipt")])
-    checks = {u.id: u.statement for u in ledger.build(store, client.id).uploads}
+    checks = {u.id: u.statement for u in books.ledger(store, client.id, YEAR).uploads}
     assert (checks[statement].status, checks[statement].difference, checks[receipt]) == ("gap", Decimal("50.00"), None)
 
 
@@ -251,7 +253,7 @@ def test_a_row_added_by_hand_needs_an_account_the_client_can_use(store, code):
 def test_the_trial_balance_comes_from_the_saved_rows(store):
     client = store.create_client(CUBE)
     store.add_upload(client.id, "a.pdf", "pdf", [row(document_type="receipt", vat="12.00")])
-    assert [(l.code, l.debit, l.credit) for l in ledger.trial_balance(store, client.id).lines] == [
+    assert [(l.code, l.debit, l.credit) for l in books.trial_balance(store, client.id, YEAR).lines] == [
         ("1200", Decimal("0.00"), Decimal("72.00")), ("7502", Decimal("60.00"), Decimal("0.00")),
         ("2201", Decimal("12.00"), Decimal("0.00"))]
 
@@ -272,13 +274,13 @@ def receipt_and_its_card_line(store, client=None):
 
 
 def booked_in_the_ledger(store, client_id) -> set[int]:
-    return {r.id for r in ledger.build(store, client_id).transactions if booked(r)}
+    return {r.id for r in books.ledger(store, client_id, YEAR).transactions if booked(r)}
 
 
 def booked_in_the_trial_balance(store, client_id) -> set[int]:
     """The rows the trial balance posts, from the places its journal names in the client's rows."""
     rows = store.rows(client_id)
-    return {rows[line.transaction].id for line in ledger.trial_balance(store, client_id).journal}
+    return {rows[line.transaction].id for line in books.trial_balance(store, client_id, YEAR).journal}
 
 
 def test_a_card_line_and_its_receipt_are_one_payment_in_the_ledger_and_the_trial_balance(store):
@@ -293,7 +295,7 @@ def test_a_payment_marked_not_the_same_as_a_receipt_is_booked_by_the_trial_balan
     client = receipt_and_its_card_line(store)
     receipt, line = store.rows(client.id)
     ledger.change_row(store, client.id, line.id, RowPatch(apart_from=[receipt.id]))
-    balance = ledger.trial_balance(store, client.id)
+    balance = books.trial_balance(store, client.id, YEAR)
     assert booked_in_the_ledger(store, client.id) == {receipt.id, line.id}
     assert booked_in_the_trial_balance(store, client.id) == booked_in_the_ledger(store, client.id)
     assert [(l.code, l.debit, l.credit) for l in balance.lines if l.code in ("1200", "7400")] == [
@@ -305,7 +307,7 @@ def test_the_exported_trial_balance_sheet_has_the_payment_marked_not_the_same(st
     client = receipt_and_its_card_line(store)
     receipt, line = store.rows(client.id)
     ledger.change_row(store, client.id, line.id, RowPatch(apart_from=[receipt.id]))
-    content, _ = ledger.export(store, client.id, dt.date(2026, 10, 1))
+    content, _ = books.export(store, client.id, YEAR, dt.date(2026, 10, 1))
     sheet = load_workbook(io.BytesIO(content))["Trial balance"]
     assert [(r[0], r[2], r[3]) for r in sheet.iter_rows(min_row=3, values_only=True) if r[0] in ("1200", "7400")] == [
         ("1200", 0, 72), ("7400", 72, 0)]
@@ -328,10 +330,10 @@ def claim_with_a_corrected_line(store):
 def test_a_row_a_person_corrected_is_booked_by_the_trial_balance_as_the_ledger_books_it(store):
     client = claim_with_a_corrected_line(store)
     assert store.rows(client.id)[1].original["gross"] == "27.50"
-    built = ledger.build(store, client.id)
+    built = books.ledger(store, client.id, YEAR)
     assert [i.code for i in built.transactions[1].issues] == ["total_mismatch"]
     assert booked_in_the_trial_balance(store, client.id) == booked_in_the_ledger(store, client.id)
-    assert [(l.code, l.debit) for l in ledger.trial_balance(store, client.id).lines if l.type == "expense"] == [
+    assert [(l.code, l.debit) for l in books.trial_balance(store, client.id, YEAR).lines if l.type == "expense"] == [
         ("7402", Decimal("173.75")), ("7502", Decimal("30.22"))]   # the corrected amount, not the one first read
 
 
@@ -340,16 +342,20 @@ def test_the_trial_balance_and_the_ledger_match_with_the_same_decisions(store, m
     client = receipt_and_its_card_line(store, claim_with_a_corrected_line(store))
     receipt, line = store.rows(client.id)[2:]
     ledger.change_row(store, client.id, line.id, RowPatch(apart_from=[receipt.id]))
-    seen, real = [], ledger.match
+    seen, real_documents, real_match = [], books.match_documents, posting.match
 
-    def spy(rows, settings, read=None, apart=None):
+    def spy_documents(rows, settings, read=None, apart=None, open_items=()):
         seen.append((read, apart))
-        return real(rows, settings, read=read, apart=apart)
+        return real_documents(rows, settings, read, apart, open_items)
 
-    monkeypatch.setattr(ledger, "match", spy)
+    def spy(rows, settings, read=None, apart=None, open_items=()):
+        seen.append((read, apart))
+        return real_match(rows, settings, read=read, apart=apart, open_items=open_items)
+
+    monkeypatch.setattr(books, "match_documents", spy_documents)
     monkeypatch.setattr(posting, "match", spy)
-    ledger.build(store, client.id)
-    ledger.trial_balance(store, client.id)
+    books.ledger(store, client.id, YEAR)
+    books.trial_balance(store, client.id, YEAR)
     (built_read, built_apart), (balance_read, balance_apart) = seen
     assert built_read == [None, Decimal("27.50"), None, None] and built_apart == [set(), set(), {3}, {2}]
     assert (balance_read, balance_apart) == (built_read, built_apart)
@@ -440,7 +446,7 @@ def test_a_credit_card_upload_is_checked_as_a_card_statement(store):
              row(document_type="statement", gross="10.00", balance="150.00", closing_balance="150.00")]
     store.add_upload(client.id, "Amex.pdf", "pdf", lines, bank_account="1240")
     store.add_upload(client.id, "Barclays.pdf", "pdf", lines, bank_account="1200")
-    assert [(u.name, u.statement.status) for u in ledger.build(store, client.id).uploads] == [
+    assert [(u.name, u.statement.status) for u in books.ledger(store, client.id, YEAR).uploads] == [
         ("Barclays.pdf", "gap"), ("Amex.pdf", "ok")]
 
 

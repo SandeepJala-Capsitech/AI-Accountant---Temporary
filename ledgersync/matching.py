@@ -9,11 +9,11 @@ from collections import Counter
 from dataclasses import dataclass, field
 from decimal import Decimal
 from itertools import combinations
-from typing import Optional
+from typing import Optional, Sequence
 
-from .accounts import DEBTORS, STAFF_EXPENSES
+from .accounts import CREDITORS, DEBTORS, STAFF_EXPENSES
 from .checks import MATCHING_ISSUES, PAYROLL_OWED, booked, issue, long_date, reclaims_vat
-from .models import BusinessSettings, Direction, Issue, Settlement, Transaction
+from .models import BusinessSettings, Direction, Issue, OpenItem, Settlement, Transaction
 from .money import ZERO
 
 WINDOW = dt.timedelta(days=31)   # a payment may be suggested for a document dated within 31 days of it
@@ -106,6 +106,24 @@ class _Document:
         return f"{self.description} ({_gbp(self.open)}{when})"
 
 
+@dataclass
+class DocumentStatus:
+    """What is still open on a document after every payment matched to it, and the payments."""
+    open: Decimal
+    paid_by: list[Settlement]
+
+
+def _brought_forward(items: Sequence[OpenItem]) -> dict[str, _Document]:
+    """The invoices unpaid when the first year starts, as open documents with no rows: a customer's on Debtors, a
+    supplier's on Creditors, each dated by its item (books dates them the day before the first year starts)."""
+    return {f"ob-{item.id}": _Document(ref=f"ob-{item.id}", kind="invoice", direction=item.direction.value,
+                                       account=DEBTORS if item.direction == Direction.IN else CREDITORS,
+                                       counterparty=item.counterparty,
+                                       description=f"Brought forward: {item.number or item.counterparty}",
+                                       total=item.amount, date=item.date, open=item.amount)
+            for item in items}
+
+
 def _only_each_other(docs: list[_Document], lines: list[int], agree) -> list[tuple[_Document, int]]:
     """The documents and lines that agree with each other and with nothing else in the two lists."""
     found = [(d, n) for d in docs for n in lines if agree(d, n)]
@@ -118,18 +136,27 @@ def _gbp(amount: Decimal) -> str:
 
 
 def match(rows: list[Transaction], settings: BusinessSettings, read: Optional[list[Optional[Decimal]]] = None,
-          apart: Optional[list[set[int]]] = None) -> list[Transaction]:
+          apart: Optional[list[set[int]]] = None, open_items: Sequence[OpenItem] = ()) -> list[Transaction]:
+    """The rows as match_documents matches them."""
+    return match_documents(rows, settings, read, apart, open_items)[0]
+
+
+def match_documents(rows: list[Transaction], settings: BusinessSettings,
+                    read: Optional[list[Optional[Decimal]]] = None, apart: Optional[list[set[int]]] = None,
+                    open_items: Sequence[OpenItem] = ()) -> tuple[list[Transaction], dict[str, DocumentStatus]]:
     """Which documents each bank line pays and what is still owed on each document, for transactions
     checks.normalise has already prepared. Lines a person linked go first; then lines that pay exactly what
     one document owes, whatever their date, so a bigger payment to the same person is never taken as an
     overpayment of a document another line pays exactly; then the rest, oldest first. So the result does not
     depend on the order the rows arrived in. With a client's saved rows come what a person decided: read, each row's
     amount as it was read before a person changed it (None if unchanged), and apart, for each row, the rows a person
-    said are not the same as it, which are never paired with it or asked about."""
+    said are not the same as it, which are never paired with it or asked about. open_items: the invoices unpaid when
+    the client's first year started, which a bank line pays as it pays an invoice uploaded. Also each document's
+    status, by its ref, brought-forward ones ("ob-{id}") among them."""
     read = read or [None] * len(rows)
     apart = apart or [set() for _ in rows]
     rows = _checked_totals(_with_claims(_without_copies([_cleared(tx) for tx in rows]), settings, apart), read)
-    documents = _documents(rows)
+    documents = {**_brought_forward(open_items), **_documents(rows)}
     changes: list[dict] = [{} for _ in rows]
     # Both sides of a transfer between the client's own accounts are the transfer's, never a payment of a document.
     transfers = _pair_transfers(rows, settings, changes, apart)
@@ -163,7 +190,8 @@ def match(rows: list[Transaction], settings: BusinessSettings, read: Optional[li
         for n in doc.rows:
             changes[n].update(owed=doc.open, document_direction=Direction(doc.direction), paid_by=list(doc.paid_by))
     matched = [tx.model_copy(update=change) if change else tx for tx, change in zip(rows, changes)]
-    return _without_payroll(matched)
+    statuses = {ref: DocumentStatus(open=doc.open, paid_by=list(doc.paid_by)) for ref, doc in documents.items()}
+    return _without_payroll(matched), statuses
 
 
 def _pair_transfers(rows: list[Transaction], settings: BusinessSettings, changes: list[dict],

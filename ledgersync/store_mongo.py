@@ -17,7 +17,7 @@ import pymongo
 from pymongo import MongoClient, ReturnDocument
 
 from .errors import ChangedMeanwhile, ClientArchived, NotFound
-from .models import BankAccount, Client, ClientFields, Transaction
+from .models import BankAccount, Client, ClientFields, OpeningBalances, Transaction
 from .rows import EDITABLE, OLD_TOTAL, WHOLE_DOCUMENT, StoredRow, now_iso, saved_form
 
 logger = logging.getLogger(__name__)
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 _PATCH_TRIES = 5
 
 _CLIENT_FIELDS = ("name", "business_type", "contact_name", "contact_email", "contact_phone", "vat_registered",
-                  "bank_accounts")
+                  "bank_accounts", "first_year_end")
 _CLIENT_PROJECTION = {
     "id": 1,
     "name": 1,
@@ -36,19 +36,32 @@ _CLIENT_PROJECTION = {
     "contact_phone": 1,
     "vat_registered": 1,
     "bank_accounts": 1,
+    "first_year_end": 1,
     "archived_at": 1,
     "created_at": 1,
     "updated_at": 1,
 }
 
 
-def _client(doc: dict) -> Client:
-    """A client as its document keeps it; one saved before it had bank accounts has the one current account."""
+def _date(value: Optional[str]) -> Optional[dt.date]:
+    return dt.date.fromisoformat(value) if value else None
+
+
+def _march_on_or_after(day: dt.date) -> dt.date:
+    end = dt.date(day.year, 3, 31)
+    return end if day <= end else dt.date(day.year + 1, 3, 31)
+
+
+def _client(doc: dict, earliest: Optional[dt.date] = None) -> Client:
+    """A client as its document keeps it; one saved before it had bank accounts has the one current account. One saved
+    before clients had a first year end (old test data) reads with the 31 March on or after its earliest row
+    (earliest), or on or after today when it has none."""
     return Client(
         id=doc["id"],
         name=doc["name"],
         business_type=doc["business_type"],
         contact_name=doc["contact_name"],
+        first_year_end=_date(doc.get("first_year_end")) or _march_on_or_after(earliest or dt.date.today()),
         contact_email=doc.get("contact_email", ""),
         contact_phone=doc.get("contact_phone", ""),
         vat_registered=bool(doc.get("vat_registered", True)),
@@ -94,6 +107,15 @@ class MongoStore:
         except Exception as exc:
             logger.warning("Index optimization notice: %s", exc)
 
+    def _as_client(self, doc: dict) -> Client:
+        """The client of a document; for one without a first year end, its earliest row's date is looked up."""
+        earliest = None
+        if not doc.get("first_year_end"):
+            found = self.db.clients.find_one({"id": doc["id"]}, {"rows.data.date": 1}) or {}
+            dates = [r["data"]["date"] for r in found.get("rows", []) if r.get("data", {}).get("date")]
+            earliest = _date(min(dates)) if dates else None
+        return _client(doc, earliest)
+
     def _next_id(self, sequence_name: str, count: int = 1) -> int:
         """Atomically allocates `count` sequential IDs in a single round-trip."""
         counter = self.db.counters.find_one_and_update(
@@ -125,6 +147,8 @@ class MongoStore:
             "contact_phone": fields.contact_phone,
             "vat_registered": bool(fields.vat_registered),
             "bank_accounts": _stored_accounts(fields.bank_accounts),
+            "first_year_end": fields.first_year_end.isoformat() if fields.first_year_end else None,
+            "opening": OpeningBalances().model_dump(mode="json"),
             "archived_at": None,
             "created_at": now,
             "updated_at": now,
@@ -139,7 +163,7 @@ class MongoStore:
         doc = self.db.clients.find_one({"id": client_id}, _CLIENT_PROJECTION)
         if not doc:
             raise NotFound("This client was not found.")
-        return _client(doc)
+        return self._as_client(doc)
 
     def list_clients(self, archived: bool = False) -> list[Client]:
         query = {"archived_at": {"$ne": None}} if archived else {"archived_at": None}
@@ -149,7 +173,7 @@ class MongoStore:
             collation={"locale": "en", "strength": 2}
         ).sort([("name", pymongo.ASCENDING), ("id", pymongo.ASCENDING)])
 
-        return [_client(d) for d in docs]
+        return [self._as_client(d) for d in docs]
 
     def update_client(self, client_id: int, changes: dict) -> Client:
         client = self.get_client(client_id)
@@ -158,7 +182,8 @@ class MongoStore:
             raise ClientArchived(f"Restore {client.name} to change it.")
 
         now = now_iso()
-        set_dict = {k: bool(v) if isinstance(v, bool) else v for k, v in fields.items()}
+        set_dict = {k: bool(v) if isinstance(v, bool) else v.isoformat() if isinstance(v, dt.date) else v
+                    for k, v in fields.items()}
         if "bank_accounts" in set_dict:
             set_dict["bank_accounts"] = _stored_accounts(
                 [BankAccount.model_validate(a) for a in set_dict["bank_accounts"]])
@@ -176,16 +201,31 @@ class MongoStore:
             )
             if not updated:
                 raise NotFound("This client was not found.")
-            return _client(updated)
+            return self._as_client(updated)
 
         return client
+
+    def opening(self, client_id: int) -> OpeningBalances:
+        """The client's first year's opening balances; none for a client saved before it had them."""
+        doc = self.db.clients.find_one({"id": client_id}, {"opening": 1})
+        if not doc:
+            raise NotFound("This client was not found.")
+        return OpeningBalances.model_validate(doc.get("opening") or {})
+
+    def set_opening(self, client_id: int, opening: OpeningBalances) -> None:
+        res = self.db.clients.update_one(
+            {"id": client_id},
+            {"$set": {"opening": opening.model_dump(mode="json"), "updated_at": now_iso()}, "$inc": {"revision": 1}})
+        if res.matched_count == 0:
+            raise NotFound("This client was not found.")
 
     # ─── Uploads and rows ──────────────────────────────────────────────────────
 
     def add_upload(self, client_id: int, name: str, kind: str, rows: list[Transaction], *, sha256: str = "",
-                   model: str = "", warnings=(), bank_account: Optional[str] = None) -> int:
+                   model: str = "", warnings=(), bank_account: Optional[str] = None,
+                   year_start: Optional[dt.date] = None) -> int:
         """Saves an upload and its rows; bank_account: the account or card its statement is for, which its statement
-        lines are on."""
+        lines are on; year_start: the year it was added to, which its undated rows wait in."""
         self.get_client(client_id)
         upload_id = self._next_id("upload_id")
         now = now_iso()
@@ -198,6 +238,7 @@ class MongoStore:
             "model": model or "",
             "warnings": list(warnings),
             "bank_account": bank_account,
+            "year_start": year_start.isoformat() if year_start else None,
             "created_at": now
         }
 
@@ -275,6 +316,7 @@ class MongoStore:
                 "model": u.get("model", ""),
                 "warnings": u.get("warnings", []),
                 "bank_account": u.get("bank_account"),
+                "year_start": _date(u.get("year_start")),
                 "created_at": u["created_at"],
                 "row_count": counts.get(u["id"], 0)
             })

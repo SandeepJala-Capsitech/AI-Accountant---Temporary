@@ -6,13 +6,13 @@ import pytest
 
 from ledgersync.checks import issue
 from ledgersync.errors import ChangedMeanwhile, ClientArchived, LedgerSyncError, NotFound
-from ledgersync.models import ClientFields, Transaction
+from ledgersync.models import ClientFields, OpeningBalances, OpeningLine, OpenItem, Transaction
 from ledgersync.store_mongo import MongoStore
 
 pytestmark = pytest.mark.mongo
 
 CUBE = ClientFields(name="Business Cube Ltd", business_type="limited_company", contact_name="Jenny Clarke",
-                    contact_email="jenny@businesscube.co.uk")
+                    contact_email="jenny@businesscube.co.uk", first_year_end=dt.date(2027, 3, 31))
 ROW = Transaction(date=dt.date(2026, 9, 1), description="BT Business Broadband", direction="out",
                   gross=Decimal("72.00"), account_code="7502")
 
@@ -328,3 +328,33 @@ def test_a_persons_edit_clears_the_warnings_from_the_reading_and_revert_brings_t
     assert mongo_store.rows(client.id)[0].tx.issues == []
     mongo_store.patch_row(client.id, row, {}, revert=True)
     assert [i.code for i in mongo_store.rows(client.id)[0].tx.issues] == ["account_not_recognised"]
+
+
+# ─── Years and opening balances ──────────────────────────────────────────────
+
+def test_a_client_keeps_its_first_year_end_and_opening_balances(mongo_store):
+    client = mongo_store.create_client(CUBE)
+    assert mongo_store.get_client(client.id).first_year_end == dt.date(2027, 3, 31)
+    assert mongo_store.opening(client.id) == OpeningBalances()
+    opening = OpeningBalances(lines=[OpeningLine(code="1100", debit="10.00"), OpeningLine(code="3200", credit="10.00")],
+                              unpaid=[OpenItem(id="1", direction="in", counterparty="Bright Cafe", amount="10.00",
+                                               number="INV-7", date=dt.date(2026, 3, 2))])
+    mongo_store.set_opening(client.id, opening)
+    assert mongo_store.opening(client.id) == opening
+    changed = mongo_store.update_client(client.id, {"first_year_end": dt.date(2026, 12, 31)})
+    assert changed.first_year_end == mongo_store.get_client(client.id).first_year_end == dt.date(2026, 12, 31)
+
+
+def test_an_upload_keeps_the_year_it_was_added_to(mongo_store):
+    client = mongo_store.create_client(CUBE)
+    mongo_store.add_upload(client.id, "a.csv", "table", [ROW], year_start=dt.date(2026, 4, 1))
+    mongo_store.add_upload(client.id, "b.csv", "table", [ROW])
+    assert [u["year_start"] for u in mongo_store.uploads(client.id)] == [None, dt.date(2026, 4, 1)]
+
+
+def test_a_client_saved_before_year_ends_reads_with_the_31_march_after_its_earliest_row(mongo_store):
+    client = mongo_store.create_client(CUBE)
+    mongo_store.add_upload(client.id, "a.csv", "table", [ROW, ROW.model_copy(update={"date": dt.date(2025, 2, 3)})])
+    mongo_store.db.clients.update_one({"id": client.id}, {"$unset": {"first_year_end": "", "opening": ""}})
+    assert mongo_store.get_client(client.id).first_year_end == dt.date(2025, 3, 31)
+    assert mongo_store.opening(client.id) == OpeningBalances()

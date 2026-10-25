@@ -14,7 +14,8 @@ from ledgersync.store_mongo import MongoStore
 from server import create_app
 
 CUBE = {"name": "Business Cube Ltd", "business_type": "limited_company", "contact_name": "Jenny Clarke",
-        "contact_email": "jenny@businesscube.co.uk"}
+        "contact_email": "jenny@businesscube.co.uk", "first_year_end": "2027-03-31"}
+YEAR = "2026-04-01"   # the year its rows are in
 BILL = {"direction": "out", "gross": "72.00", "account_code": "7502", "date": "2026-09-01", "description": "BT",
         "document_type": "invoice", "counterparty": "BT Business", "document_ref": "bt"}
 LINE = {**BILL, "date": "2026-09-05", "document_type": "statement", "counterparty": "BT BUSINESS DD",
@@ -81,7 +82,7 @@ def test_a_client_needs_its_details(api, changes, message):
 def test_an_unknown_business_type_or_client_is_refused(api):
     client = api()
     assert client.post("/api/clients", json={**CUBE, "business_type": "charity"}).status_code == 422
-    missing = client.get("/api/clients/99/ledger")
+    missing = client.get(f"/api/clients/99/years/{YEAR}/ledger")
     assert (missing.status_code, missing.json()["detail"]["code"]) == (404, "not_found")
 
 
@@ -100,7 +101,7 @@ def test_links_and_edits_rematch_the_ledger_and_revert_undoes_an_edit(api):
     client = api()
     cid = add(client)["id"]
     manual(client, cid, BILL, LINE)
-    bill_id, line_id = (r["id"] for r in client.get(f"/api/clients/{cid}/ledger").json()["transactions"])
+    bill_id, line_id = (r["id"] for r in client.get(f"/api/clients/{cid}/years/{YEAR}/ledger").json()["transactions"])
     unlinked = client.patch(f"/api/clients/{cid}/rows/{line_id}", json={"link": []}).json()["transactions"]
     assert (unlinked[0]["owed"], unlinked[1]["pays"]) == ("72.00", [])
     [edited, _] = client.patch(f"/api/clients/{cid}/rows/{bill_id}", json={"gross": "70.00"}).json()["transactions"]
@@ -127,7 +128,7 @@ def test_removing_a_copy_row_clears_its_warning_and_books_the_bill_again(api):
     cid = add(client)["id"]
     manual(client, cid, BILL, {**BILL, "document_ref": "bt-again", "counterparty": "BT", "document_number": "BT-1"},
            LINE)
-    [bill, copy, line] = client.get(f"/api/clients/{cid}/ledger").json()["transactions"]
+    [bill, copy, line] = client.get(f"/api/clients/{cid}/years/{YEAR}/ledger").json()["transactions"]
     after = client.delete(f"/api/clients/{cid}/rows/{bill['id']}")
     assert after.status_code == 200, after.text
     assert [r["id"] for r in after.json()["transactions"]] == [copy["id"], line["id"]]
@@ -158,7 +159,7 @@ def test_a_clients_trial_balance_uses_its_vat_setting(api):
     client = api()
     cid = add(client, vat_registered=False)["id"]
     manual(client, cid, {**BILL, "document_type": "receipt", "vat": "12.00"})
-    lines = client.get(f"/api/clients/{cid}/trial-balance").json()["lines"]
+    lines = client.get(f"/api/clients/{cid}/years/{YEAR}/trial-balance").json()["lines"]
     assert [(l["code"], l["debit"], l["credit"]) for l in lines] == [("1200", "0.00", "72.00"), ("7502", "72.00", "0.00")]
 
 
@@ -206,7 +207,7 @@ def test_analysing_for_a_client_saves_the_rows_as_an_upload(api):
                        files={"file": ("Barclays Sept.csv", data, "text/csv")})
     job = finish(client, resp.json()["job_id"])
     assert (job["status"], job["result"]["client_id"]) == ("succeeded", cid)
-    [upload] = client.get(f"/api/clients/{cid}/ledger").json()["uploads"]
+    [upload] = client.get(f"/api/clients/{cid}/years/{YEAR}/ledger").json()["uploads"]
     assert (upload["id"], upload["name"], upload["kind"], upload["rows"]) == (
         job["result"]["upload_id"], "Barclays Sept.csv", "table", 1)
     assert upload["sha256"] == hashlib.sha256(data).hexdigest()
@@ -217,7 +218,7 @@ def test_pasted_text_is_saved_and_the_clients_vat_setting_applies(api):
     client = api(FakeModel([transactions_json(dict(ROW, vat=12.0))]))
     cid = add(client, vat_registered=False)["id"]
     finish(client, client.post("/api/analyze", data={"text": "BT 72.00", "client_id": str(cid)}).json()["job_id"])
-    ledger = client.get(f"/api/clients/{cid}/ledger").json()
+    ledger = client.get(f"/api/clients/{cid}/years/{YEAR}/ledger").json()
     assert (ledger["uploads"][0]["name"], ledger["transactions"][0]["vat_posted"]) == ("Pasted text", "0.00")
 
 
@@ -226,7 +227,7 @@ def test_nothing_is_saved_when_a_job_finds_no_rows_or_fails(api, reply):
     client = api(FakeModel([reply]))
     cid = add(client)["id"]
     finish(client, client.post("/api/analyze", data={"text": "x", "client_id": str(cid)}).json()["job_id"])
-    assert client.get(f"/api/clients/{cid}/ledger").json()["uploads"] == []
+    assert client.get(f"/api/clients/{cid}/years/{YEAR}/ledger").json()["uploads"] == []
 
 
 def test_a_post_from_another_web_page_cannot_add_rows(api):
@@ -238,7 +239,7 @@ def test_a_post_from_another_web_page_cannot_add_rows(api):
     del client.headers["X-LedgerSync"]
     resp = client.post("/api/analyze", data={"text": "BT 72.00", "client_id": str(cid)})
     assert (resp.status_code, resp.json()["detail"]["code"]) == (403, "refused_request")
-    assert model.calls == [] and client.get(f"/api/clients/{cid}/ledger").json()["uploads"] == []
+    assert model.calls == [] and client.get(f"/api/clients/{cid}/years/{YEAR}/ledger").json()["uploads"] == []
 
 
 def test_an_unknown_or_archived_client_is_refused_before_anything_is_queued(api):
@@ -261,7 +262,7 @@ def test_a_job_that_finishes_after_its_client_was_archived_is_still_saved(api):
     client.patch(f"/api/clients/{cid}", json={"archived": True})
     gate.set()
     assert finish(client, job_id)["status"] == "succeeded"
-    assert len(client.get(f"/api/clients/{cid}/ledger").json()["transactions"]) == 1
+    assert len(client.get(f"/api/clients/{cid}/years/{YEAR}/ledger").json()["transactions"]) == 1
 
 
 def test_a_cancelled_job_saves_nothing(api):
@@ -272,21 +273,22 @@ def test_a_cancelled_job_saves_nothing(api):
     client.delete(f"/api/jobs/{job_id}")
     gate.set()
     assert finish(client, job_id)["status"] == "cancelled"
-    assert client.get(f"/api/clients/{cid}/ledger").json()["uploads"] == []
+    assert client.get(f"/api/clients/{cid}/years/{YEAR}/ledger").json()["uploads"] == []
 
 
 def test_analysing_without_a_client_saves_nothing(api):
     client = api(FakeModel([transactions_json(ROW)]))
     cid = add(client)["id"]
     job = finish(client, client.post("/api/analyze", data={"text": "x"}).json()["job_id"])
-    assert "upload_id" not in job["result"] and client.get(f"/api/clients/{cid}/ledger").json()["uploads"] == []
+    assert "upload_id" not in job["result"]
+    assert client.get(f"/api/clients/{cid}/years/{YEAR}/ledger").json()["uploads"] == []
 
 
 def test_the_export_downloads_with_the_clients_name_even_when_archived(api):
     client = api()
     cid = add(client, name="Café/Bar Ltd")["id"]
     client.patch(f"/api/clients/{cid}", json={"archived": True})
-    resp = client.get(f"/api/clients/{cid}/export.xlsx")
+    resp = client.get(f"/api/clients/{cid}/years/{YEAR}/export.xlsx")
     assert resp.status_code == 200 and resp.headers["content-type"].startswith("application/vnd.openxmlformats")
     disposition = resp.headers["content-disposition"]
     assert "filename*=UTF-8''Caf%C3%A9%20Bar%20Ltd%20" in disposition and 'filename="Caf_ Bar Ltd ' in disposition
@@ -298,7 +300,7 @@ def test_a_statements_balances_reach_the_saved_rows_and_are_checked(api):
     client = api(FakeModel([reply]))
     cid = add(client)["id"]
     finish(client, client.post("/api/analyze", data={"text": "x", "client_id": str(cid)}).json()["job_id"])
-    [upload] = client.get(f"/api/clients/{cid}/ledger").json()["uploads"]
+    [upload] = client.get(f"/api/clients/{cid}/years/{YEAR}/ledger").json()["uploads"]
     assert upload["statement"] == {"status": "ok", "difference": None}
 
 
@@ -321,7 +323,7 @@ def test_a_cancel_that_arrives_after_the_rows_were_saved_leaves_the_job_succeede
     client.delete(f"/api/jobs/{job_id}")
     release.set()
     assert finish(client, job_id)["status"] == "succeeded"
-    assert len(client.get(f"/api/clients/{cid}/ledger").json()["uploads"]) == 1
+    assert len(client.get(f"/api/clients/{cid}/years/{YEAR}/ledger").json()["uploads"]) == 1
 
 
 BT_CSV = b"Date,Description,Amount\n01/09/2026,BT Business Broadband,-72.00\n"
@@ -383,7 +385,7 @@ def test_a_statement_for_a_client_with_two_accounts_must_say_which(api):
     failed = finish(client, job["job_id"])
     assert failed["status"] == "failed" and "Choose which bank account" in failed["error"]["message"]
     assert failed["error"]["message"] == "Choose which bank account this statement is for."
-    assert client.get(f"/api/clients/{cid}/ledger").json()["uploads"] == []   # Task 7 moves this to the year route
+    assert client.get(f"/api/clients/{cid}/years/{YEAR}/ledger").json()["uploads"] == []
 
 
 def test_a_statement_sent_with_its_account_is_saved_on_it_and_can_be_moved(api):
@@ -392,7 +394,7 @@ def test_a_statement_sent_with_its_account_is_saved_on_it_and_can_be_moved(api):
     cid = client_with_two_accounts(client)
     job = client.post("/api/analyze", data={"client_id": str(cid), "text": "Amex lines", "bank_account": "1240"}).json()
     assert finish(client, job["job_id"])["status"] == "succeeded"
-    ledger = client.get(f"/api/clients/{cid}/ledger").json()
+    ledger = client.get(f"/api/clients/{cid}/years/{YEAR}/ledger").json()
     [upload], [line] = ledger["uploads"], ledger["transactions"]
     assert (upload["bank_account"], line["bank_account"], line["contra_account_code"]) == ("1240", "1240", "1240")
     assert "1200 Bank Current Account" in model.calls[0]["messages"][0]["content"]   # paying the card off
@@ -412,5 +414,73 @@ def test_a_client_with_one_account_has_its_statements_put_on_it(api):
     client = api(FakeModel([STATEMENT_LINE]))
     cid = add(client)["id"]
     finish(client, client.post("/api/analyze", data={"client_id": str(cid), "text": "x"}).json()["job_id"])
-    [line] = client.get(f"/api/clients/{cid}/ledger").json()["transactions"]
+    [line] = client.get(f"/api/clients/{cid}/years/{YEAR}/ledger").json()["transactions"]
     assert (line["bank_account"], line["contra_account_code"]) == ("1200", "1200")
+
+
+# ─── Years and opening balances ──────────────────────────────────────────────
+
+def test_a_client_needs_its_first_year_end(api):
+    resp = api().post("/api/clients", json={**CUBE, "first_year_end": ""})
+    assert (resp.status_code, resp.json()["detail"]["message"]) == (422, "Enter the client's first year end.")
+
+
+def test_a_clients_years_and_a_years_ledger_and_trial_balance(api):
+    client = api()
+    cid = add(client, first_year_end="2026-03-31")["id"]
+    manual(client, cid, {**BILL, "document_type": "receipt"})
+    years = client.get(f"/api/clients/{cid}/years").json()
+    assert [(y["start"], y["end"], y["label"], y["closed"]) for y in years][:2] == [
+        ("2025-04-01", "2026-03-31", "Year to 31 Mar 2026", False),
+        ("2026-04-01", "2027-03-31", "Year to 31 Mar 2027", False)]
+    first = client.get(f"/api/clients/{cid}/years/2025-04-01/ledger").json()
+    second = client.get(f"/api/clients/{cid}/years/2026-04-01/ledger").json()
+    assert (first["transactions"], len(second["transactions"])) == ([], 1)
+    assert second["year"]["label"] == "Year to 31 Mar 2027"
+    tb = client.get(f"/api/clients/{cid}/years/2026-04-01/trial-balance").json()
+    assert (tb["opening"], tb["is_balanced"]) == ([], True)
+    assert client.get(f"/api/clients/{cid}/years/2026-04-01/export.xlsx").status_code == 200
+
+
+@pytest.mark.parametrize("path", ["ledger", "trial-balance", "export.xlsx"])
+def test_a_year_the_client_does_not_have_is_not_found(api, path):
+    client = api()
+    cid = add(client)["id"]
+    resp = client.get(f"/api/clients/{cid}/years/2026-04-02/{path}")
+    assert (resp.status_code, resp.json()["detail"]["message"]) == (404, "That year was not found.")
+
+
+def test_opening_balances_are_saved_and_read_back(api):
+    client = api()
+    cid = add(client)["id"]
+    assert client.get(f"/api/clients/{cid}/opening-balances").json() == {"lines": [], "unpaid": []}
+    opening = {"lines": [{"code": "1100", "debit": "200.00", "credit": "0.00"},
+                         {"code": "3200", "debit": "0.00", "credit": "200.00"}],
+               "unpaid": [{"id": "1", "direction": "in", "counterparty": "Bright Cafe", "amount": "200.00",
+                           "number": "INV-7", "date": None}]}
+    saved = client.put(f"/api/clients/{cid}/opening-balances", json=opening)
+    assert (saved.status_code, saved.json()) == (200, opening)
+    tb = client.get(f"/api/clients/{cid}/years/{YEAR}/trial-balance").json()
+    assert [(l["code"], l["debit"], l["credit"]) for l in tb["opening"]] == [("1100", "200.00", "0.00"),
+                                                                             ("3200", "0.00", "200.00")]
+    refused = client.put(f"/api/clients/{cid}/opening-balances", json={"lines": [opening["lines"][0]]})
+    assert (refused.status_code, refused.json()["detail"]["message"]) == (
+        422, "Opening debits £200.00 and credits £0.00 must be the same.")
+
+
+def test_the_browser_may_send_put(api):
+    preflight = api().options("/api/clients/1/opening-balances", headers={"Origin": "http://localhost:3000",
+                                                                          "Access-Control-Request-Method": "PUT"})
+    assert "PUT" in preflight.headers.get("access-control-allow-methods", "")
+
+
+def test_an_analysis_is_added_to_the_year_picked(api):
+    client = api(FakeModel([transactions_json(dict(ROW, date=None))]))
+    cid = add(client, first_year_end="2026-03-31")["id"]
+    refused = client.post("/api/analyze", data={"text": "x", "client_id": str(cid), "year_start": "2025-04-02"})
+    assert (refused.status_code, refused.json()["detail"]["message"]) == (404, "That year was not found.")
+    job = client.post("/api/analyze", data={"text": "x", "client_id": str(cid), "year_start": "2025-04-01"}).json()
+    assert finish(client, job["job_id"])["status"] == "succeeded"
+    first = client.get(f"/api/clients/{cid}/years/2025-04-01/ledger").json()
+    assert first["uploads"][0]["year_start"] == "2025-04-01" and len(first["transactions"]) == 1
+    assert client.get(f"/api/clients/{cid}/years/2026-04-01/ledger").json()["transactions"] == []

@@ -1,27 +1,18 @@
-"""A client's ledger as the pages show it (design of 2026-10-06): the saved rows booked and matched with the
-client's own settings, each bank statement checked against its balances; the client summaries; and a
-person's changes, checked before the store saves them."""
+"""A client and a person's changes to its rows (design of 2026-10-06), checked before the store saves them: the
+client's settings and bank accounts, the client summaries, and the row and upload actions, each returning the
+ledger of the year the change was made in. books.py works out a year's ledger and trial balance."""
 from __future__ import annotations
 
-import datetime as dt
-from collections import defaultdict
-from decimal import Decimal
 from typing import Optional
 from weakref import WeakKeyDictionary
 
 from .accounts import BANK_SLOTS, choosable
-from .checks import normalise
-from .errors import ClientArchived, InvalidInput, InvalidTransactions, NotFound
-from .export import file_name, workbook
-from .file_dates import check_file_date
-from .matching import match
-from .money import to_money
+from .errors import ClientArchived, InvalidInput, NotFound
 from .models import (BankAccount, BusinessSettings, Client, ClientFields, ClientPatch, ClientSummary, Ledger,
-                     ManualUpload, RowPatch, SavedRow, StatementCheck, Transaction, TrialBalance, Upload)
-from .posting import trial_balance as post
-from .statements import check_statement
+                     ManualUpload, RowPatch, Transaction)
 from .rows import StoredRow
 from .store_mongo import MongoStore
+from .years import year_index
 
 
 def bank_codes(client: Client) -> tuple[str, ...]:
@@ -74,6 +65,8 @@ def check_client(fields: ClientFields) -> None:
         raise InvalidInput("Enter the company name.")
     if not fields.contact_name:
         raise InvalidInput("Enter the responsible person.")
+    if fields.first_year_end is None:
+        raise InvalidInput("Enter the client's first year end.")
     if fields.contact_email and "@" not in fields.contact_email:
         raise InvalidInput("Enter a valid email.")
     if not fields.bank_accounts:
@@ -146,57 +139,29 @@ def needs_review(row: Transaction) -> bool:
     return any(found.severity in ("error", "warning") for found in row.issues)
 
 
-def _decisions(stored: list[StoredRow]) -> tuple[list[Optional[Decimal]], list[set[int]]]:
-    """What people decided about a client's rows, for matching them: each row's amount as it was read before a person
-    changed it (None if unchanged), and, for each row, the rows they said are not the same as it, both ways, from row
-    ids to places in the list. The ledger and the trial balance both match with this, so they book the same rows."""
-    read = [to_money(row.original.get("gross")) if row.original else None for row in stored]
-    place = {row.id: n for n, row in enumerate(stored)}
-    apart: list[set[int]] = [set() for _ in stored]
-    for n, row in enumerate(stored):
-        for other in (place[i] for i in row.tx.apart_from if i in place):
-            apart[n].add(other)
-            apart[other].add(n)
-    return read, apart
-
-
-def build(store: MongoStore, client_id: int) -> Ledger:
-    """The client's ledger: every saved row booked and matched with the client's settings, then each upload's
-    bank lines checked against the balances its statement prints, and its document's date against its file name's."""
-    client = store.get_client(client_id)
-    stored = store.rows(client_id)
-    settings = settings_for(client)
-    read, apart = _decisions(stored)
-    ready = match([normalise(row.tx, settings) for row in stored], settings, read=read, apart=apart)
-    positions: dict[int, list[int]] = defaultdict(list)
-    for n, row in enumerate(stored):
-        positions[row.upload_id].append(n)
-    listed = store.uploads(client_id)
-    names = {u["id"]: u["name"] for u in listed}
-    # A card's statement prints what is owed on it, so its balances move the other way.
-    cards = {a.code for a in client.bank_accounts if a.kind == "credit_card"}
-    on_card = {u["id"] for u in listed if u["bank_account"] in cards}
-    checks: dict[int, Optional[StatementCheck]] = {}
-    for upload_id, ns in positions.items():
-        checked, checks[upload_id] = check_statement([ready[n] for n in ns], credit_card=upload_id in on_card)
-        checked = check_file_date(checked, names.get(upload_id, ""))
-        for n, tx in zip(ns, checked):
-            ready[n] = tx
-    # The rows each issue is about, from their place in the rows matched to their row ids.
-    transactions = [SavedRow(**{**tx.model_dump(), "issues": [
-                                 {**i.model_dump(), "related": [stored[p].id for p in i.related]} for i in tx.issues]},
-                             id=row.id,
-                             upload_id=row.upload_id,
-                             edited=row.original is not None, original=row.original)
-                    for row, tx in zip(stored, ready)]
-    uploads = [Upload(id=u["id"], name=u["name"], kind=u["kind"], sha256=u["sha256"], model=u["model"],
-                      warnings=u["warnings"], created_at=u["created_at"], rows=u["row_count"],
-                      statement=checks.get(u["id"]), bank_account=u["bank_account"]) for u in listed]
-    return Ledger(client=client, uploads=uploads, transactions=transactions)
-
-
 # Each store's clients: (revision, rows, rows to review), as the clients page last worked them out.
 _counted: WeakKeyDictionary[MongoStore, dict[int, tuple[int, int, int]]] = WeakKeyDictionary()
+
+
+def _books():
+    """books.py, which builds on this module's settings_for, so it is imported when first used."""
+    from . import books
+    return books
+
+
+def _year_of(store: MongoStore, client: Client, row: Optional[StoredRow] = None,
+             upload_id: Optional[int] = None) -> Optional[int]:
+    """The year a change is made in: the row's year, or the year of an upload's first row, or the year it was added
+    to; None when nothing says (the latest year)."""
+    uploads = {u["id"]: u for u in store.uploads(client.id)}
+    if row is None and upload_id is not None:
+        row = next((r for r in store.rows(client.id) if r.upload_id == upload_id), None)
+        if row is None:
+            added = (uploads.get(upload_id) or {}).get("year_start")
+            return year_index(client.first_year_end, added) or 0 if added else None
+    if row is None:
+        return None
+    return _books().year_of_row(client, row, uploads) or 0   # a row before the first year shows in it
 
 
 def summaries(store: MongoStore, archived: bool = False) -> list[ClientSummary]:
@@ -208,7 +173,7 @@ def summaries(store: MongoStore, archived: bool = False) -> list[ClientSummary]:
         revision = store.revision(client.id)   # read before the rows, so a change made meanwhile shows next time
         known = counted.get(client.id)
         if known is None or known[0] != revision:
-            rows = build(store, client.id).transactions
+            rows = _books().all_rows(store, client.id)
             known = counted[client.id] = (revision, len(rows), sum(needs_review(r) for r in rows))
         found.append(ClientSummary(**client.model_dump(), rows=known[1], to_review=known[2]))
     return found
@@ -257,7 +222,7 @@ def change_row(store: MongoStore, client_id: int, row_id: int, patch: RowPatch) 
         sent = patch.model_fields_set - {"revert"}
         _check_edit(patch, sent, row.tx, client)
         store.patch_row(client_id, row_id, patch.model_dump(mode="json", include=sent))
-    return build(store, client_id)
+    return _books().ledger_of(store, client_id, _year_of(store, client, row))
 
 
 def add_manual(store: MongoStore, client_id: int, upload: ManualUpload) -> Ledger:
@@ -270,8 +235,8 @@ def add_manual(store: MongoStore, client_id: int, upload: ManualUpload) -> Ledge
         raise InvalidInput(f"This account can't be chosen for {client.name}.")
     if any(tx.bank_account is not None and tx.bank_account not in bank_codes(client) for tx in upload.transactions):
         raise InvalidInput(f"Choose one of {client.name}'s bank accounts.")
-    store.add_upload(client_id, upload.name.strip() or "Manual entry", upload.kind, upload.transactions)
-    return build(store, client_id)
+    added = store.add_upload(client_id, upload.name.strip() or "Manual entry", upload.kind, upload.transactions)
+    return _books().ledger_of(store, client_id, _year_of(store, client, upload_id=added))
 
 
 def set_upload_bank(store: MongoStore, client_id: int, upload_id: int, bank_account: str) -> Ledger:
@@ -280,36 +245,24 @@ def set_upload_bank(store: MongoStore, client_id: int, upload_id: int, bank_acco
     require_active(client)
     check_bank_account(client, bank_account)
     store.set_upload_bank(client_id, upload_id, bank_account)
-    return build(store, client_id)
+    return _books().ledger_of(store, client_id, _year_of(store, client, upload_id=upload_id))
 
 
 def remove_upload(store: MongoStore, client_id: int, upload_id: int) -> Ledger:
-    require_active(store.get_client(client_id))
+    client = store.get_client(client_id)
+    require_active(client)
+    year = _year_of(store, client, upload_id=upload_id)
     store.delete_upload(client_id, upload_id)
-    return build(store, client_id)
+    return _books().ledger_of(store, client_id, year)
 
 
 def remove_row(store: MongoStore, client_id: int, row_id: int) -> Ledger:
-    """Removes one row a person no longer wants, and returns the ledger worked out again without it."""
-    require_active(store.get_client(client_id))
-    store.delete_row(client_id, row_id)
-    return build(store, client_id)
-
-
-def trial_balance(store: MongoStore, client_id: int) -> TrialBalance:
-    """The client's trial balance from its saved rows, matched with what people decided as the ledger is, so it books
-    the rows the ledger books; InvalidTransactions (422) while rows need fixing."""
+    """Removes one row a person no longer wants, and returns its year's ledger worked out again without it."""
     client = store.get_client(client_id)
-    stored = store.rows(client_id)
-    read, apart = _decisions(stored)
-    return post([row.tx for row in stored], settings_for(client), read=read, apart=apart)
+    require_active(client)
+    row = next((r for r in store.rows(client_id) if r.id == row_id), None)
+    if row is None:
+        raise NotFound("This row was not found.")
+    store.delete_row(client_id, row_id)
+    return _books().ledger_of(store, client_id, _year_of(store, client, row))
 
-
-def export(store: MongoStore, client_id: int, day: dt.date) -> tuple[bytes, str]:
-    """The client's workbook and its file name; while rows need fixing, the trial balance sheet says what."""
-    built = build(store, client_id)
-    try:
-        balance = trial_balance(store, client_id)
-    except InvalidTransactions as exc:
-        balance = exc.problems
-    return workbook(built, balance, day), file_name(built.client.name, day)

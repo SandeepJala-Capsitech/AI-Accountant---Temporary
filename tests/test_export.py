@@ -4,12 +4,14 @@ import io
 import pytest
 from openpyxl import load_workbook
 
-from ledgersync import ledger
+from ledgersync import books, ledger
 from ledgersync.export import MONEY, file_name
 from ledgersync.models import ClientFields, RowPatch, Transaction
 
 DAY = dt.date(2026, 10, 6)
-CUBE = ClientFields(name="Business Cube Ltd", business_type="limited_company", contact_name="Jenny Clarke")
+CUBE = ClientFields(name="Business Cube Ltd", business_type="limited_company", contact_name="Jenny Clarke",
+                    first_year_end=dt.date(2027, 3, 31))
+YEAR = dt.date(2026, 4, 1)
 
 
 pytestmark = pytest.mark.mongo
@@ -27,7 +29,7 @@ def receipt(**changes):
 
 
 def sheets(store, client_id):
-    content, name = ledger.export(store, client_id, DAY)
+    content, name = books.export(store, client_id, YEAR, DAY)
     book = load_workbook(io.BytesIO(content))
     return book["Trial balance"], book["Transactions"], name
 

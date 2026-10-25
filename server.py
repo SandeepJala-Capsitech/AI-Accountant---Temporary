@@ -11,9 +11,8 @@ from fastapi import FastAPI, File, Form, Header, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
-from ledgersync import accounts, adapter, intake, pipeline, posting
+from ledgersync import accounts, adapter, books, intake, ledger, pipeline, posting
 from ledgersync.blobs import BlobStore, GridFSBlobStore
-from ledgersync import ledger as books
 from ledgersync.accounts import choosable
 from ledgersync.checks import normalise
 from ledgersync.config import Settings
@@ -23,8 +22,8 @@ from ledgersync.model_client import ModelClient
 from ledgersync.jobs import JobStore
 from ledgersync.matching import match
 from ledgersync.models import (AnalysisResult, BusinessSettings, BusinessType, Client, ClientFields, ClientPatch,
-                               ClientSummary, Ledger, LedgerRequest, ManualUpload, RowPatch, TransactionList,
-                               TrialBalance, UploadPatch)
+                               ClientSummary, Ledger, LedgerRequest, ManualUpload, OpeningBalances, RowPatch,
+                               TransactionList, TrialBalance, UploadPatch, Year)
 from ledgersync.store_mongo import MongoStore
 
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -66,7 +65,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         lifespan=lifespan,
     )
     app.add_middleware(CORSMiddleware, allow_origins=list(settings.cors_origins),
-                       allow_methods=["GET", "POST", "PATCH", "DELETE"], allow_headers=["*"])
+                       allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"], allow_headers=["*"])
 
     @app.exception_handler(LedgerSyncError)
     async def ledgersync_error(request: Request, exc: LedgerSyncError):
@@ -91,20 +90,20 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
     # ─── Step 2 — Analyze (background job) ─────────────────────────────────────
 
     def run_analysis(item, ctx, client: Optional[Client] = None, name: str = "Pasted text", sha256: str = "",
-                     bank_account: Optional[str] = None) -> dict:
+                     bank_account: Optional[str] = None, year_start: Optional[dt.date] = None) -> dict:
         """Reads one input. For a client: the model is told its name, kind of business and its other bank accounts,
         the rows are booked with its settings, and they are saved to it as an upload when any were found (not after
-        a cancel). A statement is for bank_account, or the client's only account; a client with several must say
-        which, and is refused once the reading shows it is a statement."""
+        a cancel), added to the year starting year_start. A statement is for bank_account, or the client's only
+        account; a client with several must say which, and is refused once the reading shows it is a statement."""
         own = None
         if client is None:
             reader, rules = extractor, BusinessSettings(business_name=settings.business_name)
         else:
-            rules = books.settings_for(client)
-            codes = books.bank_codes(client)
+            rules = ledger.settings_for(client)
+            codes = ledger.bank_codes(client)
             own = bank_account or (codes[0] if len(codes) == 1 else None)
             reader = TransactionExtractor(model_client, business_name=client.name, business_type=client.business_type,
-                                          bank_codes=books.bank_choices(client, own or rules.bank_account))
+                                          bank_codes=ledger.bank_choices(client, own or rules.bank_account))
         extraction = pipeline.analyze(item, reader, ctx)
         # A line coded to the statement's own account goes to Suspense; one coded to another is a transfer.
         reading = rules.model_copy(update={"bank_account": own or rules.bank_account})
@@ -124,15 +123,17 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
             result["client_id"] = client.id
             result["upload_id"] = store.add_upload(client.id, name, item.kind, transactions, sha256=sha256,
                                                    model=extraction.model or "", warnings=extraction.warnings,
-                                                   bank_account=own if statement else None)
+                                                   bank_account=own if statement else None,
+                                                   year_start=year_start)
         return result
 
     @app.post("/api/analyze", status_code=202)
     def analyze_transaction(text: Optional[str] = Form(None), file: Optional[UploadFile] = File(None),
                             client_id: Optional[int] = Form(None), bank_account: Optional[str] = Form(None),
-                            x_ledgersync: Optional[str] = Header(None)):
+                            year_start: Optional[dt.date] = Form(None), x_ledgersync: Optional[str] = Header(None)):
         """Validates the input now (403/404/413/415/422), then analyses it in a background job; with a
-        client_id, the job saves the rows it finds to that client, a statement's on bank_account (one of its codes)."""
+        client_id, the job saves the rows it finds to that client, a statement's on bank_account (one of its codes),
+        added to the year starting year_start (the year picked when the file was added)."""
         if not x_ledgersync:
             # A form on any web page can post here without the browser asking the API first. The LedgerSync
             # pages send this header, which a form can't, and another site's script can't unless CORS allows it.
@@ -141,9 +142,11 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         client = None
         if client_id is not None:
             client = store.get_client(client_id)
-            books.require_active(client)
+            ledger.require_active(client)
             if bank_account:
-                books.check_bank_account(client, bank_account)
+                ledger.check_bank_account(client, bank_account)
+            if year_start is not None:
+                year_of(client_id, year_start)
         name, sha256, content_type = "Pasted text", "", ""
         if file is not None and file.filename:
             data = intake.read_limited(file.file, settings.max_upload_bytes)
@@ -159,7 +162,8 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
             blobs.put(data, name=name, content_type=content_type)
 
         def work(ctx):
-            return run_analysis(item, ctx, client, name, sha256, bank_account or None)
+            return run_analysis(item, ctx, client, name, sha256, bank_account or None,
+                                year_start if client is not None else None)
 
         job = jobs.submit(work)
         return {"job_id": job.id, "status": job.status}
@@ -180,7 +184,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         those a row of that client can be coded to, its own bank accounts and cards among them."""
         if client_id is not None:
             client = store.get_client(client_id)
-            chosen = choosable(client.business_type, books.bank_choices(client))
+            chosen = choosable(client.business_type, ledger.bank_choices(client))
         else:
             chosen = choosable(business_type) if business_type else accounts.CHART
         return [{"code": a.code, "name": a.name, "type": a.type.value, "vat": a.vat.value} for a in chosen]
@@ -201,11 +205,11 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
 
     @app.get("/api/clients", response_model=list[ClientSummary])
     def list_clients(archived: bool = False):
-        return books.summaries(store, archived)
+        return ledger.summaries(store, archived)
 
     @app.post("/api/clients", response_model=Client, status_code=201)
     def add_client(fields: ClientFields):
-        return books.add_client(store, fields)
+        return ledger.add_client(store, fields)
 
     @app.get("/api/clients/{client_id}", response_model=Client)
     def get_client(client_id: int):
@@ -213,31 +217,58 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
 
     @app.patch("/api/clients/{client_id}", response_model=Client)
     def change_client(client_id: int, patch: ClientPatch):
-        return books.change_client(store, client_id, patch)
+        return ledger.change_client(store, client_id, patch)
 
-    @app.get("/api/clients/{client_id}/ledger", response_model=Ledger)
-    def client_ledger(client_id: int):
-        return books.build(store, client_id)
+    # ─── A client's years ────────────────────────────────────────────────────────
+
+    def year_of(client_id: int, start: dt.date) -> Year:
+        """The client's year starting on start; 404 when it is not one."""
+        year = next((y for y in books.years_of(store, client_id, dt.date.today()) if y.start == start), None)
+        if year is None:
+            raise NotFound("That year was not found.")
+        return year
+
+    @app.get("/api/clients/{client_id}/years", response_model=list[Year])
+    def client_years(client_id: int):
+        return books.years_of(store, client_id, dt.date.today())
+
+    @app.get("/api/clients/{client_id}/years/{start}/ledger", response_model=Ledger)
+    def year_ledger(client_id: int, start: dt.date):
+        return books.ledger(store, client_id, start)
+
+    @app.get("/api/clients/{client_id}/years/{start}/trial-balance", response_model=TrialBalance)
+    def year_trial_balance(client_id: int, start: dt.date):
+        return books.trial_balance(store, client_id, start)
+
+    @app.get("/api/clients/{client_id}/opening-balances", response_model=OpeningBalances)
+    def opening_balances(client_id: int):
+        store.get_client(client_id)
+        return store.opening(client_id)
+
+    @app.put("/api/clients/{client_id}/opening-balances", response_model=OpeningBalances)
+    def set_opening_balances(client_id: int, opening: OpeningBalances):
+        books.set_opening(store, client_id, opening)
+        return store.opening(client_id)
 
     @app.patch("/api/clients/{client_id}/rows/{row_id}", response_model=Ledger)
     def change_row(client_id: int, row_id: int, patch: RowPatch):
-        return books.change_row(store, client_id, row_id, patch)
+        return ledger.change_row(store, client_id, row_id, patch)
 
     @app.delete("/api/clients/{client_id}/rows/{row_id}", response_model=Ledger)
     def remove_row(client_id: int, row_id: int):
-        return books.remove_row(store, client_id, row_id)
+        return ledger.remove_row(store, client_id, row_id)
 
     @app.post("/api/clients/{client_id}/uploads", response_model=Ledger, status_code=201)
     def add_manual_rows(client_id: int, upload: ManualUpload):
-        return books.add_manual(store, client_id, upload)
+        return ledger.add_manual(store, client_id, upload)
 
     @app.patch("/api/clients/{client_id}/uploads/{upload_id}", response_model=Ledger)
     def change_upload(client_id: int, upload_id: int, patch: UploadPatch):
-        return books.set_upload_bank(store, client_id, upload_id, patch.bank_account)
+        return ledger.set_upload_bank(store, client_id, upload_id, patch.bank_account)
 
     @app.delete("/api/clients/{client_id}/uploads/{upload_id}", response_model=Ledger)
     def remove_upload(client_id: int, upload_id: int):
-        return books.remove_upload(store, client_id, upload_id)
+        return ledger.remove_upload(store, client_id, upload_id)
 
     @app.get("/api/clients/{client_id}/uploads/{upload_id}/file")
     def download_original(client_id: int, upload_id: int):
@@ -255,10 +286,6 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
                         headers={"Content-Disposition": f"attachment; filename=\"{plain}\"; "
                                                         f"filename*=UTF-8''{quote(blob.name)}"})
 
-    @app.get("/api/clients/{client_id}/trial-balance", response_model=TrialBalance)
-    def client_trial_balance(client_id: int):
-        return books.trial_balance(store, client_id)
-
     def workbook_download(content: bytes, name: str) -> Response:
         """An Excel workbook as a download under its file name."""
         plain = name.encode("ascii", "replace").decode().replace("?", "_")
@@ -266,10 +293,10 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
                         headers={"Content-Disposition": f"attachment; filename=\"{plain}\"; "
                                                         f"filename*=UTF-8''{quote(name)}"})
 
-    @app.get("/api/clients/{client_id}/export.xlsx")
-    def export_client(client_id: int):
-        """The client's trial balance and transactions as an Excel workbook (archived clients too)."""
-        return workbook_download(*books.export(store, client_id, dt.date.today()))
+    @app.get("/api/clients/{client_id}/years/{start}/export.xlsx")
+    def export_year(client_id: int, start: dt.date):
+        """The year's trial balance and transactions as an Excel workbook (archived clients too)."""
+        return workbook_download(*books.export(store, client_id, start, dt.date.today()))
 
     return app
 

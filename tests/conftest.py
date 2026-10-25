@@ -1,11 +1,13 @@
 """Shared fixtures. The MongoDB ones run against a throwaway database on the test cluster."""
 import os
+from datetime import date
 from uuid import uuid4
 
 import pytest
 from pymongo import MongoClient
 
 from ledgersync.config import ENV_FILE, read_env_file
+from ledgersync.models import ClientFields
 from ledgersync.store_mongo import MongoStore
 
 
@@ -35,3 +37,12 @@ def mongo_db():
 def mongo_store(mongo_db):
     """A MongoStore on the throwaway database."""
     return MongoStore(_test_uri(), mongo_db.name)
+
+
+@pytest.fixture
+def acme(mongo_store) -> int:
+    """The id of Acme Ltd: a VAT registered limited company whose first year ends on 31 Mar 2026, with one bank
+    account (1200) and no rows."""
+    return mongo_store.create_client(ClientFields(name="Acme Ltd", business_type="limited_company",
+                                                  contact_name="Ann Smith", vat_registered=True,
+                                                  first_year_end=date(2026, 3, 31))).id
