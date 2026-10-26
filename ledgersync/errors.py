@@ -109,3 +109,10 @@ class ChangedMeanwhile(LedgerSyncError):
     status_code = 409
     code = "changed_meanwhile"
 
+
+
+class YearClosed(LedgerSyncError):
+    """A change to a closed year: it must be reopened first."""
+
+    status_code = 409
+    code = "year_closed"

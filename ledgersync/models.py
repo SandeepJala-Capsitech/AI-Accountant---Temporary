@@ -257,8 +257,18 @@ class ClientFields(BaseModel):
         return None if value == "" else value
 
 
+class ClosedYear(BaseModel):
+    """A year the accountant closed: locked until reopened, and its balances at its end by account, signed with
+    debits positive, which the next year opens with."""
+    start: dt.date
+    end: dt.date
+    closed_at: str
+    closing: dict[str, Decimal]
+
+
 class Client(ClientFields):
     id: int
+    closed_years: list[ClosedYear] = Field(default_factory=list)   # in order, the first year first
     archived: bool = False
     archived_at: Optional[str] = None
     created_at: str
@@ -316,6 +326,7 @@ class Year(BaseModel):
     end: dt.date
     label: str                 # "Year to 31 Mar 2026"
     closed: bool = False
+    changed_since_closed: bool = False   # a closed year whose rows now work out to other balances than it closed with
 
 
 def _money(value) -> Decimal:

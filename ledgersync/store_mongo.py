@@ -17,7 +17,7 @@ import pymongo
 from pymongo import MongoClient, ReturnDocument
 
 from .errors import ChangedMeanwhile, ClientArchived, NotFound
-from .models import BankAccount, Client, ClientFields, OpeningBalances, Transaction
+from .models import BankAccount, Client, ClientFields, ClosedYear, OpeningBalances, Transaction
 from .rows import EDITABLE, OLD_TOTAL, WHOLE_DOCUMENT, StoredRow, now_iso, saved_form
 
 logger = logging.getLogger(__name__)
@@ -37,6 +37,7 @@ _CLIENT_PROJECTION = {
     "vat_registered": 1,
     "bank_accounts": 1,
     "first_year_end": 1,
+    "closed_years": 1,
     "archived_at": 1,
     "created_at": 1,
     "updated_at": 1,
@@ -66,6 +67,7 @@ def _client(doc: dict, earliest: Optional[dt.date] = None) -> Client:
         contact_phone=doc.get("contact_phone", ""),
         vat_registered=bool(doc.get("vat_registered", True)),
         **({"bank_accounts": doc["bank_accounts"]} if doc.get("bank_accounts") else {}),
+        closed_years=[ClosedYear.model_validate(y) for y in doc.get("closed_years") or []],
         archived=doc.get("archived_at") is not None,
         archived_at=doc.get("archived_at"),
         created_at=doc["created_at"],
@@ -149,6 +151,7 @@ class MongoStore:
             "bank_accounts": _stored_accounts(fields.bank_accounts),
             "first_year_end": fields.first_year_end.isoformat() if fields.first_year_end else None,
             "opening": OpeningBalances().model_dump(mode="json"),
+            "closed_years": [],
             "archived_at": None,
             "created_at": now,
             "updated_at": now,
@@ -218,6 +221,29 @@ class MongoStore:
             {"$set": {"opening": opening.model_dump(mode="json"), "updated_at": now_iso()}, "$inc": {"revision": 1}})
         if res.matched_count == 0:
             raise NotFound("This client was not found.")
+
+    def close_year(self, client_id: int, closed: ClosedYear) -> Client:
+        """Adds a closed year, its closing balances kept as exact decimal strings; NotFound unless the client is
+        there with that year open."""
+        updated = self.db.clients.find_one_and_update(
+            {"id": client_id, "closed_years.start": {"$ne": closed.start.isoformat()}},
+            {"$push": {"closed_years": closed.model_dump(mode="json")}, "$set": {"updated_at": now_iso()},
+             "$inc": {"revision": 1}},
+            projection=_CLIENT_PROJECTION, return_document=ReturnDocument.AFTER)
+        if not updated:
+            raise NotFound("This client was not found, or that year is closed already.")
+        return self._as_client(updated)
+
+    def reopen_year(self, client_id: int, start: dt.date) -> Client:
+        """Removes the closed year starting on start, and its saved closing balances."""
+        updated = self.db.clients.find_one_and_update(
+            {"id": client_id},
+            {"$pull": {"closed_years": {"start": start.isoformat()}}, "$set": {"updated_at": now_iso()},
+             "$inc": {"revision": 1}},
+            projection=_CLIENT_PROJECTION, return_document=ReturnDocument.AFTER)
+        if not updated:
+            raise NotFound("This client was not found.")
+        return self._as_client(updated)
 
     # ─── Uploads and rows ──────────────────────────────────────────────────────
 
