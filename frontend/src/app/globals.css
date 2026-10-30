@@ -188,6 +188,7 @@ textarea.input { height: auto; min-height: 150px; padding: 10px; resize: vertica
 .notice { padding: 10px 14px; border-radius: var(--radius); margin-bottom: 14px; font-size: 13.5px; }
 .section > .notice { margin: 12px 0 0; }
 .notice-error { background: var(--error-tint); color: var(--error); }
+.notice-info { background: var(--accent-tint); color: var(--on-tint); }
 .notice-warn { background: var(--warn-tint); color: var(--warn); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .figures { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
 .figure { padding: 12px 14px; }
@@ -283,6 +284,7 @@ textarea.input { height: auto; min-height: 150px; padding: 10px; resize: vertica
 .dropzone:hover, .dropzone.drag-over { border-color: var(--accent); background: var(--hover); }
 .dropzone strong { display: block; color: var(--text); font-weight: 500; margin-bottom: 4px; }
 .form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.add-to { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; margin-bottom: 12px; }
 .manual-grid { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 12px; }
 .progress { display: flex; align-items: center; gap: 10px; margin-top: 12px; font-size: 13px; color: var(--muted); }
 .batch { list-style: none; margin: 12px 0 0; padding: 0; font-size: 13px; }
@@ -304,6 +306,8 @@ textarea.input { height: auto; min-height: 150px; padding: 10px; resize: vertica
 .upload-list li { padding: 8px 0; border-bottom: 1px solid var(--rule); }
 .upload-list li:last-child { border-bottom: 0; }
 .upload-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.upload-bank { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.upload-bank .input { width: auto; max-width: 100%; padding: 4px 8px; }
 .upload-list .link-btn { margin-left: 0; font-size: 12.5px; }
 
 @media (min-width: 1400px) { .workspace { grid-template-columns: minmax(0, 1fr) 280px; } }

@@ -1,15 +1,16 @@
 'use client'
 
-import type { Upload } from '@/lib/clients'
+import type { BankAccount, Upload } from '@/lib/clients'
 import { dayMonth, statementText, transactionCount } from '@/lib/clientRules'
 
-// What was added to the client, newest first, with each bank statement's balance check and Remove (disabled while
-// the client's job runs: the API refuses it).
-export default function UploadsList({ uploads, readOnly, locked = false, onRemove }: {
+// What was added to the year, newest first, with each bank statement's account (changeable when the client has
+// several) and balance check, and Remove.
+export default function UploadsList({ uploads, bankAccounts, readOnly, onRemove, onBank }: {
   uploads: Upload[]
+  bankAccounts: BankAccount[]
   readOnly: boolean
-  locked?: boolean
   onRemove: (upload: Upload) => void
+  onBank: (upload: Upload, code: string) => void
 }) {
   return (
     <section className="card section">
@@ -22,10 +23,23 @@ export default function UploadsList({ uploads, readOnly, locked = false, onRemov
           {uploads.map(upload => {
             const check = statementText(upload.statement)
             const status = upload.statement?.status
+            const isStatement = !!upload.statement || upload.bank_account != null
+            const account = upload.bank_account ?? bankAccounts[0]?.code ?? ''
             return (
               <li key={upload.id}>
                 <div className="upload-name" title={upload.name}>{upload.name}</div>
                 <div className="muted small">{transactionCount(upload.rows)} · {dayMonth(upload.created_at)}</div>
+                {isStatement && bankAccounts.length > 1 && (readOnly ? (
+                  <div className="muted small">On {bankAccounts.find(a => a.code === account)?.name ?? account}</div>
+                ) : (
+                  <label className="small upload-bank">
+                    <span className="muted">On</span>
+                    <select className="input" value={account} aria-label={`Bank account for ${upload.name}`}
+                            onChange={e => onBank(upload, e.target.value)}>
+                      {bankAccounts.map(a => <option key={a.code} value={a.code}>{a.name}</option>)}
+                    </select>
+                  </label>
+                ))}
                 {check && (
                   <div className={`small ${status === 'gap' ? 'text-warn' : status === 'ok' ? 'text-ok' : 'muted'}`}>{check}</div>
                 )}
@@ -36,7 +50,7 @@ export default function UploadsList({ uploads, readOnly, locked = false, onRemov
                   </details>
                 )}
                 {!readOnly && (
-                  <button type="button" className="link-btn danger" disabled={locked} onClick={() => onRemove(upload)}>Remove</button>
+                  <button type="button" className="link-btn danger" onClick={() => onRemove(upload)}>Remove</button>
                 )}
               </li>
             )

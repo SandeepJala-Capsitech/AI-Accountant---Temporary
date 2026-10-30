@@ -162,6 +162,22 @@ export function getHealth(): Promise<Health> {
   return request<Health>('/api/health', {}, 10_000)
 }
 
+// The form /api/analyze takes: one file or some pasted text. For a client's documents it also names the client, the
+// year they go to and the bank account a statement is on; the API refuses a statement without an account when the
+// client has several.
+export function analysisForm(source: { file?: Blob; text?: string },
+                             where?: { clientId: number; yearStart: string; bankAccount: string }): FormData {
+  const data = new FormData()
+  if (source.file) data.append('file', source.file)
+  if (source.text !== undefined) data.append('text', source.text)
+  if (where) {
+    data.append('client_id', String(where.clientId))
+    data.append('year_start', where.yearStart)
+    if (where.bankAccount) data.append('bank_account', where.bankAccount)
+  }
+  return data
+}
+
 // Starts an analysis job and polls it until it finishes, reporting progress along the way.
 // isCancelled is checked between polls. Cancelling asks the server to stop the job, then waits for the job's
 // own answer: a job that saved a client's rows before the cancel arrived still succeeds, and calling it
@@ -174,6 +190,15 @@ export async function analyze(
   // The API takes analyses only with this header, which a form on another web site can't send.
   const init = { method: 'POST', body: formData, headers: { 'X-LedgerSync': '1' } }
   const { job_id } = await request<{ job_id: string }>('/api/analyze', init, 120_000)
+  return waitForJob(job_id, onProgress, isCancelled)
+}
+
+// Polls a job (one analyze started, or one an import from the client's folder started) until it finishes.
+export async function waitForJob(
+  job_id: string,
+  onProgress: (progress: string) => void,
+  isCancelled: () => boolean,
+): Promise<AnalyzeResult> {
   let failures = 0
   let cancelSent = false
   for (;;) {

@@ -3,9 +3,11 @@
 import Link from 'next/link'
 import { useParams } from 'next/navigation'
 import { useClientYear } from '@/components/ClientYearContext'
+import DocumentsSection from '@/components/DocumentsSection'
+import TransactionsSection from '@/components/TransactionsSection'
 import { isSection, SECTIONS, sectionHref } from '@/lib/years'
 
-// One section of a client's year. Each shows its title until the section itself is built.
+// One section of a client's year. Sections not built yet show their title.
 export default function SectionPage() {
   const params = useParams<{ section: string }>()
   const { client, year } = useClientYear()
@@ -19,6 +21,8 @@ export default function SectionPage() {
       </div>
     )
   }
+  if (params.section === 'documents') return <DocumentsSection />
+  if (params.section === 'transactions') return <TransactionsSection />
   const section = SECTIONS.find(s => s.slug === params.section)!
   return (
     <section>

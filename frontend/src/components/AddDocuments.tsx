@@ -1,9 +1,9 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { analyze, ApiError, getHealth, type Transaction } from '@/lib/api'
-import { addManualRows, type Ledger, type Upload } from '@/lib/clients'
-import { requeue, sameFileAs, sameFileText, transactionCount, type FileStatus, type PickedFile } from '@/lib/clientRules'
+import { analysisForm, analyze, ApiError, getHealth, waitForJob, type Transaction } from '@/lib/api'
+import { addManualRows, importFolder, type BankAccount, type Upload } from '@/lib/clients'
+import { importText, requeue, sameFileAs, sameFileText, transactionCount, type FileStatus, type PickedFile } from '@/lib/clientRules'
 import { fingerprint } from '@/lib/duplicates'
 
 const MAX_BATCH_FILES = 20
@@ -12,22 +12,17 @@ const MARK: Record<FileStatus, string> = { waiting: '○', reading: '', done: '�
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
-const form = (fields: Record<string, string | Blob>) => {
-  const data = new FormData()
-  for (const [key, value] of Object.entries(fields)) data.append(key, value)
-  return data
-}
-
-// Upload, Paste and Add by hand for one client. Each analysis runs as a job that the API saves to the client
-// when it finishes, so onSaved reloads the ledger; a row added by hand is saved here, once the model has
-// suggested its account. While the client's job runs the area is locked: nothing can be added, because the API
-// refuses it (and the job is working on the rows as they are).
-export default function AddDocuments({ clientId, uploads, locked = false, onSaved, onLedger }: {
+// Upload, Paste and Add by hand for one year of a client, and Import from folder. Each analysis runs as a job that
+// the API saves to the year when it finishes, so onSaved reloads the year; a row added by hand is saved here, once
+// the model has suggested its account. A statement goes on the account picked in Add to (the client's first by
+// default): the API refuses a statement without one when the client has several.
+export default function AddDocuments({ clientId, yearStart, bankAccounts, folder, uploads, onSaved }: {
   clientId: number
+  yearStart: string
+  bankAccounts: BankAccount[]
+  folder: string             // the client's folder on this computer; '' when none is set
   uploads: Upload[]
-  locked?: boolean
   onSaved: () => void
-  onLedger: (ledger: Ledger) => void
 }) {
   const [tab, setTab] = useState<'upload' | 'paste' | 'manual'>('upload')
   const [pasteText, setPasteText] = useState('')
@@ -37,7 +32,11 @@ export default function AddDocuments({ clientId, uploads, locked = false, onSave
   const [progress, setProgress] = useState('')
   const [error, setError] = useState('')
   const [batch, setBatch] = useState<PickedFile[]>([])
+  const [picked, setPicked] = useState('')   // the account chosen in Add to
+  const [imported, setImported] = useState('')   // what the last import from the folder found and did
   const [limits, setLimits] = useState({ parallel: 1, maxMb: 20 })
+  const bank = bankAccounts.some(a => a.code === picked) ? picked : bankAccounts[0]?.code ?? ''
+  const where = { clientId, yearStart, bankAccount: bank }
   const cancelRef = useRef(false)
   const nextId = useRef(1)
   const fileInput = useRef<HTMLInputElement>(null)
@@ -58,8 +57,7 @@ export default function AddDocuments({ clientId, uploads, locked = false, onSave
     setError('')
     setProgress('Uploading…')
     try {
-      const result = await analyze(form({ text: pasteText.trim(), client_id: String(clientId) }), setProgress,
-                                   () => cancelRef.current)
+      const result = await analyze(analysisForm({ text: pasteText.trim() }, where), setProgress, () => cancelRef.current)
       if (!result.transactions.length) throw new ApiError('No transactions were found in this text.', 'empty')
       setPasteText('')
       onSaved()
@@ -89,8 +87,8 @@ export default function AddDocuments({ clientId, uploads, locked = false, onSave
         }
         update(item.id, { status: 'reading', detail: 'Uploading…' })
         try {
-          const result = await analyze(form({ file: item.file, client_id: String(clientId) }),
-                                       p => update(item.id, { detail: p }), () => cancelRef.current)
+          const result = await analyze(analysisForm({ file: item.file }, where), p => update(item.id, { detail: p }),
+                                       () => cancelRef.current)
           const count = result.transactions.length
           if (!count) throw new ApiError('No transactions were found in this file.', 'empty')
           update(item.id, { status: 'done', detail: `${transactionCount(count)} saved` })
@@ -110,13 +108,13 @@ export default function AddDocuments({ clientId, uploads, locked = false, onSave
   }
 
   const pickFiles = async (files: FileList | null) => {
-    const picked = Array.from(files ?? [])
+    const chosen = Array.from(files ?? [])
     if (fileInput.current) fileInput.current.value = ''   // lets the same files be chosen again
-    if (!picked.length) return
-    const hashes = await Promise.all(picked.slice(0, MAX_BATCH_FILES).map(fingerprint))
+    if (!chosen.length) return
+    const hashes = await Promise.all(chosen.slice(0, MAX_BATCH_FILES).map(fingerprint))
     const items: PickedFile[] = []
     hashes.forEach((hash, n) => {
-      const file = picked[n]
+      const file = chosen[n]
       // A file already saved for this client, or picked twice, is not read again: its rows would be booked twice.
       const saved = sameFileAs(hash, uploads)
       const twice = hash ? items.find(item => item.hash === hash) : undefined
@@ -128,8 +126,8 @@ export default function AddDocuments({ clientId, uploads, locked = false, onSave
       items.push({ id: nextId.current++, file, hash, status: saved || twice || tooBig ? 'skipped' : 'waiting', detail })
     })
     setBatch(items)
-    setError(picked.length > MAX_BATCH_FILES
-      ? `Only the first ${MAX_BATCH_FILES} files were added; upload the other ${picked.length - MAX_BATCH_FILES} next.`
+    setError(chosen.length > MAX_BATCH_FILES
+      ? `Only the first ${MAX_BATCH_FILES} files were added; upload the other ${chosen.length - MAX_BATCH_FILES} next.`
       : '')
     runBatch(items)
   }
@@ -152,8 +150,7 @@ export default function AddDocuments({ clientId, uploads, locked = false, onSave
     setProgress('Asking the AI model for an account…')
     try {
       const verb = manual.direction === 'in' ? 'received' : 'paid'
-      const result = await analyze(form({ text: `${description} - ${verb} GBP ${amount}` }), setProgress,
-                                   () => cancelRef.current)
+      const result = await analyze(analysisForm({ text: `${description} - ${verb} GBP ${amount}` }), setProgress, () => cancelRef.current)
       const suggested = result.transactions[0]
       const row: Transaction = {
         date: null, description, direction: manual.direction, gross: amount.toFixed(2), vat: null,
@@ -164,7 +161,8 @@ export default function AddDocuments({ clientId, uploads, locked = false, onSave
           ? suggested.issues.filter(i => i.code === 'account_not_recognised')
           : [{ code: 'account_not_recognised', severity: 'warning', message: 'No account suggested; posted to Suspense.' }],
       }
-      onLedger(await addManualRows(clientId, [row]))
+      await addManualRows(clientId, [row])
+      onSaved()
       setManual(m => ({ ...m, description: '', amount: '' }))
     } catch (e) {
       setError(message(e))
@@ -174,8 +172,39 @@ export default function AddDocuments({ clientId, uploads, locked = false, onSave
     }
   }
 
-  const canRetry = !busy && !locked && batch.some(item => item.status === 'failed' || item.status === 'cancelled')
-  const closed = busy || locked   // nothing new can be started: files are being read, or the job runs
+  // Reads the files in the client's folder it has not had before, as jobs like an upload's, then reloads the year.
+  const importFromFolder = async () => {
+    cancelRef.current = false
+    setBusy(true)
+    setError('')
+    setImported('')
+    setProgress('Looking in the folder…')
+    try {
+      const result = await importFolder(clientId, yearStart, bank)
+      const failed: string[] = []
+      let read = 0
+      setProgress(`Reading ${result.jobs.length} new file${result.jobs.length === 1 ? '' : 's'}…`)
+      await Promise.all(result.jobs.map(async job => {
+        try {
+          await waitForJob(job.job_id, () => {}, () => cancelRef.current)
+        } catch (e) {
+          failed.push(`${job.name}: ${message(e)}`)
+        }
+        setProgress(`${++read} of ${result.jobs.length} files read…`)
+      }))
+      setImported(importText(result))
+      if (failed.length) setError(failed.join(' '))
+    } catch (e) {
+      setError(message(e))
+    } finally {
+      setBusy(false)
+      setProgress('')
+      onSaved()
+    }
+  }
+
+  const canRetry = !busy && batch.some(item => item.status === 'failed' || item.status === 'cancelled')
+  const closed = busy   // nothing new can be started while files are being read
   return (
     <section className="card section">
       <div className="section-head">
@@ -189,13 +218,24 @@ export default function AddDocuments({ clientId, uploads, locked = false, onSave
           </button>
         ))}
       </div>
-      {locked && <p className="muted small">Locked while the job runs: documents can be added once it finishes.</p>}
+      <div className="add-to">
+        {bankAccounts.length > 1 && (
+          <label className="year-picker">
+            <span>Add to</span>
+            <select className="input" value={bank} aria-label="Bank account for statements" onChange={e => setPicked(e.target.value)}>
+              {bankAccounts.map(a => <option key={a.code} value={a.code}>{a.name}</option>)}
+            </select>
+          </label>
+        )}
+        <button type="button" className="btn" onClick={importFromFolder} disabled={closed || !folder}>Import from folder</button>
+        {!folder && <span className="muted small">Set the client&apos;s folder in Edit details to import from it.</span>}
+      </div>
+      {imported && <div className="notice notice-info">{imported}</div>}
       {tab === 'upload' && (
         <>
-          <input ref={fileInput} type="file" multiple hidden disabled={locked} onChange={e => pickFiles(e.target.files)}
+          <input ref={fileInput} type="file" multiple hidden onChange={e => pickFiles(e.target.files)}
                  accept=".csv,.tsv,.txt,.xlsx,.xls,.pdf,.png,.jpg,.jpeg,.webp,.bmp,.tiff" />
-          <div className={`dropzone${dragOver && !locked ? ' drag-over' : ''}`} role="button" tabIndex={locked ? -1 : 0}
-               aria-disabled={locked}
+          <div className={`dropzone${dragOver ? ' drag-over' : ''}`} role="button" tabIndex={0}
                onClick={() => { if (!closed) fileInput.current?.click() }}
                onKeyDown={e => { if ((e.key === 'Enter' || e.key === ' ') && !closed) fileInput.current?.click() }}
                onDragOver={e => { e.preventDefault(); setDragOver(true) }}

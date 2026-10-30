@@ -5,7 +5,7 @@ import type { Transaction } from './api.ts'
 import type { ClientSummary, SavedRow, Upload } from './clients.ts'
 import type { PickedFile } from './clientRules.ts'
 import {
-  accountList, bankAccountsLeft, changesOf, clientFormErrors, dayMonth, draftOf, emptyListText, figuresOf, lineTemplate, newRowFrom, requeue,
+  accountList, bankAccountsLeft, changesOf, clientFormErrors, dayMonth, draftOf, emptyListText, figuresOf, importText, lineTemplate, newRowFrom, requeue,
   rowEditErrors, sameFileAs, searchClients, showsInvitation, statementText, transactionCount,
 } from './clientRules.ts'
 
@@ -161,4 +161,14 @@ test('the Edit list of accounts is in name order, with a saved account the busin
                    ['Drawings', 'Hotels', 'Office Equipment', 'Telephone and Internet'])
   assert.equal(accountList(chart, { code: '9999', name: null }, '9999')[0].name, 'Unknown account')   // not in the chart
   assert.deepEqual(accountList(chart, { code: '', name: null }, '').map(a => a.code), ['7402', '0040', '7502'])
+})
+
+test('the import says what it found', () => {
+  const j = () => ({ name: 'a.csv', job_id: 'j' })
+  assert.equal(importText({ jobs: [j(), j(), j()], skipped: ['a', 'b'], unreadable: ['backup.zip'], refused: [] }),
+    "Reading 3 new files. Skipped 2 already taken in. 1 can't be read: backup.zip.")
+  assert.equal(importText({ jobs: [], skipped: ['a'], unreadable: [], refused: [] }), 'No new files in the folder.')
+  assert.equal(importText({ jobs: [j()], skipped: [], unreadable: ['a.zip', 'b.zip'],
+                            refused: [{ name: 'big.pdf', message: 'Larger than the 20 MB limit.' }] }),
+    "Reading 1 new file. 2 can't be read: a.zip, b.zip. big.pdf was refused: Larger than the 20 MB limit.")
 })

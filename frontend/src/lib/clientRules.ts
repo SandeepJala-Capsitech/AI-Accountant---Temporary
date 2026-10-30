@@ -1,6 +1,6 @@
 // Rules the client pages share, kept apart from the network so node --test can run them.
 import type { Transaction } from './api'
-import type { AccountChoice, BankAccount, BankAccountKind, BusinessType, ClientFields, ClientSummary, EditableField, RowChange, SavedRow, StatementCheck,
+import type { AccountChoice, BankAccount, BankAccountKind, BusinessType, ClientFields, ClientSummary, EditableField, FolderImportResult, RowChange, SavedRow, StatementCheck,
               Upload } from './clients'
 import { money, totalsOf } from './ledger.ts'
 
@@ -190,3 +190,19 @@ export function accountList(accounts: AccountChoice[], saved: { code: string; na
   return !saved.code || accounts.some(a => a.code === current) ? sorted
     : [{ code: saved.code, name: saved.name || 'Unknown account', type: '', vat: '' }, ...sorted]
 }
+
+// What an import from the client's folder found, in a sentence or three: each part is left out when there is none.
+export function importText(result: FolderImportResult): string {
+  const { jobs, skipped, unreadable, refused } = result
+  if (!jobs.length && !unreadable.length && !refused.length) return 'No new files in the folder.'
+  const files = (n: number) => `${n} new file${n === 1 ? '' : 's'}`
+  return [
+    jobs.length ? `Reading ${files(jobs.length)}.` : '',
+    skipped.length ? `Skipped ${skipped.length} already taken in.` : '',
+    unreadable.length ? `${unreadable.length} can't be read: ${unreadable.join(', ')}.` : '',
+    ...refused.map(r => `${r.name} was refused: ${r.message}`),
+  ].filter(Boolean).join(' ')
+}
+
+// What a closed year's sections say in place of their controls.
+export const CLOSED_YEAR_NOTICE = 'This year is closed. Reopen it from Trial balance to change it.'
