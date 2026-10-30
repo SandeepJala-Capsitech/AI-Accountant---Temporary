@@ -11,10 +11,10 @@ from decimal import Decimal
 from itertools import combinations
 from typing import Optional, Sequence
 
-from .accounts import CREDITORS, DEBTORS, STAFF_EXPENSES
+from .accounts import BY_CODE, CREDITORS, DEBTORS, STAFF_EXPENSES, AccountType
 from .checks import MATCHING_ISSUES, PAYROLL_OWED, booked, issue, long_date, reclaims_vat
 from .models import BusinessSettings, Direction, Issue, OpenItem, Settlement, Transaction
-from .money import ZERO
+from .money import ZERO, VatTreatment
 
 WINDOW = dt.timedelta(days=31)   # a payment may be suggested for a document dated within 31 days of it
 PART_WINDOW = dt.timedelta(days=120)  # a part payment, an overpayment or a set of documents: at most 120 days after
@@ -191,8 +191,22 @@ def match_documents(rows: list[Transaction], settings: BusinessSettings,
         for n in doc.rows:
             changes[n].update(owed=doc.open, document_direction=Direction(doc.direction), paid_by=list(doc.paid_by))
     matched = [tx.model_copy(update=change) if change else tx for tx, change in zip(rows, changes)]
+    matched = [_with_sale_without_vat(tx, settings) for tx in matched]
     statuses = {ref: DocumentStatus(open=doc.open, paid_by=list(doc.paid_by)) for ref, doc in documents.items()}
     return _without_payroll(matched), statuses
+
+
+def _with_sale_without_vat(tx: Transaction, settings: BusinessSettings) -> Transaction:
+    """A VAT-registered client's bank line left unpaired, booked to an income account usually charged VAT, with no VAT
+    shown and no rate a person chose: the sale may need its invoice, or a rate."""
+    account = BY_CODE.get(tx.account_code)
+    if (settings.vat_registered and tx.document_type == "statement" and tx.direction == Direction.IN
+            and account is not None and account.type == AccountType.INCOME and account.vat == VatTreatment.STANDARD
+            and tx.vat is None and tx.vat_treatment is None and not tx.pays and tx.recorded_by is None
+            and booked(tx) and booked_line(tx)):
+        return tx.model_copy(update={"issues": tx.issues + [issue(
+            "sale_without_vat", "A sale with no VAT shown: book it from its invoice, or choose its VAT rate.")]})
+    return tx
 
 
 def booked_line(tx: Transaction) -> bool:

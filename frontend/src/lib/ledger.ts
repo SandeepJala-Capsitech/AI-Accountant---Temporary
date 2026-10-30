@@ -211,7 +211,7 @@ const ISSUE_TITLES: Record<string, string> = {
   unusual_direction: 'Unusual direction', director_loan: 'Owner account', not_booked: 'Not booked', before_first_year: 'Before the first year',
   statement_gap: "Balance doesn't follow", statement_total: "Statement doesn't add up", mixed_items: 'Mixed items',
   direction_conflict: 'Direction changed', no_payroll: 'No payroll report', wages_from_bank: 'Wages from the bank',
-  payroll_owed_to: 'Check the payroll line',
+  payroll_owed_to: 'Check the payroll line', sale_without_vat: 'Sale with no VAT',
 }
 
 export const issueTitle = (code: string) => ISSUE_TITLES[code] ?? 'Check this'

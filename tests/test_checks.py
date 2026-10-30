@@ -379,3 +379,44 @@ def test_owed_to_decides_the_other_side_on_every_pass():
     second = normalise(Transaction(**saved_form(first)), HELPER_SETTINGS)
     for checked in (first, second):
         assert checked.contra_account_code == "2230" and not [i for i in checked.issues if i.code == "payroll_owed_to"]
+
+
+# ─── The smaller VAT points (Task 11) ──────────────────────────────────────────
+
+def test_a_vat_registered_sale_from_a_bank_line_without_vat_is_flagged():
+    line = row(direction="in", gross=Decimal("600.00"), account_code="4000", document_type="statement")
+    assert only_issue(normalise_and_match([line])[0], "sale_without_vat").severity == "warning"
+    unregistered = normalise_and_match([line], HELPER_SETTINGS.model_copy(update={"vat_registered": False}))[0]
+    assert not any(i.code == "sale_without_vat" for i in unregistered.issues)
+
+
+def test_a_bank_line_that_pays_a_sales_invoice_is_not_flagged():
+    invoice = row(direction="in", gross=Decimal("600.00"), vat=Decimal("100.00"), account_code="4000",
+                  counterparty="Bright Cafe", document_type="invoice", document_ref="s1")
+    paid = row(direction="in", date=dt.date(2026, 1, 5), gross=Decimal("600.00"), account_code="4000",
+               counterparty="Bright Cafe", document_type="statement")
+    assert not any(i.code == "sale_without_vat" for i in normalise_and_match([invoice, paid])[1].issues)
+
+
+def test_a_sale_whose_vat_rate_a_person_chose_is_not_flagged():
+    line = row(direction="in", gross=Decimal("600.00"), account_code="4000", document_type="statement",
+               vat_treatment="standard")
+    assert not any(i.code == "sale_without_vat" for i in normalise_and_match([line])[0].issues)
+
+
+def test_a_sale_to_an_account_not_usually_standard_rated_is_not_flagged():
+    line = row(direction="in", gross=Decimal("600.00"), account_code="4904", document_type="statement")
+    assert not any(i.code == "sale_without_vat" for i in normalise_and_match([line])[0].issues)
+
+
+@pytest.mark.parametrize("account, vat", [("7400", Decimal("0.00")), ("7501", Decimal("0.00"))])
+def test_travel_and_postage_with_no_vat_charged_are_not_flagged(account, vat):
+    bill = normalise(row(gross=Decimal("12.00"), vat=vat, account_code=account), HELPER_SETTINGS)
+    assert not any(i.code == "vat_rate_mismatch" for i in bill.issues)
+
+
+def test_the_usual_vat_on_travel_postage_and_rent():
+    from ledgersync.accounts import BY_CODE
+    from ledgersync.money import VatTreatment
+    assert [BY_CODE[c].vat for c in ("7400", "7501", "7100")] == [
+        VatTreatment.STANDARD, VatTreatment.STANDARD, VatTreatment.EXEMPT]

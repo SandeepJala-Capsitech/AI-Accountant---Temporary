@@ -16,7 +16,7 @@ _NO_VAT = {AccountType.LIABILITY, AccountType.EQUITY}
 MATCHING_ISSUES = {"choose_payment", "part_payment", "overpayment", "possible_payment", "stale_link",
                    "mixed_link", "duplicate_document", "total_mismatch", "claim_vat", "vat_worked_out",
                    "not_vat_invoice", "date_conflict", "date_from_claim", "date_from_bank", "booked_twice",
-                   "amount_conflict", "open_document", "no_payroll", "transfer"}
+                   "amount_conflict", "open_document", "no_payroll", "transfer", "sale_without_vat"}
 # Issues statements.check_statement adds to bank lines, and file_dates.check_file_date to a document; derived too,
 # so checking again replaces them.
 STATEMENT_ISSUES = {"statement_gap", "statement_total", "file_date"}
