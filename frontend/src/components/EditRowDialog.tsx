@@ -2,14 +2,14 @@
 
 import { useEffect, useState, type FormEvent } from 'react'
 import type { Transaction } from '@/lib/api'
-import { listAccounts, type AccountChoice, type BusinessType, type RowChange, type SavedRow } from '@/lib/clients'
+import { listAccounts, type AccountChoice, type Client, type RowChange, type SavedRow } from '@/lib/clients'
 import { accountList, changesOf, DOCUMENT_TYPES, draftOf, rowEditErrors, type EditDraft, type EditErrors } from '@/lib/clientRules'
 
 // Corrects what the model read on one row (counterparty and document type change for the whole document), or, with
 // onAdd, adds a row: a new transaction, or a line of an existing document from a template (clientRules.lineTemplate).
-export default function EditRowDialog({ row, businessType, onCancel, onSave, onAdd, title }: {
+export default function EditRowDialog({ row, client, onCancel, onSave, onAdd, title }: {
   row: SavedRow | Transaction
-  businessType: BusinessType
+  client: Client
   onCancel: () => void
   onSave?: (change: RowChange) => Promise<void>
   onAdd?: (draft: EditDraft) => Promise<void>
@@ -23,8 +23,8 @@ export default function EditRowDialog({ row, businessType, onCancel, onSave, onA
   const errors: EditErrors = rowEditErrors(draft)
 
   useEffect(() => {
-    listAccounts(businessType).then(setAccounts).catch(e => setError(e instanceof Error ? e.message : String(e)))
-  }, [businessType])
+    listAccounts(client.id).then(setAccounts).catch(e => setError(e instanceof Error ? e.message : String(e)))
+  }, [client.id])
 
   const set = (field: keyof EditDraft, value: string) => setDraft(d => ({ ...d, [field]: value }))
   const fieldError = (field: keyof EditErrors) =>
@@ -50,7 +50,9 @@ export default function EditRowDialog({ row, businessType, onCancel, onSave, onA
     }
   }
 
-  const options = accountList(accounts, { code: row.account_code, name: row.account_name }, draft.account_code)
+  // A bank account or card is shown by the name the client gives it.
+  const named = accounts.map(a => ({ ...a, name: client.bank_accounts.find(b => b.code === a.code)?.name || a.name }))
+  const options = accountList(named, { code: row.account_code, name: row.account_name }, draft.account_code)
 
   return (
     <div className="overlay" role="presentation" onMouseDown={e => { if (e.target === e.currentTarget) onCancel() }}

@@ -213,5 +213,5 @@ export const removeRow = (id: number, rowId: number) =>
   request<Ledger>(`/api/clients/${id}/rows/${rowId}`, { method: 'DELETE' })
 export const removeUpload = (id: number, uploadId: number) =>
   request<Ledger>(`/api/clients/${id}/uploads/${uploadId}`, { method: 'DELETE' })
-export const listAccounts = (businessType: BusinessType) =>
-  request<AccountChoice[]>(`/api/accounts?business_type=${businessType}`)
+// The accounts a row of this client can be coded to: its own bank accounts and cards among them.
+export const listAccounts = (clientId: number) => request<AccountChoice[]>(`/api/accounts?client_id=${clientId}`)

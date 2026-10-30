@@ -54,10 +54,10 @@ export default function TransactionsSection() {
       <TransactionsTable ledger={ledger} readOnly={readOnly} onChange={(id, change) => act(() => changeRow(client.id, id, change))}
                          onEdit={setEditing} onAdd={startAdding} onRemove={remove} />
       {editing && (
-        <EditRowDialog row={editing} businessType={client.business_type} onCancel={() => setEditing(null)} onSave={saveRow} />
+        <EditRowDialog row={editing} client={client} onCancel={() => setEditing(null)} onSave={saveRow} />
       )}
       {adding && (
-        <EditRowDialog row={adding.template} businessType={client.business_type} title={adding.title}
+        <EditRowDialog row={adding.template} client={client} title={adding.title}
                        onCancel={() => setAdding(null)} onAdd={saveNew} />
       )}
       {confirmDialog}
