@@ -1,9 +1,12 @@
 ﻿"""FastAPI entry point: a thin HTTP layer over the ledgersync package."""
 import datetime as dt
 import hashlib
+import io
 import logging
+import mimetypes
 import threading
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
@@ -11,7 +14,7 @@ from fastapi import FastAPI, File, Form, Header, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
-from ledgersync import accounts, adapter, books, intake, ledger, pipeline, posting
+from ledgersync import accounts, adapter, books, folder, intake, ledger, pipeline, posting
 from ledgersync.blobs import BlobStore, GridFSBlobStore
 from ledgersync.accounts import choosable
 from ledgersync.checks import normalise
@@ -22,9 +25,9 @@ from ledgersync.model_client import ModelClient
 from ledgersync.jobs import JobStore
 from ledgersync.matching import match
 from ledgersync.models import (AnalysisResult, BankCheck, BusinessSettings, BusinessType, Client, ClientFields,
-                               ClientPatch, ClientSummary, InvoiceSummary, Ledger, LedgerRequest, ManualUpload,
-                               OpeningBalances, RowPatch, TransactionList, TrialBalance, UploadPatch, Year,
-                               YearSummary)
+                               ClientPatch, ClientSummary, FolderImport, InvoiceSummary, Ledger, LedgerRequest,
+                               ManualUpload, OpeningBalances, RowPatch, TransactionList, TrialBalance, UploadPatch,
+                               Year, YearSummary)
 from ledgersync.store_mongo import MongoStore
 
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -132,6 +135,18 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
                                                    year_start=year_start)
         return result
 
+    def submit_analysis(item, client: Optional[Client], name: str, sha256: str, content_type: str, data: bytes,
+                        year_start: Optional[dt.date], bank_account: Optional[str]):
+        """Keeps the original file (when it has a sha256) and queues the analysis of an input already checked."""
+        if sha256:
+            blobs.put(data, name=name, content_type=content_type)
+
+        def work(ctx):
+            return run_analysis(item, ctx, client, name, sha256, bank_account,
+                                year_start if client is not None else None)
+
+        return jobs.submit(work)
+
     @app.post("/api/analyze", status_code=202)
     def analyze_transaction(text: Optional[str] = Form(None), file: Optional[UploadFile] = File(None),
                             client_id: Optional[int] = Form(None), bank_account: Optional[str] = Form(None),
@@ -152,7 +167,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
                 ledger.check_bank_account(client, bank_account)
             if year_start is not None:
                 year_of(client_id, year_start)
-        name, sha256, content_type = "Pasted text", "", ""
+        name, sha256, content_type, data = "Pasted text", "", "", b""
         if file is not None and file.filename:
             data = intake.read_limited(file.file, settings.max_upload_bytes)
             item = intake.load_upload(file.filename, data, settings.max_pdf_pages)
@@ -163,14 +178,8 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         else:
             raise UnreadableFile("Provide text or a file to analyse.")
         model_client.ensure_available()   # fail fast with 503 instead of queueing doomed work
-        if sha256:
-            blobs.put(data, name=name, content_type=content_type)
-
-        def work(ctx):
-            return run_analysis(item, ctx, client, name, sha256, bank_account or None,
-                                year_start if client is not None else None)
-
-        job = jobs.submit(work)
+        job = submit_analysis(item, client, name, sha256, content_type, data, year_start,
+                              bank_account or None)
         return {"job_id": job.id, "status": job.status}
 
     @app.get("/api/jobs/{job_id}")
@@ -264,6 +273,43 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
     @app.post("/api/clients/{client_id}/years/{start}/reopen", response_model=Client)
     def reopen_year(client_id: int, start: dt.date):
         return books.reopen(store, client_id, start)
+
+    @app.post("/api/clients/{client_id}/import-folder", status_code=202)
+    def import_folder(client_id: int, body: FolderImport, x_ledgersync: Optional[str] = Header(None)):
+        """Reads the files in the client's folder whose contents it has not had before, each as /api/analyze
+        reads an upload (the original kept, one job each). Lists the jobs, the files skipped as already known, those
+        of a type that can't be read, and those that failed their check, with why."""
+        if not x_ledgersync:
+            raise RefusedRequest("Imports are taken from the Super Accountant pages only: the X-LedgerSync "
+                                 "header is missing.")
+        client = store.get_client(client_id)
+        ledger.require_active(client)
+        if not client.folder:
+            raise InvalidInput("Set this client's folder first.")
+        root = Path(client.folder)
+        if not root.is_dir():
+            raise InvalidInput("That folder doesn't exist on this computer.")
+        if body.bank_account:
+            ledger.check_bank_account(client, body.bank_account)
+        year_of(client_id, body.year_start)
+        ledger.ensure_open(client, [body.year_start], body.year_start)
+        scan = folder.new_files(root, {u["sha256"] for u in store.uploads(client_id) if u["sha256"]})
+        if scan.new:
+            model_client.ensure_available()
+        started, refused = [], []
+        for path, data, sha256 in scan.new:
+            name = path.relative_to(root).as_posix()
+            try:
+                intake.read_limited(io.BytesIO(data), settings.max_upload_bytes)
+                item = intake.load_upload(name, data, settings.max_pdf_pages)
+            except LedgerSyncError as e:
+                refused.append({"name": name, "message": e.message})
+                continue
+            content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+            job = submit_analysis(item, client, name, sha256, content_type, data, body.year_start,
+                                  body.bank_account or None)
+            started.append({"name": name, "job_id": job.id})
+        return {"jobs": started, "skipped": scan.skipped, "unreadable": scan.unreadable, "refused": refused}
 
     @app.get("/api/clients/{client_id}/opening-balances", response_model=OpeningBalances)
     def opening_balances(client_id: int):

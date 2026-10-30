@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 _PATCH_TRIES = 5
 
 _CLIENT_FIELDS = ("name", "business_type", "contact_name", "contact_email", "contact_phone", "vat_registered",
-                  "bank_accounts", "first_year_end")
+                  "bank_accounts", "first_year_end", "folder")
 _CLIENT_PROJECTION = {
     "id": 1,
     "name": 1,
@@ -37,6 +37,7 @@ _CLIENT_PROJECTION = {
     "vat_registered": 1,
     "bank_accounts": 1,
     "first_year_end": 1,
+    "folder": 1,
     "closed_years": 1,
     "archived_at": 1,
     "created_at": 1,
@@ -66,6 +67,7 @@ def _client(doc: dict, earliest: Optional[dt.date] = None) -> Client:
         contact_email=doc.get("contact_email", ""),
         contact_phone=doc.get("contact_phone", ""),
         vat_registered=bool(doc.get("vat_registered", True)),
+        folder=doc.get("folder", ""),
         **({"bank_accounts": doc["bank_accounts"]} if doc.get("bank_accounts") else {}),
         closed_years=[ClosedYear.model_validate(y) for y in doc.get("closed_years") or []],
         archived=doc.get("archived_at") is not None,
@@ -150,6 +152,7 @@ class MongoStore:
             "vat_registered": bool(fields.vat_registered),
             "bank_accounts": _stored_accounts(fields.bank_accounts),
             "first_year_end": fields.first_year_end.isoformat() if fields.first_year_end else None,
+            "folder": fields.folder,
             "opening": OpeningBalances().model_dump(mode="json"),
             "closed_years": [],
             "archived_at": None,

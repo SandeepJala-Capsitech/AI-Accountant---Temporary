@@ -5,6 +5,7 @@ trial balance."""
 from __future__ import annotations
 
 import datetime as dt
+from pathlib import Path
 from typing import Iterable, Optional
 from weakref import WeakKeyDictionary
 
@@ -89,7 +90,8 @@ _KIND_NAMES = {"current": "current", "savings": "savings", "credit_card": "credi
 
 def check_client(fields: ClientFields) -> None:
     """A client needs a company name and a responsible person, and an email needs an @. It has at least one bank
-    account, each with a name of its own, and no more of a kind than the chart has codes for."""
+    account, each with a name of its own, and no more of a kind than the chart has codes for. A folder that is set is
+    one on this computer."""
     if not fields.name:
         raise InvalidInput("Enter the company name.")
     if not fields.contact_name:
@@ -98,6 +100,8 @@ def check_client(fields: ClientFields) -> None:
         raise InvalidInput("Enter the client's first year end.")
     if fields.contact_email and "@" not in fields.contact_email:
         raise InvalidInput("Enter a valid email.")
+    if fields.folder and not Path(fields.folder).is_dir():
+        raise InvalidInput("That folder doesn't exist on this computer.")
     if not fields.bank_accounts:
         raise InvalidInput("Add at least one bank account.")
     names: set[str] = set()

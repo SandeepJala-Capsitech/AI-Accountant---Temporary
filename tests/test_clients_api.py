@@ -529,3 +529,65 @@ def test_an_analysis_isnt_saved_into_a_closed_year(api):
     job = finish(client, client.post("/api/analyze", data={"text": "x", "client_id": str(cid)}).json()["job_id"])
     assert (job["status"], job["error"]["code"]) == ("failed", "year_closed")
     assert client.get(f"/api/clients/{cid}/years/{YEAR}/ledger").json()["uploads"] == []
+
+
+# ─── Importing a client's files from its folder ──────────────────────────────
+
+def import_folder(client, cid, **body):
+    return client.post(f"/api/clients/{cid}/import-folder", json={"year_start": YEAR, **body})
+
+
+def test_import_without_a_folder_is_refused(api):
+    client = api()
+    cid = add(client)["id"]
+    r = import_folder(client, cid)
+    assert r.status_code == 422 and "Set this client's folder first" in r.text
+
+
+def test_a_folder_that_is_set_must_exist(api, tmp_path):
+    client = api()
+    assert add(client, folder=str(tmp_path))["folder"] == str(tmp_path)
+    missing = client.post("/api/clients", json={**CUBE, "folder": str(tmp_path / "nope")})
+    assert (missing.status_code, missing.json()["detail"]["message"]) == (
+        422, "That folder doesn't exist on this computer.")
+    cid = add(client)["id"]
+    assert client.patch(f"/api/clients/{cid}", json={"folder": str(tmp_path)}).json()["folder"] == str(tmp_path)
+    assert client.patch(f"/api/clients/{cid}", json={"folder": ""}).json()["folder"] == ""
+
+
+def test_importing_reads_new_files_once_and_reports_the_rest(mongo_store, tmp_path):
+    (tmp_path / "bt.csv").write_bytes(BT_CSV)
+    (tmp_path / "bt copy.csv").write_bytes(BT_CSV)
+    (tmp_path / "backup.zip").write_bytes(b"PK")
+    (tmp_path / "empty.csv").write_bytes(b"")
+    app = create_app(Settings(warmup=False), model_client=FakeModel([transactions_json(ROW)]),
+                     store=mongo_store, blobs=MemoryBlobStore())
+    with TestClient(app, headers={"X-LedgerSync": "1"}) as api:
+        cid = add(api, folder=str(tmp_path))["id"]
+        done = import_folder(api, cid)
+        assert done.status_code == 202, done.text
+        body = done.json()
+        assert [j["name"] for j in body["jobs"]] == ["bt copy.csv"]
+        assert (body["skipped"], body["unreadable"]) == (["bt.csv"], ["backup.zip"])
+        assert body["refused"] == [{"name": "empty.csv", "message": "'empty.csv' is empty."}]
+        job = finish(api, body["jobs"][0]["job_id"])
+        assert job["status"] == "succeeded"
+        [upload] = api.get(f"/api/clients/{cid}/years/{YEAR}/ledger").json()["uploads"]
+        assert (upload["name"], upload["sha256"]) == ("bt copy.csv", hashlib.sha256(BT_CSV).hexdigest())
+        again = import_folder(api, cid).json()      # the same contents are known now
+        assert again["jobs"] == [] and again["skipped"] == ["bt copy.csv", "bt.csv"]
+        assert api.get(f"/api/clients/{cid}/uploads/{upload['id']}/file").content == BT_CSV
+
+
+def test_importing_checks_the_header_the_year_the_account_and_a_closed_year(api, tmp_path):
+    client = api()
+    cid = add(client, folder=str(tmp_path))["id"]
+    unknown = import_folder(client, cid, year_start="2020-04-01")
+    assert (unknown.status_code, unknown.json()["detail"]["message"]) == (404, "That year was not found.")
+    assert import_folder(client, cid, bank_account="9999").status_code == 422
+    assert import_folder(client, 99).status_code == 404
+    client.post(f"/api/clients/{cid}/years/{YEAR}/close")
+    closed = import_folder(client, cid)
+    assert (closed.status_code, closed.json()["detail"]["code"]) == (409, "year_closed")
+    del client.headers["X-LedgerSync"]
+    assert import_folder(client, cid).status_code == 403

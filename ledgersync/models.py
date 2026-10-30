@@ -245,8 +245,9 @@ class ClientFields(BaseModel):
     vat_registered: bool = True
     bank_accounts: list[BankAccount] = Field(
         default_factory=lambda: [BankAccount(code=BANK, name="Bank current account", kind="current")])
+    folder: str = ""                   # where the client's files are on the computer the site runs on; "" for none
 
-    @field_validator("name", "contact_name", "contact_email", "contact_phone", mode="before")
+    @field_validator("name", "contact_name", "contact_email", "contact_phone", "folder", mode="before")
     @classmethod
     def _trimmed(cls, value):
         return "" if value is None else str(value).strip()
@@ -285,7 +286,14 @@ class ClientPatch(BaseModel):
     vat_registered: Optional[bool] = None
     bank_accounts: Optional[list[BankAccount]] = None
     first_year_end: Optional[dt.date] = None
+    folder: Optional[str] = None
     archived: Optional[bool] = None
+
+
+class FolderImport(BaseModel):
+    """Which year, and for a statement which bank account, the files of a client's folder are read into."""
+    year_start: dt.date
+    bank_account: Optional[str] = None
 
 
 class ClientSummary(Client):

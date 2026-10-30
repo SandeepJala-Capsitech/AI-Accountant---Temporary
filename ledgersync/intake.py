@@ -18,6 +18,9 @@ Kind = Literal["text", "table", "pdf", "image"]
 SUPPORTED = "CSV, TSV, TXT, XLSX, XLS, PDF, PNG, JPG, WEBP, BMP or TIFF"
 TEXT_KINDS = {".txt": "text", ".csv": "table", ".tsv": "table"}
 EXCEL_EXTENSIONS = {".xlsx", ".xls"}
+# The extensions a file can have to be accepted: SUPPORTED, as a set.
+EXTENSIONS = (set(TEXT_KINDS) | EXCEL_EXTENSIONS
+              | {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"})
 
 _ZIP = b"PK\x03\x04"
 _OLE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"   # legacy .xls container
