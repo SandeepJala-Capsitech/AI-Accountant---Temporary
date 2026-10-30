@@ -362,10 +362,16 @@ def bank_checks(store: MongoStore, client_id: int, year_start: dt.date) -> list[
 
 def summary(store: MongoStore, client_id: int, year_start: dt.date) -> YearSummary:
     """The year at a glance. While rows need fixing its trial balance is blocked, with the problems, and there are no
-    bank checks, which are worked out from it. What is unpaid is what is still owed on the year's invoices."""
+    bank checks, which are worked out from it. What is unpaid is what was owed on the year's invoices when it ended."""
     b = _books(store, client_id)
     n = b.index(year_start)
     rows, _ = _saved_rows(b, n)
+    end = b.years[n].end
+
+    def owed_at_end(i: InvoiceSummary) -> Decimal:
+        """What was owed on the invoice when the year ended: its total less the payments dated by then."""
+        return max(i.total - sum((p.amount for p in i.paid_by if p.date and p.date <= end), ZERO), ZERO)
+
     owed = _invoices(b, n)
     problems: list[str] = []
     bank: list[BankCheck] = []
@@ -378,8 +384,8 @@ def summary(store: MongoStore, client_id: int, year_start: dt.date) -> YearSumma
     except InvalidTransactions as exc:
         problems = exc.problems
     return YearSummary(year=_year_now(b, n), rows=len(rows), to_review=sum(needs_review(r) for r in rows),
-                       unpaid_sales=sum((i.owed for i in owed if i.kind == "sale"), ZERO),
-                       unpaid_purchases=sum((i.owed for i in owed if i.kind == "purchase"), ZERO), bank=bank,
+                       unpaid_sales=sum((owed_at_end(i) for i in owed if i.kind == "sale"), ZERO),
+                       unpaid_purchases=sum((owed_at_end(i) for i in owed if i.kind == "purchase"), ZERO), bank=bank,
                        trial_balance="blocked" if problems else "balanced", problems=problems)
 
 

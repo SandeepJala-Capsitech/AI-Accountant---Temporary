@@ -394,3 +394,11 @@ def test_an_unknown_year_is_not_found_for_each_view(store, acme):
     for view in (books.invoices, books.bank_checks, books.summary):
         with pytest.raises(NotFound, match="That year was not found."):
             view(store, acme, date(2025, 4, 2))
+
+
+def test_a_years_summary_shows_what_was_owed_at_its_end(store, acme_with_unpaid_bill_in_year_one):
+    add_rows(store, acme_with_unpaid_bill_in_year_one, the_bills_payment_dated(date(2026,5,10)))
+    assert books.summary(store, acme_with_unpaid_bill_in_year_one, YEAR_1).unpaid_purchases == D("300.00")
+    [bill] = books.invoices(store, acme_with_unpaid_bill_in_year_one, YEAR_2)
+    assert bill.owed == 0
+    assert books.summary(store, acme_with_unpaid_bill_in_year_one, YEAR_2).unpaid_purchases == 0
