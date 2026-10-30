@@ -8,7 +8,7 @@ from helpers import (acme_two_years, acme_with_unpaid_bill_in_year_one, acme_wit
 
 from ledgersync import books, ledger
 from ledgersync.errors import InvalidInput, InvalidTransactions, NotFound, YearClosed
-from ledgersync.models import ClientPatch, ManualUpload, OpeningBalances, OpeningLine, OpenItem, RowPatch
+from ledgersync.models import BankAccount, ClientPatch, ManualUpload, OpeningBalances, OpeningLine, OpenItem, RowPatch
 
 pytestmark = pytest.mark.mongo
 
@@ -279,3 +279,29 @@ def test_the_year_end_cant_change_once_a_year_is_closed(store, acme_with_year_on
         ledger.change_client(store, acme_with_year_one, ClientPatch(first_year_end=date(2026, 12, 31)))
     assert ledger.change_client(store, acme_with_year_one, ClientPatch(name="Acme Trading Ltd")).name == (
         "Acme Trading Ltd")
+
+
+def test_vat_registration_and_business_type_cant_change_once_a_year_is_closed(store, acme_with_year_one):
+    books.close(store, acme_with_year_one, YEAR_1)
+    with pytest.raises(YearClosed, match="Reopen the closed years to change the client's VAT registration: it "
+                                         "changes how they were booked."):
+        ledger.change_client(store, acme_with_year_one, ClientPatch(vat_registered=False))
+    with pytest.raises(YearClosed, match="Reopen the closed years to change the client's business type: it "
+                                         "changes how they were booked."):
+        ledger.change_client(store, acme_with_year_one, ClientPatch(business_type="sole_trader"))
+    same = ledger.change_client(store, acme_with_year_one, ClientPatch(vat_registered=True,
+                                                                       business_type="limited_company"))
+    assert (same.vat_registered, same.business_type) == (True, "limited_company")
+    books.reopen(store, acme_with_year_one, YEAR_1)
+    changed = ledger.change_client(store, acme_with_year_one, ClientPatch(vat_registered=False,
+                                                                          business_type="sole_trader"))
+    assert (changed.vat_registered, changed.business_type) == (False, "sole_trader")
+
+
+def test_a_bank_account_can_still_be_added_after_closing(store, acme_with_year_one):
+    books.close(store, acme_with_year_one, YEAR_1)
+    [current] = store.get_client(acme_with_year_one).bank_accounts
+    changed = ledger.change_client(store, acme_with_year_one, ClientPatch(bank_accounts=[
+        current.model_copy(update={"name": "Barclays current"}), BankAccount(name="Amex card", kind="credit_card")]))
+    assert [(a.name, a.kind) for a in changed.bank_accounts] == [("Barclays current", "current"),
+                                                                 ("Amex card", "credit_card")]

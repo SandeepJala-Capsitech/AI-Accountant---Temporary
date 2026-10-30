@@ -149,12 +149,16 @@ def add_client(store: MongoStore, fields: ClientFields) -> Client:
 
 def change_client(store: MongoStore, client_id: int, patch: ClientPatch) -> Client:
     """Edits, archives or restores a client; an edited client must still be complete, and keeps the bank accounts its
-    rows are on."""
+    rows are on. Once a year is closed, its year end, VAT registration and kind of business stay as they are."""
     client = store.get_client(client_id)
     sent = patch.model_dump(exclude_unset=True)
     changes = {k: v for k, v in sent.items() if k != "archived" and v is not None}
     if client.closed_years and changes.get("first_year_end", client.first_year_end) != client.first_year_end:
         raise InvalidInput("The year end can't change once a year is closed.")
+    for field, what in (("vat_registered", "VAT registration"), ("business_type", "business type")):
+        if client.closed_years and changes.get(field, getattr(client, field)) != getattr(client, field):
+            raise YearClosed(f"Reopen the closed years to change the client's {what}: it changes how they were "
+                             "booked.")
     if changes and not client.archived:
         merged = ClientFields(**{**client.model_dump(include=set(ClientFields.model_fields)), **changes})
         check_client(merged)
