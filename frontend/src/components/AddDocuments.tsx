@@ -161,7 +161,7 @@ export default function AddDocuments({ clientId, yearStart, bankAccounts, folder
           ? suggested.issues.filter(i => i.code === 'account_not_recognised')
           : [{ code: 'account_not_recognised', severity: 'warning', message: 'No account suggested; posted to Suspense.' }],
       }
-      await addManualRows(clientId, [row])
+      await addManualRows(clientId, [row], yearStart)
       onSaved()
       setManual(m => ({ ...m, description: '', amount: '' }))
     } catch (e) {

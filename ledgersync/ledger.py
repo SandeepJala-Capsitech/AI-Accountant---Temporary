@@ -288,8 +288,13 @@ def add_manual(store: MongoStore, client_id: int, upload: ManualUpload) -> Ledge
         raise InvalidInput(f"This account can't be chosen for {client.name}.")
     if any(tx.bank_account is not None and tx.bank_account not in bank_codes(client) for tx in upload.transactions):
         raise InvalidInput(f"Choose one of {client.name}'s bank accounts.")
-    ensure_open(client, [tx.date for tx in upload.transactions], dt.date.today())   # undated: today's year
-    added = store.add_upload(client_id, upload.name.strip() or "Manual entry", upload.kind, upload.transactions)
+    if upload.year_start is not None and all(y.start != upload.year_start
+                                             for y in _books().years_of(store, client_id, dt.date.today())):
+        raise NotFound("That year was not found.")
+    # A dated row goes by its date; an undated one waits in the year it was added to (today's, when none is said).
+    ensure_open(client, [tx.date for tx in upload.transactions], upload.year_start or dt.date.today())
+    added = store.add_upload(client_id, upload.name.strip() or "Manual entry", upload.kind, upload.transactions,
+                             year_start=upload.year_start)
     return _books().ledger_of(store, client_id, _year_of(store, client, upload_id=added))
 
 

@@ -473,3 +473,4 @@ class ManualUpload(BaseModel):
     name: str = "Manual entry"
     kind: Literal["manual"] = "manual"
     transactions: list[Transaction]
+    year_start: Optional[dt.date] = None   # the year the rows are added to, which any undated row waits in

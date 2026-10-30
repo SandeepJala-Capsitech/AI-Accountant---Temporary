@@ -402,3 +402,26 @@ def test_a_years_summary_shows_what_was_owed_at_its_end(store, acme_with_unpaid_
     [bill] = books.invoices(store, acme_with_unpaid_bill_in_year_one, YEAR_2)
     assert bill.owed == 0
     assert books.summary(store, acme_with_unpaid_bill_in_year_one, YEAR_2).unpaid_purchases == 0
+
+
+def test_an_undated_manual_row_goes_in_the_year_it_was_added_to(store, acme_two_years):
+    # "today" is in year 2 (the latest year), but the row is added while viewing year 1
+    ledger.add_manual(store, acme_two_years, ManualUpload(year_start=YEAR_1, transactions=[row(date=None, gross=D("7.00"))]))
+    in_year_1 = books.ledger(store, acme_two_years, YEAR_1)
+    in_year_2 = books.ledger(store, acme_two_years, YEAR_2)
+    assert [t.gross for t in in_year_1.transactions if t.date is None] == [D("7.00")]
+    assert not [t for t in in_year_2.transactions if t.date is None]
+
+
+def test_an_undated_manual_row_is_allowed_in_an_open_year_and_refused_in_a_closed_one(store, acme_two_years):
+    books.close(store, acme_two_years, YEAR_1)
+    undated = [row(date=None, gross=D("7.00"))]
+    with pytest.raises(YearClosed, match=r"The year to 31 Mar 2026 is closed"):
+        ledger.add_manual(store, acme_two_years, ManualUpload(year_start=YEAR_1, transactions=undated))
+    added = ledger.add_manual(store, acme_two_years, ManualUpload(year_start=YEAR_2, transactions=undated))
+    assert added.year.start == YEAR_2 and [t.gross for t in added.transactions if t.date is None] == [D("7.00")]
+
+
+def test_a_manual_row_for_an_unknown_year_is_not_found(store, acme_two_years):
+    with pytest.raises(NotFound, match="That year was not found."):
+        ledger.add_manual(store, acme_two_years, ManualUpload(year_start=date(2020, 4, 1), transactions=[row(gross=D("5.00"))]))

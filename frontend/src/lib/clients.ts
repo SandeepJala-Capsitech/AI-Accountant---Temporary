@@ -205,8 +205,10 @@ export const setUploadBank = (id: number, uploadId: number, code: string) =>
   request<Ledger>(`/api/clients/${id}/uploads/${uploadId}`, send('PATCH', { bank_account: code }))
 export const changeRow = (id: number, rowId: number, change: RowChange) =>
   request<Ledger>(`/api/clients/${id}/rows/${rowId}`, send('PATCH', change))
-export const addManualRows = (id: number, transactions: Transaction[]) =>
-  request<Ledger>(`/api/clients/${id}/uploads`, send('POST', { name: 'Manual entry', kind: 'manual', transactions }))
+// Rows a person types in, added to the year start names: a row without a date waits in that year.
+export const addManualRows = (id: number, transactions: Transaction[], yearStart: string) =>
+  request<Ledger>(`/api/clients/${id}/uploads`,
+                  send('POST', { name: 'Manual entry', kind: 'manual', transactions, year_start: yearStart }))
 export const removeRow = (id: number, rowId: number) =>
   request<Ledger>(`/api/clients/${id}/rows/${rowId}`, { method: 'DELETE' })
 export const removeUpload = (id: number, uploadId: number) =>

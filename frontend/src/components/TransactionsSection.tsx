@@ -36,7 +36,7 @@ export default function TransactionsSection() {
   })
   const saveNew = async (draft: EditDraft) => {
     if (!adding) return
-    await addManualRows(client.id, [newRowFrom(draft, adding.template)])
+    await addManualRows(client.id, [newRowFrom(draft, adding.template)], year.start)
     setAdding(null)
     await reload()
   }
