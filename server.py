@@ -93,8 +93,9 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
                      bank_account: Optional[str] = None, year_start: Optional[dt.date] = None) -> dict:
         """Reads one input. For a client: the model is told its name, kind of business and its other bank accounts,
         the rows are booked with its settings, and they are saved to it as an upload when any were found (not after
-        a cancel), added to the year starting year_start. A statement is for bank_account, or the client's only
-        account; a client with several must say which, and is refused once the reading shows it is a statement."""
+        a cancel), added to the year starting year_start; none is saved when any falls in a closed year. A
+        statement is for bank_account, or the client's only account; a client with several must say which, and is
+        refused once the reading shows it is a statement."""
         own = None
         if client is None:
             reader, rules = extractor, BusinessSettings(business_name=settings.business_name)
@@ -119,6 +120,9 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         result = AnalysisResult(transactions=transactions, warnings=extraction.warnings,
                                 model=extraction.model).model_dump(mode="json")
         if client is not None and transactions:
+            # an undated row waits in the year picked, or the year it is saved in
+            ledger.ensure_open(store.get_client(client.id), [tx.date for tx in transactions],
+                               year_start or dt.date.today())
             ctx.commit()   # from here a cancel can't discard the job: the rows are being saved
             result["client_id"] = client.id
             result["upload_id"] = store.add_upload(client.id, name, item.kind, transactions, sha256=sha256,
@@ -239,6 +243,14 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
     @app.get("/api/clients/{client_id}/years/{start}/trial-balance", response_model=TrialBalance)
     def year_trial_balance(client_id: int, start: dt.date):
         return books.trial_balance(store, client_id, start)
+
+    @app.post("/api/clients/{client_id}/years/{start}/close", response_model=Client)
+    def close_year(client_id: int, start: dt.date):
+        return books.close(store, client_id, start)
+
+    @app.post("/api/clients/{client_id}/years/{start}/reopen", response_model=Client)
+    def reopen_year(client_id: int, start: dt.date):
+        return books.reopen(store, client_id, start)
 
     @app.get("/api/clients/{client_id}/opening-balances", response_model=OpeningBalances)
     def opening_balances(client_id: int):

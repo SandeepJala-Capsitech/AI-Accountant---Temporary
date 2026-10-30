@@ -2,11 +2,13 @@ from datetime import date
 from decimal import Decimal as D
 
 import pytest
-from helpers import add_rows, net, row
+from helpers import (acme_two_years, acme_with_unpaid_bill_in_year_one, acme_with_year_one,  # noqa: F401 (fixtures)
+                     add_rows, bill_row, change_stationery_receipt_to, first_row_id, net, row,
+                     the_bills_payment_dated)
 
-from ledgersync import books
-from ledgersync.errors import InvalidInput, InvalidTransactions, NotFound
-from ledgersync.models import OpeningBalances, OpeningLine, OpenItem
+from ledgersync import books, ledger
+from ledgersync.errors import InvalidInput, InvalidTransactions, NotFound, YearClosed
+from ledgersync.models import ClientPatch, ManualUpload, OpeningBalances, OpeningLine, OpenItem, RowPatch
 
 pytestmark = pytest.mark.mongo
 
@@ -169,3 +171,111 @@ def test_unpaid_bills_must_make_up_creditors(store, acme):
     with pytest.raises(InvalidInput, match=r"The unpaid bills from suppliers add up to £0\.00; Creditors is £500\.00\."):
         books.set_opening(store, acme, OpeningBalances(lines=[OpeningLine(code="1200", debit=D("500.00")),
                                                               OpeningLine(code="2100", credit=D("500.00"))]))
+
+
+# ─── Closing and reopening a year (Task 8) ─────────────────────────────────────
+
+def test_a_closed_year_refuses_changes(store, acme_with_year_one):
+    books.close(store, acme_with_year_one, date(2025,4,1))
+    with pytest.raises(YearClosed, match="Reopen it"):
+        ledger.change_row(store, acme_with_year_one, first_row_id(store, acme_with_year_one), RowPatch(account_code="7502"))
+
+
+def test_years_close_in_order_and_reopen_from_the_latest(store, acme_two_years):
+    with pytest.raises(InvalidInput, match="Close the year to 31 Mar 2026 first"):
+        books.close(store, acme_two_years, date(2026,4,1))
+    books.close(store, acme_two_years, date(2025,4,1)); books.close(store, acme_two_years, date(2026,4,1))
+    with pytest.raises(InvalidInput, match="Reopen the year to 31 Mar 2027 first"):
+        books.reopen(store, acme_two_years, date(2025,4,1))
+
+
+def test_paying_a_closed_years_invoice_leaves_that_year_alone(store, acme_with_unpaid_bill_in_year_one):
+    before = books.trial_balance(store, acme_with_unpaid_bill_in_year_one, date(2025,4,1))
+    books.close(store, acme_with_unpaid_bill_in_year_one, date(2025,4,1))
+    add_rows(store, acme_with_unpaid_bill_in_year_one, the_bills_payment_dated(date(2026,5,10)))
+    after = books.ledger(store, acme_with_unpaid_bill_in_year_one, date(2025,4,1))
+    assert books.trial_balance(store, acme_with_unpaid_bill_in_year_one, date(2025,4,1)).lines == before.lines
+    assert not after.year.changed_since_closed and bill_row(after).owed == 0
+
+
+def test_reopen_edit_and_close_again_moves_the_next_years_opening(store, acme_two_years):
+    # acme_two_years: year 1 holds a £60.00 stationery receipt paid from the bank (no VAT shown); year 2 one row
+    def bank_opening():
+        tb = books.trial_balance(store, acme_two_years, date(2026,4,1))
+        return {l.code: l.debit - l.credit for l in tb.opening}["1200"]
+    books.close(store, acme_two_years, date(2025,4,1))
+    before = bank_opening()
+    books.reopen(store, acme_two_years, date(2025,4,1))
+    change_stationery_receipt_to(store, acme_two_years, D("80.00"))
+    books.close(store, acme_two_years, date(2025,4,1))
+    assert bank_opening() == before - D("20.00")
+
+
+def test_closing_saves_the_years_balances_and_marks_it_closed(store, acme_with_year_one):
+    client = books.close(store, acme_with_year_one, YEAR_1)
+    [closed] = client.closed_years
+    assert (closed.start, closed.end, closed.closing) == (YEAR_1, date(2026, 3, 31),
+                                                          {"1200": D("-60.00"), "7504": D("60.00")})
+    assert store.get_client(acme_with_year_one).closed_years == client.closed_years
+    year1, year2 = books.ledger(store, acme_with_year_one, YEAR_1).years
+    assert (year1.closed, year2.closed) == (True, False)
+    assert books.reopen(store, acme_with_year_one, YEAR_1).closed_years == []
+    assert not books.ledger(store, acme_with_year_one, YEAR_1).year.closed
+
+
+def test_a_year_whose_trial_balance_cant_be_built_isnt_closed(store, acme):
+    add_rows(store, acme, row(date=date(2025, 6, 1), gross=D("50.00"), account_code="9999"))
+    with pytest.raises(InvalidInput, match="The trial balance must balance before the year is closed."):
+        books.close(store, acme, YEAR_1)
+    assert store.get_client(acme).closed_years == []
+
+
+def test_a_year_is_closed_or_reopened_once(store, acme_with_year_one):
+    with pytest.raises(InvalidInput, match="The year to 31 Mar 2026 is open."):
+        books.reopen(store, acme_with_year_one, YEAR_1)
+    books.close(store, acme_with_year_one, YEAR_1)
+    with pytest.raises(InvalidInput, match="The year to 31 Mar 2026 is already closed."):
+        books.close(store, acme_with_year_one, YEAR_1)
+
+
+def test_the_next_year_opens_from_the_saved_closing(store, acme_two_years):
+    books.close(store, acme_two_years, YEAR_1)
+    assert books.opening(store, acme_two_years, YEAR_2) == {"1200": D("-60.00"), "3200": D("60.00")}
+    # The saved closing stands even when the rows behind it now work out otherwise (written past the guard).
+    change = next(r for r in store.rows(acme_two_years) if r.tx.account_code == "7504")
+    store.patch_row(acme_two_years, change.id, {"gross": "70.00"})
+    assert books.opening(store, acme_two_years, YEAR_2) == {"1200": D("-60.00"), "3200": D("60.00")}
+    assert books.ledger(store, acme_two_years, YEAR_1).year.changed_since_closed
+    assert not books.ledger(store, acme_two_years, YEAR_2).year.changed_since_closed
+
+
+def test_every_change_to_a_closed_years_rows_is_refused(store, acme_two_years):
+    books.close(store, acme_two_years, YEAR_1)
+    receipt = next(r for r in store.rows(acme_two_years) if r.tx.account_code == "7504")
+    phone = next(r for r in store.rows(acme_two_years) if r.tx.account_code == "7502")
+    refusals = [
+        lambda: ledger.remove_row(store, acme_two_years, receipt.id),
+        lambda: ledger.remove_upload(store, acme_two_years, receipt.upload_id),
+        lambda: ledger.set_upload_bank(store, acme_two_years, receipt.upload_id, "1200"),
+        lambda: ledger.add_manual(store, acme_two_years, ManualUpload(transactions=[row(date=date(2025, 7, 1),
+                                                                                         gross=D("5.00"))])),
+        lambda: ledger.add_manual(store, acme_two_years, ManualUpload(transactions=[row(date=date(2025, 3, 1),
+                                                                                         gross=D("5.00"))])),
+        # moving a row of an open year into the closed one
+        lambda: ledger.change_row(store, acme_two_years, phone.id, RowPatch(date=date(2026, 3, 1))),
+        lambda: books.set_opening(store, acme_two_years, OPENING_BANK),
+    ]
+    for refused in refusals:
+        with pytest.raises(YearClosed, match=r"The year to 31 Mar 2026 is closed\. Reopen it to change it\."):
+            refused()
+    assert len(store.rows(acme_two_years)) == 2 and store.opening(acme_two_years) == OpeningBalances()
+    # the open year still takes changes
+    ledger.change_row(store, acme_two_years, phone.id, RowPatch(gross=D("30.00")))
+
+
+def test_the_year_end_cant_change_once_a_year_is_closed(store, acme_with_year_one):
+    books.close(store, acme_with_year_one, YEAR_1)
+    with pytest.raises(InvalidInput, match="The year end can't change once a year is closed."):
+        ledger.change_client(store, acme_with_year_one, ClientPatch(first_year_end=date(2026, 12, 31)))
+    assert ledger.change_client(store, acme_with_year_one, ClientPatch(name="Acme Trading Ltd")).name == (
+        "Acme Trading Ltd")

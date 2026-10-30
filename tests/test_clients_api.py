@@ -484,3 +484,33 @@ def test_an_analysis_is_added_to_the_year_picked(api):
     first = client.get(f"/api/clients/{cid}/years/2025-04-01/ledger").json()
     assert first["uploads"][0]["year_start"] == "2025-04-01" and len(first["transactions"]) == 1
     assert client.get(f"/api/clients/{cid}/years/2026-04-01/ledger").json()["transactions"] == []
+
+
+def test_a_year_is_closed_and_reopened(api):
+    client = api()
+    cid = add(client)["id"]
+    manual(client, cid, BILL)
+    closed = client.post(f"/api/clients/{cid}/years/{YEAR}/close")
+    assert closed.status_code == 200
+    [saved] = closed.json()["closed_years"]
+    assert (saved["start"], saved["end"], saved["closing"]) == (YEAR, "2027-03-31",
+                                                                {"2100": "-72.00", "7502": "72.00"})
+    assert [y["closed"] for y in client.get(f"/api/clients/{cid}/years").json()] == [True]
+    refused = client.post(f"/api/clients/{cid}/uploads", json={"transactions": [LINE]})
+    assert (refused.status_code, refused.json()["detail"]) == (409, {
+        "code": "year_closed", "message": "The year to 31 Mar 2027 is closed. Reopen it to change it."})
+    moved = client.patch(f"/api/clients/{cid}", json={"first_year_end": "2027-12-31"})
+    assert (moved.status_code, moved.json()["detail"]["message"]) == (
+        422, "The year end can't change once a year is closed.")
+    reopened = client.post(f"/api/clients/{cid}/years/{YEAR}/reopen")
+    assert (reopened.status_code, reopened.json()["closed_years"]) == (200, [])
+    assert client.post(f"/api/clients/{cid}/uploads", json={"transactions": [LINE]}).status_code == 201
+
+
+def test_an_analysis_isnt_saved_into_a_closed_year(api):
+    client = api(FakeModel([transactions_json(ROW)]))
+    cid = add(client)["id"]
+    client.post(f"/api/clients/{cid}/years/{YEAR}/close")
+    job = finish(client, client.post("/api/analyze", data={"text": "x", "client_id": str(cid)}).json()["job_id"])
+    assert (job["status"], job["error"]["code"]) == ("failed", "year_closed")
+    assert client.get(f"/api/clients/{cid}/years/{YEAR}/ledger").json()["uploads"] == []

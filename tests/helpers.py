@@ -1,11 +1,15 @@
-"""Small helpers shared by tests: a row with sensible defaults, the figures a test asks about."""
+"""Small helpers shared by tests: a row with sensible defaults, the figures a test asks about, and clients with
+years to close."""
 import datetime as dt
 from decimal import Decimal
 from typing import Optional
 
+import pytest
+
+from ledgersync import ledger
 from ledgersync.checks import normalise
 from ledgersync.matching import match
-from ledgersync.models import BusinessSettings, Transaction
+from ledgersync.models import BusinessSettings, RowPatch, Transaction
 
 SETTINGS = BusinessSettings(business_name="Acme Ltd", vat_registered=True, business_type="limited_company")
 
@@ -51,3 +55,47 @@ def add_rows(store, client_id: int, *rows: Transaction, year_start: Optional[dt.
     """Saves the rows to the client as one upload, added to the year starting year_start; its id."""
     return store.add_upload(client_id, "rows.csv", "table", list(rows), year_start=year_start,
                             bank_account=bank_account)
+
+
+# ─── Clients with a year to close (Task 8) ─────────────────────────────────────
+
+@pytest.fixture
+def acme_with_year_one(store, acme) -> int:
+    """acme with a £60.00 stationery receipt paid from the bank on 1 Jun 2025, in its first year."""
+    add_rows(store, acme, row(date=dt.date(2025, 6, 1), gross=Decimal("60.00"), account_code="7504"))
+    return acme
+
+
+@pytest.fixture
+def acme_two_years(store, acme_with_year_one) -> int:
+    """acme_with_year_one and, in its second year, a £25.00 telephone receipt on 1 May 2026."""
+    add_rows(store, acme_with_year_one, row(date=dt.date(2026, 5, 1), gross=Decimal("25.00"), account_code="7502"))
+    return acme_with_year_one
+
+
+@pytest.fixture
+def acme_with_unpaid_bill_in_year_one(store, acme) -> int:
+    """acme with a £300.00 bill from Smith Solicitors dated 1 Mar 2026, unpaid at the first year's end."""
+    add_rows(store, acme, row(date=dt.date(2026, 3, 1), gross=Decimal("300.00"), document_type="invoice",
+                              counterparty="Smith Solicitors", document_ref="bill"))
+    return acme
+
+
+def the_bills_payment_dated(day: dt.date) -> Transaction:
+    """The bank line paying acme_with_unpaid_bill_in_year_one's bill."""
+    return row(date=day, gross=Decimal("300.00"), document_type="statement", counterparty="SMITH SOLICITORS")
+
+
+def bill_row(ledger_):
+    """The ledger's row of acme_with_unpaid_bill_in_year_one's bill."""
+    return next(r for r in ledger_.transactions if r.document_ref == "bill")
+
+
+def first_row_id(store, client_id: int) -> int:
+    return store.rows(client_id)[0].id
+
+
+def change_stationery_receipt_to(store, client_id: int, gross: Decimal) -> None:
+    """Edits the amount of the client's stationery receipt (on 7504)."""
+    found = next(r for r in store.rows(client_id) if r.tx.account_code == "7504")
+    ledger.change_row(store, client_id, found.id, RowPatch(gross=gross))

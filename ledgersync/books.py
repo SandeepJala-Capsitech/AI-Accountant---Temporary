@@ -18,7 +18,7 @@ from .checks import long_date, normalise
 from .errors import InvalidInput, InvalidTransactions, NotFound
 from .export import file_name, workbook
 from .file_dates import check_file_date
-from .ledger import require_active, settings_for
+from .ledger import ensure_open, require_active, settings_for
 from .matching import match_documents
 from .models import (BusinessSettings, Client, ClosedYear, Ledger, OpeningBalances, OpenItem, SavedRow,
                      StatementCheck, TrialBalance, Upload, Year)
@@ -304,9 +304,10 @@ def check_opening(opening: OpeningBalances) -> None:
 
 
 def set_opening(store: MongoStore, client_id: int, opening: OpeningBalances) -> Client:
-    """Saves the client's first year's opening balances once they make sense."""
+    """Saves the client's first year's opening balances once they make sense, while the first year is open."""
     client = store.get_client(client_id)
     require_active(client)
+    ensure_open(client, [yr.year_bounds(client.first_year_end, 0)[0]])
     check_opening(opening)
     store.set_opening(client_id, opening)
     return store.get_client(client_id)

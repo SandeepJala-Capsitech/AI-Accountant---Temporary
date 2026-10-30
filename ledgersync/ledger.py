@@ -1,16 +1,19 @@
 """A client and a person's changes to its rows (design of 2026-10-06), checked before the store saves them: the
 client's settings and bank accounts, the client summaries, and the row and upload actions, each returning the
-ledger of the year the change was made in. books.py works out a year's ledger and trial balance."""
+ledger of the year the change was made in, and refused in a closed year. books.py works out a year's ledger and
+trial balance."""
 from __future__ import annotations
 
-from typing import Optional
+import datetime as dt
+from typing import Iterable, Optional
 from weakref import WeakKeyDictionary
 
 from .accounts import BANK_SLOTS, choosable
-from .errors import ClientArchived, InvalidInput, NotFound
+from .checks import long_date
+from .errors import ClientArchived, InvalidInput, NotFound, YearClosed
 from .models import (BankAccount, BusinessSettings, Client, ClientFields, ClientPatch, ClientSummary, Ledger,
                      ManualUpload, RowPatch, Transaction)
-from .rows import StoredRow
+from .rows import WHOLE_DOCUMENT, StoredRow
 from .store_mongo import MongoStore
 from .years import year_bounds, year_index
 
@@ -53,6 +56,31 @@ def check_bank_account(client: Client, code: str) -> None:
 def require_active(client: Client) -> None:
     if client.archived:
         raise ClientArchived(f"Restore {client.name} to add documents or make changes.")
+
+
+def ensure_open(client: Client, days: Iterable[Optional[dt.date]], year_start: Optional[dt.date] = None) -> None:
+    """Refuses a change to rows of a closed year: rows dated on the days, a day of None counting as year_start (the
+    year an undated row waits in), and a day before the first year as the first, which shows it."""
+    closed = {c.start for c in client.closed_years}
+    if not closed:
+        return
+    for day in days:
+        day = day or year_start
+        if day is None:
+            continue
+        start, end = year_bounds(client.first_year_end, year_index(client.first_year_end, day) or 0)
+        if start in closed:
+            raise YearClosed(f"The year to {long_date(end)} is closed. Reopen it to change it.")
+
+
+def _days(store: MongoStore, client: Client, rows: Iterable[StoredRow]) -> list[Optional[dt.date]]:
+    """Each row's date, or for an undated row the start of the year it waits in."""
+    uploads = {u["id"]: u for u in store.uploads(client.id)}
+    days = []
+    for row in rows:
+        n = None if row.tx.date else _books().year_of_row(client, row, uploads)
+        days.append(row.tx.date or (year_bounds(client.first_year_end, n)[0] if n is not None else None))
+    return days
 
 
 # How a message names each kind of bank account.
@@ -125,6 +153,8 @@ def change_client(store: MongoStore, client_id: int, patch: ClientPatch) -> Clie
     client = store.get_client(client_id)
     sent = patch.model_dump(exclude_unset=True)
     changes = {k: v for k, v in sent.items() if k != "archived" and v is not None}
+    if client.closed_years and changes.get("first_year_end", client.first_year_end) != client.first_year_end:
+        raise InvalidInput("The year end can't change once a year is closed.")
     if changes and not client.archived:
         merged = ClientFields(**{**client.model_dump(include=set(ClientFields.model_fields)), **changes})
         check_client(merged)
@@ -217,6 +247,13 @@ def change_row(store: MongoStore, client_id: int, row_id: int, patch: RowPatch) 
     if "apart_from" in patch.model_fields_set and (
             patch.apart_from is None or not set(patch.apart_from) <= {r.id for r in rows} - {row_id}):
         raise InvalidInput("Not the same can only name other rows of this client.")
+    # A revert, or a change to the whole document, changes the other rows of its document too.
+    whole = patch.revert or bool(patch.model_fields_set & WHOLE_DOCUMENT)
+    changed = [r for r in rows if r.id == row_id or (whole and row.tx.document_ref
+                                                    and r.tx.document_ref == row.tx.document_ref)]
+    days = _days(store, client, changed) + [dt.date.fromisoformat(r.original["date"]) for r in changed
+                                             if patch.revert and r.original and r.original.get("date")]
+    ensure_open(client, days + ([patch.date] if patch.date else []))
     if patch.revert:
         store.patch_row(client_id, row_id, {}, revert=True)
     else:
@@ -236,8 +273,14 @@ def add_manual(store: MongoStore, client_id: int, upload: ManualUpload) -> Ledge
         raise InvalidInput(f"This account can't be chosen for {client.name}.")
     if any(tx.bank_account is not None and tx.bank_account not in bank_codes(client) for tx in upload.transactions):
         raise InvalidInput(f"Choose one of {client.name}'s bank accounts.")
+    ensure_open(client, [tx.date for tx in upload.transactions], dt.date.today())   # undated: today's year
     added = store.add_upload(client_id, upload.name.strip() or "Manual entry", upload.kind, upload.transactions)
     return _books().ledger_of(store, client_id, _year_of(store, client, upload_id=added))
+
+
+def _ensure_upload_open(store: MongoStore, client: Client, upload_id: int) -> None:
+    """Refuses a change to an upload with rows in a closed year."""
+    ensure_open(client, _days(store, client, (r for r in store.rows(client.id) if r.upload_id == upload_id)))
 
 
 def set_upload_bank(store: MongoStore, client_id: int, upload_id: int, bank_account: str) -> Ledger:
@@ -245,6 +288,7 @@ def set_upload_bank(store: MongoStore, client_id: int, upload_id: int, bank_acco
     client = store.get_client(client_id)
     require_active(client)
     check_bank_account(client, bank_account)
+    _ensure_upload_open(store, client, upload_id)
     store.set_upload_bank(client_id, upload_id, bank_account)
     return _books().ledger_of(store, client_id, _year_of(store, client, upload_id=upload_id))
 
@@ -252,6 +296,7 @@ def set_upload_bank(store: MongoStore, client_id: int, upload_id: int, bank_acco
 def remove_upload(store: MongoStore, client_id: int, upload_id: int) -> Ledger:
     client = store.get_client(client_id)
     require_active(client)
+    _ensure_upload_open(store, client, upload_id)
     year = _year_of(store, client, upload_id=upload_id)
     store.delete_upload(client_id, upload_id)
     return _books().ledger_of(store, client_id, year)
@@ -264,6 +309,7 @@ def remove_row(store: MongoStore, client_id: int, row_id: int) -> Ledger:
     row = next((r for r in store.rows(client_id) if r.id == row_id), None)
     if row is None:
         raise NotFound("This row was not found.")
+    ensure_open(client, _days(store, client, [row]))
     store.delete_row(client_id, row_id)
     return _books().ledger_of(store, client_id, _year_of(store, client, row))
 
