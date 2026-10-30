@@ -591,3 +591,43 @@ def test_importing_checks_the_header_the_year_the_account_and_a_closed_year(api,
     assert (closed.status_code, closed.json()["detail"]["code"]) == (409, "year_closed")
     del client.headers["X-LedgerSync"]
     assert import_folder(client, cid).status_code == 403
+
+
+def test_a_missing_folder_doesnt_block_other_edits(api, tmp_path):
+    client = api()
+    folder = tmp_path / "acme"
+    folder.mkdir()
+    cid = add(client, folder=str(folder))["id"]
+    folder.rmdir()
+    renamed = client.patch(f"/api/clients/{cid}", json={"name": "Renamed Ltd"})
+    assert (renamed.status_code, renamed.json()["name"], renamed.json()["folder"]) == (200, "Renamed Ltd", str(folder))
+    refused = client.patch(f"/api/clients/{cid}", json={"folder": str(folder)})
+    assert (refused.status_code, refused.json()["detail"]["message"]) == (
+        422, "That folder doesn't exist on this computer.")
+    assert client.patch(f"/api/clients/{cid}", json={"folder": ""}).json()["folder"] == ""
+
+
+def test_a_second_import_while_the_first_is_reading_skips_its_files(api, tmp_path):
+    (tmp_path / "bt.csv").write_bytes(BT_CSV)
+    gate = threading.Event()
+    client = api(GatedModel([transactions_json(ROW)], gate))
+    cid = add(client, folder=str(tmp_path))["id"]
+    try:
+        first = import_folder(client, cid).json()
+        [started] = first["jobs"]
+        second = import_folder(client, cid).json()
+        assert (second["jobs"], second["skipped"]) == ([], ["bt.csv"])
+    finally:
+        gate.set()
+    assert finish(client, started["job_id"])["status"] == "succeeded"
+    assert len(client.get(f"/api/clients/{cid}/years/{YEAR}/ledger").json()["uploads"]) == 1
+
+
+def test_a_file_is_read_again_after_its_job_failed(api, tmp_path):
+    (tmp_path / "bt.csv").write_bytes(BT_CSV)
+    client = api(FakeModel([ModelError("The AI model's answer was not valid JSON."), transactions_json(ROW)]))
+    cid = add(client, folder=str(tmp_path))["id"]
+    [first] = import_folder(client, cid).json()["jobs"]
+    assert finish(client, first["job_id"])["status"] == "failed"
+    [again] = import_folder(client, cid).json()["jobs"]    # nothing was saved, and nothing is still reading it
+    assert finish(client, again["job_id"])["status"] == "succeeded"

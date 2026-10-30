@@ -90,8 +90,7 @@ _KIND_NAMES = {"current": "current", "savings": "savings", "credit_card": "credi
 
 def check_client(fields: ClientFields) -> None:
     """A client needs a company name and a responsible person, and an email needs an @. It has at least one bank
-    account, each with a name of its own, and no more of a kind than the chart has codes for. A folder that is set is
-    one on this computer."""
+    account, each with a name of its own, and no more of a kind than the chart has codes for."""
     if not fields.name:
         raise InvalidInput("Enter the company name.")
     if not fields.contact_name:
@@ -100,8 +99,6 @@ def check_client(fields: ClientFields) -> None:
         raise InvalidInput("Enter the client's first year end.")
     if fields.contact_email and "@" not in fields.contact_email:
         raise InvalidInput("Enter a valid email.")
-    if fields.folder and not Path(fields.folder).is_dir():
-        raise InvalidInput("That folder doesn't exist on this computer.")
     if not fields.bank_accounts:
         raise InvalidInput("Add at least one bank account.")
     names: set[str] = set()
@@ -114,6 +111,13 @@ def check_client(fields: ClientFields) -> None:
     for kind, codes in BANK_SLOTS.items():
         if sum(a.kind == kind for a in fields.bank_accounts) > len(codes):
             raise InvalidInput(f"You can add up to {len(codes)} {_KIND_NAMES[kind]} accounts.")
+
+
+def check_folder(folder: str) -> None:
+    """A folder that is set is one on this computer. Checked when a folder is set, not on every edit: a folder that
+    has since gone doesn't stop the client's other edits."""
+    if folder and not Path(folder).is_dir():
+        raise InvalidInput("That folder doesn't exist on this computer.")
 
 
 def assign_codes(accounts: list[BankAccount], kept: list[BankAccount]) -> list[BankAccount]:
@@ -148,6 +152,7 @@ def _accounts_in_use(store: MongoStore, client: Client) -> list[BankAccount]:
 
 def add_client(store: MongoStore, fields: ClientFields) -> Client:
     check_client(fields)
+    check_folder(fields.folder)
     return store.create_client(fields.model_copy(update={"bank_accounts": assign_codes(fields.bank_accounts, [])}))
 
 
@@ -166,6 +171,8 @@ def change_client(store: MongoStore, client_id: int, patch: ClientPatch) -> Clie
     if changes and not client.archived:
         merged = ClientFields(**{**client.model_dump(include=set(ClientFields.model_fields)), **changes})
         check_client(merged)
+        if "folder" in changes:
+            check_folder(merged.folder)
         if "bank_accounts" in changes:
             merged.bank_accounts = assign_codes(merged.bank_accounts, _accounts_in_use(store, client))
         changes = {k: getattr(merged, k) for k in changes}

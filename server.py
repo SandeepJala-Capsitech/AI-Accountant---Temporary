@@ -5,6 +5,7 @@ import io
 import logging
 import mimetypes
 import threading
+from collections import Counter
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
@@ -135,17 +136,39 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
                                                    year_start=year_start)
         return result
 
+    reading: Counter = Counter()   # (client id, sha256) of each file a job is reading for a client, once per job
+    reading_lock = threading.Lock()
+
     def submit_analysis(item, client: Optional[Client], name: str, sha256: str, content_type: str, data: bytes,
-                        year_start: Optional[dt.date], bank_account: Optional[str]):
-        """Keeps the original file (when it has a sha256) and queues the analysis of an input already checked."""
-        if sha256:
-            blobs.put(data, name=name, content_type=content_type)
+                        year_start: Optional[dt.date], bank_account: Optional[str], *, once: bool = False):
+        """Keeps the original file (when it has a sha256) and queues the analysis of an input already checked. With
+        once, a file a job is already reading for the client is not queued again: returns None."""
+        key = (client.id, sha256) if client is not None and sha256 else None
+
+        def release():
+            with reading_lock:
+                reading[key] -= 1
+                if not reading[key]:
+                    del reading[key]
+
+        if key is not None:
+            with reading_lock:
+                if once and reading[key]:
+                    return None
+                reading[key] += 1
 
         def work(ctx):
             return run_analysis(item, ctx, client, name, sha256, bank_account,
                                 year_start if client is not None else None)
 
-        return jobs.submit(work)
+        try:
+            if sha256:
+                blobs.put(data, name=name, content_type=content_type)
+            return jobs.submit(work, on_finish=release if key is not None else None)
+        except BaseException:
+            if key is not None:
+                release()
+            raise
 
     @app.post("/api/analyze", status_code=202)
     def analyze_transaction(text: Optional[str] = Form(None), file: Optional[UploadFile] = File(None),
@@ -277,7 +300,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
     @app.post("/api/clients/{client_id}/import-folder", status_code=202)
     def import_folder(client_id: int, body: FolderImport, x_ledgersync: Optional[str] = Header(None)):
         """Reads the files in the client's folder whose contents it has not had before, each as /api/analyze
-        reads an upload (the original kept, one job each). Lists the jobs, the files skipped as already known, those
+        reads an upload (the original kept, one job each). Lists the jobs, the files skipped as already known (or being read now), those
         of a type that can't be read, and those that failed their check, with why."""
         if not x_ledgersync:
             raise RefusedRequest("Imports are taken from the Super Accountant pages only: the X-LedgerSync "
@@ -296,7 +319,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         scan = folder.new_files(root, {u["sha256"] for u in store.uploads(client_id) if u["sha256"]})
         if scan.new:
             model_client.ensure_available()
-        started, refused = [], []
+        started, refused, skipped = [], [], list(scan.skipped)
         for path, data, sha256 in scan.new:
             name = path.relative_to(root).as_posix()
             try:
@@ -307,9 +330,12 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
                 continue
             content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
             job = submit_analysis(item, client, name, sha256, content_type, data, body.year_start,
-                                  body.bank_account or None)
+                                  body.bank_account or None, once=True)
+            if job is None:   # another import, or an upload, is reading it now
+                skipped.append(name)
+                continue
             started.append({"name": name, "job_id": job.id})
-        return {"jobs": started, "skipped": scan.skipped, "unreadable": scan.unreadable, "refused": refused}
+        return {"jobs": started, "skipped": skipped, "unreadable": scan.unreadable, "refused": refused}
 
     @app.get("/api/clients/{client_id}/opening-balances", response_model=OpeningBalances)
     def opening_balances(client_id: int):
