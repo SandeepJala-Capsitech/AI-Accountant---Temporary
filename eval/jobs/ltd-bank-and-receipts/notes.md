@@ -4,7 +4,7 @@ Worked by hand from the documents themselves, cross-checked against each fixture
 API, the ledger, the posting code and the extractor were not run to produce or check any figure.
 `ledgersync/accounts.py` and `ledgersync/posting.py` were read only for the chart and the posting conventions.
 
-## Client and period
+## Client and year
 
 | Setting | Value | Why |
 |---|---|---|
@@ -12,7 +12,7 @@ API, the ledger, the posting code and the extractor were not run to produce or c
 | Business type | `limited_company` | The case is a limited company. |
 | VAT registered | yes | The Barclays export pays HMRC VAT (27/09, £1,210.33), so the business makes VAT returns. |
 | Contact email | northbridge-bank-receipts@example.com | Reserved test domain: a document request can't reach anyone. |
-| Period | 2026-09-01 to 2026-09-30 | Every document is dated 02/09/2026 to 27/09/2026. |
+| First year end | 2027-03-31 | The client's first year runs 1 Apr 2026 to 31 Mar 2027, and every document, dated 02/09/2026 to 27/09/2026, is in it. |
 
 ## Documents
 
@@ -74,19 +74,18 @@ Check: the debit nets are 1.25 + 1210.33 + 89.00 + 18.75 + 15.60 + 45.99 + 32.40
 1. **No receipt is matched to a card payment.** This case can't test that, because neither receipt has a bank
    line. The Tesco receipt was paid in cash (CASH 20.00, CHANGE 7.50). The cafe's £7.50 card payment is not in the
    Barclays export: there is no £7.50 line, and nothing for £12.50 either. The right result is that each receipt is
-   booked on its own and no bank line is paired with it. An agent that links or marks either receipt against a
-   bank line is wrong.
+   booked on its own and no bank line is paired with it. A receipt linked to a bank line here is wrong.
 2. **Both receipts post against 1200 Bank.** That is the app's convention for a receipt with no matching card
-   payment, and the agent can't change a row's other side. So 1200 is £20.00 lower than the statement's own
+   payment, and nothing in the documents gives a receipt another side. So 1200 is £20.00 lower than the statement's own
    movement: 950.00 − 1393.32 = −443.32 on the statement, against −463.32 in the trial balance. A person reviewing
    might move the cash receipt to 1230 Petty Cash, or both to 2250 Director's Loan Account if the director paid.
-   That is outside what the agent can do, so it is not expected here.
+   That is a person's call, so it is not expected here.
 3. **Tesco: no VAT is booked.** The receipt prints a VAT number but no VAT amount, and VAT is reclaimable only when
-   shown. Much of a meal deal is zero-rated anyway. The agent can't add VAT.
+   shown. Much of a meal deal is zero-rated anyway. VAT is never added to a document that shows none.
 4. **Tesco and the cafe go to 7406 Subsistence.** Both are food and drink bought while working: one person's meal,
    not client hospitality, so not 7403 Entertainment. This agrees with both fixtures' `expected.json`.
 5. **BRIGHTWELL LTD £950.00 in goes to 4000 Sales gross.** The sales invoice it pays is not in the set, and the
    bank line shows no VAT, so none is split out.
 6. **HMRC VAT £1,210.33 goes to 2202 VAT Liability.** It is a VAT return payment, not a cost, and a liability
    account takes no VAT.
-7. No opening balance: the Barclays export prints none, and the trial balance holds the period's transactions only.
+7. No opening balance: the Barclays export prints none, and no opening balances are entered, so the trial balance holds the year's transactions only.

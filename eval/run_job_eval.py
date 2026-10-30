@@ -1,14 +1,15 @@
-"""Gate 1: runs the client-level test set (eval/jobs/) through a running LedgerSync API, treated as a black box, and
-scores each agent job's trial balance against the one worked out by hand, account by account, to the penny.
+"""Runs the client-level test set (eval/jobs/) through a running LedgerSync API, treated as a black box, and scores
+each client's first-year trial balance against the one worked out by hand, account by account, to the penny.
 
-  .venv/bin/python server.py                                      # in one terminal; needs MongoDB and an agent model
-  .venv/bin/python eval/run_job_eval.py --label gate1             # in another
-  .venv/bin/python eval/run_job_eval.py --label gate1 --case ltd- # only the cases whose folder name contains "ltd-"
+  .venv/bin/python server.py                                      # in one terminal; needs MongoDB and a model
+  .venv/bin/python eval/run_job_eval.py --label my-change         # in another
+  .venv/bin/python eval/run_job_eval.py --label my-change --case ltd-   # only the cases whose folder name contains "ltd-"
 
-For each case it adds the client (client.json), reads every document in documents/ for it, starts an agent job for
-period.json and waits while the job is preparing (30 minutes at most), then scores the job's latest after_gate
-snapshot against expected_trial_balance.json. Writes eval/results/<date>-jobs-<label>.json and exits 0 only when
-every case matches."""
+For each case it adds the client (client.json), reads every document in documents/ into the client's first year (a
+statement goes to the bank account client.json's "statements" names for it, any other file to the client's first
+account), and scores the year's trial balance against expected_trial_balance.json. No agent is involved: the
+figures are what the documents give. Writes eval/results/<date>-jobs-<label>.json and exits 0 only when every case
+matches."""
 from __future__ import annotations
 
 import argparse
@@ -26,8 +27,6 @@ from job_scoring import compare, net_by_account
 EVAL_DIR = Path(__file__).parent
 JOBS_DIR = EVAL_DIR / "jobs"
 RESULTS_DIR = EVAL_DIR / "results"
-JOB_TIMEOUT = 30 * 60       # seconds a job may stay preparing before the run gives up on it
-JOB_POLL_SECONDS = 5.0
 ANALYSIS_TIMEOUT = 600      # seconds allowed to read each document, as run_eval allows
 
 
@@ -47,116 +46,87 @@ def _documents(case: Path) -> list[Path]:
 
 def _new_outcome(case: Path) -> dict:
     """A case's result before anything has run. differences stays None until the trial balance is compared."""
-    return {"case": case.name, "matched": False, "error": None, "error_detail": None, "client_id": None,
-            "job_id": None, "status": None, "documents": [], "snapshot_version": None, "is_balanced": None,
-            "problems": [], "differences": None, "gate_passed": None, "gate_checks": [], "exceptions": None,
-            "fix_rounds": None, "job_time_s": None, "run_time_s": None}
+    return {"case": case.name, "verdict": None, "error": None, "error_detail": None, "client_id": None,
+            "year_start": None, "documents": [], "is_balanced": None, "differences": None, "run_time_s": None}
 
 
-def _wait_for_job(client, job: dict, *, sleep, clock, timeout: float) -> Optional[dict]:
-    """Polls the job while it is preparing, for at most `timeout` seconds. The job as it ended, or as it stood when
-    time ran out; None when the API stopped knowing it."""
-    deadline = clock() + timeout
-    while job["status"] == "preparing" and clock() < deadline:
-        sleep(JOB_POLL_SECONDS)
-        resp = run_eval._call(client.get, f"/api/agent-jobs/{job['id']}")
-        if resp.status_code != 200:
-            return None
-        job = resp.json()
-    return job
-
-
-def _score(client, case: Path, job_id: str, outcome: dict) -> None:
-    """Compares the job's latest after_gate snapshot with the expected trial balance. A trial balance that couldn't
-    be built has no lines and all-zero totals, so its problems are reported instead and it is not compared."""
-    resp = run_eval._call(client.get, f"/api/agent-jobs/{job_id}/snapshots")
-    if resp.status_code != 200:
-        outcome.update(error="snapshots_unavailable", error_detail=run_eval._error_code(resp))
-        return
-    after_gate = [s for s in resp.json() if s.get("stage") == "after_gate"]
-    if not after_gate:
-        outcome.update(error="no_after_gate_snapshot")
-        return
-    latest = max(after_gate, key=lambda s: s["version"])
-    outcome.update(snapshot_version=latest["version"], is_balanced=latest["is_balanced"],
-                   problems=list(latest.get("problems") or []))
-    if outcome["problems"]:
-        return
-    expected = {code: Decimal(net) for code, net in _read(case, "expected_trial_balance.json").items()}
-    outcome["differences"] = compare(expected, net_by_account(latest))
-
-
-def _run(client, case: Path, outcome: dict, *, sleep, clock, job_timeout: float, analysis_timeout: float) -> None:
-    resp = run_eval._call(client.post, "/api/clients", json=_read(case, "client.json"), headers=run_eval.PAGES)
+def _run(client, case: Path, outcome: dict, *, sleep, analysis_timeout: float) -> None:
+    fields = _read(case, "client.json")
+    statements = fields.pop("statements", {})   # file name -> the name of the bank account it is for
+    resp = run_eval._call(client.post, "/api/clients", json=fields, headers=run_eval.PAGES)
     if resp.status_code != 201:
         outcome.update(error="client_not_added", error_detail=run_eval._error_code(resp))
         return
-    client_id = outcome["client_id"] = resp.json()["id"]
+    added = resp.json()
+    client_id = outcome["client_id"] = added["id"]
+    codes = {account["name"]: account["code"] for account in added["bank_accounts"]}
+    unknown = sorted(set(statements.values()) - set(codes))
+    if unknown:
+        outcome.update(error="unknown_bank_account", error_detail=f"client.json names no such account: {unknown[0]}")
+        return
+    default = added["bank_accounts"][0]["code"]
+
+    resp = run_eval._call(client.get, f"/api/clients/{client_id}/years")
+    if resp.status_code != 200:
+        outcome.update(error="years_unavailable", error_detail=run_eval._error_code(resp))
+        return
+    year_start = outcome["year_start"] = resp.json()[0]["start"]
 
     for path in _documents(case):
-        result, error = run_eval.run_document(client, path, analysis_timeout, client_id=client_id)
-        outcome["documents"].append({"name": path.name, "error": error,
+        account = codes[statements[path.name]] if path.name in statements else default
+        result, error = run_eval.run_document(client, path, analysis_timeout, client_id=client_id,
+                                              year_start=year_start, bank_account=account, sleep=sleep)
+        outcome["documents"].append({"name": path.name, "bank_account": account, "error": error,
                                      "rows": len((result or {}).get("transactions") or [])})
     unread = [d["name"] for d in outcome["documents"] if d["error"] or not d["rows"]]
-    if unread:   # the job would work on rows short of the documents, so its trial balance can't match
+    if unread:   # the books would lack their rows, so the trial balance can't match
         outcome.update(error="analysis_failed", error_detail=f"No rows saved from: {', '.join(unread)}")
         return
 
-    resp = run_eval._call(client.post, f"/api/clients/{client_id}/agent-jobs", json=_read(case, "period.json"),
-                          headers=run_eval.PAGES)
-    if resp.status_code != 202:
-        outcome.update(error="job_not_started", error_detail=run_eval._error_code(resp))
+    resp = run_eval._call(client.get, f"/api/clients/{client_id}/years/{year_start}/trial-balance")
+    if resp.status_code == 422:   # a row needs fixing: the API says which
+        message = (resp.json().get("detail") or {}).get("message")
+        outcome.update(error="trial_balance_not_built", error_detail=message or run_eval._error_code(resp))
         return
-    job_id = outcome["job_id"] = resp.json()["id"]
-    started = clock()
-    job = _wait_for_job(client, resp.json(), sleep=sleep, clock=clock, timeout=job_timeout)
-    outcome["job_time_s"] = round(clock() - started, 1)
-    if job is None:
-        outcome.update(error="job_not_found")
+    if resp.status_code != 200:
+        outcome.update(error="trial_balance_unavailable", error_detail=run_eval._error_code(resp))
         return
-
-    gate = job.get("gate") or {}
-    outcome.update(status=job["status"], fix_rounds=job.get("fix_rounds"), gate_passed=gate.get("passed"),
-                   gate_checks=[{"code": c["code"], "passed": c["passed"], "detail": c["detail"]}
-                                for c in gate.get("checks", [])])
-    resp = run_eval._call(client.get, f"/api/agent-jobs/{job_id}/exceptions")
-    if resp.status_code == 200:
-        outcome["exceptions"] = len(resp.json())
-
-    if job["status"] == "preparing":
-        try:   # stop the work, so a later run doesn't share the API with it
-            run_eval._call(client.post, f"/api/agent-jobs/{job_id}/cancel", headers=run_eval.PAGES, retries=1)
-        except run_eval.ApiUnreachable:
-            pass
-        outcome.update(error="eval_timeout", error_detail=f"Still preparing after {job_timeout:.0f} s; cancelled.")
-    elif job["status"] != "awaiting_review":
-        outcome.update(error=f"job_{job['status']}", error_detail=job.get("error"))
-    else:
-        _score(client, case, job_id, outcome)
+    trial_balance = resp.json()
+    expected = {code: Decimal(net) for code, net in _read(case, "expected_trial_balance.json").items()}
+    outcome.update(is_balanced=trial_balance["is_balanced"],
+                   differences=compare(expected, net_by_account(trial_balance)))
 
 
-def run_case(client, case: Path, *, sleep=time.sleep, clock=time.monotonic, job_timeout: float = JOB_TIMEOUT,
+def _verdict_of(outcome: dict) -> str:
+    """"match" only when every step worked and the trial balance balances and agrees with the expected one in every
+    account; otherwise what went wrong."""
+    if outcome["error"]:
+        return outcome["error"]
+    if outcome["is_balanced"] is not True:
+        return "not_balanced"
+    return "differences" if outcome["differences"] else "match"
+
+
+def run_case(client, case: Path, *, sleep=time.sleep, clock=time.monotonic,
              analysis_timeout: float = ANALYSIS_TIMEOUT) -> dict:
-    """Adds the case's client, reads its documents, runs an agent job and scores the job's trial balance. It
-    matches only when every step worked and the latest after_gate trial balance was built, balances, and agrees
-    with the expected one in every account."""
+    """Adds the case's client, reads its documents into the client's first year and scores that year's trial
+    balance."""
     outcome = _new_outcome(case)
     started = clock()
     try:
-        _run(client, case, outcome, sleep=sleep, clock=clock, job_timeout=job_timeout,
-             analysis_timeout=analysis_timeout)
+        _run(client, case, outcome, sleep=sleep, analysis_timeout=analysis_timeout)
     except run_eval.ApiUnreachable as exc:
         outcome.update(error="api_unreachable", error_detail=str(exc))
+    outcome["verdict"] = _verdict_of(outcome)
     outcome["run_time_s"] = round(clock() - started, 1)
-    outcome["matched"] = (outcome["error"] is None and outcome["is_balanced"] is True and not outcome["problems"]
-                          and outcome["differences"] == [])
     return outcome
 
 
 def _write_report(out_file: Path, results: list[dict], **meta) -> dict:
-    report = {"date": date.today().isoformat(), **meta, "job_timeout_s": JOB_TIMEOUT,
-              "summary": {"cases": len(results), "matched": sum(r["matched"] for r in results),
-                          "failed": [r["case"] for r in results if not r["matched"]]},
+    matched = [r["verdict"] == "match" for r in results]
+    report = {"date": date.today().isoformat(), **meta,
+              "summary": {"cases": len(results), "matched": sum(matched),
+                          "failed": [r["case"] for r, ok in zip(results, matched) if not ok]},
               "cases": results}
     tmp = out_file.with_suffix(".tmp")
     tmp.write_text(json.dumps(report, indent=2) + "\n")
@@ -164,16 +134,16 @@ def _write_report(out_file: Path, results: list[dict], **meta) -> dict:
     return report
 
 
-def _verdict(outcome: dict) -> str:
-    if outcome["matched"]:
+def _describe(outcome: dict) -> str:
+    """A case's result in words, for the console."""
+    verdict = outcome["verdict"]
+    if verdict == "match":
         return "matches"
-    if outcome["error"]:
-        return f"{outcome['error']}" + (f": {outcome['error_detail']}" if outcome["error_detail"] else "")
-    if outcome["problems"]:
-        return f"trial balance not built: {'; '.join(outcome['problems'][:3])}"
-    if outcome["is_balanced"] is not True:
+    if verdict == "not_balanced":
         return "trial balance does not balance"
-    return f"{len(outcome['differences'])} account(s) differ"
+    if verdict == "differences":
+        return f"{len(outcome['differences'])} account(s) differ"
+    return verdict + (f": {outcome['error_detail']}" if outcome["error_detail"] else "")
 
 
 def run_all(client, cases: list[Path], out_file: Path, *, label: str, api: str, model: Optional[str] = None,
@@ -187,29 +157,20 @@ def run_all(client, cases: list[Path], out_file: Path, *, label: str, api: str, 
         print(f"[{n}/{len(cases)}] {case.name} ...", end=" ", flush=True)
         outcome = run_case(client, case, sleep=sleep, clock=clock)
         results.append(outcome)
-        print(_verdict(outcome), f"({outcome['run_time_s']} s)", flush=True)
+        print(_describe(outcome), f"({outcome['run_time_s']} s)", flush=True)
         _write_report(out_file, results, **meta)
     return _write_report(out_file, results, **meta)
 
 
 def exit_code(report: dict) -> int:
     """0 only when there were cases and every one matched."""
-    return 0 if report["cases"] and all(c["matched"] for c in report["cases"]) else 1
-
-
-def _gate_text(case: dict) -> str:
-    """The gate as the summary shows it: passed, the checks that failed, or n/a when it didn't run."""
-    if not case["gate_checks"]:
-        return "n/a"
-    failing = [c["code"] for c in case["gate_checks"] if not c["passed"]]
-    return f"failed {', '.join(failing)}" if failing else "passed"
+    return 0 if report["cases"] and all(c["verdict"] == "match" for c in report["cases"]) else 1
 
 
 def _print_summary(report: dict) -> None:
     print(f"\n{report['summary']['matched']} of {report['summary']['cases']} case(s) match.")
     for case in report["cases"]:
-        print(f"  {case['case']}: {_verdict(case)}; gate {_gate_text(case)}; exceptions {case['exceptions']}; "
-              f"fix rounds {case['fix_rounds']}; {case['run_time_s']} s")
+        print(f"  {case['case']}: {_describe(case)}; {case['run_time_s']} s")
         for diff in case["differences"] or []:
             print(f"      {diff['code']}: expected {diff['expected']}, got {diff['actual']} ({diff['difference']})")
 
@@ -217,7 +178,7 @@ def _print_summary(report: dict) -> None:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--api", default="http://127.0.0.1:8085")
-    parser.add_argument("--label", required=True, help="name for this run, e.g. gate1")
+    parser.add_argument("--label", required=True, help="name for this run, e.g. accounting-site")
     parser.add_argument("--case", default="", help="only cases whose folder name contains this text")
     parser.add_argument("--overwrite", action="store_true", help="replace today's report for this label")
     args = parser.parse_args(argv)

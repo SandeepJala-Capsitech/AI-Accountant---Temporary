@@ -5,7 +5,7 @@ API, the ledger, the posting code and the extractor were not run to produce or c
 `ledgersync/accounts.py`, `ledgersync/posting.py` and `ledgersync/matching.py` were read only for the chart and the
 posting and matching conventions.
 
-## Client and period
+## Client and year
 
 | Setting | Value | Why |
 |---|---|---|
@@ -13,7 +13,7 @@ posting and matching conventions.
 | Business type | `limited_company` | "Ltd". |
 | VAT registered | yes | Northbridge pays HMRC VAT elsewhere in the fixture set (`csv-barclays-export`, `text-hmrc-vat-payment`). Here that means the invoice's VAT is reclaimed. |
 | Contact email | northbridge-invoices@example.com | Reserved test domain. |
-| Period | 2026-09-01 to 2026-09-30 | The statement runs 01/09 to 23/09/2026 and the invoice is dated 08/09/2026. |
+| First year end | 2027-03-31 | The client's first year runs 1 Apr 2026 to 31 Mar 2027. The statement runs 01/09 to 23/09/2026 and the invoice is dated 08/09/2026. |
 
 ## Documents
 
@@ -94,17 +94,17 @@ Check: the debit nets are 1380.70 + 50.00 + 295.00 + 64.30 + 250.00 + 360.00 = 2
 
 1. **No bank line clears the invoice, so it stays on 2100 Creditors.** The task brief describes this case as "a bank
    line clearing an open invoice through 2100 Creditors". The public fixtures can't show that, because no Starling
-   line pays Clearway (see the table above). What the case tests is that an invoice unpaid at the period end stays
-   in 2100 with its VAT reclaimed. An agent that links Hartley & Co's £360.00 (or any other line) to the Clearway
+   line pays Clearway (see the table above). What the case tests is that an invoice unpaid at the year end stays
+   in 2100 with its VAT reclaimed. A reading that links Hartley & Co's £360.00 (or any other line) to the Clearway
    invoice is wrong: that would move 2100 and 7601.
 2. **Hartley & Co £360.00 goes to 7601 Accountancy Fees.** Hartley & Co are chartered accountants (see
    `pdf-scanned-invoice`), and the line names their invoice 2026-288. That invoice is not in the set; it may be one
-   received before the period. The trial balance books no opening creditors, so the payment is a cost when paid.
+   received before the period. No opening creditors are entered, so the payment is a cost when paid.
 3. **Brightwell £2,100.00 in goes to 4000 Sales gross.** It pays Northbridge's own sales invoice NB-0112, which is
    not in the set. The bank line shows no VAT, so none is split out.
 4. **The whole Clearway invoice goes to 7504 Office Stationery.** Paper, toner (ink) and desk organisers are all
    small office supplies. The invoice prints one VAT total, so it is one row.
 5. **WeWork £295.00 goes to 7100 Rent with no VAT.** It is desk rental for premises. VAT may well be charged, but
    no VAT invoice is in the set, and a bank line books none.
-6. **The opening balance of £3,200.00 is not booked.** The trial balance holds the period's transactions only, so
+6. **The opening balance of £3,200.00 is not booked.** No opening balances are entered, so the trial balance holds the year's transactions only, so
    1200 shows the movement (+1,380.70), not the closing balance (4,580.70).

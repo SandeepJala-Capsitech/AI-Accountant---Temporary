@@ -1,7 +1,8 @@
 # Super Accountant (prototype)
 
-Turns UK financial inputs (receipt photos, bank statement CSV/Excel/PDF exports, pasted text
-or manual entries) into categorised transactions and a double-entry trial balance. Documents are
+A bookkeeping site for one accountant's clients. It turns UK financial inputs (receipt photos, bank statement
+CSV/Excel/PDF exports, invoices, payroll reports, pasted text or manual entries) into categorised transactions and a
+double-entry trial balance, kept **by client and by accounting year**. Documents are
 read by a hosted Qwen vision model (`qwen/qwen3.8-27b`), through OpenRouter when `OPENROUTER_API_KEY` is
 set and otherwise through Groq: **uploaded documents are sent to that provider.** The code keeps its working name, LedgerSync: the `ledgersync` package, the `LEDGERSYNC_*`
 settings and the `X-LedgerSync` header.
@@ -9,17 +10,20 @@ settings and the `X-LedgerSync` header.
 - `server.py` — FastAPI routes (port 8085, localhost only)
 - `ledgersync/` — settings, typed errors, background jobs, the model client, upload checks, the
   extractor (prompt, schema, per-row validation), pipeline, chart of accounts, money and VAT,
-  transaction checks and double-entry posting
+  transaction checks, matching, double-entry posting, and the books (years, opening balances, closing a year)
+  kept in MongoDB
 - `frontend/` — Next.js UI (port 3000); calls the API through its `/api` rewrite
+- `eval/` — the accuracy measures (see Measuring accuracy)
 
-This prototype is being hardened; see
-[the design spec](docs/superpowers/specs/2026-09-28-ledgersync-robustness-design.md) and
-[the Groq model design](docs/superpowers/specs/2026-09-29-groq-vision-model-design.md).
+The design is in [the accounting site design](docs/superpowers/specs/2026-10-23-accounting-site-design.md). An agent
+that runs the site is a separate project, designed in
+[the chat agent design](docs/superpowers/specs/2026-10-23-chat-agent-design.md); this site works without it.
 
 ## Prerequisites
 
 - Python 3.11
 - Node.js 20.9+
+- MongoDB, running locally (`brew services start mongodb-community`) or an Atlas cluster
 - An OpenRouter API key ([openrouter.ai/keys](https://openrouter.ai/keys)) or a Groq API key
   ([console.groq.com/keys](https://console.groq.com/keys)); with both, OpenRouter is used
 
@@ -28,7 +32,7 @@ This prototype is being hardened; see
 ```bash
 python3.11 -m venv .venv
 .venv/bin/pip install -r requirements-dev.txt
-cp .env.example .env                      # then paste your key after OPENROUTER_API_KEY= or GROQ_API_KEY=
+cp .env.example .env                      # then paste your key after OPENROUTER_API_KEY= or GROQ_API_KEY=, and set MONGODB_URI
 (cd frontend && npm install)
 ```
 
@@ -41,49 +45,143 @@ cp .env.example .env                      # then paste your key after OPENROUTER
 (cd frontend && npm run dev)              # UI on http://localhost:3000
 ```
 
-Analyses run as background jobs: `POST /api/analyze` returns `{job_id}`, then
-`GET /api/jobs/{job_id}` reports progress and the result; `DELETE` cancels. The API takes an analysis
-only with an `X-LedgerSync` header, which the pages send and a form on another web site can't. Up to five
-jobs run at once (`LEDGERSYNC_MAX_PARALLEL_JOBS`), and the UI sends that many files of an upload at a time; on
-Groq's free plan they mostly wait on its per-minute limits, so the gain shows on a paid plan.
-
-Each client's page keeps one table across its uploads and catches what was entered twice. A file already
-uploaded for that client, on any day, or picked twice, is skipped without being read. A row with the same
-amount and direction as a row from another upload, dated within three days of it (a receipt and its bank
-line, say), is flagged "possible duplicate" and left for a person to decide; two receipts on one expense claim
-are not, as the claim has a line for each. Show both puts the two side by side, and Not the same keeps them
-apart for good (with Undo).
 Without a key or an internet connection the API answers 503 with how to fix it; it never guesses.
 
-The ledger endpoints use double entry: `GET /api/accounts` lists the chart (Sage 50-style
-codes), `POST /api/transactions/validate` splits VAT and lists issues, and
-`POST /api/trial-balance` takes `{"transactions": [...], "settings": {"vat_registered": true}}`
-and always balances; rows with errors (unknown account, non-GBP, impossible VAT) get a 422.
-Money is sent and returned as strings, e.g. `"12.50"`. Send `vat` only when the document shows
-it; the API never changes it, and fills in `vat_posted` and `net` afresh on every call, so an
-edited row can simply be sent back. `vat_posted` is the VAT booked: the amount shown; or, when a
-person picked a rate in `vat_treatment`, the VAT inside the gross at that rate (flagged); otherwise
-none, because VAT can only be reclaimed when it was charged.
+## The site
+
+### Clients, years and sections
+
+The first page, **Clients**, lists the clients with each one's latest year and whether it is open or closed. Add a
+client with its company name, business type (limited company, sole trader, partnership or LLP), its responsible
+person (the client's own contact, with email and phone), whether it is VAT registered, the end of its **first year**
+(for example 31 March 2027), its bank accounts and, if you like, a folder of its files. Archive hides a client and
+keeps everything; Restore brings it back.
+
+Open a client to get its own space: a **year picker** beside its name (for example "Year to 31 Mar 2027"), and a side
+menu of six sections, all for the year picked.
+
+| Section | What it shows |
+|---|---|
+| Overview | The client's details (editable), whether the year is open or closed, and a summary: rows to review, what is unpaid on sales and purchases, whether each bank account agrees with its statements, whether the trial balance balances. The first year's opening balances are entered here. |
+| Documents | Upload files or import them from the client's folder; every file of the year with its status (reading, read, failed, or "Doesn't add up" for a statement that doesn't reach its printed balances); download an original. |
+| Bank | One tab for each bank account and card, with its lines for the year, its balance in the books beside the balance its statements print, and the difference. |
+| Invoices | **Sales** (invoices the client sent) and **Purchases** (bills from suppliers): the total, what has been paid, what is still owed, and the bank lines that paid it. An invoice paid in a later year shows as paid there. The site doesn't create invoices; they come from the client's files. |
+| Transactions | Every row of the year: edit, link, include, unlink, mark "Not the same", add and remove rows. |
+| Trial balance | The year's trial balance with its summary figures, the Excel export, and Close year / Reopen year. |
+
+Rows belong to the year of their **date**: a file whose rows fall in two years puts each row in its own year. A row
+with no date waits in the year the file was added to and is flagged. A row dated before the first year starts is not
+booked again, because the opening balances hold it.
+
+### Bank accounts and cards
+
+A client has one or more bank accounts and credit cards, each with a name ("Barclays current") and a kind (current,
+savings, credit card or petty cash). Each gets its own account in the chart: current accounts 1200 to 1202, deposit
+accounts 1210 and 1211, petty cash 1230, credit cards 1240 and 1241. A statement belongs to one account: pick it when
+you add the file. A transfer between two of the client's own accounts is coded to the other account, and when both
+statements are in, the two lines are booked once. Paying a card off from the bank is a transfer, not spending.
+
+### Opening balances
+
+A client's first year has no year before it, so its opening balances are typed in once, from the client's last
+accounts: an amount on each balance sheet account (debits must equal credits), and for Debtors and Creditors the
+unpaid invoices that make them up (the customer or supplier, the amount, the invoice number if known). Payments in the
+year clear those unpaid invoices as they clear an invoice uploaded that year.
+
+### Closing a year
+
+Close year, on the Trial balance section, locks a year: no row, opening balance or setting of it can change until it
+is reopened. Closing carries the year forward: balance sheet accounts open the next year as they stand, the year's
+profit or loss goes to retained earnings (owners' capital for a business that isn't a company), and income and cost
+accounts start at zero. A year closes only after the ones before it and only when its trial balance balances; only the latest closed year can be reopened, and a change made after
+reopening flows into the next year's opening balances. While any year is closed, the client's year end, VAT
+registration and business type can't be changed.
+
+### Payroll reports
+
+A client with staff sends a monthly payroll report from its payroll software. It is read like an invoice and books
+the wages as costs: gross pay (7000 Gross Wages, or 7001 for directors), employer's NI (7006) and employer's pension
+(7007), against what is owed on 2220 Net Wages, 2210 PAYE and National Insurance and 2230 Pension Fund. The bank lines
+that pay the staff, HMRC and the pension provider are coded to those liability accounts and clear them. A bank line
+coded to wages with no payroll report for that month is flagged "Book wages from the payroll report".
+
+### Importing from the client's folder
+
+A client can have a folder on the computer the site runs on. Import from folder reads every file in it that is new
+since the last import into the year picked (and the bank account picked, for statements). A file is known by its
+contents, not its name, so a copy or a renamed file is skipped. Each file is kept in MongoDB first, then read into the
+books like an upload. Files of a type the site can't read, and files that fail their check, are listed with why.
+
+### MongoDB only
+
+Everything is kept in MongoDB: the clients, their years, rows and opening balances, and the original files. Set
+`MONGODB_URI` in `.env` (for example `mongodb://localhost:27017`) and, if you want another database than `ledgersync`,
+`MONGODB_DB_NAME`. With no `MONGODB_URI` the API refuses to start: `Set MONGODB_URI in .env: Super Accountant keeps
+its data in MongoDB.` Dropping the database removes every client. There is no other store.
+
+### The API
+
+Analyses run as background jobs: `POST /api/analyze` returns `{job_id}`, then `GET /api/jobs/{job_id}` reports
+progress and the result; `DELETE` cancels. The API takes an analysis or an import only with an `X-LedgerSync` header,
+which the pages send and a form on another web site can't. Up to five jobs run at once
+(`LEDGERSYNC_MAX_PARALLEL_JOBS`), and the UI sends that many files of an upload at a time; on Groq's free plan they
+mostly wait on its per-minute limits, so the gain shows on a paid plan. Money is sent and returned as strings, e.g.
+`"12.50"`. Send `vat` only when the document shows it; the API never changes it. Errors are
+`{"detail": {"code", "message"}}`.
+
+| Route | What it does |
+|---|---|
+| `GET /api/health` | The model and its availability |
+| `POST /api/analyze` | Reads one file or pasted text; with `client_id`, `year_start` and `bank_account` it saves the rows to that client's year |
+| `GET /api/jobs/{job_id}`, `DELETE /api/jobs/{job_id}` | A reading job's progress and result; cancel it |
+| `GET /api/accounts` | The chart (Sage 50-style codes); `?client_id=` gives the accounts that client's rows can be coded to |
+| `POST /api/transactions/validate`, `POST /api/trial-balance` | Check or post rows sent in the request, without saving anything (422 when a row can't be posted) |
+| `GET /api/clients`, `POST /api/clients` | List (`?archived=true` for archived ones) or add a client |
+| `GET /api/clients/{id}`, `PATCH /api/clients/{id}` | Read, change or archive a client |
+| `GET /api/clients/{id}/years` | The client's years, the first through the latest |
+| `GET /api/clients/{id}/years/{start}/ledger` | The year's rows and uploads |
+| `GET /api/clients/{id}/years/{start}/trial-balance` | The year's trial balance (422 while a row has an error to fix) |
+| `GET /api/clients/{id}/years/{start}/invoices` | The year's sales and purchase invoices |
+| `GET /api/clients/{id}/years/{start}/bank` | Each bank account against its statements |
+| `GET /api/clients/{id}/years/{start}/summary` | The Overview's figures |
+| `GET /api/clients/{id}/years/{start}/export.xlsx` | The trial balance and transactions as an Excel workbook |
+| `POST /api/clients/{id}/years/{start}/close`, `.../reopen` | Close a year, or reopen the latest closed one |
+| `POST /api/clients/{id}/import-folder` | Read the client's folder's new files into a year |
+| `GET /api/clients/{id}/opening-balances`, `PUT` the same | Read or set the first year's opening balances |
+| `PATCH` or `DELETE /api/clients/{id}/rows/{row_id}` | Edit a row (the original is kept; Revert puts it back) or remove it |
+| `POST /api/clients/{id}/uploads` | Add rows by hand |
+| `PATCH` or `DELETE /api/clients/{id}/uploads/{upload_id}` | Change a statement's bank account, or remove an upload |
+| `GET /api/clients/{id}/uploads/{upload_id}/file` | Download the original file |
+
+In the UI the sections are at `/clients/{id}/{year start}/{section}`, for example
+`/clients/3/2026-04-01/trial-balance`; a client's address on its own opens its latest year's Overview.
+
+A row's `vat_posted` is the VAT booked: the amount shown; or, when a person picked a rate in `vat_treatment`, the VAT
+inside the gross at that rate (flagged); otherwise none, because VAT can only be reclaimed when it was charged. The
+API fills in `vat_posted` and `net` afresh on every call, so an edited row can simply be sent back.
 
 ### Unpaid bills, claims and payments
 
 Documents are booked the way an accountant would (accruals):
 
-- A till or card receipt, or a bank line, is money that moved: it posts against 1200 Bank Current Account.
+- A till or card receipt, or a bank line, is money that moved: it posts against the bank account or card it went through (1200 Bank Current Account when the client has one).
   A receipt and the card payment for it on a bank statement (the same amount, within three days) are booked
   once, from the receipt, which shows the VAT; Unlink on the bank line books them apart. The amount and the date
   decide, since a bank names a shop its own way; the shop's name only chooses between payments that both fit.
 - An invoice starts unpaid. A bill, or a supplier's credit note, posts against 2100 Creditors; a sales
   invoice, or a credit note to a customer, against 1100 Debtors; an expense claim against 2110 Expenses
   Owed to Staff.
-- A bank line that pays an open invoice or claim clears it instead of being booked as a second expense:
-  the same counterparty, dated on or after the document and at most 31 days later. Names match when they
-  are the same once legal and bank words are set aside, however short ("HML PM Ltd"). A payment of exactly
-  what one document owes is applied first, whatever its date, so a bigger payment to the same person is
-  never taken as an overpayment of it. One payment can clear up to five documents from one counterparty.
-  When several could be meant, the table asks you to choose (Link) and the trial balance waits. Part
-  payments and overpayments are applied and flagged; a payment of the same amount under a different name is
-  only suggested. Unlink undoes a match.
+- A bank line that pays an open invoice or claim clears it instead of being booked as a second expense. A
+  payment of exactly what one open document from the same counterparty owes clears it however late it is made, and
+  across years. Any other payment (a part payment, an overpayment, or one for several documents) is applied
+  automatically only when it is dated on or after the document and within 120 days of it. Names match when they
+  are the same once legal and bank words are set aside, however short ("HML PM Ltd"). A payment of exactly what one
+  document owes is applied first, whatever its date, so a bigger payment to the same person is never taken as an
+  overpayment of it. One payment can clear up to five documents from one counterparty. When several could be
+  meant, the table asks you to choose (Link) and the trial balance waits. Part payments and overpayments are
+  applied and flagged; a payment of the same amount under a different name is only suggested, and a bank line to
+  or from a counterparty that has an open document it didn't clear carries a warning naming that document. Unlink
+  undoes a match.
 - A document with the same number, counterparty, direction and total as an earlier one (a reminder of a
   bill; a receipt photographed twice, on the same day) is a copy: it is not booked unless you tick Include.
 - The receipt or invoice for a line of an expense claim (the same amount, within three days) is booked instead
@@ -116,13 +214,15 @@ Documents are booked the way an accountant would (accruals):
 `pays`, `candidates`, `owed`, `document_direction`, `paid_by`, `copy_of` and `recorded_by`. Rows without a `document_type` are receipts, so older clients keep their postings. The
 design is in `docs/superpowers/specs/2026-10-06-unpaid-documents-and-payment-matching-design.md`.
 
-### Clients and saved work
+### Working on a client's rows
 
-The first page lists your clients. Add one with its company name, its business type (limited company,
-sole trader, partnership or LLP), its responsible person (the client's own contact, with email and phone)
-and whether it is VAT registered. Open a client to add its documents: each analysis is saved to that
-client in MongoDB when it finishes, with the decisions you make (Link, Include, edits), so
-closing the browser loses nothing. Archive hides a client and keeps everything; Restore brings it back.
+Each analysis is saved to the client's year in MongoDB when it finishes, with the decisions you make (Link,
+Include, edits), so closing the browser loses nothing. Each client's page keeps one table across its uploads and
+catches what was entered twice. A file already uploaded for that client, on any day, or picked twice, is skipped
+without being read. A row with the same amount and direction as a row from another upload, dated within three days of it (a receipt and its bank
+line, say), is flagged "possible duplicate" and left for a person to decide; two receipts on one expense claim
+are not, as the claim has a line for each. Show both puts the two side by side, and Not the same keeps them
+apart for good (with Undo).
 
 - Edit corrects a row: date, description, counterparty, money in or out, amount, VAT shown, account and
   document type. The row shows "Edited", and Revert puts back what the model read. Remove deletes one row (and
@@ -131,17 +231,12 @@ closing the browser loses nothing. Archive hides a client and keeps everything; 
   one to see only those rows.
 - A bank statement is checked against the balances it prints. A line the model missed or misread shows
   where the balance breaks, and the upload says "Doesn't add up".
-- Export to Excel downloads the client's trial balance and transactions as one workbook.
+- Export to Excel downloads the year's trial balance and transactions as one workbook.
+- A sale in a VAT-registered business booked from a bank line that shows no VAT is flagged.
 - VAT on client entertainment (7403) and on cars (0050 Cars) is not reclaimed; vans (0055 Vans) are. A
   limited company's owners use 2250 Director's Loan Account; other businesses use 3260 Drawings and
   3010 Capital Introduced. Rent from tenants goes to 4904 Rent Income, and cash from a cash machine to 1230
   Petty Cash. VAT at the 5% rate (a small business's energy) and £0.00 VAT are not flagged.
-
-Everything is kept in MongoDB: the clients, their rows and the original files. Set `MONGODB_URI` in `.env`
-(for example `mongodb://localhost:27017`) and, if you want another database than `ledgersync`,
-`MONGODB_DB_NAME`; with no `MONGODB_URI` the API refuses to start. Dropping the database removes every
-client. The endpoints are under `/api/clients`, and the design is in
-`docs/superpowers/specs/2026-10-06-clients-and-local-database-design.md`.
 
 ## The AI model (OpenRouter or Groq)
 
@@ -215,12 +310,15 @@ there. Without `LEDGERSYNC_TEST_MONGODB_URI` the MongoDB tests are skipped.
 
 ```bash
 LEDGERSYNC_TEST_MONGODB_URI=mongodb://localhost:27017 .venv/bin/python -m pytest   # fast tests, no network
+(cd frontend && npm test)                                                           # the frontend's tests
 .venv/bin/python -m pytest -m llm         # live test against the model (needs OPENROUTER_API_KEY or GROQ_API_KEY)
 ```
 
+The tests use a fake model (`tests/fakes.py`) and need no key; only `-m llm` calls the real one.
+
 ## Measuring accuracy
 
-`eval/` holds 31 synthetic UK documents (receipts including a mixed-VAT one and two with items of
+`eval/` holds 33 synthetic UK documents (receipts including a mixed-VAT one and two with items of
 different kinds, invoices including one already paid, bank statements in several bank formats
 including two of payees used nowhere else, spreadsheets and pasted text), each with the
 transactions a bookkeeper would record
@@ -287,6 +385,28 @@ right amount, both Sainsbury's rows included. The Tesco lines, the customer's pa
 refund came back right. Costa Coffee, an accountant's invoice and Google Ads did not. A receipt or
 invoice took a median 11.5 seconds instead of 1.1, partly waiting on the free plan's per-minute
 limits.
+
+### The client-level test set
+
+`eval/jobs/` holds 7 cases, each a whole client: its `client.json` (the client as the API takes it, with its
+`first_year_end` and `bank_accounts`, and `statements` saying which bank account each statement is for), its
+`documents/`, a `notes.md` explaining what it tests and how the figures were worked out, and
+`expected_trial_balance.json`, the first year's trial balance worked out by hand, account by account (debit less
+credit, so a credit is negative). The cases are a bank statement with two receipts, receipts and invoices matched to their payments, an unpaid invoice, a sole trader's
+expense claim, a bill paid 49 days late, a payroll report with the net pay, HMRC and pension payments, and a
+transfer between a current and a savings account. The runner adds the client, reads every document into its first
+year, and compares the year's trial balance with the expected one to the penny. No agent is involved, so it
+measures the model's reading and the booking rules together:
+
+```bash
+.venv/bin/python server.py                                          # in one terminal
+.venv/bin/python eval/run_job_eval.py --label my-change             # in another
+.venv/bin/python eval/run_job_eval.py --label my-change --case ltd- # only some cases
+```
+
+It writes `eval/results/<date>-jobs-<label>.json` and exits 0 only when every case matches. Reading the documents
+spends model credit. The expected figures themselves are checked without a model by `tests/test_eval_cases.py`,
+which gives each case the rows a good reading would give and runs them through the real API.
 
 To measure real documents, put anonymised copies in `eval/private/<case>/` (the input file plus an
 `expected.json` in the same format) and add `--private`; that folder is never committed. After

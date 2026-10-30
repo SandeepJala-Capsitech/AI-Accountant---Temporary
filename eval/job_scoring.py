@@ -1,4 +1,4 @@
-"""Scores an agent job's trial balance against one worked out by hand (eval/jobs/<case>/expected_trial_balance.json),
+"""Scores a client's year trial balance against one worked out by hand (eval/jobs/<case>/expected_trial_balance.json),
 account by account, to the penny.
 
 Each account is compared by its net: debit minus credit, so a credit balance is negative ("-72.00"). An account
@@ -17,18 +17,18 @@ def _money(amount: Decimal) -> str:
     return str(amount if amount != 0 else ZERO)   # never "-0.00"
 
 
-def net_by_account(snapshot: dict) -> dict[str, Decimal]:
-    """Each account's debit minus credit in a trial balance snapshot (its `lines`, money as exact strings), to two
-    places, leaving out the accounts that net to zero."""
+def net_by_account(trial_balance: dict) -> dict[str, Decimal]:
+    """Each account's debit minus credit in a trial balance (its `lines`, money as exact strings), to two places,
+    leaving out the accounts that net to zero."""
     nets: dict[str, Decimal] = {}
-    for line in snapshot.get("lines") or []:
+    for line in trial_balance.get("lines") or []:
         code = line["code"]
         nets[code] = nets.get(code, ZERO) + Decimal(line["debit"]) - Decimal(line["credit"])
     return {code: net.quantize(PENNY) for code, net in nets.items() if net != 0}
 
 
 def compare(expected: dict[str, Decimal], actual: dict[str, Decimal]) -> list[dict]:
-    """Every account whose net differs, sorted by code: what was expected, what the job booked, and the difference
+    """Every account whose net differs, sorted by code: what was expected, what the books give, and the difference
     (actual less expected), as money strings. An account missing on one side counts as "0.00" there."""
     differences = []
     for code in sorted(set(expected) | set(actual)):

@@ -13,7 +13,7 @@ or check any figure.
 
 All names, addresses, VAT numbers and the invoice number are made up for the test.
 
-## Client and period
+## Client and year
 
 | Setting | Value | Why |
 |---|---|---|
@@ -21,7 +21,7 @@ All names, addresses, VAT numbers and the invoice number are made up for the tes
 | Business type | `limited_company` | The case is a limited company. |
 | VAT registered | yes | The case is a VAT-registered company, so the VAT shown on the receipt and the invoice is reclaimed. |
 | Contact email | ashdown-matched-payments@example.com | Reserved test domain. |
-| Period | 2026-10-01 to 2026-10-31 | Every document is dated 01/10/2026 to 31/10/2026. |
+| First year end | 2027-03-31 | The client's first year runs 1 Apr 2026 to 31 Mar 2027, and every document, dated 01/10/2026 to 31/10/2026, is in it. |
 
 ## Documents (authored)
 
@@ -153,13 +153,13 @@ balance sums to zero.
   7601 would be 396.00, or the line's account would rise by 216.00.
 - **The VAT doubled or lost**: 2201 would not be 40.00.
 
-The gate is expected to pass every check for this case:
+The year's checks are expected to pass for this case:
 
 - the trial balance builds and balances;
 - the statement reconciles;
 - no row has an error;
 - nothing is in 9998;
-- every row is in the period.
+- every row is in the year.
 
 ## Judgement calls
 
@@ -168,5 +168,5 @@ The gate is expected to pass every check for this case:
 2. **I1 goes to 7601 Accountancy Fees.** Bookkeeping by chartered accountants is "accountants, bookkeeping and
    audit".
 3. **S3 goes to 7901 Bank Charges.** It is a bank account fee, so no VAT.
-4. **The opening balance of 5,000.00 is not booked.** The trial balance holds the period's transactions only, so 1200
+4. **The opening balance of 5,000.00 is not booked.** No opening balances are entered, so the trial balance holds the year's transactions only, so 1200
    shows the movement, −246.50.

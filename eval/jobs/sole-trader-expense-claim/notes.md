@@ -5,7 +5,7 @@ API, the ledger, the posting code and the extractor were not run to produce or c
 `ledgersync/accounts.py`, `ledgersync/posting.py`, `ledgersync/checks.py` and `ledgersync/matching.py` were read
 only for the chart and the posting conventions.
 
-## Client and period
+## Client and year
 
 | Setting | Value | Why |
 |---|---|---|
@@ -13,7 +13,7 @@ only for the chart and the posting conventions.
 | Business type | `sole_trader` | The case is a sole trader. The owner's personal spending goes through 3260 Drawings, not 2250 Director's Loan Account. |
 | VAT registered | no | Neither document shows a VAT number, a VAT amount or a payment to HMRC. No document here shows VAT, so this changes no figure either way. |
 | Contact email | sam.rivers@example.com | Reserved test domain. |
-| Period | 2026-09-01 to 2026-10-31 | The expense claim is dated 12/09/2026. The bank lines run 01/10 to 28/10/2026. |
+| First year end | 2027-03-31 | The client's first year runs 1 Apr 2026 to 31 Mar 2027. The expense claim is dated 12/09/2026 and the bank lines run 01/10 to 28/10/2026. |
 
 ## Documents
 
@@ -130,17 +130,15 @@ Check, adding the debit nets in table order: 549.00, then 669.00, 2164.93, 2464.
 
 1. **The claim is owed on 2110 Expenses Owed to Staff.** That is the app's convention for an expense claim, and the
    case tests "claim lines owed to staff". The note doesn't say who claimed. If it was the owner's own spending, an
-   accountant might credit 3000 Capital Introduced instead. The agent can't change a row's other side, so that is
-   not expected.
+   accountant might credit 3010 Capital Introduced instead. The documents don't say, so that is not expected.
 2. **No bank line repays the claim.** There is no £50.00 line, nor one for £18.00 or £32.00, so 2110 stays at
-   −50.00. An agent that links any bank line to the claim is wrong.
+   −50.00. A bank line linked to the claim is wrong.
 3. **Claim lines: Breakfast to 7406 Subsistence, Taxi to client to 7400 Travel.** This agrees with the fixture's
    `expected.json`.
 4. **Drawings, which this case is meant to test.** All three are departures from the fixture's `expected.json`,
    which puts B7, B15, B19 and B10 in 9998. Those labels were made for reading one document with no client known,
-   where Suspense means "for a person to review". Here the business is known to be a sole trader. The agent's
-   instructions are to make the most reasonable choice and log an exception when unsure, and to use Suspense only
-   when nothing fits. The three Drawings rows:
+   where Suspense means "for a person to review". Here the business is known to be a sole trader. The model reads each
+   row knowing the business is a sole trader, and is told to use Suspense only when nothing fits. The three Drawings rows:
    - **B15 SELFRIDGES £210.00 → 3260 Drawings.** A department store with no business purpose shown: for a sole
      trader, personal spending.
    - **B7 ETSY £24.50 → 3260 Drawings.** A marketplace with no business purpose shown. It is treated the same way as
@@ -151,15 +149,13 @@ Check, adding the debit nets in table order: 549.00, then 669.00, 2164.93, 2464.
      tax, is rejected.
 5. **B10 LINKEDIN ADS £200.00 → 8201 Subscriptions and Software.** This departs from the fixture's
    `expected.json`, which has 9998. LinkedIn Ads is a known, allowable business cost (advertising), so a careful
-   accountant wouldn't leave it in Suspense at the period end. That would also fail the gate's no_suspense check,
-   which the fix loop is built to clear.
+   accountant wouldn't leave it in Suspense at the year end. A row left in 9998 is flagged for a person to check.
    - The chart has no advertising account. The nearest fit is 8201, whose definition covers "online services";
      LinkedIn Ads is a self-serve online advertising service.
    - The alternative is 7603 Professional Fees ("other professional services"), which fits less well: no
      professional is engaged.
-   - An agent that picks 7603 will differ on 8201 (−200.00) and 7603 (+200.00). Read its exception before calling
-     that a mistake.
-   - With every row out of Suspense, the gate is expected to pass for this case.
+   - A reading that picks 7603 will differ on 8201 (−200.00) and 7603 (+200.00): a judgement call, not
+     necessarily a mistake.
 6. **Accounts that follow the chart's own definitions and the fixture's labels:**
    - B4 GREGGS → 7406 Subsistence: a bakery or takeaway.
    - B11 MORRISONS → 8205 Refreshments: a supermarket with no item detail is workplace groceries.
@@ -168,5 +164,5 @@ Check, adding the debit nets in table order: 549.00, then 669.00, 2164.93, 2464.
    - B12 M&S sandwiches for a client meeting → 7403 Entertainment.
    - B5 GUMTREE office desk → 0040 Furniture and Fixtures.
    - B8 ARGOS laptop → 0030 Office Equipment.
-7. **The opening balance (9,000.00) is not booked.** The trial balance holds the period's transactions only, so 1200
+7. **The opening balance (9,000.00) is not booked.** No opening balances are entered, so the trial balance holds the year's transactions only, so 1200
    shows the movement, +1,495.93.
