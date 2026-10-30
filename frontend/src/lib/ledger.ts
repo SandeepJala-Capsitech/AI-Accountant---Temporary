@@ -55,7 +55,7 @@ export const takesLines = (tx: Transaction): boolean => {
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
 // 9 Sep 2026, as the API's messages write a date.
-const longDate = (iso: string) => {
+export const longDate = (iso: string) => {
   const [year, month, day] = iso.split('-').map(Number)
   return `${day} ${MONTHS[month - 1]} ${year}`
 }

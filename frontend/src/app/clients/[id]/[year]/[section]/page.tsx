@@ -3,7 +3,9 @@
 import Link from 'next/link'
 import { useParams } from 'next/navigation'
 import { useClientYear } from '@/components/ClientYearContext'
+import BankSection from '@/components/BankSection'
 import DocumentsSection from '@/components/DocumentsSection'
+import InvoicesSection from '@/components/InvoicesSection'
 import TransactionsSection from '@/components/TransactionsSection'
 import { isSection, SECTIONS, sectionHref } from '@/lib/years'
 
@@ -22,6 +24,8 @@ export default function SectionPage() {
     )
   }
   if (params.section === 'documents') return <DocumentsSection />
+  if (params.section === 'bank') return <BankSection />
+  if (params.section === 'invoices') return <InvoicesSection />
   if (params.section === 'transactions') return <TransactionsSection />
   const section = SECTIONS.find(s => s.slug === params.section)!
   return (

@@ -205,6 +205,7 @@ textarea.input { height: auto; min-height: 150px; padding: 10px; resize: vertica
 .table tfoot td { border-top: 1px solid var(--rule); border-bottom: 0; font-weight: 500; }
 .num, .table .num { text-align: right; font-family: var(--font-mono), ui-monospace, monospace; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .mono { font-family: var(--font-mono), ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+.table .owed { color: var(--warn); background: var(--warn-tint); font-weight: 600; }
 .clickable { cursor: pointer; }
 .clickable:hover { background: var(--hover); }
 /* Edit, Add line, Revert and Remove one under another: side by side they took a quarter of the table. */
