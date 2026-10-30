@@ -2,7 +2,8 @@
 all of a client's rows, whatever their year, so a payment in one year clears an invoice of another, and each bank
 statement is checked whole; a year's views then take the rows of that year. A year opens with the balances the year
 before closed with, its profit carried into retained earnings or the owners' capital; the first year with the
-balances typed in from the client's last accounts, and the invoices unpaid behind its Debtors and Creditors."""
+balances typed in from the client's last accounts, and the invoices unpaid behind its Debtors and Creditors. A year
+the accountant closes keeps the balances it closed with, which the next year opens with, until it is reopened."""
 from __future__ import annotations
 
 import datetime as dt
@@ -13,17 +14,17 @@ from typing import Optional
 
 from . import years as yr
 from .accounts import BY_CODE, CREDITORS, DEBTORS, AccountType, reserve_for
-from .checks import normalise
+from .checks import long_date, normalise
 from .errors import InvalidInput, InvalidTransactions, NotFound
 from .export import file_name, workbook
 from .file_dates import check_file_date
 from .ledger import require_active, settings_for
 from .matching import match_documents
-from .models import (BusinessSettings, Client, Ledger, OpeningBalances, OpenItem, SavedRow, StatementCheck,
-                     TrialBalance, Upload, Year)
+from .models import (BusinessSettings, Client, ClosedYear, Ledger, OpeningBalances, OpenItem, SavedRow,
+                     StatementCheck, TrialBalance, Upload, Year)
 from .money import ZERO, to_money
 from .posting import trial_balance as post
-from .rows import StoredRow
+from .rows import StoredRow, now_iso
 from .statements import check_statement
 from .store_mongo import MongoStore
 
@@ -36,7 +37,7 @@ def _gbp(amount: Decimal) -> str:
 
 def _year(client: Client, n: int) -> Year:
     start, end = yr.year_bounds(client.first_year_end, n)
-    return Year(start=start, end=end, label=yr.label(end))
+    return Year(start=start, end=end, label=yr.label(end), closed=any(c.start == start for c in client.closed_years))
 
 
 def year_of_row(client: Client, row: StoredRow, uploads_by_id: dict[int, dict]) -> Optional[int]:
@@ -161,6 +162,16 @@ def _saved_rows(b: _Books, n: Optional[int]) -> tuple[list[SavedRow], dict[int, 
     return rows, checks
 
 
+def _changed_since_closed(b: _Books, n: int) -> bool:
+    """Whether closed year n's balances, worked out now, differ from the ones it closed with: say, a document
+    added to a later year changed how one of its rows is matched. True when they can't be worked out."""
+    saved = next(c.closing for c in b.client.closed_years if c.start == b.years[n].start)
+    try:
+        return _balances(_trial_balance(b, n)) != saved
+    except InvalidTransactions:
+        return True
+
+
 def _ledger(b: _Books, n: int) -> Ledger:
     transactions, checks = _saved_rows(b, n)
     held = {row.upload_id for row in transactions}
@@ -169,7 +180,10 @@ def _ledger(b: _Books, n: int) -> Ledger:
                       warnings=u["warnings"], created_at=u["created_at"], rows=u["row_count"],
                       statement=checks.get(u["id"]), bank_account=u["bank_account"], year_start=u["year_start"])
                for u in b.uploads if u["id"] in held or u["year_start"] == start]
-    return Ledger(client=b.client, year=b.years[n], years=b.years, uploads=uploads, transactions=transactions)
+    year = b.years[n]
+    if year.closed:
+        year = year.model_copy(update={"changed_since_closed": _changed_since_closed(b, n)})
+    return Ledger(client=b.client, year=year, years=b.years, uploads=uploads, transactions=transactions)
 
 
 def ledger(store: MongoStore, client_id: int, year_start: dt.date) -> Ledger:
@@ -192,22 +206,38 @@ def all_rows(store: MongoStore, client_id: int) -> list[SavedRow]:
     return _saved_rows(_books(store, client_id), None)[0]
 
 
+def _balances(tb: TrialBalance) -> dict[str, Decimal]:
+    """A trial balance's balances by account, signed with debits positive."""
+    return {line.code: line.debit - line.credit for line in tb.lines}
+
+
+def _carried(b: _Books, balances: dict[str, Decimal]) -> dict[str, Decimal]:
+    """Balances at a year's end as the next year opens with them: the income and costs in the reserve (retained
+    earnings, or the owners' capital)."""
+    reserve = reserve_for(b.client.business_type)
+    carried: dict[str, Decimal] = defaultdict(lambda: ZERO)
+    for code, balance in balances.items():
+        carried[reserve if BY_CODE[code].type.value in _PROFIT_AND_LOSS else code] += balance
+    return {code: balance for code, balance in carried.items() if balance != 0}
+
+
 def _opening(b: _Books, n: int) -> dict[str, Decimal]:
     """Year n's opening balances by account, signed with debits positive: the first year's typed lines; a later
-    year's, the balances of every row before it on top of those, with the income and costs of the years before it
-    in the reserve (retained earnings, or the owners' capital)."""
+    year's, the balances the latest closed year before it closed with (the typed lines when none is), and the
+    balances of every row of the years between, carried into the year."""
     typed = _typed(b.opening)
     if n == 0:
         return typed
+    closed = {c.start: c.closing for c in b.client.closed_years}
+    last = next((k for k in range(n - 1, -1, -1) if b.years[k].start in closed), None)
+    if last == n - 1:
+        return _carried(b, closed[b.years[last].start])
+    since, base = (-1, typed) if last is None else (last, _carried(b, closed[b.years[last].start]))
     try:
-        before = b.post(b.settings, keep=[p < n for p in b.placed], opening=typed)
+        before = b.post(b.settings, keep=[since < p < n for p in b.placed], opening=base)
     except InvalidTransactions as exc:
         raise InvalidTransactions(f"Fix the earlier years first: {exc.message}", problems=exc.problems) from exc
-    reserve = reserve_for(b.client.business_type)
-    carried: dict[str, Decimal] = defaultdict(lambda: ZERO)
-    for line in before.lines:
-        carried[reserve if line.type in _PROFIT_AND_LOSS else line.code] += line.debit - line.credit
-    return {code: balance for code, balance in carried.items() if balance != 0}
+    return _carried(b, _balances(before))
 
 
 def opening(store: MongoStore, client_id: int, year_start: dt.date) -> dict[str, Decimal]:
@@ -220,7 +250,10 @@ def trial_balance(store: MongoStore, client_id: int, year_start: dt.date) -> Tri
     """The year's trial balance: its opening balances plus its own rows, matched with what people decided as the
     ledger is, so it books the rows the ledger books; InvalidTransactions (422) while rows need fixing."""
     b = _books(store, client_id)
-    n = b.index(year_start)
+    return _trial_balance(b, b.index(year_start))
+
+
+def _trial_balance(b: _Books, n: int) -> TrialBalance:
     return b.post(b.settings_in(n), keep=[p == n for p in b.placed], opening=_opening(b, n))
 
 
@@ -277,3 +310,38 @@ def set_opening(store: MongoStore, client_id: int, opening: OpeningBalances) -> 
     check_opening(opening)
     store.set_opening(client_id, opening)
     return store.get_client(client_id)
+
+
+def close(store: MongoStore, client_id: int, year_start: dt.date) -> Client:
+    """Closes the year, after the ones before it, once its trial balance balances: it is locked until reopened,
+    and keeps the balances it closed with for the next year to open with."""
+    b = _books(store, client_id)
+    require_active(b.client)
+    n = b.index(year_start)
+    year = b.years[n]
+    if year.closed:
+        raise InvalidInput(f"The year to {long_date(year.end)} is already closed.")
+    still_open = next((y for y in b.years[:n] if not y.closed), None)
+    if still_open is not None:
+        raise InvalidInput(f"Close the year to {long_date(still_open.end)} first.")
+    try:
+        tb = _trial_balance(b, n)
+    except InvalidTransactions:
+        tb = None
+    if tb is None or not tb.is_balanced:
+        raise InvalidInput("The trial balance must balance before the year is closed.")
+    return store.close_year(client_id, ClosedYear(start=year.start, end=year.end, closed_at=now_iso(),
+                                                  closing=_balances(tb)))
+
+
+def reopen(store: MongoStore, client_id: int, year_start: dt.date) -> Client:
+    """Reopens the latest closed year, so it can be changed; the next year opens from its rows again."""
+    b = _books(store, client_id)
+    require_active(b.client)
+    year = b.years[b.index(year_start)]
+    if not year.closed:
+        raise InvalidInput(f"The year to {long_date(year.end)} is open.")
+    latest = b.client.closed_years[-1]
+    if latest.start != year_start:
+        raise InvalidInput(f"Reopen the year to {long_date(latest.end)} first.")
+    return store.reopen_year(client_id, year_start)
