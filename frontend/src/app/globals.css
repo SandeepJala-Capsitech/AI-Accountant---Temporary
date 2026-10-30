@@ -341,3 +341,24 @@ textarea.input { height: auto; min-height: 150px; padding: 10px; resize: vertica
   .bank-row { grid-template-columns: minmax(0, 1fr) auto; }
   .bank-row select { grid-column: 1; }
 }
+
+/* Client details and the year's summary in Overview */
+.details { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px 24px; }
+.details dt { font-size: 12px; color: var(--muted); }
+.details dd { margin: 2px 0 0; overflow-wrap: anywhere; }
+
+/* The first year's opening balances in Trial balance */
+.opening h3 { font-size: 14px; margin: 18px 0 8px; }
+.opening-rows { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+.opening-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.opening-row.invoice { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1.2fr) minmax(0, 0.8fr) minmax(0, 1fr) minmax(0, 0.8fr) auto; }
+.opening-row .link-btn { margin-left: 0; }
+.opening .add-btn, .opening .add-btns .btn-small { margin-left: 0; }
+.add-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.opening .notice { margin-top: 14px; }
+.problem { display: block; }
+.type-badge { font-size: 10px; padding: 1px 5px; text-transform: uppercase; }
+@media (max-width: 640px) {
+  .opening-row, .opening-row.invoice { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .opening-row > .wide { grid-column: 1 / -1; }
+}

@@ -1,8 +1,11 @@
 // Run with: npm test (Node's own test runner; Node strips the TypeScript types itself).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { BankCheck, Client, InvoiceSummary, Ledger, SavedRow } from './clients.ts'
-import { bankCheckNotice, bankCheckText, defaultBank, fullDate, linesFor, splitInvoices } from './sections.ts'
+import type { BankCheck, Client, InvoiceSummary, Ledger, OpeningBalances, SavedRow, Year } from './clients.ts'
+import type { TrialBalanceResult } from './api.ts'
+import {
+  bankCheckNotice, bankCheckText, closeQuestion, defaultBank, fullDate, linesFor, openingAccounts, openingErrors, splitInvoices, trialRows,
+} from './sections.ts'
 
 const check = (change: Partial<BankCheck> = {}): BankCheck => ({
   code: '1200', name: 'Current', kind: 'current', books: '100.00', statement: '100.00', statement_date: '2025-09-30',
@@ -70,4 +73,56 @@ test('an account shows its statement lines and the transfers into it from anothe
   const ledger = ledgerOf(c, [own, unset, other, transferIn, receipt])
   assert.deepEqual(linesFor(ledger, '1200').map(r => r.description), ['own', 'default account', 'transfer to current'])
   assert.deepEqual(linesFor(ledger, '1211').map(r => r.description), ['savings line', 'transfer to current'])
+})
+
+const year = (end: string): Year => ({ start: '2025-04-01', end, label: `Year to ${end}`, closed: false })
+
+test('opening balances must balance', () => {
+  assert.deepEqual(openingErrors({ lines: [{ code: '1200', debit: '10.00', credit: '0.00' }], unpaid: [] }),
+    ['Opening debits £10.00 and credits £0.00 must be the same.'])
+  assert.deepEqual(openingErrors({ lines: [], unpaid: [] }), [])
+})
+
+test('the unpaid invoices must make up Debtors and Creditors', () => {
+  const item = (direction: 'in' | 'out', amount: string) => ({ id: direction + amount, direction, counterparty: 'Acme', amount, number: null, date: null })
+  const balanced = (o: Partial<OpeningBalances>): OpeningBalances => ({
+    lines: [
+      { code: '1100', debit: '300.00', credit: '0.00' }, { code: '2100', debit: '0.00', credit: '120.50' },
+      { code: '3100', debit: '0.00', credit: '179.50' },
+    ],
+    unpaid: [item('in', '300.00'), item('out', '120.50')], ...o,
+  })
+  assert.deepEqual(openingErrors(balanced({})), [])
+  assert.deepEqual(openingErrors(balanced({ unpaid: [item('in', '250.00'), item('out', '120.50')] })),
+    ['The unpaid invoices from customers add up to £250.00; Debtors is £300.00.'])
+  assert.deepEqual(openingErrors(balanced({ unpaid: [item('in', '300.00')] })),
+    ['The unpaid bills from suppliers add up to £0.00; Creditors is £120.50.'])
+  assert.deepEqual(openingErrors(balanced({ unpaid: [item('in', '1300.00'), item('out', '120.50')] })),
+    ['The unpaid invoices from customers add up to £1,300.00; Debtors is £300.00.'])
+})
+
+test('closing a year asks first', () => {
+  assert.match(closeQuestion(year('2026-03-31')), /^Close the year to 31 Mar 2026\?/)
+  assert.equal(closeQuestion(year('2026-03-31')),
+    'Close the year to 31 Mar 2026? Its figures are locked and carried into the next year. You can reopen it later.')
+})
+
+test('the trial balance shows each account opening, moving and closing', () => {
+  const line = (code: string, debit: string, credit: string) => ({ code, name: `Account ${code}`, type: 'asset', debit, credit })
+  const result = {
+    opening: [line('1200', '100.00', '0.00'), line('3100', '0.00', '100.00')],
+    lines: [line('1200', '70.00', '0.00'), line('3100', '0.00', '100.00'), line('7100', '30.00', '0.00')],
+  } as unknown as TrialBalanceResult
+  assert.deepEqual(trialRows(result).map(r => [r.code, r.opening, r.movement, r.closing]), [
+    ['1200', 10000, -3000, 7000],
+    ['3100', -10000, 0, -10000],
+    ['7100', 0, 3000, 3000],
+  ])
+})
+
+test('opening balances are offered balance sheet accounts and the client\'s own bank accounts', () => {
+  const account = (code: string, type: string) => ({ code, name: code, type, vat: 'outside_scope' })
+  const chart = [account('7100', 'expense'), account('4000', 'income'), account('3200', 'equity'), account('1100', 'asset'),
+                 account('1201', 'asset'), account('1200', 'asset'), account('2100', 'liability')]
+  assert.deepEqual(openingAccounts(chart, client(['current'])).map(a => a.code), ['1100', '1200', '2100', '3200'])
 })

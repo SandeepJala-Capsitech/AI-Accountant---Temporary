@@ -79,7 +79,8 @@ export interface TrialBalanceLine {
 }
 
 export interface TrialBalanceResult {
-  lines: TrialBalanceLine[]
+  lines: TrialBalanceLine[]       // the closing balances: the opening balances plus the year's movements
+  opening?: TrialBalanceLine[]    // the opening balances alone; missing from older APIs
   total_debits: string
   total_credits: string
   is_balanced: boolean

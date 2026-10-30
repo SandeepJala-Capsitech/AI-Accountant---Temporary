@@ -3,11 +3,10 @@
 import Link from 'next/link'
 import { useParams, useRouter, useSelectedLayoutSegment } from 'next/navigation'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import ClientDialog from '@/components/ClientDialog'
 import { ClientYearContext, type ClientYear } from '@/components/ClientYearContext'
 import { useConfirm } from '@/components/ConfirmDialog'
 import { ApiError } from '@/lib/api'
-import { changeClient, getYearLedger, getYears, yearExportUrl, type ClientFields, type Ledger } from '@/lib/clients'
+import { changeClient, getYearLedger, getYears, yearExportUrl, type Ledger } from '@/lib/clients'
 import { BUSINESS_TYPES } from '@/lib/clientRules'
 import { isSection, SECTIONS, sectionHref, yearOption } from '@/lib/years'
 
@@ -25,7 +24,6 @@ export default function ClientYearLayout({ children }: { children: ReactNode }) 
   const [ledger, setLedger] = useState<Ledger | null>(null)
   const [missing, setMissing] = useState<'client' | 'year' | null>(null)
   const [error, setError] = useState('')
-  const [editing, setEditing] = useState(false)
   const latest = useRef(0)   // the newest load: an answer for a client or year left behind is dropped
 
   const reload = useCallback(async () => {
@@ -85,11 +83,6 @@ export default function ClientYearLayout({ children }: { children: ReactNode }) 
   const contact = [client.contact_name, client.contact_email, client.contact_phone].filter(Boolean).join(' · ')
   const open = segment && isSection(segment) ? segment : 'overview'
 
-  const saveDetails = async (fields: ClientFields) => {
-    await changeClient(client.id, fields)
-    setEditing(false)
-    await reload()
-  }
   const archive = async () => {
     if (!(await ask(`Archive ${client.name}? You can restore it from Show archived.`, 'Archive'))) return
     try { await changeClient(client.id, { archived: true }); await reload() } catch (e) { setError(message(e)) }
@@ -119,7 +112,6 @@ export default function ClientYearLayout({ children }: { children: ReactNode }) 
               {years.map(y => <option key={y.start} value={y.start}>{yearOption(y)}</option>)}
             </select>
           </label>
-          {!client.archived && <button type="button" className="btn" onClick={() => setEditing(true)}>Edit details</button>}
           <a className="btn" href={yearExportUrl(client.id, year.start)} download>Export to Excel</a>
           {!client.archived && <button type="button" className="btn btn-ghost" onClick={archive}>Archive</button>}
         </div>
@@ -142,7 +134,6 @@ export default function ClientYearLayout({ children }: { children: ReactNode }) 
         </nav>
         <div className="client-section">{children}</div>
       </div>
-      {editing && <ClientDialog client={client} onCancel={() => setEditing(false)} onSave={saveDetails} />}
       {confirmDialog}
     </ClientYearContext.Provider>
   )

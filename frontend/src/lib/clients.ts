@@ -215,3 +215,5 @@ export const removeUpload = (id: number, uploadId: number) =>
   request<Ledger>(`/api/clients/${id}/uploads/${uploadId}`, { method: 'DELETE' })
 // The accounts a row of this client can be coded to: its own bank accounts and cards among them.
 export const listAccounts = (clientId: number) => request<AccountChoice[]>(`/api/accounts?client_id=${clientId}`)
+// The whole chart, with the accounts a row is never coded to (Debtors, Creditors, the reserves) that opening balances use.
+export const listChart = () => request<AccountChoice[]>('/api/accounts')

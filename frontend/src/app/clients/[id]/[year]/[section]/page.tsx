@@ -6,10 +6,12 @@ import { useClientYear } from '@/components/ClientYearContext'
 import BankSection from '@/components/BankSection'
 import DocumentsSection from '@/components/DocumentsSection'
 import InvoicesSection from '@/components/InvoicesSection'
+import OverviewSection from '@/components/OverviewSection'
 import TransactionsSection from '@/components/TransactionsSection'
-import { isSection, SECTIONS, sectionHref } from '@/lib/years'
+import TrialBalancePanel from '@/components/TrialBalancePanel'
+import { isSection, sectionHref } from '@/lib/years'
 
-// One section of a client's year. Sections not built yet show their title.
+// One section of a client's year.
 export default function SectionPage() {
   const params = useParams<{ section: string }>()
   const { client, year } = useClientYear()
@@ -23,14 +25,10 @@ export default function SectionPage() {
       </div>
     )
   }
+  if (params.section === 'overview') return <OverviewSection />
   if (params.section === 'documents') return <DocumentsSection />
   if (params.section === 'bank') return <BankSection />
   if (params.section === 'invoices') return <InvoicesSection />
   if (params.section === 'transactions') return <TransactionsSection />
-  const section = SECTIONS.find(s => s.slug === params.section)!
-  return (
-    <section>
-      <h2>{section.title}</h2>
-    </section>
-  )
+  return <TrialBalancePanel />
 }
