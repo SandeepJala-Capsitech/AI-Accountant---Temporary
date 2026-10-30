@@ -1,14 +1,16 @@
 'use client'
 
 import { useState, type FormEvent } from 'react'
-import type { BusinessType, Client, ClientFields } from '@/lib/clients'
-import { BUSINESS_TYPES, clientFormErrors } from '@/lib/clientRules'
+import type { BankAccountKind, BusinessType, Client, ClientFields } from '@/lib/clients'
+import { bankAccountsLeft, BANK_KINDS, BUSINESS_TYPES, clientFormErrors } from '@/lib/clientRules'
 
 const NEW_CLIENT: ClientFields = {
   name: '', business_type: 'limited_company', contact_name: '', contact_email: '', contact_phone: '', vat_registered: true,
+  first_year_end: '', bank_accounts: [{ code: '', name: 'Bank current account', kind: 'current' }], folder: '',
 }
 
-// Adds a client, or edits one. The responsible person is the client's own contact.
+// Adds a client, or edits one. The responsible person is the client's own contact. A bank account that has a code
+// keeps it when saved (the server gives a new one the next free code of its kind).
 export default function ClientDialog({ client, onCancel, onSave }: {
   client?: Client
   onCancel: () => void
@@ -17,12 +19,16 @@ export default function ClientDialog({ client, onCancel, onSave }: {
   const [fields, setFields] = useState<ClientFields>(() => (client ? {
     name: client.name, business_type: client.business_type, contact_name: client.contact_name,
     contact_email: client.contact_email, contact_phone: client.contact_phone, vat_registered: client.vat_registered,
+    first_year_end: client.first_year_end, bank_accounts: client.bank_accounts.map(a => ({ ...a })), folder: client.folder,
   } : NEW_CLIENT))
   const [showErrors, setShowErrors] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const errors = clientFormErrors(fields)
   const set = <K extends keyof ClientFields>(key: K, value: ClientFields[K]) => setFields(f => ({ ...f, [key]: value }))
+  const changeAccount = (index: number, change: { name?: string; kind?: BankAccountKind }) =>
+    set('bank_accounts', fields.bank_accounts.map((a, i) => (i === index ? { ...a, ...change } : a)))
+  const kindToAdd = (Object.keys(BANK_KINDS) as BankAccountKind[]).find(kind => bankAccountsLeft(fields.bank_accounts, kind) > 0)
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
@@ -75,6 +81,47 @@ export default function ClientDialog({ client, onCancel, onSave }: {
                    onChange={e => set('contact_phone', e.target.value)} placeholder="e.g. +44 7700 900123" />
           </label>
         </div>
+        <label className="field">
+          <span>First year end</span>
+          <input className="input" type="date" value={fields.first_year_end}
+                 onChange={e => set('first_year_end', e.target.value)} />
+          <span className="hint">The end of the first year the books are kept for, e.g. 31 March 2026. Later years follow it.</span>
+          {showErrors && errors.first_year_end && <span className="field-error">{errors.first_year_end}</span>}
+        </label>
+        <fieldset className="field bank-accounts">
+          <legend>Bank accounts</legend>
+          {fields.bank_accounts.map((account, i) => (
+            <div className="bank-row" key={i}>
+              <input className="input" value={account.name} aria-label={`Bank account ${i + 1} name`}
+                     onChange={e => changeAccount(i, { name: e.target.value })} placeholder="e.g. Barclays current" />
+              <select className="input" value={account.kind} aria-label={`Bank account ${i + 1} kind`}
+                      disabled={!!account.code} title={account.code ? 'The kind of an account can’t change once it has a code.' : undefined}
+                      onChange={e => changeAccount(i, { kind: e.target.value as BankAccountKind })}>
+                {(Object.entries(BANK_KINDS) as [BankAccountKind, string][]).map(([kind, label]) => (
+                  <option key={kind} value={kind} disabled={kind !== account.kind && bankAccountsLeft(fields.bank_accounts, kind) < 1}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+              <button type="button" className="link-btn danger" onClick={() => set('bank_accounts', fields.bank_accounts.filter((_, j) => j !== i))}>
+                Remove
+              </button>
+            </div>
+          ))}
+          <div>
+            <button type="button" className="btn btn-small" disabled={!kindToAdd}
+                    onClick={() => kindToAdd && set('bank_accounts', [...fields.bank_accounts, { code: '', name: '', kind: kindToAdd }])}>
+              Add bank account
+            </button>
+          </div>
+          {showErrors && errors.bank_accounts && <span className="field-error">{errors.bank_accounts}</span>}
+        </fieldset>
+        <label className="field">
+          <span>Folder</span>
+          <input className="input" value={fields.folder} onChange={e => set('folder', e.target.value)}
+                 placeholder="e.g. /Users/you/Clients/Acme" />
+          <span className="hint">Where this client’s files are on this computer. Optional: it lets you import new files in one go.</span>
+        </label>
         <label className="switch">
           <input type="checkbox" checked={fields.vat_registered} onChange={e => set('vat_registered', e.target.checked)} />
           <span>VAT registered</span>

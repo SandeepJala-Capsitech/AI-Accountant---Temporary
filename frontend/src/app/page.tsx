@@ -5,8 +5,9 @@ import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import ClientDialog from '@/components/ClientDialog'
 import { useConfirm } from '@/components/ConfirmDialog'
-import { addClient, changeClient, listClients, type Client, type ClientFields, type ClientSummary } from '@/lib/clients'
+import { addClient, changeClient, getYears, listClients, type Client, type ClientFields, type ClientSummary, type Year } from '@/lib/clients'
 import { BUSINESS_TYPES, dayMonth, emptyListText, searchClients, showsInvitation } from '@/lib/clientRules'
+import { currentYear, isoDay, sectionHref } from '@/lib/years'
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
@@ -18,6 +19,7 @@ export default function ClientsPage() {
   const [clients, setClients] = useState<ClientSummary[] | null>(null)
   const [counts, setCounts] = useState({ active: 0, archived: 0 })
   const [query, setQuery] = useState('')
+  const [years, setYears] = useState<Record<number, Year[]>>({})   // each client's years, once they have arrived
   const [error, setError] = useState('')
   const [editing, setEditing] = useState<{ client?: Client } | null>(null)   // the dialog: adding, or editing one
 
@@ -33,6 +35,15 @@ export default function ClientsPage() {
   }, [showArchived])
 
   useEffect(() => { load() }, [load])
+
+  // Each client's current year, found from its years. A client whose years can't be fetched shows a dash.
+  useEffect(() => {
+    let alive = true
+    for (const c of clients ?? []) {
+      getYears(c.id).then(list => { if (alive) setYears(known => ({ ...known, [c.id]: list })) }, () => undefined)
+    }
+    return () => { alive = false }
+  }, [clients])
 
   const shown = useMemo(() => searchClients(clients ?? [], query), [clients, query])
 
@@ -52,6 +63,10 @@ export default function ClientsPage() {
     try { await changeClient(client.id, { archived: false }); await load() } catch (e) { setError(message(e)) }
   }
 
+  const today = isoDay(new Date())
+  // Straight to the current year's Overview once the years are known; until then the client's own address finds it.
+  const hrefOf = (c: ClientSummary) =>
+    years[c.id] ? sectionHref(c.id, currentYear(years[c.id], today).start, 'overview') : `/clients/${c.id}`
   const empty = clients !== null && showsInvitation(counts, showArchived)
   return (
     <>
@@ -87,6 +102,7 @@ export default function ClientsPage() {
                   <th>Company</th>
                   <th>Responsible person</th>
                   <th>VAT</th>
+                  <th>Current year</th>
                   <th className="num">Transactions</th>
                   <th className="num">To review</th>
                   <th className="num">Updated</th>
@@ -94,11 +110,11 @@ export default function ClientsPage() {
                 </tr>
               </thead>
               <tbody>
-                {clients === null && <tr><td colSpan={7} className="muted">Loading clients…</td></tr>}
+                {clients === null && <tr><td colSpan={8} className="muted">Loading clients…</td></tr>}
                 {shown.map(c => (
-                  <tr key={c.id} className="clickable" onClick={() => router.push(`/clients/${c.id}`)}>
+                  <tr key={c.id} className="clickable" onClick={() => router.push(hrefOf(c))}>
                     <td>
-                      <Link href={`/clients/${c.id}`} className="strong" onClick={e => e.stopPropagation()}>{c.name}</Link>
+                      <Link href={hrefOf(c)} className="strong" onClick={e => e.stopPropagation()}>{c.name}</Link>
                       <div className="muted small">{BUSINESS_TYPES[c.business_type]}</div>
                     </td>
                     <td>
@@ -109,6 +125,19 @@ export default function ClientsPage() {
                       <span className={c.vat_registered ? 'badge badge-accent' : 'badge badge-warn'}>
                         {c.vat_registered ? 'Registered' : 'Not registered'}
                       </span>
+                    </td>
+                    <td>
+                      {years[c.id] ? (() => {
+                        const year = currentYear(years[c.id], today)
+                        return (
+                          <>
+                            {year.label}{' '}
+                            <span className={year.closed ? 'badge badge-muted' : 'badge badge-accent'}>
+                              {year.closed ? 'Closed' : 'Open'}
+                            </span>
+                          </>
+                        )
+                      })() : <span className="muted">–</span>}
                     </td>
                     <td className="num">{c.rows}</td>
                     <td className={c.to_review ? 'num text-warn' : 'num'}>{c.to_review}</td>
@@ -127,7 +156,7 @@ export default function ClientsPage() {
                 ))}
                 {clients !== null && !shown.length && (
                   <tr>
-                    <td colSpan={7} className="muted">
+                    <td colSpan={8} className="muted">
                       {emptyListText(showArchived, query)}
                     </td>
                   </tr>

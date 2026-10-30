@@ -1,6 +1,6 @@
 // Rules the client pages share, kept apart from the network so node --test can run them.
 import type { Transaction } from './api'
-import type { AccountChoice, BusinessType, ClientFields, ClientSummary, EditableField, RowChange, SavedRow, StatementCheck,
+import type { AccountChoice, BankAccount, BankAccountKind, BusinessType, ClientFields, ClientSummary, EditableField, RowChange, SavedRow, StatementCheck,
               Upload } from './clients'
 import { money, totalsOf } from './ledger.ts'
 
@@ -40,7 +40,17 @@ export function emptyListText(showArchived: boolean, query: string): string {
   return showArchived ? 'No archived clients.' : 'No active clients. Show archived to restore one.'
 }
 
-export type ClientErrors = Partial<Record<'name' | 'contact_name' | 'contact_email', string>>
+export const BANK_KINDS: Record<BankAccountKind, string> = {
+  current: 'Current account', savings: 'Savings account', credit_card: 'Credit card', petty_cash: 'Petty cash',
+}
+
+// How many of each kind the chart has codes for (1200 to 1202, 1210 and 1211, 1240 and 1241, 1230).
+const BANK_LIMITS: Record<BankAccountKind, number> = { current: 3, savings: 2, credit_card: 2, petty_cash: 1 }
+
+export const bankAccountsLeft = (accounts: BankAccount[], kind: BankAccountKind) =>
+  BANK_LIMITS[kind] - accounts.filter(a => a.kind === kind).length
+
+export type ClientErrors = Partial<Record<'name' | 'contact_name' | 'contact_email' | 'first_year_end' | 'bank_accounts', string>>
 
 // What the client dialog says before saving; the API checks the same.
 export function clientFormErrors(fields: ClientFields): ClientErrors {
@@ -48,6 +58,12 @@ export function clientFormErrors(fields: ClientFields): ClientErrors {
   if (!fields.name.trim()) errors.name = 'Enter the company name'
   if (!fields.contact_name.trim()) errors.contact_name = 'Enter the responsible person'
   if (fields.contact_email.trim() && !fields.contact_email.includes('@')) errors.contact_email = 'Enter a valid email'
+  if (!fields.first_year_end) errors.first_year_end = "Enter the client's first year end"
+  const names = fields.bank_accounts.map(a => a.name.trim().toLowerCase())
+  const twice = names.findIndex((name, i) => name && names.indexOf(name) !== i)
+  if (!fields.bank_accounts.length) errors.bank_accounts = 'Add at least one bank account'
+  else if (names.some(name => !name)) errors.bank_accounts = 'Name each bank account'
+  else if (twice >= 0) errors.bank_accounts = `Two bank accounts are called ${fields.bank_accounts[twice].name.trim()}: give each its own name`
   return errors
 }
 

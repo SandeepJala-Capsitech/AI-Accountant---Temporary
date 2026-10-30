@@ -5,7 +5,7 @@ import type { Transaction } from './api.ts'
 import type { ClientSummary, SavedRow, Upload } from './clients.ts'
 import type { PickedFile } from './clientRules.ts'
 import {
-  accountList, changesOf, clientFormErrors, dayMonth, draftOf, emptyListText, figuresOf, lineTemplate, newRowFrom, requeue,
+  accountList, bankAccountsLeft, changesOf, clientFormErrors, dayMonth, draftOf, emptyListText, figuresOf, lineTemplate, newRowFrom, requeue,
   rowEditErrors, sameFileAs, searchClients, showsInvitation, statementText, transactionCount,
 } from './clientRules.ts'
 
@@ -13,7 +13,8 @@ const client = (change: Partial<ClientSummary> = {}): ClientSummary => ({
   id: 1, name: 'Business Cube Ltd', business_type: 'limited_company', contact_name: 'Jenny Clarke',
   contact_email: 'jenny@businesscube.co.uk', contact_phone: '', vat_registered: true, archived: false,
   archived_at: null, created_at: '2026-10-06T09:00:00+00:00', updated_at: '2026-10-06T09:00:00+00:00',
-  rows: 0, to_review: 0, ...change,
+  first_year_end: '2026-03-31', bank_accounts: [{ code: '1200', name: 'Bank current account', kind: 'current' }],
+  folder: '', rows: 0, to_review: 0, ...change,
 })
 
 const row = (change: Partial<SavedRow> = {}): SavedRow => ({
@@ -32,13 +33,28 @@ test('search finds clients by company, responsible person or email, ignoring cas
   assert.deepEqual(searchClients(clients, '  ').map(c => c.id), [1, 2])
 })
 
-test('the client dialog needs a company name, a responsible person and a real email', () => {
+test('the client dialog needs a company name, a responsible person, a first year end and named bank accounts', () => {
   const fields = { name: ' ', business_type: 'limited_company' as const, contact_name: '', contact_email: 'jenny',
-                   contact_phone: '', vat_registered: true }
+                   contact_phone: '', vat_registered: true, first_year_end: '',
+                   bank_accounts: [{ code: '', name: ' ', kind: 'current' as const }], folder: '' }
   assert.deepEqual(clientFormErrors(fields), {
     name: 'Enter the company name', contact_name: 'Enter the responsible person', contact_email: 'Enter a valid email',
+    first_year_end: "Enter the client's first year end", bank_accounts: 'Name each bank account',
   })
-  assert.deepEqual(clientFormErrors({ ...fields, name: 'Cube', contact_name: 'Jenny', contact_email: '' }), {})
+  const fixed = { ...fields, name: 'Cube', contact_name: 'Jenny', contact_email: '', first_year_end: '2026-03-31',
+                  bank_accounts: [{ code: '1200', name: 'Current', kind: 'current' as const }] }
+  assert.deepEqual(clientFormErrors(fixed), {})
+  assert.deepEqual(clientFormErrors({ ...fixed, bank_accounts: [] }), { bank_accounts: 'Add at least one bank account' })
+  assert.deepEqual(clientFormErrors({ ...fixed, bank_accounts: [...fixed.bank_accounts, { code: '', name: 'current', kind: 'savings' as const }] }),
+                   { bank_accounts: 'Two bank accounts are called current: give each its own name' })
+})
+
+test('the dialog offers only as many bank accounts of a kind as the chart has codes for', () => {
+  const current = (name: string) => ({ code: '', name, kind: 'current' as const })
+  assert.equal(bankAccountsLeft([current('a'), current('b')], 'current'), 1)
+  assert.equal(bankAccountsLeft([current('a'), current('b'), current('c')], 'current'), 0)
+  assert.equal(bankAccountsLeft([], 'petty_cash'), 1)
+  assert.equal(bankAccountsLeft([], 'credit_card'), 2)
 })
 
 test('the figures count the rows to review and what is still owed each way', () => {

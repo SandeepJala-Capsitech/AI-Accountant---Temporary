@@ -2,12 +2,13 @@
 
 import { useEffect, useState } from 'react'
 import type { TrialBalanceResult } from '@/lib/api'
-import { clientTrialBalance } from '@/lib/clients'
+import { getYearTrialBalance } from '@/lib/clients'
 import { money } from '@/lib/ledger'
 
 // The client's trial balance from its saved rows. A change to the rows clears one already shown.
-export default function TrialBalancePanel({ clientId, version, hasRows }: {
+export default function TrialBalancePanel({ clientId, yearStart, version, hasRows }: {
   clientId: number
+  yearStart: string
   version: number
   hasRows: boolean
 }) {
@@ -21,7 +22,7 @@ export default function TrialBalancePanel({ clientId, version, hasRows }: {
     setBusy(true)
     setError('')
     try {
-      setResult(await clientTrialBalance(clientId))
+      setResult(await getYearTrialBalance(clientId, yearStart))
     } catch (e) {
       setResult(null)
       setError(e instanceof Error ? e.message : String(e))

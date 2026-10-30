@@ -103,7 +103,13 @@ button, input, select, textarea { font: inherit; color: inherit; }
   padding-left: 14px; border-left: 1px solid var(--bar-rule);
   font-family: var(--font-serif), serif; font-size: 19px; font-weight: 600; letter-spacing: 0.01em; white-space: nowrap;
 }
+.header-nav { display: flex; align-items: center; gap: 4px; margin-right: auto; }
+.header-nav a { color: var(--on-bar-muted); text-decoration: none; padding: 6px 10px; border-radius: var(--radius); font-weight: 500; }
+.header-nav a:hover { background: var(--bar-hover); color: var(--on-bar); }
+.header-nav a:focus-visible { outline: 2px solid var(--on-bar); outline-offset: 2px; }
 .header-end { display: flex; align-items: center; gap: 14px; }
+/* Empty for now: the Agent button that a later project adds sits here. */
+.agent-slot { min-width: 112px; }
 .ai-status { font-size: 12.5px; color: var(--on-bar-muted); white-space: nowrap; }
 .ai-status::before { content: '●'; margin-right: 6px; }
 .ai-on::before { color: var(--bar-ok); }
@@ -120,6 +126,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   .brand-logo { height: 36px; }
   .brand-name { padding-left: 10px; font-size: 16px; }
   /* The dot stays; its words are kept for screen readers only. */
+  .agent-slot { display: none; }
   .ai-status-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 }
 
@@ -158,8 +165,16 @@ textarea.input { height: auto; min-height: 150px; padding: 10px; resize: vertica
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; font-size: 13px; color: var(--muted); }
 .field > span:first-child { color: var(--text); font-weight: 500; }
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.hint { font-size: 12.5px; color: var(--muted); }
 .field-error { color: var(--error); font-size: 12.5px; }
 .switch { display: flex; align-items: center; gap: 8px; margin: 4px 0 14px; cursor: pointer; }
+
+/* The bank accounts in the client dialog */
+.bank-accounts { border: 0; padding: 0; margin: 0 0 14px; min-width: 0; }
+.bank-accounts legend { color: var(--text); font-weight: 500; padding: 0; margin-bottom: 6px; }
+.bank-row { display: grid; grid-template-columns: minmax(0, 1fr) 170px auto; align-items: center; gap: 8px; margin-bottom: 8px; }
+.bank-row .link-btn { margin-left: 0; }
+.bank-accounts .btn-small { margin-left: 0; }
 
 /* Cards, sections, notices, figures */
 .card { background: var(--card); border: 1px solid var(--rule); border-radius: 10px; }
@@ -291,4 +306,28 @@ textarea.input { height: auto; min-height: 150px; padding: 10px; resize: vertica
 @media (max-width: 1100px) {
   .figures { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .manual-grid { grid-template-columns: 1fr; }
+}
+
+/* A client's year: the side menu on the left, the section in the middle */
+.page:has(.client-space) { max-width: 1840px; }
+.year-picker { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+.year-picker .input { width: auto; min-width: 210px; }
+.client-space { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 24px; align-items: start; }
+.side-menu { display: flex; flex-direction: column; gap: 2px; position: sticky; top: 16px; }
+.side-menu a {
+  padding: 8px 12px; border-radius: var(--radius); color: var(--text); text-decoration: none; font-weight: 500;
+  border-left: 3px solid transparent;
+}
+.side-menu a:hover { background: var(--hover); }
+.side-menu a[aria-current="page"] { background: var(--accent-tint); color: var(--on-tint); border-left-color: var(--accent); }
+.side-menu a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.client-section { min-width: 0; }
+.client-section > section > h2 { margin-bottom: 12px; }
+@media (max-width: 800px) {
+  .client-space { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .side-menu { flex-direction: row; overflow-x: auto; position: static; border-bottom: 1px solid var(--rule); padding-bottom: 6px; }
+  .side-menu a { white-space: nowrap; border-left: 0; border-bottom: 3px solid transparent; border-radius: 6px 6px 0 0; }
+  .side-menu a[aria-current="page"] { border-bottom-color: var(--accent); }
+  .bank-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .bank-row select { grid-column: 1; }
 }
