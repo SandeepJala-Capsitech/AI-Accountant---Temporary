@@ -86,6 +86,26 @@ def the_bills_payment_dated(day: dt.date) -> Transaction:
     return row(date=day, gross=Decimal("300.00"), document_type="statement", counterparty="SMITH SOLICITORS")
 
 
+@pytest.fixture
+def acme_with_statement_missing_a_line(store, acme) -> int:
+    """acme with a bank statement for September 2025 that closes at £100.00. Its rows are a £100.00 sale on 2 Sep and
+    a £25.00 stationery payment on 30 Sep, so the books hold £75.00: a £25.00 deposit was missed."""
+    line = dict(document_type="statement")
+    add_rows(store, acme,
+             row(**line, date=dt.date(2025, 9, 2), direction="in", gross=Decimal("100.00"), account_code="4000",
+                 counterparty="Bright Cafe", opening_balance=Decimal("0.00"), balance=Decimal("100.00")),
+             row(**line, date=dt.date(2025, 9, 30), gross=Decimal("25.00"), account_code="7504",
+                 counterparty="Paper Shop", balance=Decimal("75.00"), closing_balance=Decimal("100.00")))
+    return acme
+
+
+@pytest.fixture
+def acme_with_a_non_gbp_row(store, acme) -> int:
+    """acme with a $50.00 receipt in its first year, which has to be converted to pounds before it can be booked."""
+    add_rows(store, acme, row(date=dt.date(2025, 6, 1), gross=Decimal("50.00"), currency="USD"))
+    return acme
+
+
 def bill_row(ledger_):
     """The ledger's row of acme_with_unpaid_bill_in_year_one's bill."""
     return next(r for r in ledger_.transactions if r.document_ref == "bill")

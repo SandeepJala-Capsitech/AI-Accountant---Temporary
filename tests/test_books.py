@@ -2,8 +2,8 @@ from datetime import date
 from decimal import Decimal as D
 
 import pytest
-from helpers import (acme_two_years, acme_with_unpaid_bill_in_year_one, acme_with_year_one,  # noqa: F401 (fixtures)
-                     add_rows, bill_row, change_stationery_receipt_to, first_row_id, net, row,
+from helpers import (acme_two_years, acme_with_a_non_gbp_row, acme_with_statement_missing_a_line,  # noqa: F401 (fixtures)
+                     acme_with_unpaid_bill_in_year_one, acme_with_year_one, add_rows, bill_row, change_stationery_receipt_to, first_row_id, net, row,
                      the_bills_payment_dated)
 
 from ledgersync import books, ledger
@@ -305,3 +305,92 @@ def test_a_bank_account_can_still_be_added_after_closing(store, acme_with_year_o
         current.model_copy(update={"name": "Barclays current"}), BankAccount(name="Amex card", kind="credit_card")]))
     assert [(a.name, a.kind) for a in changed.bank_accounts] == [("Barclays current", "current"),
                                                                  ("Amex card", "credit_card")]
+
+
+# ─── Invoices, bank checks and the year's summary (Task 9) ────────────────────
+
+def test_an_invoice_paid_next_year_shows_as_owed_at_the_year_end_and_paid_now(store, acme_with_unpaid_bill_in_year_one):
+    add_rows(store, acme_with_unpaid_bill_in_year_one, the_bills_payment_dated(date(2026,5,10)))
+    [bill] = books.invoices(store, acme_with_unpaid_bill_in_year_one, date(2026,4,1))
+    assert bill.kind == "purchase" and bill.owed == 0 and bill.paid_by[0].date == date(2026,5,10)
+
+
+def test_the_bank_check_compares_the_books_with_the_statement(store, acme_with_statement_missing_a_line):
+    [check] = books.bank_checks(store, acme_with_statement_missing_a_line, date(2025,4,1))
+    assert check.difference == D("-25.00") and check.statement_date == date(2025,9,30)
+
+
+def test_a_blocked_trial_balance_shows_in_the_summary(store, acme_with_a_non_gbp_row):
+    s = books.summary(store, acme_with_a_non_gbp_row, date(2025,4,1))
+    assert s.trial_balance == "blocked" and "Convert" in s.problems[0]
+
+
+def test_a_sale_part_paid_in_the_year_shows_what_is_paid_and_owed(store, acme):
+    add_rows(store, acme, row(date=date(2025,6,1), direction="in", gross=D("1200.00"), vat=D("200.00"),
+                              account_code="4000", document_type="invoice", counterparty="Bright Cafe",
+                              document_number="INV-7", document_ref="sale"),
+             row(date=date(2025,6,20), direction="in", gross=D("500.00"), document_type="statement",
+                 counterparty="BRIGHT CAFE"))
+    [sale] = books.invoices(store, acme, YEAR_1)
+    assert (sale.kind, sale.counterparty, sale.number, sale.date) == ("sale", "Bright Cafe", "INV-7", date(2025,6,1))
+    assert (sale.total, sale.paid, sale.owed, sale.brought_forward) == (D("1200.00"), D("500.00"), D("700.00"), False)
+    assert books.summary(store, acme, YEAR_1).unpaid_sales == D("700.00")
+
+
+def test_an_unpaid_item_brought_forward_is_listed_first_with_its_own_date_and_number(store, acme):
+    books.set_opening(store, acme, OpeningBalances(
+        lines=[OpeningLine(code="1200", debit=D("500.00")), OpeningLine(code="2100", credit=D("500.00"))],
+        unpaid=[OpenItem(id="1", direction="out", counterparty="Smith Solicitors Ltd", amount=D("500.00"),
+                         number="S-12", date=date(2025,2,14))]))
+    add_rows(store, acme, row(date=date(2025,7,1), gross=D("40.00"), document_type="invoice", counterparty="BT",
+                              document_ref="bt"))
+    [old, new] = books.invoices(store, acme, YEAR_1)
+    assert (old.kind, old.number, old.date, old.owed, old.brought_forward) == ("purchase", "S-12", date(2025,2,14),
+                                                                              D("500.00"), True)
+    assert (new.counterparty, new.brought_forward) == ("BT", False)
+
+
+def test_a_bill_paid_before_the_year_started_is_not_listed_in_it(store, acme_with_unpaid_bill_in_year_one):
+    add_rows(store, acme_with_unpaid_bill_in_year_one, the_bills_payment_dated(date(2026,3,20)))
+    assert books.invoices(store, acme_with_unpaid_bill_in_year_one, YEAR_2) == []
+    [bill] = books.invoices(store, acme_with_unpaid_bill_in_year_one, YEAR_1)
+    assert (bill.owed, bill.paid) == (0, D("300.00"))
+
+
+def test_a_bank_account_without_a_statement_shows_its_books_at_the_year_end(store, acme_with_year_one):
+    [check] = books.bank_checks(store, acme_with_year_one, YEAR_1)
+    assert (check.code, check.books, check.statement, check.statement_date, check.difference) == (
+        "1200", D("-60.00"), None, None, None)
+
+
+def test_a_credit_card_is_shown_as_what_is_owed_on_it(store, acme):
+    ledger.change_client(store, acme, ClientPatch(bank_accounts=[
+        *store.get_client(acme).bank_accounts, BankAccount(name="Amex card", kind="credit_card")]))
+    card = store.get_client(acme).bank_accounts[1].code
+    line = dict(document_type="statement", bank_account=card, account_code="7504", counterparty="Paper Shop")
+    add_rows(store, acme, row(**line, date=date(2025,8,1), gross=D("80.00"), opening_balance=D("0.00"),
+                              balance=D("80.00")),
+             row(**line, date=date(2025,8,9), gross=D("20.00"), balance=D("100.00"), closing_balance=D("100.00")),
+             bank_account=card)
+    current, amex = books.bank_checks(store, acme, YEAR_1)
+    assert (current.books, current.statement) == (0, None)
+    assert (amex.books, amex.statement, amex.difference) == (D("100.00"), D("100.00"), D("0.00"))
+
+
+def test_the_summary_counts_the_rows_to_review_and_checks_the_banks(store, acme_with_statement_missing_a_line):
+    s = books.summary(store, acme_with_statement_missing_a_line, YEAR_1)
+    assert (s.rows, s.trial_balance, s.problems) == (2, "balanced", [])
+    assert s.to_review == 1 and s.bank[0].difference == D("-25.00")
+    assert not s.year.closed
+
+
+def test_a_blocked_year_has_no_bank_checks_and_the_bank_route_refuses(store, acme_with_a_non_gbp_row):
+    assert books.summary(store, acme_with_a_non_gbp_row, YEAR_1).bank == []
+    with pytest.raises(InvalidTransactions):
+        books.bank_checks(store, acme_with_a_non_gbp_row, YEAR_1)
+
+
+def test_an_unknown_year_is_not_found_for_each_view(store, acme):
+    for view in (books.invoices, books.bank_checks, books.summary):
+        with pytest.raises(NotFound, match="That year was not found."):
+            view(store, acme, date(2025, 4, 2))

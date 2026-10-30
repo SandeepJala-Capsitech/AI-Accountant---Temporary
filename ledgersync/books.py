@@ -14,14 +14,14 @@ from typing import Optional
 
 from . import years as yr
 from .accounts import BY_CODE, CREDITORS, DEBTORS, AccountType, reserve_for
-from .checks import long_date, normalise
+from .checks import booked, long_date, normalise
 from .errors import InvalidInput, InvalidTransactions, NotFound
 from .export import file_name, workbook
 from .file_dates import check_file_date
-from .ledger import ensure_open, require_active, settings_for
-from .matching import match_documents
-from .models import (BusinessSettings, Client, ClosedYear, Ledger, OpeningBalances, OpenItem, SavedRow,
-                     StatementCheck, TrialBalance, Upload, Year)
+from .ledger import ensure_open, needs_review, require_active, settings_for
+from .matching import DocumentStatus, match_documents
+from .models import (BankCheck, BusinessSettings, Client, ClosedYear, InvoiceSummary, Ledger, OpeningBalances, OpenItem,
+                     SavedRow, StatementCheck, Transaction, TrialBalance, Upload, Year, YearSummary)
 from .money import ZERO, to_money
 from .posting import trial_balance as post
 from .rows import StoredRow, now_iso
@@ -135,12 +135,18 @@ def years_of(store: MongoStore, client_id: int, today: dt.date) -> list[Year]:
     return _books(store, client_id, today).years
 
 
+def _matched(b: _Books, settings: BusinessSettings) -> tuple[list[Transaction], dict[str, DocumentStatus]]:
+    """All the client's rows matched together with the invoices brought forward, in the order of b.stored, and what
+    is still owed on each document, by its ref."""
+    return match_documents([normalise(row.tx, settings) for row in b.stored], settings, b.read, b.apart, b.unpaid)
+
+
 def _saved_rows(b: _Books, n: Optional[int]) -> tuple[list[SavedRow], dict[int, Optional[StatementCheck]]]:
     """The rows of year n (every row when None), matched over all the client's rows and the invoices brought forward,
     then each upload's bank lines checked whole against the balances its statement prints, and its document's date
     against its file name's; and each upload's statement check."""
     settings = b.settings if n is None else b.settings_in(n)
-    ready, _ = match_documents([normalise(row.tx, settings) for row in b.stored], settings, b.read, b.apart, b.unpaid)
+    ready, _ = _matched(b, settings)
     positions: dict[int, list[int]] = defaultdict(list)
     for k, row in enumerate(b.stored):
         positions[row.upload_id].append(k)
@@ -172,6 +178,14 @@ def _changed_since_closed(b: _Books, n: int) -> bool:
         return True
 
 
+def _year_now(b: _Books, n: int) -> Year:
+    """Year n, a closed one saying whether its rows now work out to other balances than it closed with."""
+    year = b.years[n]
+    if year.closed:
+        year = year.model_copy(update={"changed_since_closed": _changed_since_closed(b, n)})
+    return year
+
+
 def _ledger(b: _Books, n: int) -> Ledger:
     transactions, checks = _saved_rows(b, n)
     held = {row.upload_id for row in transactions}
@@ -180,10 +194,7 @@ def _ledger(b: _Books, n: int) -> Ledger:
                       warnings=u["warnings"], created_at=u["created_at"], rows=u["row_count"],
                       statement=checks.get(u["id"]), bank_account=u["bank_account"], year_start=u["year_start"])
                for u in b.uploads if u["id"] in held or u["year_start"] == start]
-    year = b.years[n]
-    if year.closed:
-        year = year.model_copy(update={"changed_since_closed": _changed_since_closed(b, n)})
-    return Ledger(client=b.client, year=year, years=b.years, uploads=uploads, transactions=transactions)
+    return Ledger(client=b.client, year=_year_now(b, n), years=b.years, uploads=uploads, transactions=transactions)
 
 
 def ledger(store: MongoStore, client_id: int, year_start: dt.date) -> Ledger:
@@ -255,6 +266,121 @@ def trial_balance(store: MongoStore, client_id: int, year_start: dt.date) -> Tri
 
 def _trial_balance(b: _Books, n: int) -> TrialBalance:
     return b.post(b.settings_in(n), keep=[p == n for p in b.placed], opening=_opening(b, n))
+
+
+def _total_and_date(rows: list[Transaction]) -> tuple[Decimal, Optional[dt.date]]:
+    """A document's total (its rows' gross, those the other way taken off) and its date, its latest row's."""
+    total = sum((tx.gross if tx.direction == rows[0].direction else -tx.gross for tx in rows), ZERO)
+    days = [tx.date for tx in rows if tx.date]
+    return abs(total), max(days, default=None)
+
+
+def _invoices(b: _Books, n: int) -> list[InvoiceSummary]:
+    ready, statuses = _matched(b, b.settings_in(n))
+    start = b.years[n].start
+    refs: dict[str, list[int]] = defaultdict(list)
+    for k, tx in enumerate(ready):
+        if tx.document_type == "invoice" and booked(tx) and tx.claimed_in is None:
+            refs[tx.document_ref or f"row-{k}"].append(k)
+
+    def summary(ref: str, sale: bool, who: Optional[str], number: Optional[str], day: Optional[dt.date],
+                total: Decimal, here: bool) -> Optional[InvoiceSummary]:
+        """The invoice if it is dated in the year (here), or was still owed when the year started."""
+        status = statuses[ref]
+        if not here and total - sum((p.amount for p in status.paid_by if p.date and p.date < start), ZERO) <= 0:
+            return None
+        return InvoiceSummary(ref=ref, kind="sale" if sale else "purchase", counterparty=who, number=number, date=day,
+                              total=total, paid=total - status.open, owed=status.open, paid_by=status.paid_by,
+                              brought_forward=not here)
+
+    found = []
+    for ref, ks in refs.items():
+        if ref not in statuses:
+            continue
+        rows = [ready[k] for k in ks]
+        total, day = _total_and_date(rows)
+        latest = next((k for k in ks if ready[k].date == day), ks[0])
+        if b.placed[latest] <= n:
+            found.append(summary(ref, rows[0].contra_account_code == DEBTORS,
+                                 next((tx.counterparty for tx in rows if tx.counterparty), None),
+                                 next((tx.document_number for tx in rows if tx.document_number), None), day, total,
+                                 b.placed[latest] == n))
+    for item in b.opening.unpaid:
+        found.append(summary(f"ob-{item.id}", item.direction.value == "in", item.counterparty, item.number, item.date,
+                             item.amount, False))
+    return sorted((i for i in found if i), key=lambda i: (i.date is None, i.date or dt.date.min, i.ref))
+
+
+def invoices(store: MongoStore, client_id: int, year_start: dt.date) -> list[InvoiceSummary]:
+    """The year's booked invoices, and the earlier ones and open items still owed when it started, oldest first. Each
+    says what has been paid and what is still owed after every payment, in any year."""
+    b = _books(store, client_id)
+    return _invoices(b, b.index(year_start))
+
+
+def _bank_checks(b: _Books, n: int, tb: TrialBalance) -> list[BankCheck]:
+    # Each account's latest statement ending in the year: its last line's date and the closing balance it prints.
+    latest: dict[str, tuple[dt.date, int, Decimal]] = {}
+    for upload in b.uploads:
+        lines = [k for k, row in enumerate(b.stored) if row.upload_id == upload["id"]
+                 and row.tx.document_type == "statement"]
+        dated = [k for k in lines if b.stored[k].tx.date]
+        closings = [b.stored[k].tx.closing_balance for k in lines if b.stored[k].tx.closing_balance is not None]
+        if not dated or not closings:
+            continue
+        last = max(dated, key=lambda k: (b.stored[k].tx.date, k))
+        account = upload["bank_account"] or b.settings.bank_account
+        day = b.stored[last].tx.date
+        if b.placed[last] == n and (account not in latest or (day, upload["id"]) > latest[account][:2]):
+            latest[account] = (day, upload["id"], closings[-1])
+
+    def held(code: str, day: Optional[dt.date]) -> Decimal:
+        """What the books hold in the account, from its opening and the year's rows up to day (all of them if None)."""
+        moved = sum((line.debit - line.credit for line in tb.journal if line.code == code and (
+            day is None or (b.stored[line.transaction].tx.date or dt.date.max) <= day)), ZERO)
+        balance = moved + sum((line.debit - line.credit for line in tb.opening if line.code == code), ZERO)
+        return -balance if next(a.kind for a in b.client.bank_accounts if a.code == code) == "credit_card" else balance
+
+    checks = []
+    for account in b.client.bank_accounts:
+        day, _, printed = latest.get(account.code, (None, 0, None))
+        books = held(account.code, day)
+        checks.append(BankCheck(code=account.code, name=account.name, kind=account.kind, books=books, statement=printed,
+                                statement_date=day, difference=None if printed is None else books - printed))
+    return checks
+
+
+def bank_checks(store: MongoStore, client_id: int, year_start: dt.date) -> list[BankCheck]:
+    """One check for each of the client's bank accounts: its balance in the books, from the opening balances and the
+    year's rows up to the date of its latest statement of the year (the year's end with none), against that
+    statement's closing balance, both as the statement prints it (what a card owes is positive). InvalidTransactions
+    (422) while rows need fixing."""
+    b = _books(store, client_id)
+    n = b.index(year_start)
+    return _bank_checks(b, n, _trial_balance(b, n))
+
+
+def summary(store: MongoStore, client_id: int, year_start: dt.date) -> YearSummary:
+    """The year at a glance. While rows need fixing its trial balance is blocked, with the problems, and there are no
+    bank checks, which are worked out from it. What is unpaid is what is still owed on the year's invoices."""
+    b = _books(store, client_id)
+    n = b.index(year_start)
+    rows, _ = _saved_rows(b, n)
+    owed = _invoices(b, n)
+    problems: list[str] = []
+    bank: list[BankCheck] = []
+    try:
+        tb = _trial_balance(b, n)
+        bank = _bank_checks(b, n, tb)
+        if not tb.is_balanced:
+            problems = [f"The trial balance doesn't balance: debits {_gbp(tb.total_debits)}, credits "
+                        f"{_gbp(tb.total_credits)}."]
+    except InvalidTransactions as exc:
+        problems = exc.problems
+    return YearSummary(year=_year_now(b, n), rows=len(rows), to_review=sum(needs_review(r) for r in rows),
+                       unpaid_sales=sum((i.owed for i in owed if i.kind == "sale"), ZERO),
+                       unpaid_purchases=sum((i.owed for i in owed if i.kind == "purchase"), ZERO), bank=bank,
+                       trial_balance="blocked" if problems else "balanced", problems=problems)
 
 
 def export(store: MongoStore, client_id: int, year_start: dt.date, day: dt.date) -> tuple[bytes, str]:

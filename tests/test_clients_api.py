@@ -97,6 +97,21 @@ def test_the_ledger_pairs_a_bill_and_its_payment_saved_in_two_uploads(api):
     assert (line["edited"], line["original"]) == (False, None)
 
 
+def test_a_years_invoices_bank_checks_and_summary_are_served(api):
+    client = api()
+    cid = add(client)["id"]
+    manual(client, cid, BILL)
+    year = f"/api/clients/{cid}/years/{YEAR}"
+    [bill] = client.get(f"{year}/invoices").json()
+    assert (bill["kind"], bill["total"], bill["paid"], bill["owed"]) == ("purchase", "72.00", "0.00", "72.00")
+    [bank] = client.get(f"{year}/bank").json()
+    assert (bank["code"], bank["books"], bank["statement"]) == ("1200", "0.00", None)
+    summary = client.get(f"{year}/summary").json()
+    assert (summary["rows"], summary["unpaid_purchases"], summary["trial_balance"]) == (1, "72.00", "balanced")
+    for view in ("invoices", "bank", "summary"):
+        assert client.get(f"/api/clients/{cid}/years/2020-04-01/{view}").status_code == 404
+
+
 def test_links_and_edits_rematch_the_ledger_and_revert_undoes_an_edit(api):
     client = api()
     cid = add(client)["id"]

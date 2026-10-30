@@ -21,9 +21,10 @@ from ledgersync.extractor import TransactionExtractor
 from ledgersync.model_client import ModelClient
 from ledgersync.jobs import JobStore
 from ledgersync.matching import match
-from ledgersync.models import (AnalysisResult, BusinessSettings, BusinessType, Client, ClientFields, ClientPatch,
-                               ClientSummary, Ledger, LedgerRequest, ManualUpload, OpeningBalances, RowPatch,
-                               TransactionList, TrialBalance, UploadPatch, Year)
+from ledgersync.models import (AnalysisResult, BankCheck, BusinessSettings, BusinessType, Client, ClientFields,
+                               ClientPatch, ClientSummary, InvoiceSummary, Ledger, LedgerRequest, ManualUpload,
+                               OpeningBalances, RowPatch, TransactionList, TrialBalance, UploadPatch, Year,
+                               YearSummary)
 from ledgersync.store_mongo import MongoStore
 
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -243,6 +244,18 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
     @app.get("/api/clients/{client_id}/years/{start}/trial-balance", response_model=TrialBalance)
     def year_trial_balance(client_id: int, start: dt.date):
         return books.trial_balance(store, client_id, start)
+
+    @app.get("/api/clients/{client_id}/years/{start}/invoices", response_model=list[InvoiceSummary])
+    def year_invoices(client_id: int, start: dt.date):
+        return books.invoices(store, client_id, start)
+
+    @app.get("/api/clients/{client_id}/years/{start}/bank", response_model=list[BankCheck])
+    def year_bank(client_id: int, start: dt.date):
+        return books.bank_checks(store, client_id, start)
+
+    @app.get("/api/clients/{client_id}/years/{start}/summary", response_model=YearSummary)
+    def year_summary(client_id: int, start: dt.date):
+        return books.summary(store, client_id, start)
 
     @app.post("/api/clients/{client_id}/years/{start}/close", response_model=Client)
     def close_year(client_id: int, start: dt.date):

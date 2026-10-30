@@ -389,6 +389,46 @@ class Ledger(BaseModel):
     transactions: list[SavedRow]
 
 
+class InvoiceSummary(BaseModel):
+    """One sales or purchase invoice of a year, with what has been paid and what is still owed after every payment
+    matched to it, in any year. brought_forward: dated before the year and still owed when it started."""
+    ref: str
+    kind: Literal["sale", "purchase"]
+    counterparty: Optional[str] = None
+    number: Optional[str] = None
+    date: Optional[dt.date] = None
+    total: Decimal
+    paid: Decimal
+    owed: Decimal
+    paid_by: list[Settlement] = Field(default_factory=list)
+    brought_forward: bool = False
+
+
+class BankCheck(BaseModel):
+    """A bank account's balance in the books against the closing balance of its latest statement of the year, both
+    as the statement prints it (a card's, what is owed on it). difference: books less statement."""
+    code: str
+    name: str
+    kind: BankAccountKind
+    books: Decimal
+    statement: Optional[Decimal] = None
+    statement_date: Optional[dt.date] = None
+    difference: Optional[Decimal] = None
+
+
+class YearSummary(BaseModel):
+    """A year at a glance: its rows and those to review, what is unpaid, its bank checks and whether its trial
+    balance can be worked out (blocked, with the problems that stop it)."""
+    year: Year
+    rows: int
+    to_review: int
+    unpaid_sales: Decimal
+    unpaid_purchases: Decimal
+    bank: list[BankCheck]
+    trial_balance: Literal["balanced", "blocked"]
+    problems: list[str] = Field(default_factory=list)
+
+
 class RowPatch(BaseModel):
     """A person's change to a saved row: Link, Include or Not the same, an edit of what was read, or revert. Only
     the fields sent change; ledger.change_row checks them."""
