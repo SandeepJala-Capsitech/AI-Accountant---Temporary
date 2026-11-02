@@ -18,6 +18,35 @@ def test_without_mongodb_the_api_refuses_to_start():
         create_app(Settings(mongodb_uri=""), model_client=FakeModel())
 
 
+class SpyStore:
+    """Stands in for a MongoStore and records whether it was closed."""
+    db = None
+
+    def __init__(self, *args, **kwargs):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+def test_the_app_leaves_a_store_it_was_given_open_at_shutdown():
+    store = SpyStore()
+    app = create_app(Settings(warmup=False), model_client=FakeModel(), store=store, blobs=object())
+    with TestClient(app):
+        pass
+    assert not store.closed
+
+
+def test_the_app_closes_the_store_it_opened_at_shutdown(monkeypatch):
+    opened = []
+    monkeypatch.setattr("server.MongoStore", lambda *args, **kwargs: opened.append(SpyStore()) or opened[-1])
+    app = create_app(Settings(warmup=False, mongodb_uri="mongodb://localhost:1"), model_client=FakeModel(),
+                     blobs=object())
+    with TestClient(app):
+        assert not opened[0].closed
+    assert opened[0].closed
+
+
 @pytest.fixture
 def make_client(mongo_store):
     clients = []

@@ -3,6 +3,7 @@ import threading
 from decimal import Decimal
 
 import pytest
+from pymongo import MongoClient
 
 from ledgersync.checks import issue
 from ledgersync.errors import ChangedMeanwhile, ClientArchived, LedgerSyncError, NotFound
@@ -17,10 +18,33 @@ ROW = Transaction(date=dt.date(2026, 9, 1), description="BT Business Broadband",
                   gross=Decimal("72.00"), account_code="7502")
 
 
-def test_store_uses_given_client_and_does_not_close_it(mongo_client, mongo_db):
-    store = MongoStore("unused", mongo_db.name, client=mongo_client)
+class SpyClient:
+    """Stands in for a MongoClient and records whether it was closed."""
+    def __init__(self):
+        self.closed = False
+
+    def __getitem__(self, name):
+        return MongoClient("mongodb://localhost:1", connect=False)[name]
+
+    def close(self):
+        self.closed = True
+
+
+def test_store_uses_given_client_and_does_not_close_it(monkeypatch):
+    spy = SpyClient()
+    monkeypatch.setattr(MongoStore, "_init_indexes", lambda self: None)
+    store = MongoStore("unused", "x", client=spy)
     store.close()
-    assert store.client is mongo_client and mongo_client.admin.command("ping")["ok"] == 1
+    assert store.client is spy and not spy.closed
+
+
+def test_store_closes_the_client_it_opened(monkeypatch):
+    spy = SpyClient()
+    monkeypatch.setattr("ledgersync.store_mongo._new_client", lambda uri, max_pool: spy)
+    monkeypatch.setattr(MongoStore, "_init_indexes", lambda self: None)
+    store = MongoStore("mongodb://localhost:1", "x")
+    store.close()
+    assert store.client is spy and spy.closed
 
 
 def test_store_default_pool_is_small():

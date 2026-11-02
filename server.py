@@ -48,6 +48,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
     settings = settings or Settings.from_env()
     configure_logging(settings.log_level)
     model_client = model_client or ModelClient(settings)
+    owns_store = store is None   # a store handed in stays open for whoever made it
     if store is None:
         if not settings.mongodb_uri:
             raise StorageError("Set MONGODB_URI in .env: Super Accountant keeps its data in MongoDB.")
@@ -62,8 +63,11 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         if settings.warmup:
             threading.Thread(target=model_client.warm_up, name="model-warmup", daemon=True).start()
         yield
-        jobs.shutdown()
-        store.close()
+        try:
+            jobs.shutdown()
+        finally:
+            if owns_store:
+                store.close()
 
     app = FastAPI(
         title="Super Accountant API",
