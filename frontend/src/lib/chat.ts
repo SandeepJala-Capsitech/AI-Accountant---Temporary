@@ -51,7 +51,7 @@ export interface Question {
   row_ids: number[]
   kind: QuestionKind
   text: string               // "When was this taxi?"
-  why: string                // "Over £50, so I need ..."
+  why: string                // "£50 or more, so I need ..."
   source: 'rules' | 'agent'
   status: 'open' | 'waiting' | 'resolved'
   answer: string | null      // "I don't have it", "Not sure", or the answer given

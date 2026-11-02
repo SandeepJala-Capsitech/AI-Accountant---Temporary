@@ -189,7 +189,9 @@ def match_documents(rows: list[Transaction], settings: BusinessSettings,
         _note(changes[n], rows[n], automatic.pop(n))
     for n, found in automatic.items():
         _settle(n, rows[n], documents, changes[n], found)
-    _pair_receipts(rows, changes, [n for n in lines if rows[n].document_type == "statement"], apart)
+    statement_lines = [n for n in lines if rows[n].document_type == "statement"]
+    _pair_receipts(rows, changes, statement_lines, apart)
+    _paid_again(rows, changes, statement_lines, apart)
     for doc in documents.values():
         for n in doc.rows:
             changes[n].update(owed=doc.open, document_direction=Direction(doc.direction), paid_by=list(doc.paid_by))
@@ -371,6 +373,30 @@ def _pair_receipts(rows: list[Transaction], changes: list[dict], lines: list[int
         for r in receipt.rows:   # the payment counts once meanwhile: the bank line's
             changes[r]["recorded_by"] = held
         changes[first].update(amount_found=line.gross, issues=rows[first].issues + [asks])
+
+
+def _paid_again(rows: list[Transaction], changes: list[dict], lines: list[int], apart: list[set[int]]) -> None:
+    """Each bank line nothing was matched to whose amount, counterparty and date are those of a receipt an expense
+    claim line records: the receipt books the purchase, owed to the claimant, and the line books it again. The line
+    warns booked_twice, pointing at the receipt and the claim line; which one is kept is for a person to say. A
+    person's Link or Unlink on the line, or saying they are not the same, keeps them apart."""
+    receipts = _grouped(rows, lambda tx: tx.document_type == "receipt" and tx.claimed_in is not None and booked(tx))
+    claim_lines: dict[str, list[int]] = {}
+    for n, tx in enumerate(rows):
+        if tx.document_type == "expense_claim" and tx.recorded_by is not None:
+            claim_lines.setdefault(tx.recorded_by.ref, []).append(n)
+    for n in lines:
+        line, change = rows[n], changes[n]
+        if line.link is not None or line.date is None or change.get("pays") or change.get("recorded_by"):
+            continue
+        receipt = next((r for r in receipts.values() if r.total == line.gross and r.date == line.date
+                        and r.direction == line.direction.value and names_match(line.counterparty, r.counterparty)
+                        and not any(k in apart[n] for k in r.rows)), None)
+        if receipt is not None:
+            twice = issue("booked_twice", f"Also booked from the expenses sheet's receipt ({receipt.counterparty}, "
+                                          f"{_gbp(receipt.total)}, {long_date(receipt.date)}). Keep one.",
+                          related=receipt.rows + claim_lines.get(receipt.ref, []))
+            change["issues"] = change.get("issues", line.issues) + [twice]
 
 
 def _record(rows: list[Transaction], changes: list[dict], n: int, receipt: _Document) -> None:

@@ -553,7 +553,7 @@ class QuestionDraft(BaseModel):
     row_ids: list[int] = Field(default_factory=list)
     kind: Literal["date", "receipt_or_invoice", "vat_invoice", "other"]
     text: str                                  # "When was this taxi?"
-    why: str                                   # "Over £50, so I need ..."
+    why: str                                   # "£50 or more, so I need ..."
     source: Literal["rules", "agent"]
 
 

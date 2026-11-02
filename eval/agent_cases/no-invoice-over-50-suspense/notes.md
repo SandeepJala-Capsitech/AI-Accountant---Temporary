@@ -51,7 +51,7 @@ None. Holding is the document rule's, applied at posting. It needs no decision.
 | AMAZON MKTPLACE £50.00 | `receipt_or_invoice` | open | open (not answered) |
 | BRIGHTLINE PRINT £240.00 | `receipt_or_invoice` | open | **waiting**, answer "I don't have it" |
 
-The Brightline question's why, per Task 7: "£240.00 to Brightline Print on 22 Oct 2026. Over £50, so I need it.
+The Brightline question's why, per Task 7: "£240.00 to Brightline Print on 22 Oct 2026. £50 or more, so I need it.
 Held in Suspense as Documentation required until then."
 
 "I don't have it" changes no figure. The payment stays in Suspense, as the spec says.
@@ -82,8 +82,8 @@ The posted trial balance's `suspense` list holds two items:
 
 ## Needs a check
 
-1. **The question wording for an under-£250 hold.** Task 7's why reads "Over £50, so I need it". At exactly £50.00
-   that is not quite true: the rule is "£50.00 or more". Suggest "£50 or more, so I need it" for the
+1. **The question wording for an under-£250 hold.** Task 7's why read "Over £50, so I need it", which at exactly
+   £50.00 was not quite true: the rule is "£50.00 or more". It now reads "£50 or more, so I need it" for the
    `receipt_or_invoice` case.
 
 ## Judgement calls

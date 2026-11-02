@@ -102,10 +102,13 @@ Each document's `.rows.json` holds its reading.
 `matching`, with no decision yet:
 - **Costco:** the sheet line and the receipt have the same £58.00, the same day and the same shop. So the receipt
   becomes the claim's, owed to Priya on 2110. The Barclays COSTCO WHOLESALE £58.00 line is then left unpaired
-  (only a `possible_payment` towards the sheet line), and is **held in Suspense** as a bank line of £50 or more.
+  (a `possible_payment` towards the sheet line), and is **held in Suspense** as a bank line of £50 or more. It
+  warns `booked_twice`: "Also booked from the expenses sheet's receipt (Costco Wholesale UK Ltd, £58.00, 21 Oct
+  2026). Keep one."
 - **Inkwell:** the sheet line (£27.50) and the invoice (£30.22) are from the same shop on the same day. Both get
   `amount_conflict`. The invoice is held, and the sheet line is booked. INKWELL SUPPLIES £30.22 on 12/10 then has
-  no invoice to pay, so it is booked as a cost (under £50).
+  no invoice to pay, so it is booked as a cost (under £50). The invoice also warns `vat_not_booked`: "The invoice
+  shows £5.04 VAT; none is booked."
 - **Parking:** the undated ticket and NCP LEEDS £6.50 match only each other, so the ticket is dated 14/10 from the
   bank (`date_from_bank`).
 - **Taxi:** no date and no £18.00 line, so it gets `date_missing`. Its file name also gives a `file_date`
@@ -197,7 +200,7 @@ The undated taxi is booked, and waits in the year it was added to.
 | Row | Kind | Why |
 |---|---|---|
 | Leeds City Cabs taxi, Leeds Station to Kirkstall | `date` | "£18.00, no date on it and no matching bank line." |
-| BRIGHTLINE PRINT | `receipt_or_invoice` | "£240.00 to Brightline Print on 22 Oct 2026. Over £50, so I need it. Held in Suspense as Documentation required until then." |
+| BRIGHTLINE PRINT | `receipt_or_invoice` | "£240.00 to Brightline Print on 22 Oct 2026. £50 or more, so I need it. Held in Suspense as Documentation required until then." |
 
 Nothing else is asked.
 - **Parking:** dated from the bank.
@@ -295,18 +298,18 @@ unchanged at **21,272.50**. It balances. Nothing is left in Suspense, and no que
 
 ## Needs a check
 
-1. **Nothing says the Costco purchase is booked twice.**
-   - Before R2, the receipt is the sheet's (2110) and the COSTCO WHOLESALE line is booked too, into Suspense. Only
-     a `possible_payment` hint links them.
+1. **The Costco purchase is booked twice.** Done in Task 8: `matching` warns `booked_twice` on an unpaired bank
+   line whose amount, shop and day equal a receipt that a claim line records, pointing at the receipt and the
+   claim line.
+   - Before R2, the receipt is the sheet's (2110) and the COSTCO WHOLESALE line is booked too, into Suspense.
+     Before the check, only a `possible_payment` hint linked them.
    - If the agent misses it, the review asks a **third** question: a receipt for COSTCO WHOLESALE £58.00, which
      is already uploaded. The demo would look like a junior.
-   - Suggest a deterministic check in `matching`: an unpaired bank line whose amount, shop and day equal a
-     receipt that a claim line records.
    - See also `eval/agent_cases/duplicate-receipt-spreadsheet/notes.md`: R2 there is only right because the card
      paid.
-2. **Nothing says the Inkwell invoice has no VAT.** It is read with `vat: null` while its `document_total` (30.22)
-   and `document_net` (25.18) differ by 5.04 = 30.22 × 1/6. No issue says so. See
-   `vat-on-invoice-missing-from-entry/notes.md` for a suggested check.
+2. **The Inkwell invoice has no VAT booked.** It is read with `vat: null` while its `document_total` (30.22) and
+   `document_net` (25.18) differ by 5.04 = 30.22 × 1/6. Done in Task 8: `checks.normalise` warns `vat_not_booked`
+   (see `vat-on-invoice-missing-from-entry/notes.md`).
 3. **The taxi's file name date lands in `date_found`.**
    - `books._saved_rows` runs `file_dates.check_file_date`, which sets the taxi's `date_found` to 2026-10-09
      with a `file_date` warning.

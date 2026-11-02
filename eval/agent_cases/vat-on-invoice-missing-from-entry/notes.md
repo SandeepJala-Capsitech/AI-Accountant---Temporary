@@ -71,14 +71,13 @@ None.
 
 ## Needs a check
 
-1. **No existing check raises this.**
-   - An invoice row with no VAT, whose own `document_net` (60.00) and `document_total` (72.00) differ by a
-     plausible VAT (12.00 = 72.00 × 1/6), gets no issue at all. Checked with the services: the row has no issue.
+1. **No check raised this.** Done in Task 8: `checks.normalise` warns `vat_not_booked`, "The invoice shows £12.00
+   VAT; none is booked.", on a VAT-registered client's account VAT applies to, when `vat is None` and
+   `document_total − document_net` is above zero and at most `most_vat(document_total)`.
+   - Before, an invoice row with no VAT, whose own `document_net` (60.00) and `document_total` (72.00) differ by a
+     plausible VAT (12.00 = 72.00 × 1/6), got no issue at all, and the agent found it only by opening the
+     document.
    - `matching._claim_vat` does this sum only for a document on an expense claim.
-   - So the agent finds it only by opening the document.
-   - A deterministic check in `checks.normalise` would make it reliable: on a VAT-registered client's reclaimable
-     account, `vat is None` and `document_total − document_net` is above zero and at most `_most_vat`. It would
-     raise a warning such as "The invoice shows £12.00 VAT; none is booked."
 
 ## Judgement calls
 

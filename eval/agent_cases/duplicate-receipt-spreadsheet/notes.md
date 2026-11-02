@@ -39,8 +39,9 @@ booked as well: £64.80, a bank line of £50 or more, so it goes to Suspense. Th
 - the receipt: 7504 54.00 and 2201 10.80, against 2110 64.80;
 - the bank line: 9998 64.80, against 1200 64.80.
 
-The only issue raised is `possible_payment` on the bank line: "may pay" the sheet line. That is the wrong reading,
-because the card paid Staples, not Priya.
+The bank line raises `possible_payment`: "may pay" the sheet line. That is the wrong reading, because the card paid
+Staples, not Priya. It also raises `booked_twice`: "Also booked from the expenses sheet's receipt (Staples, £64.80,
+13 Oct 2026). Keep one."
 
 ## The decision
 
@@ -105,15 +106,12 @@ None.
 
 ## Needs a check
 
-1. **No issue says the purchase is booked twice.**
-   - A receipt paired with a sheet line, and a bank line for the same amount, shop and day booked as a cost too:
-     nothing calls that a duplicate.
-   - `booked_twice` fires only when a person ticks Include on the claim line.
-   - The agent has only `possible_payment` on the bank line to go on.
-   - A deterministic check in `matching` would make this reliable for the real model, and would stop the
-     review asking for a receipt it already has. For example: a bank line left unpaired whose amount, shop and
-     day equal a receipt that a claim line records.
-   - Without R2, `questions.refresh` would ask for a receipt for "STAPLES £64.80", which is held in Suspense.
+1. **No issue said the purchase is booked twice.** Done in Task 8: `matching` warns `booked_twice` on a bank line
+   left unpaired whose amount, shop and day equal a receipt that a claim line records, pointing at the receipt and
+   the claim line.
+   - Before, `booked_twice` fired only when a person ticked Include on the claim line, and the agent had only
+     `possible_payment` on the bank line to go on.
+   - Without R2, `questions.refresh` asks for a receipt for "STAPLES £64.80", which is held in Suspense.
 2. **R2 is only right here because the card paid.**
    - Had Priya paid (no Barclays line), `matching` already books the purchase once, owed to her on 2110. There
      is nothing to resolve.

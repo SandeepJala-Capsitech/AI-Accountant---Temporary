@@ -555,6 +555,36 @@ def test_a_claim_line_booked_as_well_as_its_receipt_warns_that_it_counts_twice()
     assert codes(line) == []
 
 
+def costco_on_the_sheet_and_the_card(**line):
+    """Northbridge's Costco shop: the receipt, Priya's sheet line for it, and the Barclays card payment."""
+    return (row("receipt", "out", "58.00", "2026-10-21", "Costco Wholesale UK Ltd", "costco", account="7504"),
+            claim_line("58.00", "2026-10-21", "Costco - office supplies", account="7504"),
+            bank(**{"gross": "58.00", "date": "2026-10-21", "who": "Costco", "ref": "card", "account": "7504", **line}))
+
+
+def test_a_card_payment_for_a_receipt_the_claim_books_warns_that_it_counts_twice():
+    # The sheet line took the receipt, so the card line was left to book the same shop again, into Suspense; only a
+    # possible_payment hinted at it, and the review asked for a receipt that was already in.
+    receipt, claim, line = matched(*costco_on_the_sheet_and_the_card())
+    assert (receipt.claimed_in.ref, claim.recorded_by.ref, line.recorded_by, line.pays) == ("claim", "costco", None, [])
+    assert ("booked_twice", "warning") in codes(line) and about(line, "booked_twice") == [0, 1]
+    assert next(i.message for i in line.issues if i.code == "booked_twice") == (
+        "Also booked from the expenses sheet's receipt (Costco Wholesale UK Ltd, £58.00, 21 Oct 2026). Keep one.")
+    assert [code for code, _ in codes(receipt) + codes(claim)].count("booked_twice") == 0
+
+
+@pytest.mark.parametrize("line", [{"date": "2026-10-22"}, {"gross": "58.01"}, {"who": "Makro"}, {"link": []}])
+def test_a_card_payment_that_differs_from_the_receipt_on_the_claim_is_not_booked_twice(line):
+    *_, paid = matched(*costco_on_the_sheet_and_the_card(**line))
+    assert "booked_twice" not in [code for code, _ in codes(paid)]
+
+
+def test_once_the_sheet_line_is_left_out_the_card_payment_is_the_receipts():
+    receipt, claim, line = costco_on_the_sheet_and_the_card()
+    receipt, _, line = matched(receipt, claim.model_copy(update={"excluded": True}), line)
+    assert (line.recorded_by.ref, codes(line)) == ("costco", [])
+
+
 @pytest.mark.parametrize("receipt", [
     row("receipt", "out", "251.01", "2026-09-15", None, "log", description="Mileage, Farnham to Manchester and back"),
     row("receipt", "out", "251.01", "2026-09-16", "Somewhere Else Ltd", "log"),     # a name that says nothing

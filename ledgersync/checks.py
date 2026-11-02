@@ -23,7 +23,7 @@ STATEMENT_ISSUES = {"statement_gap", "statement_total", "file_date"}
 _DERIVED = {"unknown_account", "same_account", "non_gbp_currency", "vat_not_applicable", "vat_estimated",
             "vat_arithmetic", "vat_rate_mismatch", "date_missing", "date_out_of_period", "unusual_direction",
             "not_booked", "vat_blocked", "director_loan", "wages_from_bank",
-            "payroll_owed_to", "before_first_year"} | MATCHING_ISSUES | STATEMENT_ISSUES
+            "payroll_owed_to", "before_first_year", "vat_not_booked"} | MATCHING_ISSUES | STATEMENT_ISSUES
 
 
 def issue(code: str, message: str, severity: str = "warning", related: Sequence[int] = ()) -> Issue:
@@ -119,6 +119,18 @@ def most_vat(gross: Decimal) -> Decimal:
     return vat_in_gross(gross, VatTreatment.STANDARD) + Decimal("0.05") + (gross / 500).quantize(PENNY)
 
 
+def _vat_not_booked(tx: Transaction, settings: BusinessSettings) -> Optional[Issue]:
+    """A row read with no VAT whose document prints a total and a net that differ by VAT it could hold (above
+    nothing, at most a sixth of the total): the reading missed the VAT line, so none is booked until it is added."""
+    if tx.document_total is None or tx.document_net is None or not reclaims_vat(tx, settings):
+        return None
+    shown = tx.document_total - tx.document_net
+    if not ZERO < shown <= most_vat(tx.document_total):
+        return None
+    kind = tx.document_type.replace("_", " ")
+    return issue("vat_not_booked", f"The {kind} shows £{shown:,.2f} VAT; none is booked.")
+
+
 def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
     kept = [i for i in tx.issues if i.code not in _DERIVED]   # re-validating must not duplicate
     issues: list[Issue] = []
@@ -166,6 +178,9 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
         posted = ZERO
     elif vat is None and tx.vat_treatment is None:
         posted = ZERO   # VAT is reclaimable only when charged: none shown, none booked
+        missed = _vat_not_booked(tx, settings)
+        if missed:
+            issues.append(missed)
     elif vat is None:   # a person chose the rate: split the VAT out of the gross at that rate
         posted = vat_in_gross(tx.gross, treatment)
         if posted > 0:

@@ -128,6 +128,36 @@ def test_no_vat_charged_is_not_flagged():
     assert codes(normalise(tx(gross="280.00", vat="0.00", account="7800"), REGISTERED)) == []
 
 
+def test_vat_an_invoice_prints_but_the_entry_lacks_is_flagged():
+    # Northern Fibre's invoice prints £60.00 + £12.00 VAT = £72.00, but was read with no VAT: nothing said so, and
+    # £12.00 of VAT went unreclaimed unless someone opened the invoice.
+    t = normalise(tx(gross="72.00", document_type="invoice", document_total="72.00", document_net="60.00"),
+                  REGISTERED)
+    assert codes(t) == [("vat_not_booked", "warning")] and t.vat_posted == Decimal("0.00")
+    assert t.issues[0].message == "The invoice shows £12.00 VAT; none is booked."
+    receipt = normalise(tx(gross="58.00", document_type="receipt", document_total="58.00", document_net="48.34"),
+                        REGISTERED)
+    assert receipt.issues[0].message == "The receipt shows £9.66 VAT; none is booked."
+    again = normalise(Transaction.model_validate(t.model_dump(mode="json")), REGISTERED)
+    assert codes(again) == [("vat_not_booked", "warning")]
+
+
+@pytest.mark.parametrize("change, settings", [
+    ({}, NOT_REGISTERED),                                     # no VAT is booked for anyone
+    ({"account": "2250"}, REGISTERED),                        # no VAT on a liability
+    ({"account": "7403"}, REGISTERED),                        # entertainment: never reclaimed
+    ({"vat": "12.00"}, REGISTERED),                           # booked
+    ({"vat_treatment": "standard"}, REGISTERED),              # a person chose the rate: worked out and booked
+    ({"document_net": "72.00"}, REGISTERED),                  # no VAT on the invoice
+    ({"document_net": "59.00"}, REGISTERED),                  # £13.00: more than £72.00 can hold
+    ({"document_net": None}, REGISTERED),                     # no net printed
+])
+def test_vat_not_booked_only_when_the_document_shows_vat_that_could_be(change, settings):
+    fields = {"gross": "72.00", "document_type": "invoice", "document_total": "72.00", "document_net": "60.00",
+              **change}
+    assert "vat_not_booked" not in [code for code, _ in codes(normalise(tx(**fields), settings))]
+
+
 def test_renormalising_keeps_the_estimate_flag_without_duplicates():
     once = normalise(tx(vat_treatment="standard"), REGISTERED)
     twice = normalise(Transaction.model_validate(once.model_dump(mode="json")), REGISTERED)
