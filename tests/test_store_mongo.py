@@ -7,7 +7,7 @@ import pytest
 from ledgersync.checks import issue
 from ledgersync.errors import ChangedMeanwhile, ClientArchived, LedgerSyncError, NotFound
 from ledgersync.models import ClientFields, OpeningBalances, OpeningLine, OpenItem, Transaction
-from ledgersync.store_mongo import MongoStore
+from ledgersync.store_mongo import MongoStore, _new_client
 
 pytestmark = pytest.mark.mongo
 
@@ -17,10 +17,26 @@ ROW = Transaction(date=dt.date(2026, 9, 1), description="BT Business Broadband",
                   gross=Decimal("72.00"), account_code="7502")
 
 
-def test_revision_survives_a_new_store_on_the_same_database(mongo_store):
+def test_store_uses_given_client_and_does_not_close_it(mongo_client, mongo_db):
+    store = MongoStore("unused", mongo_db.name, client=mongo_client)
+    store.close()
+    assert store.client is mongo_client and mongo_client.admin.command("ping")["ok"] == 1
+
+
+def test_store_default_pool_is_small():
+    # __init__ creates indexes (it connects), so the pool is checked on the helper the store builds its client with.
+    client = _new_client("mongodb://localhost:1", 7)
+    try:
+        pool = client.options.pool_options
+        assert pool.max_pool_size == 7 and pool.min_pool_size == 0 and pool.max_idle_time_seconds == 60
+    finally:
+        client.close()
+
+
+def test_revision_survives_a_new_store_on_the_same_database(mongo_store, mongo_client):
     client = mongo_store.create_client(CUBE)
     mongo_store.add_upload(client.id, "a.csv", "table", [ROW])
-    again = MongoStore(mongo_store.uri, mongo_store.db_name)
+    again = MongoStore(mongo_store.uri, mongo_store.db_name, client=mongo_client)
     assert again.revision(client.id) == mongo_store.revision(client.id) > 0
 
 
@@ -71,11 +87,11 @@ class Interleaved:
             else getattr(self._db, name)
 
 
-def test_a_row_change_never_loses_rows_another_writer_added_meanwhile(mongo_store):
+def test_a_row_change_never_loses_rows_another_writer_added_meanwhile(mongo_store, mongo_client):
     client = mongo_store.create_client(CUBE)
     mongo_store.add_upload(client.id, "a.csv", "table", [ROW])
     row_id = mongo_store.rows(client.id)[0].id
-    other = MongoStore(mongo_store.uri, mongo_store.db_name)   # the client's upload, saved by another thread
+    other = MongoStore(mongo_store.uri, mongo_store.db_name, client=mongo_client)   # the client's upload, saved by another thread
     mongo_store.db = Interleaved(mongo_store.db, lambda: other.add_upload(client.id, "b.csv", "table", [ROW, ROW]))
     mongo_store.patch_row(client.id, row_id, {"account_code": "7500"})
     rows = other.rows(client.id)
@@ -83,11 +99,11 @@ def test_a_row_change_never_loses_rows_another_writer_added_meanwhile(mongo_stor
     assert [r.tx.account_code for r in rows if r.id == row_id] == ["7500"]
 
 
-def test_a_row_change_that_keeps_losing_the_race_asks_the_person_to_try_again(mongo_store):
+def test_a_row_change_that_keeps_losing_the_race_asks_the_person_to_try_again(mongo_store, mongo_client):
     client = mongo_store.create_client(CUBE)
     mongo_store.add_upload(client.id, "a.csv", "table", [ROW])
     row_id = mongo_store.rows(client.id)[0].id
-    other = MongoStore(mongo_store.uri, mongo_store.db_name)
+    other = MongoStore(mongo_store.uri, mongo_store.db_name, client=mongo_client)
     mongo_store.db = Interleaved(mongo_store.db, lambda: other.add_upload(client.id, "b.csv", "table", [ROW]), times=5)
     with pytest.raises(LedgerSyncError, match="Try again"):
         mongo_store.patch_row(client.id, row_id, {"account_code": "7500"})

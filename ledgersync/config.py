@@ -16,7 +16,7 @@ ENV_NAMES = (
     "OPENROUTER_PROVIDERS", "OPENROUTER_QUANTIZATIONS",
     "GROQ_API_KEY", "GROQ_MODEL", "GROQ_BASE_URL", "GROQ_TIMEOUT", "GROQ_MAX_OUTPUT_TOKENS",
     "GROQ_REASONING_EFFORT", "GROQ_MAX_IMAGES",
-    "MONGODB_URI", "MONGODB_DB_NAME",
+    "MONGODB_URI", "MONGODB_DB_NAME", "LEDGERSYNC_MONGO_MAX_POOL",
 )
 
 
@@ -85,6 +85,7 @@ class Settings:
     # Everything is kept in MongoDB; the API refuses to start without the address.
     mongodb_uri: str = ""                 # e.g. "mongodb://localhost:27017"
     mongodb_db_name: str = "ledgersync"
+    mongodb_max_pool: int = 10            # connections the app may hold open (Atlas M0 allows 500 in all)
 
     @property
     def max_upload_bytes(self) -> int:
@@ -146,4 +147,5 @@ class Settings:
             business_name=env.get("LEDGERSYNC_BUSINESS_NAME", "").strip(),
             mongodb_uri=env.get("MONGODB_URI", "").strip(),
             mongodb_db_name=env.get("MONGODB_DB_NAME", "ledgersync").strip(),
+            mongodb_max_pool=max(1, _number(env, "LEDGERSYNC_MONGO_MAX_POOL", d.mongodb_max_pool)),
         )

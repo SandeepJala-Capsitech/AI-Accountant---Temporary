@@ -51,7 +51,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
     if store is None:
         if not settings.mongodb_uri:
             raise StorageError("Set MONGODB_URI in .env: Super Accountant keeps its data in MongoDB.")
-        store = MongoStore(settings.mongodb_uri, settings.mongodb_db_name)
+        store = MongoStore(settings.mongodb_uri, settings.mongodb_db_name, max_pool=settings.mongodb_max_pool)
     if blobs is None:
         blobs = GridFSBlobStore(store.db)   # originals live beside the rows
     extractor = TransactionExtractor(model_client, business_name=settings.business_name)
@@ -63,6 +63,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
             threading.Thread(target=model_client.warm_up, name="model-warmup", daemon=True).start()
         yield
         jobs.shutdown()
+        store.close()
 
     app = FastAPI(
         title="Super Accountant API",

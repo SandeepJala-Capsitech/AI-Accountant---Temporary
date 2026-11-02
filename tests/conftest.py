@@ -16,27 +16,34 @@ def _test_uri():
     return {**read_env_file(ENV_FILE), **os.environ}.get("LEDGERSYNC_TEST_MONGODB_URI")
 
 
-@pytest.fixture
-def mongo_db():
-    """A fresh `ledgersync_test_<hex>` database, dropped after the test with the `<name>_checkpoints`
-    database an app on it writes LangGraph's checkpoints to."""
+@pytest.fixture(scope="session")
+def mongo_client():
+    """The one small client every MongoDB test shares (Atlas M0 allows 500 connections in all), closed when the
+    session ends."""
     uri = _test_uri()
     if not uri:
         pytest.skip("Set LEDGERSYNC_TEST_MONGODB_URI to run MongoDB tests")
-    client = MongoClient(uri)
-    db = client[f"ledgersync_test_{uuid4().hex[:8]}"]
-    try:
-        yield db
-    finally:
-        client.drop_database(db.name)
-        client.drop_database(f"{db.name}_checkpoints")
-        client.close()
+    client = MongoClient(uri, maxPoolSize=5, minPoolSize=0)
+    yield client
+    client.close()
 
 
 @pytest.fixture
-def mongo_store(mongo_db):
-    """A MongoStore on the throwaway database."""
-    return MongoStore(_test_uri(), mongo_db.name)
+def mongo_db(mongo_client):
+    """A fresh `ledgersync_test_<hex>` database, dropped after the test with the `<name>_checkpoints`
+    database an app on it writes LangGraph's checkpoints to."""
+    db = mongo_client[f"ledgersync_test_{uuid4().hex[:8]}"]
+    try:
+        yield db
+    finally:
+        mongo_client.drop_database(db.name)
+        mongo_client.drop_database(f"{db.name}_checkpoints")
+
+
+@pytest.fixture
+def mongo_store(mongo_db, mongo_client):
+    """A MongoStore on the throwaway database, sharing the session's client."""
+    return MongoStore(_test_uri(), mongo_db.name, client=mongo_client)
 
 
 @pytest.fixture

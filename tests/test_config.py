@@ -105,6 +105,12 @@ def test_five_files_are_read_at_once_unless_set_otherwise():
     assert Settings.from_env({"LEDGERSYNC_MAX_PARALLEL_JOBS": "0"}).max_parallel_jobs == 1   # never below one
 
 
+def test_the_mongodb_pool_is_ten_connections_unless_set_otherwise():
+    assert Settings.from_env({}).mongodb_max_pool == 10
+    assert Settings.from_env({"LEDGERSYNC_MONGO_MAX_POOL": "4"}).mongodb_max_pool == 4
+    assert Settings.from_env({"LEDGERSYNC_MONGO_MAX_POOL": "0"}).mongodb_max_pool == 1   # never below one
+
+
 def test_a_blank_number_setting_uses_its_default():
     blank = {name: "" for name in ("LEDGERSYNC_PORT", "LEDGERSYNC_MAX_UPLOAD_MB", "LEDGERSYNC_MAX_PDF_PAGES",
                                    "LEDGERSYNC_MAX_PARALLEL_JOBS", "OPENROUTER_MAX_OUTPUT_TOKENS", "GROQ_TIMEOUT",

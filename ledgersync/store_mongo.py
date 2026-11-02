@@ -81,21 +81,36 @@ def _stored_accounts(accounts: list[BankAccount]) -> list[dict]:
     return [a.model_dump() for a in accounts]
 
 
+def _new_client(uri: str, max_pool: int) -> MongoClient:
+    """A client whose pool stays small and drops idle connections: Atlas M0 allows 500 connections in all, counted
+    on each node of the replica set, so nothing is kept open ahead of need."""
+    return MongoClient(
+        uri,
+        maxPoolSize=max_pool,
+        minPoolSize=0,
+        maxIdleTimeMS=60000,
+        serverSelectionTimeoutMS=5000,
+        connectTimeoutMS=10000,
+        socketTimeoutMS=20000,
+    )
+
+
 class MongoStore:
-    def __init__(self, uri: str = "mongodb://localhost:27017", db_name: str = "ledgersync"):
+    def __init__(self, uri: str = "mongodb://localhost:27017", db_name: str = "ledgersync", *,
+                 client: Optional[MongoClient] = None, max_pool: int = 10):
+        """The store on `db_name`. Given a `client` it uses that one (to share its pool) and never closes it;
+        otherwise it opens its own, of at most `max_pool` connections."""
         self.uri = uri
         self.db_name = db_name
-        # Optimal connection pooling for high-throughput FastAPI concurrency
-        self.client = MongoClient(
-            uri,
-            maxPoolSize=50,
-            minPoolSize=10,
-            serverSelectionTimeoutMS=5000,
-            connectTimeoutMS=10000,
-            socketTimeoutMS=20000,
-        )
+        self._owns_client = client is None
+        self.client = _new_client(uri, max_pool) if client is None else client
         self.db = self.client[db_name]
         self._init_indexes()
+
+    def close(self) -> None:
+        """Closes the client this store opened; a client it was given is left to whoever made it."""
+        if self._owns_client:
+            self.client.close()
 
     def _init_indexes(self):
         """Creates compound indexes for lightning-fast queries and constraints."""
