@@ -303,10 +303,49 @@ def test_resolve_twice_is_one_decision(mongo_store, records, pages, nb):
     assert saved(mongo_store, nb.id, nb.sheet_costco).decision_ids == [first.id]
 
 
-def test_a_refusal_asked_again_is_the_same_refusal(mongo_store, records, pages, nb):
+def test_a_refusal_does_not_stick(mongo_store, records, pages, nb):
+    """A refusal is kept but not returned for a retry: corrected, the same resolution applies."""
     first = call(mongo_store, records, pages, nb, nb.sheet_costco, keep_receipt(nb), "TOTAL £99.99")
-    again = call(mongo_store, records, pages, nb, nb.sheet_costco, keep_receipt(nb), "TOTAL £99.99")
-    assert again.id == first.id and again.status == "refused" and len(records.decisions(nb.id)) == 1
+    again = call(mongo_store, records, pages, nb, nb.sheet_costco, keep_receipt(nb), "TOTAL £64.80")
+    assert (first.status, again.status) == ("refused", "applied") and again.id != first.id
+    assert [d.status for d in records.decisions(nb.id)] == ["refused", "applied"]
+    assert call(mongo_store, records, pages, nb, nb.sheet_costco, keep_receipt(nb), "TOTAL £64.80").id == again.id
+
+
+def test_evidence_from_an_unrelated_upload_of_the_client_refused(mongo_store, records, pages, nb):
+    """The invoice's upload is the client's, but neither row kept nor row dropped comes from it."""
+    decision = call(mongo_store, records, pages, nb, nb.sheet_costco, keep_receipt(nb), "Total £30.22",
+                    upload=nb.upload("inkwell-invoice.pdf"))
+    assert decision.status == "refused" and not saved(mongo_store, nb.id, nb.sheet_costco).excluded
+
+
+def test_a_quote_too_short_to_show_anything_refused(mongo_store, records, pages, nb):
+    decision = call(mongo_store, records, pages, nb, nb.sheet_costco, keep_receipt(nb), " 6 ")
+    assert decision.status == "refused" and not saved(mongo_store, nb.id, nb.sheet_costco).excluded
+
+
+def test_amounts_must_be_whole_pennies(mongo_store, records, pages, nb, depot):
+    split = SplitVat(action="split_vat", parts=[
+        SplitPart(description="Printer paper", account_code="7504", gross=Decimal("52.805"), rate="standard"),
+        SplitPart(description="Biscuits", account_code="7406", gross=Decimal("11.995"), rate="zero")])
+    assert call(mongo_store, records, pages, nb, nb.receipt, split, "Biscuits 12.00 Z").status == "refused"
+    vat = VatFromDocument(action="set_vat_from_document", vat=Decimal("3.001"))
+    assert call(mongo_store, records, pages, nb, depot, vat, "VAT 3.00", upload=nb.upload("depot.pdf")).status \
+        == "refused"
+    assert saved(mongo_store, nb.id, depot).vat is None and saved(mongo_store, nb.id, nb.receipt).superseded_by is None
+
+
+def test_use_primary_refuses_to_drop_the_bank_payment_of_a_payroll_report(mongo_store, records, pages, nb):
+    [wages] = add(mongo_store, nb.id, pages, "payroll-october.pdf", "Net pay 2,400.00", row(
+        date=dt.date(2026, 10, 28), description="Net pay", counterparty="Staff", gross=Decimal("2400.00"),
+        account_code="7000", document_type="payroll", owed_to="net_pay"))
+    [line] = add(mongo_store, nb.id, pages, "barclays-october.csv", "28/10/2026 SALARIES 2,350.00",
+                 row(date=dt.date(2026, 10, 28), description="SALARIES", counterparty="Staff",
+                     gross=Decimal("2350.00"), account_code="2220", document_type="statement"), kind="table")
+    primary = UsePrimary(action="use_primary", primary_row_id=wages, other_row_id=line)
+    decision = call(mongo_store, records, pages, nb, line, primary, "Net pay 2,400.00",
+                    upload=nb.upload("payroll-october.pdf"))
+    assert decision.status == "refused" and not saved(mongo_store, nb.id, line).excluded
 
 
 def with_new_error_on(monkeypatch, row_ids):
@@ -338,6 +377,51 @@ def test_a_split_that_leaves_a_new_error_is_put_back(mongo_store, records, pages
     assert original.superseded_by is None and original.decision_ids == []
     assert {r.id for r in mongo_store.rows(nb.id)} == before
     assert not any(u["kind"] == "split" for u in mongo_store.uploads(nb.id))
+
+
+def test_vat_put_back_leaves_the_row_exactly_as_stored(mongo_store, records, pages, nb, depot, monkeypatch):
+    """VAT is a field a person edits, so setting it keeps what was read; putting it back drops that again."""
+    before = mongo_store.row_data(nb.id, [depot])
+    with_new_error_on(monkeypatch, lambda: {depot})
+    decision = call(mongo_store, records, pages, nb, depot,
+                    VatFromDocument(action="set_vat_from_document", vat=Decimal("3.00")), "VAT 3.00",
+                    upload=nb.upload("depot.pdf"))
+    assert decision.status == "refused" and mongo_store.row_data(nb.id, [depot]) == before
+    assert "original" not in before[depot]
+
+
+def test_set_date_put_back_leaves_the_row_exactly_as_stored(mongo_store, records, nb, taxi, monkeypatch):
+    before = mongo_store.row_data(nb.id, [taxi])
+    with_new_error_on(monkeypatch, lambda: {taxi})
+    decision = set_date(mongo_store, records, client_id=nb.id, thread_id="t1", row_id=taxi,
+                        date=dt.date(2026, 10, 16), question_id="q1")
+    assert decision.status == "refused" and mongo_store.row_data(nb.id, [taxi]) == before
+
+
+def test_a_failure_while_changing_rows_puts_them_back(mongo_store, records, pages, nb, monkeypatch):
+    """The change is written, then something fails before it is recorded: the rows go back and nothing is
+    recorded, and the error is raised."""
+    before = mongo_store.row_data(nb.id, [nb.receipt, nb.sheet_costco])
+
+    def fails(store, client_id):
+        raise RuntimeError("lost the connection")
+    monkeypatch.setattr(books, "all_rows", fails)
+    with pytest.raises(RuntimeError):
+        call(mongo_store, records, pages, nb, nb.sheet_costco, keep_receipt(nb), "TOTAL £64.80")
+    assert mongo_store.row_data(nb.id, [nb.receipt, nb.sheet_costco]) == before
+    assert records.decisions(nb.id) == []
+
+
+def test_a_failure_after_a_split_removes_its_parts(mongo_store, records, pages, nb, monkeypatch):
+    before = mongo_store.row_data(nb.id, [r.id for r in mongo_store.rows(nb.id)])
+
+    def fails(store, client_id):
+        raise RuntimeError("lost the connection")
+    monkeypatch.setattr(books, "all_rows", fails)
+    with pytest.raises(RuntimeError):
+        call(mongo_store, records, pages, nb, nb.receipt, costco_split(), "Biscuits 12.00 Z")
+    assert mongo_store.row_data(nb.id, [r.id for r in mongo_store.rows(nb.id)]) == before
+    assert not any(u["kind"] == "split" for u in mongo_store.uploads(nb.id)) and records.decisions(nb.id) == []
 
 
 # ─── set_date (R1, from an answer) ─────────────────────────────────────────────

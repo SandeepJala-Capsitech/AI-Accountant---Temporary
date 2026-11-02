@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import logging
 import re
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -25,6 +26,8 @@ from .money import PENNY, ZERO, VatTreatment, vat_in_gross
 from .records import AgentRecords
 from .store_mongo import MongoStore
 from .years import year_index
+
+logger = logging.getLogger(__name__)
 
 # How far each kind of record can be trusted, the better source first: the document itself, then the bank line,
 # then an expenses sheet, a spreadsheet or a hand entry (anything else).
@@ -67,8 +70,13 @@ Resolution = Annotated[Union[KeepOne, UsePrimary, SplitVat, VatFromDocument], Fi
 
 # Issues that say two rows are one transaction recorded twice, and the matches that pair such rows.
 _DUPLICATE_ISSUES = {"duplicate_document", "booked_twice", "total_mismatch", "date_conflict"}
-# Rows a bank line can pay, so a bank line that disagrees with one is linked to it rather than left out.
+# Rows a bank line can't pay: a bank line that disagrees with a receipt is left out, the receipt booking the payment;
+# any other row it disagrees with it is linked to and pays (a payroll report's is refused: see _use_primary).
 _UNPAYABLE = {"receipt", "statement", "payroll"}
+# The matches that tie a row to another record of the same transaction, whose upload is evidence for it too.
+_PARTNERS = ("recorded_by", "claimed_in", "copy_of", "pays")
+# The fewest characters (spaces aside) a quote needs to show anything: "6" is in nearly every document.
+_SHORTEST_QUOTE = 4
 
 
 class _Refused(Exception):
@@ -125,6 +133,16 @@ def _paired(a: SavedRow, b: SavedRow, codes: Optional[set[str]] = None) -> bool:
     return one_way(a, b) or one_way(b, a)
 
 
+def _uploads_of(rows: dict[int, SavedRow], row: SavedRow, partners=_PARTNERS) -> set[int]:
+    """The row's upload and those of the records matching pairs it with (by these matches)."""
+    matched = []
+    for name in partners:
+        value = getattr(row, name)
+        matched += value if isinstance(value, list) else [value]
+    refs = {s.ref for s in matched if s}
+    return {row.upload_id} | {o.upload_id for o in rows.values() if o.document_ref in refs}
+
+
 def _usable(row: SavedRow, kept: bool = True) -> None:
     """Refuses a row a split replaced, or, for a row the change keeps, one left out of the books."""
     if row.superseded_by:
@@ -168,6 +186,9 @@ def _use_primary(rows: dict[int, SavedRow], row_id: int, r: UsePrimary, **_) -> 
                        "same counterparty within a few days.")
     if _rank(primary) <= _rank(other):
         raise _Refused(f"The {_kind(primary)} doesn't rank above the {_kind(other)}.")
+    if other.document_type == "statement" and primary.document_type == "payroll":
+        # Leaving the bank line out would remove real cash and leave the wages owed; it pays the report as it is.
+        raise _Refused("A bank line paying wages stays in the books: the payroll report doesn't replace it.")
     links = other.document_type == "statement" and primary.document_type not in _UNPAYABLE
     patch = {"link": [primary.document_ref]} if links else {"excluded": True}
     return _Change(rule=f"R4 Conflict: used the {_kind(primary)}", touched=[primary.id, other.id],
@@ -185,8 +206,8 @@ def _split_vat(rows: dict[int, SavedRow], row_id: int, r: SplitVat, *, b, **_) -
     for part in r.parts:
         if part.account_code not in allowed:
             raise _Refused(f"{part.account_code} isn't an account {b.client.name} can use.")
-        if part.gross <= 0 or not part.description.strip():
-            raise _Refused("Give each part a description and an amount above zero.")
+        if part.gross <= 0 or part.gross != part.gross.quantize(PENNY) or not part.description.strip():
+            raise _Refused("Give each part a description and an amount above zero, in whole pennies.")
     total = sum((p.gross for p in r.parts), ZERO)
     if total != row.gross:
         raise _Refused(f"The parts add up to £{total}; the row is £{row.gross}.")
@@ -208,14 +229,15 @@ def _vat_from_document(rows: dict[int, SavedRow], row_id: int, r: VatFromDocumen
     to, printed in the row's own document or that of the record it is paired with."""
     row = rows[row_id]
     _usable(row)
+    if r.vat != r.vat.quantize(PENNY):
+        raise _Refused(f"£{r.vat} isn't an amount in whole pennies.")
     if r.vat <= 0 or r.vat > vat_in_gross(row.gross, VatTreatment.STANDARD):
         raise _Refused(f"£{r.vat} can't be the VAT on £{row.gross}: at most a sixth of it, £"
                        f"{vat_in_gross(row.gross, VatTreatment.STANDARD)}.")
     account = BY_CODE.get(row.account_code)
     if not b.client.vat_registered or account is None or account.type in (AccountType.LIABILITY, AccountType.EQUITY):
         raise _Refused(f"No VAT is booked on {account.name if account else row.account_code} for {b.client.name}.")
-    refs = {s.ref for s in [row.recorded_by, *row.pays] if s}
-    uploads = {row.upload_id} | {o.upload_id for o in rows.values() if o.document_ref in refs}
+    uploads = _uploads_of(rows, row, ("recorded_by", "pays"))
     printed = re.compile(rf"(?<![\d.,]){re.escape(f'{r.vat:.2f}')}(?!\d)")
     if not any(printed.search(text(u)) for u in uploads):
         raise _Refused(f"£{r.vat:.2f} isn't printed in the row's document.")
@@ -256,60 +278,77 @@ def _apply(store: MongoStore, client_id: int, change: _Change, stored: dict[int,
     return []
 
 
-def _undo(store: MongoStore, client_id: int, change: _Change, stored: dict[int, Transaction], parts: list[int]) -> None:
-    """Puts the rows back as they were: the patched fields to their values, a split's row back in the books and its
-    parts' upload removed."""
-    for row_id, patch in change.patches.items():
-        store.patch_row(client_id, row_id, _values(stored[row_id], [*patch, "decision_ids"]))
-    if change.split:
-        row_id = change.split[0]
-        store.patch_row(client_id, row_id, _values(stored[row_id], ["superseded_by", "decision_ids"]))
-        upload_id = next((r.upload_id for r in store.rows(client_id) if parts and r.id == parts[0]), None)
-        if upload_id is not None:
+def _undo(store: MongoStore, client_id: int, saved: dict[int, dict], decision_id: str) -> None:
+    """Puts the rows back exactly as they were stored (row_data), and removes any parts a split added for the
+    decision, found by the decision they name. Never raises: the change it undoes already failed or was refused, and
+    that is what the caller reports."""
+    try:
+        store.put_row_data(client_id, saved)
+        added = {r.upload_id for r in store.rows(client_id) if decision_id in r.tx.decision_ids and r.id not in saved}
+        for upload_id in added:
             store.delete_upload(client_id, upload_id)
+    except Exception:   # noqa: BLE001 - best effort; logged for whoever looks at the rows next
+        logger.exception("Couldn't put back client %s's rows after decision %s", client_id, decision_id)
 
 
 def _commit(store: MongoStore, records: AgentRecords, b, change: _Change, key: str, draft: dict) -> Decision:
     """Makes the change and records it applied; if the ledger then shows an error on a row it touched that wasn't
-    there before, puts it back and records it refused (R0)."""
+    there before, puts it back and records it refused (R0). If anything fails on the way, the rows are put back
+    and the error is raised, so no row names a decision that was never recorded."""
     stored = {s.id: s.tx for s in b.stored}
     before_errors = _errors(books._saved_rows(b, None)[0])
     decision_id = uuid4().hex
-    parts = _apply(store, b.client.id, change, stored, decision_id)
+    saved = store.row_data(b.client.id, [*change.patches, *([change.split[0]] if change.split else [])])
     before = {str(n): _values(stored[n], p) for n, p in change.patches.items()}
-    after = {str(n): dict(p) for n, p in change.patches.items()}
-    if change.split:
-        before[str(change.split[0])] = {"superseded_by": None}
-        after[str(change.split[0])] = {"superseded_by": decision_id}
-        for n, part in zip(parts, change.split[1]):
-            after[str(n)] = _values(part, ["description", "account_code", "gross", "vat", "vat_treatment"])
-    was = dict(before_errors)
-    if change.split:   # a part starts with the errors of the row it replaces
-        was.update({n: before_errors.get(change.split[0], {}) for n in parts})
-    now = _errors(books.all_rows(store, b.client.id))
-    for row_id in sorted({*change.touched, *parts}):
-        new = [message for code, message in now.get(row_id, {}).items() if code not in was.get(row_id, {})]
-        if new:
-            _undo(store, b.client.id, change, stored, parts)
-            return _record(records, key, draft, status="refused", before=before, after=before, rule=change.rule,
-                           reason=f"It would leave row {row_id} with an error: {new[0]}")
-    return _record(records, key, draft, status="applied", before=before, after=after, rule=change.rule,
-                   row_ids=sorted({*change.touched, *parts}), id=decision_id)
+    try:
+        parts = _apply(store, b.client.id, change, stored, decision_id)
+        after = {str(n): dict(p) for n, p in change.patches.items()}
+        was = dict(before_errors)
+        if change.split:
+            before[str(change.split[0])] = {"superseded_by": None}
+            after[str(change.split[0])] = {"superseded_by": decision_id}
+            for n, part in zip(parts, change.split[1]):
+                after[str(n)] = _values(part, ["description", "account_code", "gross", "vat", "vat_treatment"])
+                was[n] = before_errors.get(change.split[0], {})   # a part starts with the errors of the row it replaces
+        now = _errors(books.all_rows(store, b.client.id))
+        for row_id in sorted({*change.touched, *parts}):
+            new = [message for code, message in now.get(row_id, {}).items() if code not in was.get(row_id, {})]
+            if new:
+                _undo(store, b.client.id, saved, decision_id)
+                return _record(records, key, draft, status="refused", before=before, after=before, rule=change.rule,
+                               reason=f"It would leave row {row_id} with an error: {new[0]}")
+        return _record(records, key, draft, status="applied", before=before, after=after, rule=change.rule,
+                       row_ids=sorted({*change.touched, *parts}), id=decision_id)
+    except Exception:
+        _undo(store, b.client.id, saved, decision_id)
+        raise
 
 
 def _record(records: AgentRecords, key: str, draft: dict, id: Optional[str] = None, **fields) -> Decision:
+    """Records the decision. A refusal is kept under a key of its own, so it never answers a retry: corrected, or
+    once the rows have changed, the same resolution can still apply."""
+    if fields.get("status") == "refused":
+        key = f"{key}|refused|{uuid4().hex}"
     return records.append_decision(DecisionDraft(**{**draft, **fields}), key, id=id)[0]
+
+
+def _applied(records: AgentRecords, client_id: int, key: str) -> Optional[Decision]:
+    """The decision already applied under the key, which a retry returns."""
+    done = records.decision_by_key(client_id, key)
+    return done if done is not None and done.status == "applied" else None
 
 
 def resolve(store: MongoStore, records: AgentRecords, *, client_id: int, thread_id: Optional[str], actor: str,
             row_id: int, resolution: Resolution, evidence: list[Evidence], reason: str, texts: Texts) -> Decision:
     """Checks the resolution against its evidence and the rules, and makes it, or refuses it; either way it is
-    recorded, once: asked again with the same rows and arguments, it returns the decision made the first time.
-    R0, for every action: the rows are the client's, their year is open, each quote is in the text of its upload
-    (whatever its spacing and case), each upload is the client's, and afterwards no row touched has a new error."""
+    recorded. Asked again with the same rows and arguments once applied, it returns that decision; a refusal is
+    tried afresh. R0, for every action: the rows are the client's, their year is open, each upload cited is the
+    client's and holds one of the rows or a record matched with one, each quote (four characters or more, spaces
+    aside) is in the text of its upload whatever its spacing and case, and afterwards no row touched has a new
+    error."""
     named = _named(row_id, resolution)
     key = _key(f"{client_id}|{named}|{resolution.model_dump_json()}")
-    if (done := records.decision_by_key(client_id, key)) is not None:
+    if (done := _applied(records, client_id, key)) is not None:
         return done
     b = books._books(store, client_id)
     rows = {r.id: r for r in books._saved_rows(b, None)[0]}
@@ -341,10 +380,17 @@ def resolve(store: MongoStore, records: AgentRecords, *, client_id: int, thread_
             raise _Refused(exc.message) from exc
         if not evidence:
             raise _Refused("No evidence was cited.")
+        theirs = set().union(*(_uploads_of(rows, rows[n]) for n in named))
         for e in evidence:
             if e.upload_id not in uploads:
                 raise _Refused(f"Upload {e.upload_id} isn't one of {b.client.name}'s documents.")
-            if not _normalised(e.quote) or _normalised(e.quote) not in text(e.upload_id):
+            if e.upload_id not in theirs:
+                raise _Refused(f"{uploads[e.upload_id]} holds none of rows {', '.join(map(str, named))}, nor a record "
+                               "matched with them.")
+            if len("".join(e.quote.split())) < _SHORTEST_QUOTE:
+                raise _Refused(f"\"{e.quote}\" is too short to show anything: quote {_SHORTEST_QUOTE} characters or "
+                               "more.")
+            if _normalised(e.quote) not in text(e.upload_id):
                 raise _Refused(f"\"{e.quote}\" isn't in {uploads[e.upload_id]}.")
         change = _ACTIONS[resolution.action](rows, row_id, resolution, b=b, text=text)
     except _Refused as refused:
@@ -368,7 +414,7 @@ def set_date(store: MongoStore, records: AgentRecords, *, client_id: int, thread
         raise InvalidInput(f"That date is outside the books, which run from {long_date(start)} to {long_date(end)}.")
     ensure_open(b.client, [b.years[b.placed[place[row_id]]].start, date])
     key = _key(f"{client_id}|set_date|{row_id}|{date.isoformat()}|{question_id}")
-    if (done := records.decision_by_key(client_id, key)) is not None:
+    if (done := _applied(records, client_id, key)) is not None:
         return done
     draft = dict(client_id=client_id, thread_id=thread_id, actor="user", action="set_date", row_ids=[row_id],
                  year_start=b.years[year_index(b.client.first_year_end, date)].start, rule="R1 Date from the person",

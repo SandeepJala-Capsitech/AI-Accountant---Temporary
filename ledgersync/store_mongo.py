@@ -507,6 +507,37 @@ class MongoStore:
         raise ChangedMeanwhile("The client's rows changed while this split was being saved, so it wasn't saved. "
                                "Try again.")
 
+    def row_data(self, client_id: int, row_ids) -> dict[int, dict]:
+        """The rows' data exactly as stored, by row id: the inputs, the saved issues, and what a person's first edit
+        kept (original, original_issues), for put_row_data to write back."""
+        doc = self.db.clients.find_one({"id": client_id}, {"rows": 1})
+        if not doc:
+            raise NotFound("This client was not found.")
+        wanted = set(row_ids)
+        return {r["id"]: r["data"] for r in doc.get("rows", []) if r["id"] in wanted}
+
+    def put_row_data(self, client_id: int, data: dict[int, dict]) -> None:
+        """Writes rows' data back as row_data read it, replacing it whole. Like patch_row, it writes only if the
+        client's document still has the revision it was read at, and otherwise reads and tries again."""
+        for _ in range(_PATCH_TRIES):
+            doc = self.db.clients.find_one({"id": client_id}, {"rows": 1, "revision": 1})
+            if not doc:
+                raise NotFound("This client was not found.")
+            rows = doc.get("rows", [])
+            found = [r for r in rows if r["id"] in data]
+            if not found:
+                return
+            for r in found:
+                r["data"] = data[r["id"]]
+            read_at = doc["revision"] if "revision" in doc else {"$exists": False}
+            saved = self.db.clients.update_one(
+                {"id": client_id, "revision": read_at},
+                {"$set": {"rows": rows, "updated_at": now_iso()}, "$inc": {"revision": 1}})
+            if saved.matched_count:
+                return
+        raise ChangedMeanwhile("The client's rows changed while they were being put back, so they weren't. "
+                               "Try again.")
+
     @staticmethod
     def _patched(rows: list[dict], row_id: int, changes: dict, revert: bool) -> bool:
         """Applies the change to the rows as read, in place, and says whether anything changed."""
