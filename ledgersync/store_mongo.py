@@ -471,6 +471,42 @@ class MongoStore:
         raise ChangedMeanwhile("The client's rows changed while this change was being saved, so it wasn't saved. "
                                "Try again.")
 
+    def add_split(self, client_id: int, row_id: int, parts: list[Transaction], decision_id: str) -> list[int]:
+        """Replaces a row with parts (a mixed-VAT receipt split by its VAT rates): the row is kept, marked as
+        superseded by the decision, and the parts are added as a new upload, "<its upload's name> (split)", of
+        the same year. Returns the parts' row ids. Like patch_row, it writes only if the client's document still
+        has the revision it was read at, and otherwise reads and tries again."""
+        ids: Optional[tuple[int, int]] = None   # the new upload's id and its first row id, allocated once
+        for _ in range(_PATCH_TRIES):
+            doc = self.db.clients.find_one({"id": client_id, "rows.id": row_id}, {"rows": 1, "uploads": 1, "revision": 1})
+            if not doc:
+                raise NotFound("This row was not found.")
+            rows = doc.get("rows", [])
+            target = next(r for r in rows if r["id"] == row_id)
+            upload = next((u for u in doc.get("uploads", []) if u["id"] == target["upload_id"]), {})
+            if ids is None:
+                ids = (self._next_id("upload_id"), self._next_id("row_id", len(parts)) if parts else 0)
+            upload_id, first_row_id = ids
+
+            now = now_iso()
+            target["data"]["superseded_by"] = decision_id
+            target["data"]["decision_ids"] = [*target["data"].get("decision_ids", []), decision_id]
+            part_docs = [{"id": first_row_id + n, "upload_id": upload_id, "position": n,
+                          "data": saved_form(part.model_copy(update={"decision_ids": [decision_id]}))}
+                         for n, part in enumerate(parts)]
+            upload_doc = {"id": upload_id, "name": f"{upload.get('name', '')} (split)", "kind": "split", "sha256": "",
+                          "model": "", "warnings": [], "bank_account": None,
+                          "year_start": upload.get("year_start"), "created_at": now}
+            read_at = doc["revision"] if "revision" in doc else {"$exists": False}
+            saved = self.db.clients.update_one(
+                {"id": client_id, "revision": read_at},
+                {"$set": {"rows": [*rows, *part_docs], "updated_at": now},
+                 "$push": {"uploads": upload_doc}, "$inc": {"revision": 1}})
+            if saved.matched_count:
+                return [p["id"] for p in part_docs]
+        raise ChangedMeanwhile("The client's rows changed while this split was being saved, so it wasn't saved. "
+                               "Try again.")
+
     @staticmethod
     def _patched(rows: list[dict], row_id: int, changes: dict, revert: bool) -> bool:
         """Applies the change to the rows as read, in place, and says whether anything changed."""

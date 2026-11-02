@@ -481,3 +481,70 @@ class ManualUpload(BaseModel):
     kind: Literal["manual"] = "manual"
     transactions: list[Transaction]
     year_start: Optional[dt.date] = None   # the year the rows are added to, which any undated row waits in
+
+
+# ─── The accountant chat's records ─────────────────────────────────────────────
+
+class Evidence(BaseModel):
+    """What a decision rests on: a quote from one of the client's uploads."""
+    upload_id: int
+    upload_name: str = ""
+    quote: str
+
+
+class DecisionDraft(BaseModel):
+    """A decision as its maker states it: what was done to which rows, by which rule, on what evidence. before and
+    after hold the changed fields of each row, keyed by str(row_id). AgentRecords.append_decision adds the rest."""
+    client_id: int
+    thread_id: Optional[str] = None
+    year_start: dt.date
+    action: str
+    rule: str                                  # e.g. "R2 Duplicate: kept the receipt"
+    status: Literal["applied", "refused"]
+    row_ids: list[int] = Field(default_factory=list)
+    evidence: list[Evidence] = Field(default_factory=list)
+    reason: str = ""
+    before: dict[str, dict] = Field(default_factory=dict)
+    after: dict[str, dict] = Field(default_factory=dict)
+    actor: str                                 # "agent:<model>", "user" or "rules"
+    reverses: Optional[str] = None             # the decision this one undoes
+
+
+class Decision(DecisionDraft):
+    """A decision as the log keeps it. Each client's decisions form a hash chain: hash is the SHA-256 of
+    prev_hash (the previous decision's hash, "" for the first) and this decision's JSON without its hash."""
+    id: str
+    created_at: str
+    prev_hash: str
+    hash: str
+
+
+class QuestionDraft(BaseModel):
+    """A question for the person, as the rules or the agent state it; a new question is open."""
+    client_id: int
+    year_start: dt.date
+    row_ids: list[int] = Field(default_factory=list)
+    kind: Literal["date", "receipt_or_invoice", "vat_invoice", "other"]
+    text: str                                  # "When was this taxi?"
+    why: str                                   # "Over £50, so I need ..."
+    source: Literal["rules", "agent"]
+
+
+class Question(QuestionDraft):
+    """A question as kept: open until answered, waiting when the person has no answer yet ("I don't have it",
+    "Not sure"), resolved once answered."""
+    id: str
+    status: Literal["open", "waiting", "resolved"]
+    answer: Optional[str] = None
+    created_at: str
+    resolved_at: Optional[str] = None
+
+
+class ChatThread(BaseModel):
+    """One conversation with the accountant, about one client's year."""
+    id: str
+    client_id: int
+    year_start: dt.date
+    title: str
+    created_at: str
+    updated_at: str
