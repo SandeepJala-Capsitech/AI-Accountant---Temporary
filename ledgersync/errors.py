@@ -116,3 +116,10 @@ class YearClosed(LedgerSyncError):
 
     status_code = 409
     code = "year_closed"
+
+
+class StillWorking(LedgerSyncError):
+    """A message, an answer or a delete for a chat while its last message is still being worked on."""
+
+    status_code = 409
+    code = "still_working"

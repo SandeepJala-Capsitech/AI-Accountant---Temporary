@@ -18,9 +18,9 @@ from .errors import NotFound
 from .models import ChatThread, Decision, DecisionDraft, Question, QuestionDraft
 from .rows import now_iso
 
-# What a document keeps besides its model: the idempotency key or question key it is found by, and `seq`, the
-# time in nanoseconds it was added, which orders records that were added in the same second.
-_KEPT_APART = ("_id", "idempotency_key", "key", "seq")
+# What a document keeps besides its model: the idempotency key or question key it is found by, `seq`, the time in
+# nanoseconds it was added, which orders records that were added in the same second, and a thread's last summary.
+_KEPT_APART = ("_id", "idempotency_key", "key", "seq", "summary")
 
 
 def _model(cls, doc: dict):
@@ -114,17 +114,26 @@ class AgentRecords:
         doc = self.db.questions.find_one({"id": id})
         return _model(Question, doc) if doc else None
 
-    def questions(self, client_id: int, year_start: dt.date,
+    def questions(self, client_id: int, year_start: Optional[dt.date],
                   statuses: tuple[str, ...] = ("open", "waiting")) -> list[Question]:
-        """The client's questions for the year in these statuses, oldest first."""
-        found = self.db.questions.find({"client_id": client_id, "year_start": year_start.isoformat(),
-                                        "status": {"$in": list(statuses)}}).sort("seq", pymongo.ASCENDING)
-        return [_model(Question, doc) for doc in found]
+        """The client's questions for the year (every year when None) in these statuses, oldest first."""
+        query: dict = {"client_id": client_id, "status": {"$in": list(statuses)}}
+        if year_start is not None:
+            query["year_start"] = year_start.isoformat()
+        return [_model(Question, doc) for doc in self.db.questions.find(query).sort("seq", pymongo.ASCENDING)]
 
     def set_question(self, id: str, status: str, answer: Optional[str] = None) -> Question:
         """Moves the question to the status, with the person's answer; resolved sets the time it was."""
         changes = {"status": status, "answer": answer, "resolved_at": now_iso() if status == "resolved" else None}
         doc = self.db.questions.find_one_and_update({"id": id}, {"$set": changes}, return_document=ReturnDocument.AFTER)
+        if not doc:
+            raise NotFound("This question was not found.")
+        return _model(Question, doc)
+
+    def set_question_why(self, id: str, why: str) -> Question:
+        """Says why the question is still asked; the rules' next refresh puts their own reason back."""
+        doc = self.db.questions.find_one_and_update({"id": id}, {"$set": {"why": why}},
+                                                    return_document=ReturnDocument.AFTER)
         if not doc:
             raise NotFound("This question was not found.")
         return _model(Question, doc)
@@ -156,6 +165,15 @@ class AgentRecords:
         if not doc:
             raise NotFound("This chat was not found.")
         return _model(ChatThread, doc)
+
+    def save_summary(self, id: str, summary: dict) -> None:
+        """Keeps the summary (as JSON) the thread's last turn or answer ended with."""
+        self.db.chat_threads.update_one({"_id": id}, {"$set": {"summary": summary}})
+
+    def summary(self, id: str) -> Optional[dict]:
+        """The summary the thread's last turn or answer ended with, as JSON; None before its first."""
+        doc = self.db.chat_threads.find_one({"_id": id}, {"summary": 1})
+        return doc.get("summary") if doc else None
 
     def delete_thread(self, id: str) -> None:
         """Removes the thread's record; what else was kept for it is removed by whoever kept it."""

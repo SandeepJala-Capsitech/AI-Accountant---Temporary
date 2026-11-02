@@ -13,9 +13,10 @@ from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, Header, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from ledgersync import accounts, adapter, books, folder, intake, ledger, pipeline, posting
+from ledgersync import accounts, adapter, books, demo, folder, intake, ledger, ledger_book, pipeline, posting
+from ledgersync.agent.chat import Chat, ChatFile, NewThread, ReviewSummary, ThreadDetail, ThreadPatch
 from ledgersync.blobs import BlobStore, GridFSBlobStore
 from ledgersync.accounts import choosable
 from ledgersync.checks import normalise
@@ -25,10 +26,11 @@ from ledgersync.extractor import TransactionExtractor
 from ledgersync.model_client import ModelClient
 from ledgersync.jobs import JobStore
 from ledgersync.matching import match
-from ledgersync.models import (AnalysisResult, BankCheck, BusinessSettings, BusinessType, Client, ClientFields,
-                               ClientPatch, ClientSummary, FolderImport, InvoiceSummary, Ledger, LedgerRequest,
-                               ManualUpload, OpeningBalances, RowPatch, TransactionList, TrialBalance, UploadPatch,
-                               Year, YearSummary)
+from ledgersync.models import (AnalysisResult, BankCheck, BusinessSettings, BusinessType, ChatThread, Client,
+                               ClientFields, ClientPatch, ClientSummary, Decision, FolderImport, InvoiceSummary, Ledger,
+                               LedgerRequest, ManualUpload, OpeningBalances, PostedTrialBalance, Question, RowPatch,
+                               TransactionList, TrialBalance, UploadPatch, Year, YearSummary)
+from ledgersync.questions import Answer
 from ledgersync.store_mongo import MongoStore
 
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -43,8 +45,9 @@ def configure_logging(level: str) -> None:
 
 
 def create_app(settings: Optional[Settings] = None, *, model_client=None, store: Optional[MongoStore] = None,
-               blobs: Optional[BlobStore] = None) -> FastAPI:
-    """The API; tests pass a stand-in for the model client as model_client and a store on a test database."""
+               blobs: Optional[BlobStore] = None, chat_model=None) -> FastAPI:
+    """The API; tests pass a stand-in for the model client as model_client, a store on a test database, and the
+    accountant chat's model as chat_model (LEDGERSYNC_AGENT_MODEL through OpenRouter otherwise)."""
     settings = settings or Settings.from_env()
     configure_logging(settings.log_level)
     model_client = model_client or ModelClient(settings)
@@ -95,6 +98,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
             "ai_error": health.error,
             "max_upload_mb": settings.max_upload_mb,
             "max_parallel_jobs": settings.max_parallel_jobs,   # the UI sends this many files at once
+            "demo": settings.demo,   # LEDGERSYNC_DEMO=1: POST /api/demo/reset puts the demo client back
         }
 
     # ─── Step 2 — Analyze (background job) ─────────────────────────────────────
@@ -399,6 +403,121 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
     def export_year(client_id: int, start: dt.date):
         """The year's trial balance and transactions as an Excel workbook (archived clients too)."""
         return workbook_download(*books.export(store, client_id, start, dt.date.today()))
+
+    # ─── The accountant chat (design of 2026-11-02) ─────────────────────────────
+
+    def read_chat_file(client: Client, file: ChatFile, year_start: dt.date):
+        """Reads a file sent to the chat as /api/analyze reads an upload: checked, kept and read in a job that saves
+        its rows to the client, added to the year; a statement's on its bank account, by default the client's first
+        current account. Refused (LedgerSyncError) before it is read when it fails its checks."""
+        data = intake.read_limited(io.BytesIO(file.data), settings.max_upload_bytes)
+        item = intake.load_upload(file.name, data, settings.max_pdf_pages)
+        model_client.ensure_available()
+        bank = file.bank_account or ledger.settings_for(client).bank_account
+        return submit_analysis(item, client, file.name, hashlib.sha256(data).hexdigest(), file.content_type, data,
+                               year_start, bank)
+
+    chat = Chat(settings, store, blobs, read=read_chat_file, vision=model_client, model=chat_model)
+
+    def from_our_pages(x_ledgersync: Optional[str]) -> None:
+        """Refuses a change any web page could have sent: see /api/analyze."""
+        if not x_ledgersync:
+            raise RefusedRequest("Changes are taken from the Super Accountant pages only: the X-LedgerSync header "
+                                 "is missing.")
+
+    def sent_file(file: UploadFile, bank_account: Optional[str] = None) -> ChatFile:
+        """The file as the chat reads it; read now, as the upload is closed once the route returns."""
+        return ChatFile(name=file.filename or "file", data=file.file.read(settings.max_upload_bytes + 1),
+                        content_type=file.content_type or "application/octet-stream", bank_account=bank_account)
+
+    @app.get("/api/chat/threads", response_model=list[ChatThread])
+    def list_threads(client_id: Optional[int] = None):
+        """Every chat, or one client's, the most recently used first."""
+        return chat.records.threads(client_id)
+
+    @app.post("/api/chat/threads", response_model=ChatThread, status_code=201)
+    def new_thread(body: NewThread, x_ledgersync: Optional[str] = Header(None)):
+        from_our_pages(x_ledgersync)
+        return chat.new_thread(body.client_id)
+
+    @app.get("/api/chat/threads/{thread_id}", response_model=ThreadDetail)
+    def get_thread(thread_id: str):
+        return chat.detail(chat.thread(thread_id))
+
+    @app.patch("/api/chat/threads/{thread_id}", response_model=ChatThread)
+    def rename_thread(thread_id: str, body: ThreadPatch, x_ledgersync: Optional[str] = Header(None)):
+        from_our_pages(x_ledgersync)
+        chat.thread(thread_id)
+        return chat.records.touch_thread(thread_id, title=body.title)
+
+    @app.delete("/api/chat/threads/{thread_id}", status_code=204)
+    def delete_thread(thread_id: str, x_ledgersync: Optional[str] = Header(None)):
+        from_our_pages(x_ledgersync)
+        chat.delete(chat.thread(thread_id))
+        return Response(status_code=204)
+
+    @app.post("/api/chat/threads/{thread_id}/messages")
+    def send_message(thread_id: str, text: str = Form(""), files: Optional[list[UploadFile]] = File(None),
+                     bank_accounts: Optional[list[str]] = Form(None), x_ledgersync: Optional[str] = Header(None)):
+        """Streams the turn back as server-sent events (status, step, token, summary, error, done). files[i] is a
+        statement for bank_accounts[i] ('' or none: the client's first current account). 409 while the chat is
+        still working on its last message."""
+        from_our_pages(x_ledgersync)
+        thread = chat.thread(thread_id)
+        client = store.get_client(thread.client_id)
+        ledger.require_active(client)
+        if not text.strip():
+            raise InvalidInput("Write a message to send.")
+        codes = bank_accounts or []
+        for code in filter(None, codes):
+            ledger.check_bank_account(client, code)
+        sent = [sent_file(f, (codes[k] if k < len(codes) else "") or None)
+                for k, f in enumerate(files or []) if f.filename]
+        events = chat.send(thread, text.strip(), sent)
+        return StreamingResponse((event.sse() for event in events), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    @app.post("/api/chat/threads/{thread_id}/questions/{question_id}/answer", response_model=ReviewSummary)
+    def answer_question(thread_id: str, question_id: str, answer: Answer,
+                        x_ledgersync: Optional[str] = Header(None)):
+        from_our_pages(x_ledgersync)
+        return chat.answer(chat.thread(thread_id), question_id, answer)
+
+    @app.post("/api/chat/threads/{thread_id}/questions/{question_id}/document", response_model=ReviewSummary)
+    def question_document(thread_id: str, question_id: str, file: UploadFile = File(...),
+                          x_ledgersync: Optional[str] = Header(None)):
+        from_our_pages(x_ledgersync)
+        return chat.document(chat.thread(thread_id), question_id, sent_file(file))
+
+    @app.post("/api/chat/threads/{thread_id}/stop")
+    def stop_thread(thread_id: str, x_ledgersync: Optional[str] = Header(None)):
+        """Asks the chat's run to stop before its next model call; stopping is False when nothing runs."""
+        from_our_pages(x_ledgersync)
+        chat.thread(thread_id)
+        return {"stopping": chat.runs.stop(thread_id)}
+
+    @app.get("/api/clients/{client_id}/questions", response_model=list[Question])
+    def client_questions(client_id: int):
+        """The client's open and waiting questions, of every year, from every chat on it."""
+        store.get_client(client_id)
+        return chat.records.questions(client_id, None)
+
+    @app.get("/api/clients/{client_id}/decisions", response_model=list[Decision])
+    def client_decisions(client_id: int, year_start: Optional[dt.date] = None):
+        store.get_client(client_id)
+        return chat.records.decisions(client_id, year_start)
+
+    @app.get("/api/clients/{client_id}/years/{start}/posted-trial-balance", response_model=PostedTrialBalance)
+    def posted_trial_balance(client_id: int, start: dt.date):
+        store.get_client(client_id)
+        return ledger_book.posted_trial_balance(store, chat.records, client_id, start)
+
+    if settings.demo:   # otherwise there is no such route
+        @app.post("/api/demo/reset")
+        def reset_demo(x_ledgersync: Optional[str] = Header(None)):
+            """Puts the demo client back as the demo starts, with no chats, decisions or postings."""
+            from_our_pages(x_ledgersync)
+            return {"client_id": demo.reset(store, chat.records, store.client[f"{store.db_name}_checkpoints"])}
 
     return app
 
