@@ -140,14 +140,8 @@ class ModelClient:
             payload["reasoning_effort"] = self._s.groq_reasoning_effort
         if self._openrouter:
             # Only to providers that honour every parameter above, the strict schema above all;
-            # otherwise OpenRouter may pick one that ignores it. The hosts set are asked first, and only
-            # hosts running the model at a precision set are used (settings.openrouter_quantizations).
-            route = {"require_parameters": True}
-            if self._s.openrouter_providers:
-                route["order"] = list(self._s.openrouter_providers)
-            if self._s.openrouter_quantizations:
-                route["quantizations"] = list(self._s.openrouter_quantizations)
-            payload["provider"] = route
+            # otherwise OpenRouter may pick one that ignores it.
+            payload["provider"] = self._route(require_parameters=True)
         response = self._chat(payload)
         choice = (response.get("choices") or [{}])[0]
         if choice.get("finish_reason") == "length":
@@ -157,6 +151,16 @@ class ModelClient:
         if not content.strip():
             raise ModelError("The AI model returned an empty answer.", code="ai_output_invalid")
         return ModelAnswer(content, host=response.get("provider"))
+
+    def _route(self, require_parameters: bool = False) -> dict:
+        """OpenRouter's routing: the hosts set are asked first, and only hosts running the model at a precision
+        set are used (settings.openrouter_quantizations)."""
+        route = {"require_parameters": True} if require_parameters else {}
+        if self._s.openrouter_providers:
+            route["order"] = list(self._s.openrouter_providers)
+        if self._s.openrouter_quantizations:
+            route["quantizations"] = list(self._s.openrouter_quantizations)
+        return route
 
     def transcribe(self, image_b64: str) -> str:
         """Everything printed on one page image (a base64 JPEG from pipeline.prepare_image), as plain text:
@@ -174,6 +178,8 @@ class ModelClient:
         }
         if self._s.groq_reasoning_effort:
             payload["reasoning_effort"] = self._s.groq_reasoning_effort
+        if self._openrouter and (route := self._route()):
+            payload["provider"] = route   # a transcript is kept for good: not from a low-precision host
         response = self._chat(payload)
         choice = (response.get("choices") or [{}])[0]
         if choice.get("finish_reason") == "length":

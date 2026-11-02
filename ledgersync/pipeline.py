@@ -78,14 +78,27 @@ def _pdf_pages(data: bytes) -> list[bytes]:
 def pdf_text(data: bytes) -> Optional[str]:
     """The text layer, in reading order with each line of the page kept together: a table's cells
     stay in their row, where a column-by-column read would separate dates from their amounts."""
+    pages = _page_texts(data)
+    if pages is None:
+        return None
+    return "\n\n".join(pages).strip() or None
+
+
+def pdf_page_texts(data: bytes) -> list[str]:
+    """The text layer of each page, as pdf_text reads it; [] when no page has text (a scan) or the PDF
+    cannot be read."""
+    pages = _page_texts(data)
+    return pages if pages and any(p.strip() for p in pages) else []
+
+
+def _page_texts(data: bytes) -> Optional[list[str]]:
     import pymupdf
     try:
         with PYMUPDF_LOCK, pymupdf.open(stream=data, filetype="pdf") as doc:
-            text = "\n\n".join(page.get_text("text", sort=True) for page in doc)
+            return [page.get_text("text", sort=True) for page in doc]
     except Exception as exc:
         logger.warning("PDF text extraction failed (%s); the model will read the pages instead", type(exc).__name__)
         return None
-    return text.strip() or None
 
 
 _pdf_text = pdf_text   # the name callers and tests used before it was public

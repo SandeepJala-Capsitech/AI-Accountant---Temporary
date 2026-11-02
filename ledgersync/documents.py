@@ -6,7 +6,7 @@ from typing import Optional
 
 from . import intake
 from .errors import ModelUnavailable
-from .pipeline import _pdf_pages, pdf_text, prepare_image
+from .pipeline import _pdf_pages, pdf_page_texts, prepare_image
 
 PAGE_CHARS = 12_000   # the most characters in one page of text
 
@@ -35,9 +35,9 @@ def _read(name: str, data: bytes, vision) -> tuple[list[str], str]:
     if text is not None:
         return _split(text), "text"
     if b"%PDF-" in data[:1024]:
-        text = pdf_text(data)
-        if text:
-            return _split(text), "text"
+        texts = pdf_page_texts(data)
+        if texts:   # each page is its own page of text, split further only if it is long
+            return [part for text in texts for part in _split(text)], "text"
         images = [prepare_image(page) for page in _pdf_pages(data)]   # a scan
     else:
         images = [prepare_image(data)]

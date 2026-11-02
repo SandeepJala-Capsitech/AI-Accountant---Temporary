@@ -2,10 +2,11 @@ import io
 
 import pytest
 from fakes import chat_answer
-from test_model_client import SETTINGS, make_client
+from test_model_client import OPENROUTER, make_client
 
 from ledgersync import documents
 from ledgersync.blobs import MemoryBlobStore
+from ledgersync.config import Settings
 from ledgersync.documents import PAGE_CHARS, text_of
 from ledgersync.errors import ModelUnavailable
 
@@ -106,6 +107,12 @@ def test_text_pdf_needs_no_vision():
     assert "Opening balance 100" in pages[0] and vision.calls == []
 
 
+def test_each_page_of_a_text_pdf_is_its_own_page():
+    blobs, vision = MemoryBlobStore(), FakeVision()
+    pages = text_of(keep(blobs, "s.pdf", pdf("Page one", "Page two", "Page three")), blobs, FakeRecords(), vision)
+    assert len(pages) == 3 and "Page one" in pages[0] and "Page three" in pages[2] and vision.calls == []
+
+
 def test_scanned_pdf_is_transcribed_page_by_page():
     blobs, records, vision = MemoryBlobStore(), FakeRecords(), FakeVision("page one", "page two")
     upload = keep(blobs, "scan.pdf", pdf("", ""))
@@ -141,3 +148,21 @@ def test_transcribe_asks_for_a_plain_faithful_transcript():
     assert content[1]["image_url"]["url"] == "data:image/jpeg;base64,aW1hZ2U="
     rules = body["messages"][0]["content"].lower()
     assert "exactly as printed" in rules and "no commentary" in rules
+
+
+def test_transcribe_on_openrouter_keeps_to_the_set_hosts_and_precisions():
+    client, http, _, _ = make_client(chat_answer("text"), settings=OPENROUTER)
+    client.transcribe("aW1hZ2U=")
+    # The same hosts and precisions as chat_json; no require_parameters, as there is no schema to honour.
+    assert http.payload()["provider"] == {"order": ["deepinfra/bf16"],
+                                          "quantizations": ["bf16", "fp16", "fp32", "fp8"]}
+
+
+def test_transcribe_leaves_routing_alone_when_none_is_set_and_on_groq():
+    client, http, _, _ = make_client(chat_answer("text"), settings=Settings(
+        openrouter_api_key="k", openrouter_providers=(), openrouter_quantizations=()))
+    client.transcribe("aW1hZ2U=")
+    assert "provider" not in http.payload()
+    client, http, _, _ = make_client(chat_answer("text"))
+    client.transcribe("aW1hZ2U=")
+    assert "provider" not in http.payload()
