@@ -63,13 +63,14 @@ export interface SuspenseItem {
   row_id: number
   description: string
   gross: string
-  needs: 'receipt_or_invoice' | 'vat_invoice'
+  needs: 'receipt_or_invoice' | 'vat_invoice' | null   // null once the row is no longer held
 }
 
 // The trial balance of the posted ledger, with the rows held in Suspense among it.
 export interface PostedTrialBalance extends TrialBalanceResult {
   suspense: SuspenseItem[]
   unposted_changes: number   // rows changed since they were posted
+  problems: string[]         // what is wrong with the posted books, in words
 }
 
 export interface PostResult {
@@ -235,7 +236,7 @@ export function retryFiles(files: File[], bankAccounts: string[], steps: Step[])
 }
 
 export const suspenseLabel = (needs: SuspenseItem['needs']) =>
-  needs === 'vat_invoice' ? 'needs VAT invoice' : 'needs receipt or invoice'
+  needs === 'vat_invoice' ? 'needs VAT invoice' : needs === 'receipt_or_invoice' ? 'needs receipt or invoice' : 'Suspense'
 
 const STATEMENT_TYPES = /\.(csv|ofx|qfx|qif|xls|xlsx)$/i
 

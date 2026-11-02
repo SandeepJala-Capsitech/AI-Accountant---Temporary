@@ -21,6 +21,7 @@ export default function PostedTrialBalance({ tb }: { tb: Posted }) {
         </span>
         {held > 0 && <span className="muted small"> {held} {held === 1 ? 'item' : 'items'} in Suspense</span>}
       </p>
+      {tb.problems.length > 0 && <p className="text-error small">{tb.problems.join(' ')}</p>}
       {tb.unposted_changes > 0 && (
         <p className="text-warn small">
           {tb.unposted_changes} {tb.unposted_changes === 1 ? 'change' : 'changes'} not posted
@@ -37,7 +38,7 @@ export default function PostedTrialBalance({ tb }: { tb: Posted }) {
                   {l.code === SUSPENSE && tb.suspense.map(item => (
                     <span key={item.row_id} className="suspense-item">
                       {item.description} · {formatMoney(item.gross)}{' '}
-                      <span className="badge badge-warn">{suspenseLabel(item.needs)}</span>
+                      <span className={item.needs ? 'badge badge-warn' : 'badge badge-muted'}>{suspenseLabel(item.needs)}</span>
                     </span>
                   ))}
                 </td>

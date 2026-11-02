@@ -96,6 +96,7 @@ test('money shows pounds with thousands and two decimals', () => {
 test('a Suspense item says what it needs', () => {
   assert.equal(suspenseLabel('receipt_or_invoice'), 'needs receipt or invoice')
   assert.equal(suspenseLabel('vat_invoice'), 'needs VAT invoice')
+  assert.equal(suspenseLabel(null), 'Suspense')   // no longer held
 })
 
 test('statements are told apart by their name', () => {
