@@ -152,9 +152,12 @@ def match_documents(rows: list[Transaction], settings: BusinessSettings,
     amount as it was read before a person changed it (None if unchanged), and apart, for each row, the rows a person
     said are not the same as it, which are never paired with it or asked about. open_items: the invoices unpaid when
     the client's first year started, which a bank line pays as it pays an invoice uploaded. Also each document's
-    status, by its ref, brought-forward ones ("ob-{id}") among them."""
+    status, by its ref, brought-forward ones ("ob-{id}") among them. A row a decision left out of the books (excluded,
+    or replaced by a split) is matched as if it were not there."""
     read = read or [None] * len(rows)
     apart = apart or [set() for _ in rows]
+    if any(tx.excluded or tx.superseded_by for tx in rows):
+        return _without_left_out(rows, settings, read, apart, open_items)
     rows = _checked_totals(_with_claims(_without_copies([_cleared(tx) for tx in rows]), settings, apart), read)
     documents = {**_brought_forward(open_items), **_documents(rows)}
     changes: list[dict] = [{} for _ in rows]
@@ -194,6 +197,23 @@ def match_documents(rows: list[Transaction], settings: BusinessSettings,
     matched = [_with_sale_without_vat(tx, settings) for tx in matched]
     statuses = {ref: DocumentStatus(open=doc.open, paid_by=list(doc.paid_by)) for ref, doc in documents.items()}
     return _without_payroll(matched), statuses
+
+
+def _without_left_out(rows: list[Transaction], settings: BusinessSettings, read: list[Optional[Decimal]],
+                      apart: list[set[int]], open_items: Sequence[OpenItem]) -> tuple[list[Transaction],
+                                                                                    dict[str, DocumentStatus]]:
+    """match_documents on the rows a decision didn't leave out, put back in place among the left-out ones, which
+    keep no outputs of a match. The places that matching's issues name are mapped back to places in all the rows."""
+    kept = [n for n, tx in enumerate(rows) if not (tx.excluded or tx.superseded_by)]
+    place = {n: k for k, n in enumerate(kept)}
+    matched, statuses = match_documents([rows[n] for n in kept], settings, [read[n] for n in kept],
+                                        [{place[m] for m in apart[n] if m in place} for n in kept], open_items)
+    result = [_cleared(tx) for tx in rows]
+    for n, tx in zip(kept, matched):
+        result[n] = tx.model_copy(update={"issues": [
+            i.model_copy(update={"related": [kept[p] for p in i.related]}) if i.code in MATCHING_ISSUES else i
+            for i in tx.issues]})
+    return result, statuses
 
 
 def _with_sale_without_vat(tx: Transaction, settings: BusinessSettings) -> Transaction:

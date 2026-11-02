@@ -879,3 +879,42 @@ def test_a_card_payment_paired_with_its_receipt_is_booked_against_the_card():
     settings = HELPER_SETTINGS.model_copy(update={"bank_accounts": ("1200", "1240")})
     tb = trial_balance([receipt, card], settings)
     assert net(tb, "1240") == Decimal("-24.00") and net(tb, "1200") == Decimal("0")
+
+
+# ─── Rows a decision left out of the books ─────────────────────────────────────
+
+@pytest.mark.parametrize("left_out", [{"excluded": True}, {"superseded_by": "d1"}])
+def test_a_bank_line_left_out_of_the_books_pays_nothing(left_out):
+    open_bill, line = matched(bill(), bank(**left_out))
+    assert line.pays == [] and line.paid_against is None and codes(line) == []
+    assert open_bill.owed == Decimal("12000.00") and open_bill.paid_by == []
+
+
+def test_a_bill_left_out_of_the_books_is_not_paid():
+    left_out, line = matched(bill(excluded=True), bank())
+    assert line.pays == [] and left_out.owed is None
+
+
+def test_a_left_out_line_is_not_one_side_of_a_transfer():
+    out, into = transfer()
+    ready = {tx.document_ref: tx for tx in normalise_and_match([out, into.model_copy(update={"excluded": True})],
+                                                               TWO_BANKS)}
+    assert ready["a"].recorded_by is None and ready["b"].recorded_by is None
+    assert not any(i.code == "transfer" for tx in ready.values() for i in tx.issues)
+
+
+def test_a_left_out_claim_line_is_not_recorded_by_its_receipt():
+    receipt = row("receipt", "out", "64.80", "2026-10-07", "Costco", "r", account="7504")
+    line = row("expense_claim", "out", "64.80", "2026-10-07", "Priya Shah", "claim", account="7504",
+               description="Costco office supplies", excluded=True)
+    ready_receipt, ready_line = matched(receipt, line)
+    assert ready_line.recorded_by is None and ready_receipt.claimed_in is None
+
+
+def test_issues_point_at_the_right_rows_when_a_row_before_them_is_left_out():
+    """The places an issue names are places in all the rows, not in those left once the left-out ones are set aside."""
+    out, into = transfer()
+    gone = bank(gross="5000.00", ref="gone", excluded=True)
+    ready = normalise_and_match([gone, out, into], TWO_BANKS)
+    assert about(ready[2], "transfer") == [1]
+    assert ready[0] == normalise(gone, TWO_BANKS)
