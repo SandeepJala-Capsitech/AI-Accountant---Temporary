@@ -29,7 +29,8 @@ class DocumentRule(BaseModel):
 def _fixed_asset(account: Account) -> bool:
     """Whether the account holds equipment or vehicles the business buys (0030 to 0055): not their depreciation,
     which is outside the scope of VAT, nor Debtors, Prepayments or the banks."""
-    return account.type == AccountType.ASSET and account.code.startswith("00") and account.vat != VatTreatment.OUTSIDE_SCOPE
+    return (account.type == AccountType.ASSET and account.code.startswith("00")
+            and account.vat != VatTreatment.OUTSIDE_SCOPE)
 
 
 def _covered(tx: Transaction) -> bool:
@@ -55,6 +56,9 @@ def document_rule(tx: Transaction, settings: BusinessSettings) -> DocumentRule:
         if tx.gross < NO_DOCUMENT_LIMIT:
             return DocumentRule(action="book", reclaim_vat=False,
                                 reason="Small purchase: booked from the line without a receipt; no VAT reclaimed.")
+        if tx.gross > SIMPLIFIED_LIMIT:
+            return _hold("vat_invoice", "No receipt or invoice, and a purchase this size needs a full VAT "
+                                        "invoice: held in Suspense until it is uploaded.")
         return _hold("receipt_or_invoice", "No receipt or invoice: held in Suspense until one is uploaded.")
     if tx.document_type == "receipt":
         if tx.gross > SIMPLIFIED_LIMIT:

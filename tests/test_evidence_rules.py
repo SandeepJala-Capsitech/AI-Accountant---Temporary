@@ -64,6 +64,12 @@ def test_a_document_that_is_not_a_vat_invoice_reclaims_nothing():
     assert document_rule(invoice, SETTINGS).reclaim_vat is False
 
 
+@pytest.mark.parametrize("gross,needs", [("250.00", "receipt_or_invoice"), ("250.01", "vat_invoice"),
+                                         ("300.00", "vat_invoice")])
+def test_a_bank_line_over_250_with_no_document_needs_a_vat_invoice(gross, needs):
+    assert verdict(document_rule(statement_line(gross), SETTINGS)) == ("hold", False, needs)
+
+
 def test_an_asset_purchase_is_covered():
     assert document_rule(statement_line("500.00", "0030"), SETTINGS).action == "hold"
 

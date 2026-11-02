@@ -260,3 +260,44 @@ def test_the_posted_trial_balance_shows_while_rows_need_fixing(store, records, a
     assert ledger_book.unposted_changes(store, records, acme, YEAR_1) == 1   # the one row needing fixing
     later = ledger_book.posted_trial_balance(store, records, acme, YEAR_2)   # its opening can't be worked out
     assert later.lines == [] and later.problems and later.problems[0].startswith("Fix the earlier years first")
+
+
+STILL_WRITING = "Another posting is still being written; try again."
+
+
+@pytest.mark.parametrize("after_first", [True, False])
+def test_a_posting_still_being_written_stops_the_next(store, records, acme, after_first):
+    # A batch whose entries haven't all landed is the end of the chain: posting after it would miss its lines.
+    add_rows(store, acme, stationery())
+    after = ledger_book.post(store, records, acme, YEAR_1).batch_id if after_first else None
+    if after_first:
+        change_stationery_receipt_to(store, acme, D("72.00"))
+    before = counts(records)
+    records.db.posting_batches.insert_one({"_id": "writing", "client_id": acme, "year_start": "2025-04-01",
+                                           "key": "k", "after": after, "entries": 3, "reversals": 3 * after_first})
+    result = ledger_book.post(store, records, acme, YEAR_1)
+    assert (result.batch_id, result.entries_added, result.problems) == (None, 0, [STILL_WRITING])
+    assert counts(records) == (before[0], before[1] + 1)
+    ledger_book.posted_trial_balance(store, records, acme, YEAR_1)   # still reads what is there
+    ledger_book.unposted_changes(store, records, acme, YEAR_1)
+
+
+def test_two_first_posts_write_one_batch(store, records, acme, monkeypatch):
+    add_rows(store, acme, stationery())
+    stale = ledger_book._posted(records.db, acme, YEAR_1)   # nothing posted yet
+    assert ledger_book.post(store, records, acme, YEAR_1).batch_id
+    change_stationery_receipt_to(store, acme, D("72.00"))   # so the late one's lines differ from the first's
+    monkeypatch.setattr(ledger_book, "_posted", lambda *a: stale)
+    late = ledger_book.post(store, records, acme, YEAR_1)
+    assert (late.batch_id, late.entries_added) == (None, 0)
+    assert counts(records) == (3, 1)
+
+
+def test_a_wanted_amount_finer_than_a_penny_is_not_a_change_forever(store, records, acme, monkeypatch):
+    add_rows(store, acme, stationery())
+    rid = first_row_id(store, acme)
+    monkeypatch.setattr(ledger_book, "wanted_journal", lambda *a, **k: {rid: [
+        _line(rid, "7504", "50.004"), _line(rid, "2201", "10.00"), _line(rid, "1200", credit="60.004")]})
+    assert ledger_book.post(store, records, acme, YEAR_1).batch_id
+    assert ledger_book.unposted_changes(store, records, acme, YEAR_1) == 0
+    assert ledger_book.post(store, records, acme, YEAR_1).batch_id is None

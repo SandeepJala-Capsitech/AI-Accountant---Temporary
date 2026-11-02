@@ -91,29 +91,34 @@ def _legs(lines: list[JournalLine]) -> list[tuple[str, Decimal, Decimal]]:
 @dataclass
 class _Posted:
     """What is posted for a client's year: every entry, oldest first, with its money as Decimal; the lines of each
-    row that are neither reversals nor reversed; each row's net by account; and the latest batch, the end of the
-    chain."""
+    row that are neither reversals nor reversed; each row's net by account; the latest batch, the end of the
+    chain; and whether all its entries were written when it was read."""
     entries: list[dict]
     live: dict[int, list[dict]] = field(default_factory=dict)
     net: dict[int, dict[str, Decimal]] = field(default_factory=dict)
     last_batch: Optional[str] = None
+    complete: bool = True
 
 
 def _posted(db: Database, client_id: int, year_start: dt.date) -> _Posted:
+    """What is posted. The batches are read before the entries: a batch is written before its entries, so once the
+    end of the chain is found with all its entries written, the entries read after include them all."""
     where = {"client_id": client_id, "year_start": year_start.isoformat()}
+    batches = list(db.posting_batches.find(where, {"_id": 1, "after": 1, "entries": 1, "reversals": 1}))
+    followed = {b["after"] for b in batches}
+    latest = next((b for b in batches if b["_id"] not in followed), None)
+    complete = latest is None or db.ledger_entries.count_documents(
+        {"batch_id": latest["_id"]}) >= latest.get("entries", 0) + latest.get("reversals", 0)
     entries = [{**d, "debit": _money(d["debit"]), "credit": _money(d["credit"])}
                for d in db.ledger_entries.find(where).sort([("seq", pymongo.ASCENDING), ("_id", pymongo.ASCENDING)])]
     reversed_ = {d["reverses"] for d in entries if d["reverses"]}
     by_row: dict[int, list[dict]] = defaultdict(list)
     for d in entries:
         by_row[d["row_id"]].append(d)
-    batches = list(db.posting_batches.find(where, {"_id": 1, "after": 1}))
-    followed = {b["after"] for b in batches}
-    latest = next((b for b in batches if b["_id"] not in followed), None)
-    return _Posted(entries=entries,
-                   live={r: [d for d in ds if not d["reverses"] and d["_id"] not in reversed_] for r, ds in by_row.items()},
-                   net={r: n for r, ds in by_row.items() if (n := _net((d["code"], d["debit"], d["credit"]) for d in ds))},
-                   last_batch=latest["_id"] if latest else None)
+    live = {r: [d for d in ds if not d["reverses"] and d["_id"] not in reversed_] for r, ds in by_row.items()}
+    net = {r: n for r, ds in by_row.items() if (n := _net((d["code"], d["debit"], d["credit"]) for d in ds))}
+    return _Posted(entries=entries, live=live, net=net, last_batch=latest["_id"] if latest else None,
+                   complete=complete)
 
 
 def _changed(wanted: dict[int, list[JournalLine]], posted: _Posted) -> list[int]:
@@ -135,10 +140,11 @@ def _new_lines(wanted: dict[int, list[JournalLine]], posted: _Posted) -> list[di
 
 
 def _problems(lines: list[dict], rows: dict[int, Transaction], vat_registered: bool, posted: _Posted) -> list[str]:
-    """Why the batch can't be posted: a row's lines or the whole batch not balancing, an account not in the chart,
-    a reversal of an entry that isn't posted, is reversed already or is itself a reversal, or a new VAT leg that is not on Sales or Purchase VAT, is more than the row's gross can hold (a sixth, with the
-    rounding allowance checks.normalise allows), or is for a client that isn't VAT registered. A VAT leg is a line
-    on an account other than the row's own, its bank (or contra) and Suspense."""
+    """Why the batch can't be posted: a row's lines or the whole batch not balancing; an account not in the chart;
+    a reversal of an entry that isn't posted, is reversed already or is itself a reversal; or a new VAT leg that is
+    not on Sales or Purchase VAT, is more than the row's gross can hold (a sixth, with the rounding allowance
+    checks.normalise allows), or is for a client that isn't VAT registered. A VAT leg is a line on an account other
+    than the row's own, its bank (or contra) and Suspense."""
     problems = []
     by_row: dict[int, list[dict]] = defaultdict(list)
     for line in lines:
@@ -197,9 +203,9 @@ def _nothing(problems: Sequence[str] = ()) -> PostResult:
 def post(store: MongoStore, records: AgentRecords, client_id: int, year_start: dt.date, *,
          decision_ids: Sequence[str] = ()) -> PostResult:
     """Posts the year's changes since the last posting as one batch, recording the decisions behind it. Nothing is
-    written when there is nothing to post, when the same batch was posted already, or when the batch fails its
-    checks or rows need fixing (then with the problems). entries_added counts the new lines, reversals_added the
-    reversals. Postings are not locked against each other: two at once with different differences both post."""
+    written when there is nothing to post, when another posting worked out from the same ledger was written first,
+    or (with the problems) when the batch fails its checks, rows need fixing, or the latest batch's entries are
+    still being written. entries_added counts the new lines, reversals_added the reversals."""
     db = records.db
     _ensure_indexes(db)
     try:
@@ -207,6 +213,8 @@ def post(store: MongoStore, records: AgentRecords, client_id: int, year_start: d
     except InvalidTransactions as exc:
         return _nothing(exc.problems)
     posted = _posted(db, client_id, year_start)
+    if not posted.complete:   # its entries would be missing from what this posting reverses
+        return _nothing(["Another posting is still being written; try again."])
     lines = _new_lines(wanted_journal(store, client_id, year_start, ruled=ruled), posted)
     if not lines:
         return _nothing()
