@@ -44,16 +44,19 @@ class AgentRecords:
 
     # ─── Decisions ─────────────────────────────────────────────────────────────
 
-    def append_decision(self, d: DecisionDraft, idempotency_key: str) -> tuple[Decision, bool]:
+    def append_decision(self, d: DecisionDraft, idempotency_key: str,
+                        id: Optional[str] = None) -> tuple[Decision, bool]:
         """Adds the decision to its client's chain and says it is new. Given a key already used, it adds nothing
         and returns the decision stored under it with False, so a retried tool call decides only once. Two
-        appends racing for one client may both chain from the same previous decision; the log is not locked."""
+        appends racing for one client may both chain from the same previous decision; the log is not locked.
+        id: the decision's id when its maker needed it before adding it (a split names the decision that
+        replaced the row); a new one otherwise."""
         stored = self.db.decisions.find_one({"idempotency_key": idempotency_key})
         if stored:
             return _model(Decision, stored), False
         latest = self.db.decisions.find_one({"client_id": d.client_id}, sort=[("seq", pymongo.DESCENDING)])
         prev_hash = latest["hash"] if latest else ""
-        decision = Decision(**d.model_dump(), id=uuid4().hex, created_at=now_iso(), prev_hash=prev_hash, hash="")
+        decision = Decision(**d.model_dump(), id=id or uuid4().hex, created_at=now_iso(), prev_hash=prev_hash, hash="")
         decision.hash = _hash(prev_hash, decision)
         doc = {**decision.model_dump(mode="json"), "_id": decision.id, "idempotency_key": idempotency_key,
                "seq": time.time_ns()}
@@ -62,6 +65,11 @@ class AgentRecords:
         except DuplicateKeyError:   # the same key was added meanwhile
             return _model(Decision, self.db.decisions.find_one({"idempotency_key": idempotency_key})), False
         return decision, True
+
+    def decision_by_key(self, client_id: int, idempotency_key: str) -> Optional[Decision]:
+        """The client's decision stored under the key, if any."""
+        doc = self.db.decisions.find_one({"client_id": client_id, "idempotency_key": idempotency_key})
+        return _model(Decision, doc) if doc else None
 
     def decisions(self, client_id: int, year_start: Optional[dt.date] = None,
                   since: Optional[str] = None) -> list[Decision]:

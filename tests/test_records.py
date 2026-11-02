@@ -45,6 +45,12 @@ def test_decision_is_idempotent(records):
     assert (new1, new2) == (True, False) and d1.id == d2.id and len(records.decisions(1)) == 1
 
 
+def test_a_decision_is_found_by_its_clients_key_and_can_be_given_its_id(records):
+    d, _ = records.append_decision(draft(), "k", id="d-1")
+    assert d.id == "d-1" and records.decision_by_key(1, "k") == d
+    assert records.decision_by_key(2, "k") is None and records.decision_by_key(1, "other") is None
+
+
 def test_decisions_are_hash_chained(records):
     a, _ = records.append_decision(draft(), "a")
     b, _ = records.append_decision(draft(), "b")
