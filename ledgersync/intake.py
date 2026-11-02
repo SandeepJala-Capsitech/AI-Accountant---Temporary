@@ -58,11 +58,25 @@ def load_upload(filename: str, data: bytes, max_pdf_pages: int) -> Intake:
         return Intake("pdf", data=_check_pdf(data, filename, max_pdf_pages))
     if _is_image(data):
         return Intake("image", data=_check_image(data, filename))
+    return _read_text_file(filename, data)
+
+
+def text_of_bytes(filename: str, data: bytes) -> Optional[str]:
+    """The text of a CSV, TXT or spreadsheet (sheets as tab-separated lines), or None for a PDF or an image,
+    which are not text files. Raises as load_upload does for a file that is none of these."""
+    if b"%PDF-" in data[:1024] or _is_image(data):
+        return None
+    return _read_text_file(filename, data, sep="\t").text
+
+
+def _read_text_file(filename: str, data: bytes, sep: str = ",") -> Intake:
+    """A spreadsheet or a text file as an Intake; sep separates the cells of a spreadsheet's rows."""
+    ext = PurePath(filename).suffix.lower()
     if ext in EXCEL_EXTENSIONS:
         if data.startswith(_ZIP):
-            return Intake("table", text=_excel_to_text(data, filename, engine="openpyxl"))
+            return Intake("table", text=_excel_to_text(data, filename, engine="openpyxl", sep=sep))
         if data.startswith(_OLE):
-            return Intake("table", text=_excel_to_text(data, filename, engine="xlrd"))
+            return Intake("table", text=_excel_to_text(data, filename, engine="xlrd", sep=sep))
         if _looks_like_text(data):    # some banks export tab-separated text or HTML named .xls
             return Intake("table", text=_decode_text(data, filename))
         raise UnreadableFile(f"'{filename}' is not a valid Excel file.")
@@ -106,7 +120,7 @@ def _check_image(data: bytes, filename: str) -> bytes:
     return data
 
 
-def _excel_to_text(data: bytes, filename: str, engine: str) -> str:
+def _excel_to_text(data: bytes, filename: str, engine: str, sep: str = ",") -> str:
     import pandas as pd
     try:
         sheets = pd.read_excel(io.BytesIO(data), sheet_name=None, header=None, engine=engine)
@@ -119,7 +133,7 @@ def _excel_to_text(data: bytes, filename: str, engine: str) -> str:
     for name, frame in sheets.items():
         frame = frame.dropna(how="all").dropna(axis=1, how="all")
         if not frame.empty:
-            parts.append(f"# Sheet: {name}\n{frame.to_csv(index=False, header=False).strip()}")
+            parts.append(f"# Sheet: {name}\n{frame.to_csv(index=False, header=False, sep=sep).strip()}")
     if not parts:
         raise UnreadableFile(f"'{filename}' has no data in any sheet.")
     return "\n\n".join(parts)

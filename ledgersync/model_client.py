@@ -21,6 +21,9 @@ logger = logging.getLogger(__name__)
 
 USER_AGENT = "LedgerSync/0.3"   # urllib's default agent is refused by some API gateways
 _STRICT_KEYWORDS = {"type", "properties", "required", "items", "enum", "anyOf", "description"}
+TRANSCRIBE_RULES = ("You transcribe documents. Write out the complete text of the image, line by line, exactly as "
+                    "printed: every word, number, date and amount unchanged, tables row by row with cells "
+                    "separated by tabs. Add no commentary, summary or corrections.")
 RATE_LIMIT_WAIT = 60.0      # most seconds one call waits out 429s before giving up
 DEFAULT_RETRY_AFTER = 10.0  # when a 429 has no Retry-After header
 RECHECK_FAILURE = 15.0      # a failed health check is tried again this soon (successes: settings.health_ttl)
@@ -154,6 +157,32 @@ class ModelClient:
         if not content.strip():
             raise ModelError("The AI model returned an empty answer.", code="ai_output_invalid")
         return ModelAnswer(content, host=response.get("provider"))
+
+    def transcribe(self, image_b64: str) -> str:
+        """Everything printed on one page image (a base64 JPEG from pipeline.prepare_image), as plain text:
+        a faithful transcript, not an extraction. Raises ModelError if the model answers with nothing."""
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": TRANSCRIBE_RULES},
+                {"role": "user", "content": [
+                    {"type": "text", "text": "Transcribe this document."},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}]},
+            ],
+            "temperature": 0,
+            "max_tokens" if self._openrouter else "max_completion_tokens": self._s.max_output_tokens,
+        }
+        if self._s.groq_reasoning_effort:
+            payload["reasoning_effort"] = self._s.groq_reasoning_effort
+        response = self._chat(payload)
+        choice = (response.get("choices") or [{}])[0]
+        if choice.get("finish_reason") == "length":
+            raise ModelError("The page is too long for the AI model to transcribe in one pass.",
+                             code="ai_output_truncated")
+        content = ((choice.get("message") or {}).get("content") or "").strip()
+        if not content:
+            raise ModelError("The AI model returned an empty answer.", code="ai_output_invalid")
+        return content
 
     def warm_up(self) -> None:
         """Nothing to load on a hosted model: checks the key and model once. Never raises."""

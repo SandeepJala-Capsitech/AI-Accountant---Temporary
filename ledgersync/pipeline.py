@@ -21,7 +21,7 @@ def analyze(intake: Intake, extractor, ctx: JobContext):
         return _read_pages([intake.data], extractor, ctx)
     if intake.kind == "pdf":
         ctx.report("Extracting text from the PDF")
-        text = _pdf_text(intake.data)
+        text = pdf_text(intake.data)
         if not text:   # a scan: the model reads the page images
             return _read_pages(_pdf_pages(intake.data), extractor, ctx)
     ctx.report(f"Asking the AI model ({extractor.client.model})")
@@ -75,7 +75,7 @@ def _pdf_pages(data: bytes) -> list[bytes]:
         return [page.get_pixmap(dpi=150).tobytes("png") for page in doc]
 
 
-def _pdf_text(data: bytes) -> Optional[str]:
+def pdf_text(data: bytes) -> Optional[str]:
     """The text layer, in reading order with each line of the page kept together: a table's cells
     stay in their row, where a column-by-column read would separate dates from their amounts."""
     import pymupdf
@@ -86,3 +86,6 @@ def _pdf_text(data: bytes) -> Optional[str]:
         logger.warning("PDF text extraction failed (%s); the model will read the pages instead", type(exc).__name__)
         return None
     return text.strip() or None
+
+
+_pdf_text = pdf_text   # the name callers and tests used before it was public
