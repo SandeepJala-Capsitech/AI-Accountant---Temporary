@@ -23,6 +23,7 @@ from .matching import DocumentStatus, match_documents
 from .models import (BankCheck, BusinessSettings, Client, ClosedYear, InvoiceSummary, Ledger, OpeningBalances, OpenItem,
                      SavedRow, StatementCheck, Transaction, TrialBalance, Upload, Year, YearSummary)
 from .money import ZERO, to_money
+from .posting import matched_rows
 from .posting import trial_balance as post
 from .rows import StoredRow, now_iso
 from .statements import check_statement
@@ -266,6 +267,16 @@ def trial_balance(store: MongoStore, client_id: int, year_start: dt.date) -> Tri
 
 def _trial_balance(b: _Books, n: int) -> TrialBalance:
     return b.post(b.settings_in(n), keep=[p == n for p in b.placed], opening=_opening(b, n))
+
+
+def booked_rows(store: MongoStore, client_id: int, year_start: dt.date) -> list[tuple[int, Transaction]]:
+    """The year's booked rows, each with its stored row id, matched exactly as its trial balance matches them;
+    InvalidTransactions (422) while any of them needs fixing, as the trial balance raises."""
+    b = _books(store, client_id)
+    n = b.index(year_start)
+    posted = matched_rows([row.tx for row in b.stored], b.settings_in(n), b.read, b.apart,
+                          keep=[p == n for p in b.placed], open_items=b.unpaid)
+    return [(b.stored[k].id, tx) for k, tx in posted]
 
 
 def _total_and_date(rows: list[Transaction]) -> tuple[Decimal, Optional[dt.date]]:

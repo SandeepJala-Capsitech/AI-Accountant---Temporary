@@ -240,6 +240,31 @@ class TrialBalance(BaseModel):
     total_liabilities: Decimal = ZERO
 
 
+class SuspenseItem(BaseModel):
+    """A row posted to Suspense while it waits for the document it needs."""
+    row_id: int
+    description: str
+    gross: Decimal
+    needs: str           # "receipt_or_invoice" or "vat_invoice"
+
+
+class PostedTrialBalance(TrialBalance):
+    """The trial balance of the posted ledger: the opening balances plus every entry posted, and the rows held in
+    Suspense among them. Its journal is the posted entries, each with its row id as its transaction."""
+    suspense: list[SuspenseItem] = Field(default_factory=list)
+
+
+class PostResult(BaseModel):
+    """What one posting wrote: its batch (None when it wrote nothing), the new lines and the reversals of lines
+    posted before, their totals, and why nothing was written when the batch failed its checks."""
+    batch_id: Optional[str]
+    entries_added: int
+    reversals_added: int
+    total_debits: Decimal
+    total_credits: Decimal
+    problems: list[str] = Field(default_factory=list)
+
+
 class ClientFields(BaseModel):
     """What a person enters for a client, trimmed; ledger.check_client says what is missing."""
     name: str

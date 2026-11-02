@@ -44,6 +44,23 @@ def _line(code: str, balance: Decimal) -> TrialBalanceLine:
                             debit=balance if balance > 0 else ZERO, credit=-balance if balance < 0 else ZERO)
 
 
+def matched_rows(transactions: list[Transaction], settings: BusinessSettings,
+                 read: Optional[list[Optional[Decimal]]] = None, apart: Optional[list[set[int]]] = None, *,
+                 keep: Optional[list[bool]] = None, open_items: Sequence[OpenItem] = ()) -> list[tuple[int, Transaction]]:
+    """The rows trial_balance posts, each with its place in transactions, matched as it matches them (see there);
+    InvalidTransactions while any of them has an error."""
+    ready = match([normalise(tx, settings) for tx in transactions], settings, read=read, apart=apart,
+                  open_items=open_items)
+    posted = [(n, tx) for n, tx in enumerate(ready)   # a quote or the like waits for Include
+              if booked(tx) and (keep is None or keep[n])]
+    problems = [f"#{n + 1}: {issue.message}" for n, tx in posted
+                for issue in tx.issues if issue.severity == "error"]
+    if problems:
+        raise InvalidTransactions(f"{len(problems)} problem(s) must be fixed before the trial balance: "
+                                  + " ".join(problems[:5]), problems=problems)
+    return posted
+
+
 def trial_balance(transactions: list[Transaction], settings: BusinessSettings,
                   read: Optional[list[Optional[Decimal]]] = None, apart: Optional[list[set[int]]] = None, *,
                   keep: Optional[list[bool]] = None, opening: Optional[dict[str, Decimal]] = None,
@@ -54,16 +71,12 @@ def trial_balance(transactions: list[Transaction], settings: BusinessSettings,
     clear an invoice of another (and the open items brought into its first year), and keep: the rows of that year,
     the only ones posted and checked for errors; and its opening balances, signed with debits positive, which are
     added before the movements."""
-    ready = match([normalise(tx, settings) for tx in transactions], settings, read=read, apart=apart,
-                  open_items=open_items)
-    posted = [(n, tx) for n, tx in enumerate(ready)   # a quote or the like waits for Include
-              if booked(tx) and (keep is None or keep[n])]
-    problems = [f"#{n + 1}: {issue.message}" for n, tx in posted
-                for issue in tx.issues if issue.severity == "error"]
-    if problems:
-        raise InvalidTransactions(f"{len(problems)} problem(s) must be fixed before the trial balance: "
-                                  + " ".join(problems[:5]), problems=problems)
-    journal = [line for n, tx in posted for line in journal_for(tx, n)]
+    posted = matched_rows(transactions, settings, read, apart, keep=keep, open_items=open_items)
+    return summarise([line for n, tx in posted for line in journal_for(tx, n)], opening)
+
+
+def summarise(journal: list[JournalLine], opening: Optional[dict[str, Decimal]] = None) -> TrialBalance:
+    """The trial balance of journal lines on top of opening balances (signed with debits positive)."""
     opening = opening or {}
     balances: dict[str, Decimal] = defaultdict(lambda: ZERO, opening)
     for line in journal:
