@@ -92,13 +92,15 @@ class AgentRecords:
     # ─── Questions ─────────────────────────────────────────────────────────────
 
     def upsert_question(self, q: QuestionDraft, key: str) -> Question:
-        """Asks the question, once per key for each client: asked again, it takes the new text, reason and rows
-        and keeps its id, its status and any answer."""
+        """Asks the question, once per key for each client: asked again, it takes the new kind, year, text,
+        reason and rows (a held row can change its year or its kind of document) and keeps its id, its status and any
+        answer."""
         new_id = uuid4().hex
-        fresh = {**q.model_dump(mode="json", exclude={"text", "why", "row_ids"}), "_id": new_id, "id": new_id,
+        fresh = {**q.model_dump(mode="json", exclude={"kind", "year_start", "text", "why", "row_ids"}), "_id": new_id, "id": new_id,
                  "status": "open", "answer": None, "created_at": now_iso(), "resolved_at": None,
                  "seq": time.time_ns()}
-        update = {"$set": {"text": q.text, "why": q.why, "row_ids": q.row_ids}, "$setOnInsert": fresh}
+        update = {"$set": {"kind": q.kind, "year_start": q.year_start.isoformat(), "text": q.text, "why": q.why,
+                           "row_ids": q.row_ids}, "$setOnInsert": fresh}
         where = {"client_id": q.client_id, "key": key}
         try:
             doc = self.db.questions.find_one_and_update(where, update, upsert=True,

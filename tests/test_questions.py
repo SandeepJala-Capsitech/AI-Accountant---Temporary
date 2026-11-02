@@ -14,6 +14,7 @@ from ledgersync.records import AgentRecords
 pytestmark = pytest.mark.mongo
 
 YEAR_1 = date(2025, 4, 1)
+YEAR_2 = date(2026, 4, 1)
 
 
 @pytest.fixture
@@ -90,7 +91,7 @@ def test_240_payment_without_invoice_asks_for_document(store, records, acme):
     [q] = refresh(store, records, acme)
     assert (q.kind, q.source, q.status) == ("receipt_or_invoice", "rules", "open")
     assert q.text == "Can you upload the receipt or invoice?"
-    assert q.why == ("£240.00 to Trainline on 1 Jul 2025. Over £50, so I need it. "
+    assert q.why == ("£240.00 to Trainline on 1 Jul 2025. £50 or more, so I need it. "
                      "Held in Suspense as Documentation required until then.")
     assert records.db.questions.find_one({"id": q.id})["key"] == f"doc:{q.row_ids[0]}"
 
@@ -132,6 +133,18 @@ def test_answer_twice_is_one_decision(store, records, acme):
     answer(store, records, acme, q, given)
     assert len(records.decisions(acme)) == 1
     assert records.db.ledger_entries.count_documents({"client_id": acme}) == 2   # posted once
+
+
+def test_a_retry_after_a_partial_failure_is_still_one_decision(store, records, acme):
+    # The decision was made and the question left open (say the first call failed before resolving it).
+    add_rows(store, acme, undated_taxi(), year_start=YEAR_1)
+    [q] = refresh(store, records, acme)
+    given = DateAnswer(kind="date", date=date(2025, 8, 14))
+    answer(store, records, acme, q, given)
+    records.set_question(q.id, "open")
+    answer(store, records, acme, q, given)
+    assert records.question(q.id).status == "resolved" and len(records.decisions(acme)) == 1
+    assert records.db.ledger_entries.count_documents({"client_id": acme}) == 2
 
 
 def test_an_answer_to_a_resolved_question_does_nothing(store, records, acme):
@@ -176,6 +189,20 @@ def test_a_date_question_cannot_be_answered_with_no_document_nor_a_document_ques
     assert {q.status for q in records.questions(acme, YEAR_1)} == {"open"}
 
 
+def test_an_agent_question_accepts_only_not_sure(store, records, acme):
+    add_rows(store, acme, undated_taxi(), year_start=YEAR_1)
+    [taxi] = refresh(store, records, acme)
+    asked = questions.ask(records, client_id=acme, year_start=YEAR_1, row_ids=taxi.row_ids, text="Personal trip?",
+                          why="It ends at a home address.")
+    with pytest.raises(InvalidInput):
+        answer(store, records, acme, asked, NoDocumentAnswer(kind="no_document"))
+    with pytest.raises(InvalidInput):
+        answer(store, records, acme, asked, DateAnswer(kind="date", date=date(2025, 8, 1)))
+    assert records.question(asked.id).status == "open"
+    answer(store, records, acme, asked, NotSureAnswer(kind="not_sure"))
+    assert records.question(asked.id).status == "waiting"
+
+
 def test_another_clients_or_unknown_question_is_not_found(store, records, acme):
     add_rows(store, acme, undated_taxi(), year_start=YEAR_1)
     [q] = refresh(store, records, acme)
@@ -199,6 +226,17 @@ def test_uploaded_invoice_resolves_held_payment(store, records, acme):
     assert result.reversals_added == 2 and result.problems == []
     tb = ledger_book.posted_trial_balance(store, records, acme, YEAR_1)
     assert net(tb, "9998") == 0 and tb.suspense == []
+
+
+def test_a_question_resolved_by_the_books_loses_its_answer(store, records, acme):
+    add_rows(store, acme, travel_line(), year_start=YEAR_1)
+    [q] = refresh(store, records, acme)
+    answer(store, records, acme, q, NoDocumentAnswer(kind="no_document"))
+    assert records.question(q.id).answer == "I don't have it"
+    add_rows(store, acme, trainline_invoice(), year_start=YEAR_1)
+    assert refresh(store, records, acme) == []
+    done = records.question(q.id)
+    assert (done.status, done.answer) == ("resolved", None) and done.resolved_at
 
 
 def test_invoice_that_does_not_fit_stays_open(store, records, acme):
@@ -242,6 +280,30 @@ def test_a_receipt_edited_to_over_250_asks_for_a_vat_invoice_and_back(store, rec
     assert (q.kind, q.row_ids) == ("vat_invoice", [rid]) and "Over £250" in q.why
     store.patch_row(acme, rid, {"gross": "100.00"})
     assert refresh(store, records, acme) == [] and records.question(q.id).status == "resolved"
+
+
+@pytest.mark.parametrize("order", [(YEAR_1, YEAR_2), (YEAR_2, YEAR_1)])
+def test_a_held_line_moved_to_the_next_year_is_asked_there_only(store, records, acme, order):
+    add_rows(store, acme, travel_line(), year_start=YEAR_1)
+    [q] = refresh(store, records, acme)
+    store.patch_row(acme, store.rows(acme)[0].id, {"date": "2026-05-01"})
+    for year in (*order, *order):
+        questions.refresh(store, records, acme, year)
+    assert records.questions(acme, YEAR_1) == []
+    [there] = records.questions(acme, YEAR_2)
+    assert (there.id, there.status, there.year_start) == (q.id, "open", YEAR_2)
+    assert "on 1 May 2026" in there.why
+
+
+def test_a_held_receipt_patched_to_a_statement_line_is_asked_for_the_other_document(store, records, acme):
+    add_rows(store, acme, row(date=date(2025, 8, 1), gross=D("300.00"), account_code="7400", counterparty="Rail",
+                              description="Tickets"), year_start=YEAR_1)
+    [q] = refresh(store, records, acme)
+    assert q.kind == "vat_invoice"
+    store.patch_row(acme, store.rows(acme)[0].id, {"document_type": "statement", "gross": "240.00"})
+    [again] = refresh(store, records, acme)
+    assert (again.id, again.kind, again.text) == (q.id, "receipt_or_invoice", "Can you upload the receipt or invoice?")
+    assert "£50 or more" in again.why
 
 
 def test_ask_creates_an_agent_question_that_refresh_leaves_alone(store, records, acme):

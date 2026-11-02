@@ -22,7 +22,7 @@ from .records import AgentRecords
 from .resolutions import set_date
 from .store_mongo import MongoStore
 
-_OVER = {"receipt_or_invoice": "Over £50", "vat_invoice": "Over £250"}
+_OVER = {"receipt_or_invoice": "£50 or more", "vat_invoice": "Over £250"}
 _ASKS = {"receipt_or_invoice": "Can you upload the receipt or invoice?",
          "vat_invoice": "Can you upload the full VAT invoice?"}
 
@@ -80,7 +80,7 @@ def _wanted(store: MongoStore, client_id: int, year_start: dt.date) -> dict[str,
 def refresh(store: MongoStore, records: AgentRecords, client_id: int, year_start: dt.date) -> list[Question]:
     """Works the year's rule questions out from the books and keeps them: each is asked once under its key (asked
     again, it keeps its status and answer, so one waiting stays waiting), one that was resolved and is needed again
-    is reopened, and one the books no longer need is resolved. The agent's questions are left alone. Returns the
+    is reopened, and one the books no longer need is resolved with no answer. The agent's questions are left alone. Returns the
     year's open and waiting questions, oldest first."""
     wanted = _wanted(store, client_id, year_start)
     for key, draft in wanted.items():
@@ -89,7 +89,7 @@ def refresh(store: MongoStore, records: AgentRecords, client_id: int, year_start
             records.set_question(asked.id, "open")
     for q in records.questions(client_id, year_start):
         if q.source == "rules" and q.row_ids and _key(q.kind, q.row_ids[0]) not in wanted:
-            records.set_question(q.id, "resolved", q.answer)
+            records.set_question(q.id, "resolved", None)
     return records.questions(client_id, year_start)
 
 
@@ -128,12 +128,12 @@ def answer(store: MongoStore, records: AgentRecords, *, client_id: int, thread_i
         decision_ids = [decision.id]
         if decision.year_start not in years:   # the date moved the row to another year
             years.append(decision.year_start)
-    elif q.kind == "date":
-        if isinstance(answer, NoDocumentAnswer):
-            raise InvalidInput("This question is asking for a date, not a document.")
-        records.set_question(q.id, "waiting", "Not sure")
+    elif isinstance(answer, NoDocumentAnswer):
+        if q.kind not in _ASKS:
+            raise InvalidInput("This question isn't asking for a document.")
+        records.set_question(q.id, "waiting", "I don't have it")
     else:
-        records.set_question(q.id, "waiting", "I don't have it" if isinstance(answer, NoDocumentAnswer) else "Not sure")
+        records.set_question(q.id, "waiting", "Not sure")
     for year in years:
         refresh(store, records, client_id, year)
         ledger_book.post(store, records, client_id, year, decision_ids=decision_ids)
