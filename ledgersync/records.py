@@ -12,7 +12,7 @@ from uuid import uuid4
 import pymongo
 from pymongo import ReturnDocument
 from pymongo.database import Database
-from pymongo.errors import DuplicateKeyError
+from pymongo.errors import DuplicateKeyError, OperationFailure
 
 from .errors import NotFound
 from .models import ChatThread, Decision, DecisionDraft, Question, QuestionDraft
@@ -38,7 +38,12 @@ class AgentRecords:
         """The records on `db`, which is the one the app's client already opened: this never makes a client."""
         self.db = db
         db.decisions.create_index([("client_id", pymongo.ASCENDING), ("year_start", pymongo.ASCENDING)])
-        db.decisions.create_index([("idempotency_key", pymongo.ASCENDING)], unique=True)
+        try:   # an older database has a unique index on the key alone, which would stop two clients using one key
+            db.decisions.drop_index("idempotency_key_1")
+        except OperationFailure:
+            pass
+        db.decisions.create_index([("client_id", pymongo.ASCENDING), ("idempotency_key", pymongo.ASCENDING)],
+                                  unique=True)
         db.questions.create_index([("client_id", pymongo.ASCENDING), ("key", pymongo.ASCENDING)], unique=True)
         db.chat_threads.create_index([("client_id", pymongo.ASCENDING), ("updated_at", pymongo.ASCENDING)])
 
@@ -46,14 +51,14 @@ class AgentRecords:
 
     def append_decision(self, d: DecisionDraft, idempotency_key: str,
                         id: Optional[str] = None) -> tuple[Decision, bool]:
-        """Adds the decision to its client's chain and says it is new. Given a key already used, it adds nothing
+        """Adds the decision to its client's chain and says it is new. Keys are per client: given a key the client already used, it adds nothing
         and returns the decision stored under it with False, so a retried tool call decides only once. Two
         appends racing for one client may both chain from the same previous decision; the log is not locked.
         id: the decision's id when its maker needed it before adding it (a split names the decision that
         replaced the row); a new one otherwise."""
-        stored = self.db.decisions.find_one({"idempotency_key": idempotency_key})
+        stored = self.decision_by_key(d.client_id, idempotency_key)
         if stored:
-            return _model(Decision, stored), False
+            return stored, False
         latest = self.db.decisions.find_one({"client_id": d.client_id}, sort=[("seq", pymongo.DESCENDING)])
         prev_hash = latest["hash"] if latest else ""
         decision = Decision(**d.model_dump(), id=id or uuid4().hex, created_at=now_iso(), prev_hash=prev_hash, hash="")
@@ -63,7 +68,10 @@ class AgentRecords:
         try:
             self.db.decisions.insert_one(doc)
         except DuplicateKeyError:   # the same key was added meanwhile
-            return _model(Decision, self.db.decisions.find_one({"idempotency_key": idempotency_key})), False
+            stored = self.decision_by_key(d.client_id, idempotency_key)
+            if stored is None:   # not the key: the id is taken
+                raise
+            return stored, False
         return decision, True
 
     def decision_by_key(self, client_id: int, idempotency_key: str) -> Optional[Decision]:

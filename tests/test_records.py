@@ -78,11 +78,33 @@ def test_decisions_are_filtered_by_year_and_time_and_kept_in_order(records):
     assert records.decisions(1)[0].year_start == YEAR
 
 
-def test_the_idempotency_key_is_unique_in_the_database(records, mongo_db):
+def test_the_idempotency_key_is_unique_per_client_in_the_database(records, mongo_db):
     d, _ = records.append_decision(draft(), "k")
     with pytest.raises(DuplicateKeyError):
-        mongo_db.decisions.insert_one({"_id": "x", "idempotency_key": "k"})
+        mongo_db.decisions.insert_one({"_id": "x", "client_id": 1, "idempotency_key": "k"})
     assert records.decisions(1)[0].id == d.id
+
+
+def test_the_same_key_for_two_clients_makes_two_decisions(records):
+    a, new_a = records.append_decision(draft(client_id=1), "k")
+    b, new_b = records.append_decision(draft(client_id=2, reason="Other client's"), "k")
+    assert (new_a, new_b) == (True, True) and a.id != b.id
+    assert (b.client_id, b.reason, b.prev_hash) == (2, "Other client's", "")
+    again_a, new_again_a = records.append_decision(draft(client_id=1), "k")
+    again_b, new_again_b = records.append_decision(draft(client_id=2), "k")
+    assert (again_a.id, new_again_a, again_b.id, new_again_b) == (a.id, False, b.id, False)
+    assert records.decision_by_key(1, "k").id == a.id and records.decision_by_key(2, "k").id == b.id
+    assert records.decision_by_key(3, "k") is None
+    assert [d.id for d in records.decisions(1)] == [a.id] and [d.id for d in records.decisions(2)] == [b.id]
+
+
+def test_a_database_with_the_old_key_only_index_is_upgraded(mongo_db):
+    mongo_db.decisions.create_index("idempotency_key", unique=True)
+    records = AgentRecords(mongo_db)
+    _, new_a = records.append_decision(draft(client_id=1), "k")
+    _, new_b = records.append_decision(draft(client_id=2), "k")
+    assert (new_a, new_b) == (True, True)
+    AgentRecords(mongo_db)   # a second start on an upgraded database is fine
 
 
 def test_a_refused_decision_and_a_reversal_are_kept_as_given(records):
