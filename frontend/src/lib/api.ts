@@ -98,6 +98,7 @@ export interface Health {
   ai_error: string | null
   max_upload_mb: number
   max_parallel_jobs?: number    // files the API reads at once; missing from older APIs
+  demo?: boolean                // LEDGERSYNC_DEMO=1: the header offers Reset demo
 }
 
 interface Job {
@@ -138,7 +139,7 @@ export async function request<T>(path: string, init: RequestInit = {}, timeoutMs
   return (await res.json()) as T
 }
 
-async function errorFrom(res: Response): Promise<ApiError> {
+export async function errorFrom(res: Response): Promise<ApiError> {
   let detail: unknown
   try {
     detail = (await res.json()).detail
