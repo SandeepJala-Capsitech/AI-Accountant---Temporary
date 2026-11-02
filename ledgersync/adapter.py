@@ -83,6 +83,11 @@ def _printed_total(row: dict) -> Optional[Decimal]:
     return total if total is None or _document_type(row) == "agent_statement" else abs(total)
 
 
+def _vat_number(row: dict) -> Optional[str]:
+    """The supplier's VAT number without spaces, in upper case; None when none is printed."""
+    return "".join(str(row.get("supplier_vat_number") or "").split()).upper() or None
+
+
 def to_transactions(rows: list[dict], source: str, settings: BusinessSettings, opening_balance=None,
                     closing_balance=None, agent=None) -> list[Transaction]:
     """The model's rows as ledger rows; a bank statement's opening and closing balances, and an agent's statement's
@@ -121,6 +126,7 @@ def to_transactions(rows: list[dict], source: str, settings: BusinessSettings, o
                          method="llm", issues=issues, document_type=kind,
                          counterparty=str(row.get("counterparty") or "").strip() or None,
                          document_number=None if statement else str(row.get("document_number") or "").strip() or None,
+                         supplier_vat_number=None if statement else _vat_number(row),
                          agent=str(row.get("agent") or "").strip() or None,
                          owed_to=row.get("owed_to") if kind == "payroll" and row.get("owed_to") in OWED_TO else None,
                          document_total=_printed_total(row) if key else None,

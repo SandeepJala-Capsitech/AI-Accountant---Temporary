@@ -5,7 +5,7 @@ from fakes import ROW, FakeModel, transactions_json
 
 from ledgersync.accounts import choosable
 from ledgersync.errors import ModelError, ModelUnavailable
-from ledgersync.extractor import ACCOUNT_CHOICES, ExtractedTransactions, TransactionExtractor
+from ledgersync.extractor import ACCOUNT_CHOICES, AccountingTransaction, ExtractedTransactions, TransactionExtractor
 from ledgersync.model_client import ModelAnswer
 
 
@@ -265,3 +265,7 @@ def test_the_instructions_explain_a_payroll_report():
 def test_owed_to_comes_with_a_payroll_row_and_is_null_otherwise():
     result, _ = extract(transactions_json(dict(ROW, document_type="payroll", owed_to="paye_ni"), ROW))
     assert [r.owed_to for r in result.data] == ["paye_ni", None]
+
+
+def test_the_schema_asks_for_the_suppliers_vat_number():
+    assert "supplier_vat_number" in AccountingTransaction.model_json_schema()["properties"]

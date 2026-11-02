@@ -119,6 +119,13 @@ class Transaction(BaseModel):
     not_vat_invoice: bool = False                  # its document says it is not a VAT invoice
     document_ref: Optional[str] = None
     include: bool = False
+    # Inputs set only by the accountant chat's decisions (never by a person's edit, so not in rows.EDITABLE or
+    # RowPatch): a decision can leave a row out of the books, or replace it with another row.
+    excluded: bool = False
+    superseded_by: Optional[str] = None            # the decision that replaced this row
+    decision_ids: list[str] = Field(default_factory=list)   # the decisions that changed this row
+    supplier_vat_number: Optional[str] = None      # the VAT number printed on its document, which decides whether
+                                                   # the VAT on a receipt can be reclaimed
     apart_from: list[int] = Field(default_factory=list)   # rows a person said are not the same as this one, by row
                                                    # id (Not the same): never paired with it or asked about
     link: Optional[list[str]] = None               # a person's decision on a bank line: None automatic,

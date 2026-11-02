@@ -233,3 +233,10 @@ def test_owed_to_sets_the_payroll_rows_other_account():
     assert [r.contra_account_code for r in rows] == ["2220", "2230", "2210"]
     assert all(r.document_type == "payroll" and not r.issues for r in rows)
 
+
+
+def test_the_suppliers_vat_number_is_kept_without_spaces_in_upper_case():
+    [t] = adapt(dict(ROW, supplier_vat_number=" gb 123 4567 89 "))
+    assert t.supplier_vat_number == "GB123456789"
+    [t] = adapt(ROW)
+    assert t.supplier_vat_number is None

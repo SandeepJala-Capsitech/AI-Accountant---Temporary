@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from helpers import SETTINGS as HELPER_SETTINGS, net, normalise_and_match, only_issue, row
 
 from ledgersync.accounts import BANK, CHART
-from ledgersync.checks import normalise
+from ledgersync.checks import booked, normalise
 from ledgersync.models import BusinessSettings, Issue, Transaction
 from ledgersync.posting import trial_balance
 from ledgersync.rows import saved_form
@@ -420,3 +420,11 @@ def test_the_usual_vat_on_travel_postage_and_rent():
     from ledgersync.money import VatTreatment
     assert [BY_CODE[c].vat for c in ("7400", "7501", "7100")] == [
         VatTreatment.STANDARD, VatTreatment.STANDARD, VatTreatment.EXEMPT]
+
+
+def test_an_excluded_row_is_not_booked_even_when_included():
+    assert booked(tx(excluded=True, include=True)) is False
+
+
+def test_a_superseded_row_is_not_booked():
+    assert booked(tx(superseded_by="d1")) is False

@@ -52,7 +52,10 @@ def booked(tx: Transaction) -> bool:
     the table, or a row dated before the client's first year, whose amount is in the opening balances, is booked
     only when a person ticks Include. A card payment is booked from its receipt, which shows
     the VAT, and not again from the bank line; a claim line is booked from its receipt too, and as well only when a
-    person ticks Include. (matching.match finds copies and receipts.)"""
+    person ticks Include. (matching.match finds copies and receipts.) A row a decision excluded or replaced
+    is never booked, whatever else is true of it."""
+    if tx.excluded or tx.superseded_by:
+        return False
     if tx.recorded_by is not None or tx.in_opening:
         return tx.include
     return tx.include or (tx.document_type not in NOT_TRANSACTIONS and tx.copy_of is None)
