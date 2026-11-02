@@ -14,7 +14,8 @@ from .models import Transaction
 INPUTS = {"date", "description", "direction", "gross", "vat", "vat_treatment", "account_code", "contra_account_code",
           "bank_account", "currency", "source", "method", "evidence", "document_type", "counterparty",
           "document_number", "agent", "owed_to", "document_total", "document_net", "not_vat_invoice", "document_ref",
-          "include", "apart_from", "link", "balance", "opening_balance", "closing_balance"}
+          "include", "apart_from", "link", "balance", "opening_balance", "closing_balance", "supplier_vat_number",
+          "excluded", "superseded_by", "decision_ids"}
 # The fields a person can edit; a row's first edit keeps what they held as `original`.
 EDITABLE = ("date", "description", "counterparty", "direction", "gross", "vat", "account_code", "document_type")
 # Fields of a whole document: a change to one row changes every row with its document_ref. An expense claim's

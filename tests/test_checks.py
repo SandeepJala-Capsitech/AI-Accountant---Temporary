@@ -373,6 +373,14 @@ def test_the_payroll_owed_to_warning_survives_saving():
     assert second.contra_account_code == "2220" and only_issue(second, "payroll_owed_to")
 
 
+def test_what_a_decision_set_and_the_suppliers_vat_number_survive_saving():
+    line = normalise(row(gross=Decimal("12.00"), excluded=True, superseded_by="d2", decision_ids=["d1", "d2"],
+                         supplier_vat_number="GB123456789"), HELPER_SETTINGS)
+    again = Transaction(**saved_form(line))
+    assert (again.excluded, again.superseded_by, again.decision_ids, again.supplier_vat_number) == (
+        True, "d2", ["d1", "d2"], "GB123456789")
+
+
 def test_owed_to_decides_the_other_side_on_every_pass():
     line = row(gross=Decimal("3000.00"), account_code="7000", document_type="payroll", owed_to="pension")
     first = normalise(line, HELPER_SETTINGS)

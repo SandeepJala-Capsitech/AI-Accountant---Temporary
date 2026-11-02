@@ -175,6 +175,15 @@ def test_an_upload_keeps_its_rows_in_order_and_only_their_inputs(mongo_store):
             upload["row_count"]) == ("BT-0905.pdf", "pdf", "ab12", "fake-model", ["Row 3 skipped"], 2)
 
 
+def test_what_a_decision_set_and_the_suppliers_vat_number_are_kept(mongo_store):
+    client = mongo_store.create_client(CUBE)
+    decided = bill(excluded=True, superseded_by="d2", decision_ids=["d1", "d2"], supplier_vat_number="GB123456789")
+    mongo_store.add_upload(client.id, "a.pdf", "pdf", [decided])
+    [stored] = mongo_store.rows(client.id)
+    assert (stored.tx.excluded, stored.tx.superseded_by, stored.tx.decision_ids, stored.tx.supplier_vat_number) == (
+        True, "d2", ["d1", "d2"], "GB123456789")
+
+
 def test_a_row_saved_before_totals_were_kept_takes_its_total_from_its_old_warning(mongo_store):
     # Rows read before 2026-10-08 kept a document's printed total only in the words of their warning.
     client = mongo_store.create_client(CUBE)
