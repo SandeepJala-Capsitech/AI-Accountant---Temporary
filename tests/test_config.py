@@ -111,6 +111,14 @@ def test_the_mongodb_pool_is_ten_connections_unless_set_otherwise():
     assert Settings.from_env({"LEDGERSYNC_MONGO_MAX_POOL": "0"}).mongodb_max_pool == 1   # never below one
 
 
+def test_the_chat_runs_gpt_oss_for_a_minute_an_answer_without_the_demo_unless_set_otherwise():
+    d = Settings.from_env({})
+    assert (d.agent_model, d.agent_timeout, d.demo) == ("openai/gpt-oss-120b", 60.0, False)
+    chosen = Settings.from_env({"LEDGERSYNC_AGENT_MODEL": " x/y ", "LEDGERSYNC_AGENT_TIMEOUT": "90",
+                                "LEDGERSYNC_DEMO": "1"})
+    assert (chosen.agent_model, chosen.agent_timeout, chosen.demo) == ("x/y", 90.0, True)
+
+
 def test_a_blank_number_setting_uses_its_default():
     blank = {name: "" for name in ("LEDGERSYNC_PORT", "LEDGERSYNC_MAX_UPLOAD_MB", "LEDGERSYNC_MAX_PDF_PAGES",
                                    "LEDGERSYNC_MAX_PARALLEL_JOBS", "OPENROUTER_MAX_OUTPUT_TOKENS", "GROQ_TIMEOUT",
