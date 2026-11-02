@@ -241,17 +241,19 @@ class TrialBalance(BaseModel):
 
 
 class SuspenseItem(BaseModel):
-    """A row posted to Suspense while it waits for the document it needs."""
+    """A row whose posted lines leave its gross in Suspense, while it waits for the document it needs."""
     row_id: int
     description: str
     gross: Decimal
-    needs: str           # "receipt_or_invoice" or "vat_invoice"
+    needs: Optional[str] = None   # "receipt_or_invoice" or "vat_invoice" while it is still held; None once it isn't
 
 
 class PostedTrialBalance(TrialBalance):
-    """The trial balance of the posted ledger: the opening balances plus every entry posted, and the rows held in
-    Suspense among them. Its journal is the posted entries, each with its row id as its transaction."""
+    """The trial balance of the posted ledger: the opening balances plus every entry posted, and the rows posted to
+    Suspense. Its journal is the posted entries, each with its row id as its transaction. problems: why the opening
+    or what the Suspense items need couldn't be worked out (rows need fixing)."""
     suspense: list[SuspenseItem] = Field(default_factory=list)
+    problems: list[str] = Field(default_factory=list)
 
 
 class PostResult(BaseModel):

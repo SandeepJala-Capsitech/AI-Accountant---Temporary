@@ -5,6 +5,7 @@ from decimal import Decimal as D
 
 import pytest
 from bson import Decimal128
+from pymongo.collection import Collection
 from helpers import acme_with_a_non_gbp_row, add_rows, change_stationery_receipt_to, first_row_id, net, row  # noqa: F401
 
 from ledgersync import books, ledger_book
@@ -64,8 +65,9 @@ def test_post_writes_balanced_batch_as_decimal128(store, records, acme):
     batch = records.db.posting_batches.find_one({"_id": result.batch_id})
     assert batch["decision_ids"] == ["d1"] and batch["year_start"] == "2025-04-01"
     assert all(d["batch_id"] == result.batch_id and d["reverses"] is None for d in docs)
-    unique = [i["key"] for i in records.db.posting_batches.index_information().values() if i.get("unique")]
-    assert unique == [[("client_id", 1), ("year_start", 1), ("key", 1)]]
+    unique = sorted(i["key"] for i in records.db.posting_batches.index_information().values() if i.get("unique"))
+    assert unique == [[("client_id", 1), ("year_start", 1), ("after", 1)],   # batches form one chain
+                      [("client_id", 1), ("year_start", 1), ("key", 1)]]
 
 
 def test_post_twice_posts_nothing_second_time(store, records, acme):
@@ -184,3 +186,77 @@ def test_posted_trial_balance_includes_opening(store, records, acme):
     assert net(tb, "1200") == D("940.00") and tb.total_debits == tb.total_credits == D("1000.00")
     assert tb.suspense == [] and len(tb.journal) == 3
     assert tb.lines == books.trial_balance(store, acme, YEAR_1).lines
+
+
+YEAR_2 = date(2026, 4, 1)
+
+
+def test_a_payment_no_longer_held_stays_in_suspense_until_posted(store, records, acme):
+    add_rows(store, acme, travel_line())
+    ledger_book.post(store, records, acme, YEAR_1)
+    store.patch_row(acme, first_row_id(store, acme), {"document_type": "receipt"})   # a receipt under £250: books
+    [item] = ledger_book.posted_trial_balance(store, records, acme, YEAR_1).suspense
+    assert (item.gross, item.needs, item.description) == (D("240.00"), None, "x")
+    ledger_book.post(store, records, acme, YEAR_1)
+    assert ledger_book.posted_trial_balance(store, records, acme, YEAR_1).suspense == []
+
+
+def test_two_posts_from_the_same_state_write_one_batch(store, records, acme, monkeypatch):
+    # Both postings read the ledger after the first batch; the first to write wins and the other writes nothing.
+    add_rows(store, acme, stationery())
+    ledger_book.post(store, records, acme, YEAR_1)
+    change_stationery_receipt_to(store, acme, D("72.00"))
+    stale = ledger_book._posted(records.db, acme, YEAR_1)
+    assert ledger_book.post(store, records, acme, YEAR_1).batch_id
+    change_stationery_receipt_to(store, acme, D("80.00"))
+    monkeypatch.setattr(ledger_book, "_posted", lambda *a: stale)
+    late = ledger_book.post(store, records, acme, YEAR_1)
+    assert (late.batch_id, late.entries_added, late.reversals_added) == (None, 0, 0)
+    assert counts(records) == (9, 2)
+    monkeypatch.undo()
+    assert ledger_book.post(store, records, acme, YEAR_1).batch_id
+    assert ledger_book.unposted_changes(store, records, acme, YEAR_1) == 0
+    tb = ledger_book.posted_trial_balance(store, records, acme, YEAR_1)
+    assert net(tb, "1200") == D("-80.00") and tb.is_balanced
+
+
+def test_a_line_reversed_already_cannot_be_reversed_again(store, records, acme):
+    add_rows(store, acme, stationery())
+    ledger_book.post(store, records, acme, YEAR_1)
+    store.patch_row(acme, first_row_id(store, acme), {"excluded": True})
+    ledger_book.post(store, records, acme, YEAR_1)
+    posted = ledger_book._posted(records.db, acme, YEAR_1)
+    original, reversal = posted.entries[0], posted.entries[3]
+    again = [dict(row_id=d["row_id"], code=d["code"], description="x", debit=d["credit"], credit=d["debit"],
+                  reverses=d["_id"]) for d in (original, reversal)]
+    problems = ledger_book._problems(again, {}, True, posted)
+    assert any("already reversed" in p for p in problems) and any("is itself a reversal" in p for p in problems)
+
+
+def test_a_failed_entries_write_takes_back_only_its_own_batch(store, records, acme, monkeypatch):
+    add_rows(store, acme, stationery())
+    ledger_book.post(store, records, acme, YEAR_1)
+    change_stationery_receipt_to(store, acme, D("72.00"))
+
+    def half_written(self, docs, *a, **k):   # writes the first entry, then the connection drops
+        self.insert_one(docs[0])
+        raise ConnectionError("lost")
+
+    monkeypatch.setattr(Collection, "insert_many", half_written)
+    with pytest.raises(ConnectionError):
+        ledger_book.post(store, records, acme, YEAR_1)
+    monkeypatch.undo()
+    assert counts(records) == (3, 1)
+    assert all(d["reverses"] is None for d in entries(records, acme))
+    assert ledger_book.unposted_changes(store, records, acme, YEAR_1) == 1
+
+
+def test_the_posted_trial_balance_shows_while_rows_need_fixing(store, records, acme):
+    add_rows(store, acme, stationery())
+    ledger_book.post(store, records, acme, YEAR_1)
+    add_rows(store, acme, row(date=date(2025, 6, 2), gross=D("50.00"), currency="USD"))   # needs converting
+    tb = ledger_book.posted_trial_balance(store, records, acme, YEAR_1)
+    assert (net(tb, "7504"), net(tb, "1200")) == (D("50.00"), D("-60.00")) and tb.problems
+    assert ledger_book.unposted_changes(store, records, acme, YEAR_1) == 1   # the one row needing fixing
+    later = ledger_book.posted_trial_balance(store, records, acme, YEAR_2)   # its opening can't be worked out
+    assert later.lines == [] and later.problems and later.problems[0].startswith("Fix the earlier years first")

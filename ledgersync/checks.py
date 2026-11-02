@@ -113,7 +113,7 @@ def _mixed_items(account: Optional[Account], vat: Optional[Decimal], gross: Deci
     return issue("mixed_items", text, "info" if hotel else "warning")
 
 
-def _most_vat(gross: Decimal) -> Decimal:
+def most_vat(gross: Decimal) -> Decimal:
     """The most VAT a VAT-inclusive amount can hold: a sixth (20% of the net), plus a little
     because invoices round VAT line by line."""
     return vat_in_gross(gross, VatTreatment.STANDARD) + Decimal("0.05") + (gross / 500).quantize(PENNY)
@@ -170,7 +170,7 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
         posted = vat_in_gross(tx.gross, treatment)
         if posted > 0:
             issues.append(issue("vat_estimated", f"£{posted} estimated at the {treatment.value} rate. Check the invoice."))
-    elif vat < 0 or vat >= tx.gross or vat > _most_vat(tx.gross):
+    elif vat < 0 or vat >= tx.gross or vat > most_vat(tx.gross):
         issues.append(issue("vat_arithmetic", f"VAT £{vat} is impossible on £{tx.gross}; at 20% it would be "
                                                f"£{vat_in_gross(tx.gross, VatTreatment.STANDARD)}.", "error"))
         posted = None

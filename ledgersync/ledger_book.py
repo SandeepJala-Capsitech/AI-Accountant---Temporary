@@ -23,7 +23,7 @@ from pymongo.errors import DuplicateKeyError
 
 from . import books
 from .accounts import BY_CODE, PURCHASE_VAT, SALES_VAT, SUSPENSE
-from .checks import _most_vat
+from .checks import most_vat
 from .errors import InvalidTransactions
 from .evidence_rules import DocumentRule, document_rule, journal_with_rule
 from .ledger import settings_for
@@ -51,6 +51,10 @@ def _ensure_indexes(db: Database) -> None:
     db.ledger_entries.create_index([("batch_id", pymongo.ASCENDING)])
     db.posting_batches.create_index([("client_id", pymongo.ASCENDING), ("year_start", pymongo.ASCENDING),
                                      ("key", pymongo.ASCENDING)], unique=True)
+    # Each batch follows the one before it, and no two follow the same one: of two postings worked out from the
+    # same ledger, the second to write is refused, so a line is never reversed twice.
+    db.posting_batches.create_index([("client_id", pymongo.ASCENDING), ("year_start", pymongo.ASCENDING),
+                                     ("after", pymongo.ASCENDING)], unique=True)
 
 
 def _ruled(store: MongoStore, client_id: int, year_start: dt.date) -> tuple[BusinessSettings, Ruled]:
@@ -80,13 +84,15 @@ def _net(lines: Iterable[tuple[str, Decimal, Decimal]]) -> dict[str, Decimal]:
 
 
 def _legs(lines: list[JournalLine]) -> list[tuple[str, Decimal, Decimal]]:
-    return [(l.code, l.debit, l.credit) for l in lines]
+    """The lines' accounts and amounts in pennies, as they would be posted."""
+    return [(l.code, l.debit.quantize(PENNY), l.credit.quantize(PENNY)) for l in lines]
 
 
 @dataclass
 class _Posted:
     """What is posted for a client's year: every entry, oldest first, with its money as Decimal; the lines of each
-    row that are neither reversals nor reversed; each row's net by account; and the latest batch."""
+    row that are neither reversals nor reversed; each row's net by account; and the latest batch, the end of the
+    chain."""
     entries: list[dict]
     live: dict[int, list[dict]] = field(default_factory=dict)
     net: dict[int, dict[str, Decimal]] = field(default_factory=dict)
@@ -101,7 +107,9 @@ def _posted(db: Database, client_id: int, year_start: dt.date) -> _Posted:
     by_row: dict[int, list[dict]] = defaultdict(list)
     for d in entries:
         by_row[d["row_id"]].append(d)
-    latest = db.posting_batches.find_one(where, sort=[("seq", pymongo.DESCENDING)])
+    batches = list(db.posting_batches.find(where, {"_id": 1, "after": 1}))
+    followed = {b["after"] for b in batches}
+    latest = next((b for b in batches if b["_id"] not in followed), None)
     return _Posted(entries=entries,
                    live={r: [d for d in ds if not d["reverses"] and d["_id"] not in reversed_] for r, ds in by_row.items()},
                    net={r: n for r, ds in by_row.items() if (n := _net((d["code"], d["debit"], d["credit"]) for d in ds))},
@@ -126,15 +134,26 @@ def _new_lines(wanted: dict[int, list[JournalLine]], posted: _Posted) -> list[di
     return lines
 
 
-def _problems(lines: list[dict], rows: dict[int, Transaction], vat_registered: bool) -> list[str]:
+def _problems(lines: list[dict], rows: dict[int, Transaction], vat_registered: bool, posted: _Posted) -> list[str]:
     """Why the batch can't be posted: a row's lines or the whole batch not balancing, an account not in the chart,
-    or a new VAT leg that is not on Sales or Purchase VAT, is more than the row's gross can hold (a sixth, with the
+    a reversal of an entry that isn't posted, is reversed already or is itself a reversal, or a new VAT leg that is not on Sales or Purchase VAT, is more than the row's gross can hold (a sixth, with the
     rounding allowance checks.normalise allows), or is for a client that isn't VAT registered. A VAT leg is a line
     on an account other than the row's own, its bank (or contra) and Suspense."""
     problems = []
     by_row: dict[int, list[dict]] = defaultdict(list)
     for line in lines:
         by_row[line["row_id"]].append(line)
+    by_id = {d["_id"]: d for d in posted.entries}
+    reversed_ = {d["reverses"] for d in posted.entries if d["reverses"]}
+    for line in (l for l in lines if l["reverses"]):
+        target = by_id.get(line["reverses"])
+        if target is None:
+            problems.append(f"Row {line['row_id']}: entry {line['reverses']} to reverse isn't posted.")
+        elif target["reverses"]:
+            problems.append(f"Row {line['row_id']}: entry {line['reverses']} is itself a reversal.")
+        elif line["reverses"] in reversed_:
+            problems.append(f"Row {line['row_id']}: entry {line['reverses']} is already reversed.")
+        reversed_.add(line["reverses"])   # and twice in one batch is once too many
     for r, ls in by_row.items():
         debits, credits = sum((l["debit"] for l in ls), ZERO), sum((l["credit"] for l in ls), ZERO)
         if debits != credits:
@@ -153,7 +172,7 @@ def _problems(lines: list[dict], rows: dict[int, Transaction], vat_registered: b
                 problems.append(f"Row {r}: VAT goes only on 2200 or 2201, not {l['code']}.")
             elif not vat_registered:
                 problems.append(f"Row {r}: the client isn't VAT registered, so no VAT goes on {l['code']}.")
-            elif amount > _most_vat(tx.gross):
+            elif amount > most_vat(tx.gross):
                 problems.append(f"Row {r}: VAT of £{amount} is more than a sixth of its £{tx.gross}.")
     debits, credits = sum((l["debit"] for l in lines), ZERO), sum((l["credit"] for l in lines), ZERO)
     if debits != credits:
@@ -191,7 +210,7 @@ def post(store: MongoStore, records: AgentRecords, client_id: int, year_start: d
     lines = _new_lines(wanted_journal(store, client_id, year_start, ruled=ruled), posted)
     if not lines:
         return _nothing()
-    problems = _problems(lines, {r: tx for r, tx, _ in ruled}, settings.vat_registered)
+    problems = _problems(lines, {r: tx for r, tx, _ in ruled}, settings.vat_registered, posted)
     if problems:
         return _nothing(problems)
     debits, credits = sum((l["debit"] for l in lines), ZERO), sum((l["credit"] for l in lines), ZERO)
@@ -203,7 +222,7 @@ def post(store: MongoStore, records: AgentRecords, client_id: int, year_start: d
             "after": posted.last_batch, "decision_ids": list(decision_ids), "entries": len(lines) - reversals,
             "reversals": reversals, "total_debits": _stored(debits), "total_credits": _stored(credits),
             "created_at": now, "seq": seq})
-    except DuplicateKeyError:   # this very batch was posted meanwhile
+    except DuplicateKeyError:   # this very batch, or another worked out from the same ledger, was posted meanwhile
         return _nothing()
     try:
         db.ledger_entries.insert_many([
@@ -222,19 +241,39 @@ def post(store: MongoStore, records: AgentRecords, client_id: int, year_start: d
 def posted_trial_balance(store: MongoStore, records: AgentRecords, client_id: int,
                          year_start: dt.date) -> PostedTrialBalance:
     """The year's opening balances plus every entry posted for it, laid out as posting.trial_balance lays out the
-    rows', with the rows held in Suspense that are posted there. InvalidTransactions while rows need fixing, as the
-    rows' trial balance raises (which rows are held is worked out from them)."""
-    opening = books.opening(store, client_id, year_start)
+    rows', and the rows whose posted lines leave something in Suspense. The posted entries are facts, so it never
+    waits for rows to be fixed: while the opening can't be worked out (an earlier year needs fixing) it shows the
+    entries alone, and while this year's rows need fixing a Suspense item doesn't say what it needs; problems
+    says why."""
+    problems: list[str] = []
+    try:
+        opening = books.opening(store, client_id, year_start)
+    except InvalidTransactions as exc:
+        opening, problems = {}, [exc.message]
     posted = _posted(records.db, client_id, year_start)
     journal = [JournalLine(transaction=d["row_id"], code=d["code"], description=d["description"], debit=d["debit"],
                            credit=d["credit"]) for d in posted.entries]
-    _, ruled = _ruled(store, client_id, year_start)
-    suspense = [SuspenseItem(row_id=r, description=tx.description, gross=tx.gross, needs=rule.needs)
-                for r, tx, rule in ruled if rule.action == "hold" and posted.net.get(r, {}).get(SUSPENSE)]
-    return PostedTrialBalance(**summarise(journal, opening).model_dump(), suspense=suspense)
+    try:
+        rules = {r: rule for r, _, rule in _ruled(store, client_id, year_start)[1]}
+    except InvalidTransactions as exc:
+        rules = {}
+        problems += exc.problems
+    suspense = []
+    for r, net in posted.net.items():
+        if net.get(SUSPENSE):
+            rule = rules.get(r)
+            last = next(d for d in reversed(posted.entries) if d["row_id"] == r and d["code"] == SUSPENSE)
+            suspense.append(SuspenseItem(row_id=r, description=last["description"], gross=abs(net[SUSPENSE]),
+                                         needs=rule.needs if rule and rule.action == "hold" else None))
+    return PostedTrialBalance(**summarise(journal, opening).model_dump(), suspense=suspense, problems=problems)
 
 
 def unposted_changes(store: MongoStore, records: AgentRecords, client_id: int, year_start: dt.date) -> int:
     """How many rows would post something on the next posting: their wanted lines differ from what is posted for
-    them, or they are posted and no longer booked. InvalidTransactions while rows need fixing."""
-    return len(_changed(wanted_journal(store, client_id, year_start), _posted(records.db, client_id, year_start)))
+    them, or they are posted and no longer booked. While rows need fixing nothing can be posted, so it is the
+    number of rows that need fixing instead (it never raises for them)."""
+    try:
+        wanted = wanted_journal(store, client_id, year_start)
+    except InvalidTransactions as exc:
+        return len({p.split(":", 1)[0] for p in exc.problems})   # each problem starts with its row: "#3: ..."
+    return len(_changed(wanted, _posted(records.db, client_id, year_start)))
