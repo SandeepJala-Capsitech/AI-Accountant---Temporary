@@ -107,6 +107,11 @@ class AgentRecords:
             doc = self.db.questions.find_one_and_update(where, update, return_document=ReturnDocument.AFTER)
         return _model(Question, doc)
 
+    def question(self, id: str) -> Optional[Question]:
+        """The question with this id, in any status, if there is one."""
+        doc = self.db.questions.find_one({"id": id})
+        return _model(Question, doc) if doc else None
+
     def questions(self, client_id: int, year_start: dt.date,
                   statuses: tuple[str, ...] = ("open", "waiting")) -> list[Question]:
         """The client's questions for the year in these statuses, oldest first."""

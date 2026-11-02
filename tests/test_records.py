@@ -123,6 +123,13 @@ def test_question_upsert_keeps_one_per_key(records):
     assert other.id != q1.id and q1.status == "open"
 
 
+def test_a_question_is_found_by_id_in_any_status(records):
+    q = records.upsert_question(question(), "date:4")
+    assert records.question(q.id) == q and records.question("nope") is None
+    done = records.set_question(q.id, "resolved", "14 Aug 2025")
+    assert records.question(q.id) == done
+
+
 def test_questions_are_listed_by_status_and_resolving_sets_the_time(records):
     a = records.upsert_question(question(), "a")
     b = records.upsert_question(question(kind="vat_invoice"), "b")
