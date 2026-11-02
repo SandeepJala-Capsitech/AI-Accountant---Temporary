@@ -51,6 +51,8 @@
   - £ amounts with two decimals;
   - dates as `14 Oct 2026` (`checks.long_date`).
 - **Commits** end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+- **MongoDB connections stay within Atlas M0** (500 connections across the cluster). One `MongoClient` per process (`MongoStore.client`). Every new collection, the LangGraph `MongoDBSaver` and the agent records reuse it, and never construct their own `MongoClient`. The tests share one session-wide client. Task 0 sets this up.
+- **Running the tests:** `.venv/bin/python -m pytest`. MongoDB tests need network access to the test cluster.
 
 ## Review Focus
 
@@ -61,6 +63,38 @@
 5. **The model cites a quote that isn't in the document, or targets a row of another client or a closed year.** The service refuses, records `refused`, and the chat carries on. Test in Task 4: `test_quote_not_in_document_refused` and `test_closed_year_refused`.
 
 ---
+
+### Task 0: Keep MongoDB connections within M0
+
+**Files:**
+- Modify: `ledgersync/store_mongo.py` (`MongoStore.__init__`, `close`), `ledgersync/config.py` and `.env.example` (`LEDGERSYNC_MONGO_MAX_POOL`, default 10), `server.py` (close the store on shutdown, if it doesn't already), `tests/conftest.py`
+- Test: `tests/test_store_mongo.py`
+
+**Interfaces:**
+- Produces `MongoStore(uri=..., db_name=..., *, client: Optional[MongoClient] = None, max_pool: int = 10)`:
+  - Given a `client`, it uses that client and never closes it. Otherwise it creates one with `maxPoolSize=max_pool`, `minPoolSize=0` and `maxIdleTimeMS=60000`, plus the existing timeouts.
+  - `close()` closes only a client it created.
+- Produces in `tests/conftest.py`:
+  - one session-scoped `mongo_client` fixture: `MongoClient(uri, maxPoolSize=5, minPoolSize=0)`, closed at the end of the session;
+  - `mongo_db` and `mongo_store` use it (`MongoStore(..., client=mongo_client)`).
+  - A test that needs a second store "after a restart" builds it with the same shared client.
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+def test_store_uses_given_client_and_does_not_close_it(mongo_client, mongo_db):
+    store = MongoStore("unused", mongo_db.name, client=mongo_client); store.close()
+    assert store.client is mongo_client and mongo_client.admin.command("ping")["ok"] == 1
+def test_store_default_pool_is_small():
+    store = MongoStore("mongodb://localhost:1", "x", max_pool=7)   # never connects: no server selection on init?
+    assert store.client.options.pool_options.max_pool_size == 7 and store.client.options.pool_options.min_pool_size == 0
+```
+
+  If `__init__` creates indexes (which connects), the second test passes `client=` a `MongoClient("mongodb://localhost:1", maxPoolSize=7, minPoolSize=0, connect=False)` built by the same helper the store uses (`_new_client(uri, max_pool)`), and asserts on that helper instead.
+- [ ] **Step 2: Run the tests.** Run `.venv/bin/python -m pytest tests/test_store_mongo.py -k "client or pool" -v`. Expected: FAIL.
+- [ ] **Step 3: Implement.** Grep the tests for any other `MongoClient(` or `MongoStore(` that builds its own client, and switch it to the shared one.
+- [ ] **Step 4: Run the tests.** Run `.venv/bin/python -m pytest -q`, including the MongoDB tests. Expected: PASS.
+- [ ] **Step 5: Commit.** Message: `fix: share one small MongoDB pool so tests and the app stay within Atlas M0's connection limit`.
 
 ### Task 1: Row fields, the supplier's VAT number, and the feature branch
 
