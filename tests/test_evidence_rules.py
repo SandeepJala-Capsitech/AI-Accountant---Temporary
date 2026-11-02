@@ -68,6 +68,16 @@ def test_an_asset_purchase_is_covered():
     assert document_rule(statement_line("500.00", "0030"), SETTINGS).action == "hold"
 
 
+@pytest.mark.parametrize("account", ["0030", "0040", "0050", "0055"])   # equipment, furniture, cars, vans
+def test_a_fixed_asset_bought_without_a_document_is_held(account):
+    assert verdict(document_rule(statement_line("100.00", account), SETTINGS)) == ("hold", False, "receipt_or_invoice")
+
+
+@pytest.mark.parametrize("account", ["1100", "1103", "0031"])   # debtors, prepayments, depreciation
+def test_other_asset_accounts_need_no_document(account):
+    assert verdict(document_rule(statement_line("100.00", account), SETTINGS)) == ("book", True, None)
+
+
 @pytest.mark.parametrize("account", ["2210", "2202", "2250", "2300", "1240"])   # PAYE, VAT, DLA, loan, card pay-off
 def test_exempt_accounts_need_no_document(account):
     rule = document_rule(statement_line("500.00", account), SETTINGS)

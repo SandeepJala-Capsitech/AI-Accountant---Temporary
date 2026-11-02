@@ -10,9 +10,9 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel
 
-from .accounts import ALL_BANK_CODES, BY_CODE, SUSPENSE, AccountType
+from .accounts import ALL_BANK_CODES, BY_CODE, SUSPENSE, Account, AccountType
 from .models import BusinessSettings, Direction, JournalLine, Transaction
-from .money import ZERO
+from .money import ZERO, VatTreatment
 from .posting import journal_for
 
 NO_DOCUMENT_LIMIT = Decimal("50.00")   # below this a purchase needs no document
@@ -26,12 +26,18 @@ class DocumentRule(BaseModel):
     reason: str          # one plain sentence, shown on the question card and the decision
 
 
+def _fixed_asset(account: Account) -> bool:
+    """Whether the account holds equipment or vehicles the business buys (0030 to 0055): not their depreciation,
+    which is outside the scope of VAT, nor Debtors, Prepayments or the banks."""
+    return account.type == AccountType.ASSET and account.code.startswith("00") and account.vat != VatTreatment.OUTSIDE_SCOPE
+
+
 def _covered(tx: Transaction) -> bool:
-    """Whether the rules apply: money out on an expense or asset account that is not one of the client's own
+    """Whether the rules apply: money out on an expense account or a fixed asset, not one of the client's own
     bank accounts, and not a payment of a document (that was booked, and checked, with the document)."""
     account = BY_CODE.get(tx.account_code)
     return (tx.direction == Direction.OUT and account is not None
-            and account.type in (AccountType.EXPENSE, AccountType.ASSET)
+            and (account.type == AccountType.EXPENSE or _fixed_asset(account))
             and tx.account_code not in ALL_BANK_CODES and tx.paid_against is None)
 
 
