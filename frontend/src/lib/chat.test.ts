@@ -3,8 +3,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { ApiError } from './api.ts'
 import {
-  answerQuestion, formatMoney, groupThreads, looksLikeStatement, parseEvents, questionControl, ruleBadge,
-  shownAccounts, streamMessage, suspenseLabel, uploadForQuestion,
+  answerQuestion, changedFields, fileStatus, formatMoney, groupThreads, looksLikeStatement, parseEvents, questionControl, ruleBadge,
+  retryFiles, shownAccounts, streamMessage, suspenseLabel, uploadForQuestion,
   type ChatEvent, type ChatThread, type Decision, type PostedTrialBalance, type Question,
 } from './chat.ts'
 
@@ -177,4 +177,42 @@ test('a document for a question is uploaded as its file', async () => {
   assert.equal(sent?.url, '/api/chat/threads/t1/questions/q2/document')
   assert.equal(new Headers(sent?.init?.headers).get('X-LedgerSync'), '1')
   assert.equal(((sent?.init?.body as FormData).get('file') as File).name, 'invoice.pdf')
+})
+
+test('a decision shows each changed field of each row, before and after, in words', () => {
+  const d = {
+    ...decision('R4 Conflict: used the invoice'),
+    before: { '7': { gross: '27.50', date: null, excluded: false } },
+    after: { '7': { gross: '30.22', date: '2026-10-14', excluded: true }, '8': { vat: '5.04' } },
+  }
+  assert.deepEqual(changedFields(d), [
+    { row: 7, field: 'Amount', before: '£27.50', after: '£30.22' },
+    { row: 7, field: 'Date', before: '—', after: '14 Oct 2026' },
+    { row: 7, field: 'Removed from the books', before: 'No', after: 'Yes' },
+    { row: 8, field: 'VAT', before: '—', after: '£5.04' },
+  ])
+})
+
+test("a file's chip follows the steps that name it", () => {
+  const steps = [
+    { id: 'a', text: 'Read a.csv (12 rows)', state: 'done' as const, file: 'a.csv', rows: 12 },
+    { id: 'b', text: 'Reading b.jpg…', state: 'running' as const, file: 'b.jpg' },
+    { id: 'c', text: "Couldn't read c.pdf: it has no text", state: 'failed' as const, file: 'c.pdf', reason: 'it has no text' },
+    { id: 'd', text: 'Read d.csv (1 row)', state: 'done' as const, file: 'd.csv', rows: 1 },
+  ]
+  assert.deepEqual(fileStatus('a.csv', steps), { state: 'done', label: 'Read (12 rows)' })
+  assert.deepEqual(fileStatus('d.csv', steps), { state: 'done', label: 'Read (1 row)' })
+  assert.deepEqual(fileStatus('b.jpg', steps), { state: 'reading', label: 'Reading' })
+  assert.deepEqual(fileStatus('c.pdf', steps), { state: 'failed', label: 'Failed: it has no text' })
+  assert.deepEqual(fileStatus('e.png', steps), { state: 'queued', label: 'Queued' })
+})
+
+test('a retry sends again only the files that were not read', () => {
+  const files = [new File(['a'], 'a.csv'), new File(['c'], 'c.pdf'), new File(['e'], 'e.png')]
+  const steps = [
+    { id: 'a', text: 'Read a.csv', state: 'done' as const, file: 'a.csv', rows: 2 },
+    { id: 'c', text: "Couldn't read c.pdf", state: 'failed' as const, file: 'c.pdf' },
+  ]
+  assert.deepEqual(retryFiles(files, ['1200', '', ''], steps).files.map(f => f.name), ['c.pdf', 'e.png'])
+  assert.deepEqual(retryFiles(files, ['1200', '1201', ''], steps).bankAccounts, ['1201', ''])
 })

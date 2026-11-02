@@ -2,6 +2,7 @@
 // asks and the posted trial balance, and the calls that send a message (streamed back as SSE) and answer a question.
 // Paths go through the Next rewrite, like every other call in api.ts. The pure functions are tested in chat.test.ts.
 import { ApiError, errorFrom, request, type TrialBalanceLine, type TrialBalanceResult } from './api.ts'
+import { longDate } from './ledger.ts'
 
 // Money is a string everywhere below, like the rest of the API.
 export interface ChatThread {
@@ -185,6 +186,52 @@ export function formatMoney(s: string): string {
   const pounds = (whole.replace(/^0+(?=\d)/, '') || '0').replace(/\B(?=(\d{3})+(?!\d))/g, ',')
   const zero = /^[0,]+$/.test(pounds) && pence === '00'
   return `${negative && !zero ? '-' : ''}£${pounds}.${pence}`
+}
+
+const FIELD_NAMES: Record<string, string> = {
+  gross: 'Amount', vat: 'VAT', net: 'Net', date: 'Date', description: 'Description', counterparty: 'Payee',
+  account_code: 'Account', direction: 'Direction', excluded: 'Removed from the books', document_type: 'Document',
+}
+const MONEY_FIELDS = new Set(['gross', 'vat', 'net', 'vat_posted', 'amount'])
+
+const fieldValue = (field: string, value: unknown): string => {
+  if (value == null || value === '') return '—'
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No'
+  if (MONEY_FIELDS.has(field)) return formatMoney(String(value))
+  if (field === 'date' && /^\d{4}-\d{2}-\d{2}$/.test(String(value))) return longDate(String(value))
+  return typeof value === 'object' ? JSON.stringify(value) : String(value)
+}
+
+const fieldName = (field: string) => FIELD_NAMES[field] ?? field.charAt(0).toUpperCase() + field.slice(1).replace(/_/g, ' ')
+
+// A decision's before → after, one line per changed field of each row, in words.
+export function changedFields(d: Decision): { row: number; field: string; before: string; after: string }[] {
+  const rows = [...new Set([...Object.keys(d.before), ...Object.keys(d.after)])].sort((a, b) => Number(a) - Number(b))
+  return rows.flatMap(row => {
+    const before = d.before[row] ?? {}
+    const after = d.after[row] ?? {}
+    return [...new Set([...Object.keys(before), ...Object.keys(after)])].map(field => ({
+      row: Number(row), field: fieldName(field), before: fieldValue(field, before[field]), after: fieldValue(field, after[field]),
+    }))
+  })
+}
+
+export type FileState = 'queued' | 'reading' | 'done' | 'failed'
+
+// What a file's chip says, from the latest step that names it.
+export function fileStatus(name: string, steps: Step[]): { state: FileState; label: string } {
+  const step = [...steps].reverse().find(s => s.file === name)
+  if (!step) return { state: 'queued', label: 'Queued' }
+  if (step.state === 'running') return { state: 'reading', label: 'Reading' }
+  if (step.state === 'failed') return { state: 'failed', label: step.reason ? `Failed: ${step.reason}` : 'Failed' }
+  return { state: 'done', label: step.rows == null ? 'Read' : `Read (${step.rows} ${step.rows === 1 ? 'row' : 'rows'})` }
+}
+
+// The files a retry sends again: those not read the first time, each with its bank account. A file read once is
+// saved to the client already, and sending it again would book it twice.
+export function retryFiles(files: File[], bankAccounts: string[], steps: Step[]): { files: File[]; bankAccounts: string[] } {
+  const keep = files.map((f, i) => [f, bankAccounts[i] ?? ''] as const).filter(([f]) => fileStatus(f.name, steps).state !== 'done')
+  return { files: keep.map(([f]) => f), bankAccounts: keep.map(([, code]) => code) }
 }
 
 export const suspenseLabel = (needs: SuspenseItem['needs']) =>
