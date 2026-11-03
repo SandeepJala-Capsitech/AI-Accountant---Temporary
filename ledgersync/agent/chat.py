@@ -243,7 +243,8 @@ class Chat:
     def __init__(self, settings: Settings, store: MongoStore, blobs: BlobStore, *, read: Reader, vision=None,
                  model: Optional[BaseChatModel] = None):
         """read: reads a file sent to the chat. vision: the model client that transcribes images for the agent's
-        tools. model: the agent's chat model; by default LEDGERSYNC_AGENT_MODEL through OpenRouter."""
+        tools. model: the agent's chat model; by default OPENROUTER_MODEL (the one that reads the files) through
+        OpenRouter."""
         self.settings, self.store, self.blobs, self.read_file, self.vision = settings, store, blobs, read, vision
         self._model = model
         self.locks, self.runs = ClientLocks(), ThreadRuns()

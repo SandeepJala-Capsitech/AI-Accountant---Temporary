@@ -1,6 +1,6 @@
-"""The accountant chat on the real models: the files read by the vision model and the turn run by
-LEDGERSYNC_AGENT_MODEL through OpenRouter. Marked llm, so it runs only with `pytest -m llm`: it spends OpenRouter
-credit, so ask before running it. It needs OPENROUTER_API_KEY and the MongoDB test cluster."""
+"""The accountant chat on the real model: one model, OPENROUTER_MODEL, reads the files and runs the turn through
+OpenRouter. Marked llm, so it runs only with `pytest -m llm`: it spends OpenRouter credit, so ask before running it.
+It needs OPENROUTER_API_KEY and the MongoDB test cluster."""
 import dataclasses
 import json
 import mimetypes

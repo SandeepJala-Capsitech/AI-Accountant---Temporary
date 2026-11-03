@@ -20,9 +20,10 @@ __all__ = ["AgentDeps", "ChatContext", "ChatEvent", "build_agent", "stream_turn"
 
 
 def build_agent(settings: Settings, deps: AgentDeps, *, model=None, checkpointer=None):
-    """The agent on `model` (by default LEDGERSYNC_AGENT_MODEL through OpenRouter), with every tool, the system
-    prompt and ChatContext as the run's context. Its threads' messages are kept by `checkpointer`: by default in
-    MongoDB, in the database "<db>_checkpoints" on the store's one client (never a client of its own). A run:
+    """The agent on `model` (by default OPENROUTER_MODEL through OpenRouter, the one model that also reads the files),
+    with every tool, the system prompt and ChatContext as the run's context. Its threads' messages are kept by
+    `checkpointer`: by default in MongoDB, in the database "<db>_checkpoints" on the store's one client (never a
+    client of its own). A run:
     - stops before its next model call once deps.is_cancelled(thread_id) says so;
     - ends, with a message, before a 31st model call or when the model asks for an 81st tool call;
     - reads at most 20 documents (a call past that is answered "limit exceeded" and the run carries on);
@@ -42,5 +43,5 @@ def build_agent(settings: Settings, deps: AgentDeps, *, model=None, checkpointer
         ToolErrorsAsMessages(),
     ]
     return create_agent(model if model is not None else chat_model(settings),
-                        make_tools(deps, actor=f"agent:{settings.agent_model}"), system_prompt=SYSTEM_PROMPT,
+                        make_tools(deps, actor=f"agent:{settings.openrouter_model}"), system_prompt=SYSTEM_PROMPT,
                         middleware=middleware, context_schema=ChatContext, checkpointer=checkpointer)

@@ -47,7 +47,7 @@ def configure_logging(level: str) -> None:
 def create_app(settings: Optional[Settings] = None, *, model_client=None, store: Optional[MongoStore] = None,
                blobs: Optional[BlobStore] = None, chat_model=None) -> FastAPI:
     """The API; tests pass a stand-in for the model client as model_client, a store on a test database, and the
-    accountant chat's model as chat_model (LEDGERSYNC_AGENT_MODEL through OpenRouter otherwise)."""
+    accountant chat's model as chat_model (OPENROUTER_MODEL, the one that reads the files, otherwise)."""
     settings = settings or Settings.from_env()
     configure_logging(settings.log_level)
     model_client = model_client or ModelClient(settings)

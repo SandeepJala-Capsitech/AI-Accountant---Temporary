@@ -9,17 +9,18 @@ answer routes, then
 
 and a run fails if it has an error event, a failed step, an answer that could not be applied or changes left unposted.
 
-  .venv/bin/python eval/run_agent_eval.py                                   # every case and the demo, on the real models
+  .venv/bin/python eval/run_agent_eval.py                                   # every case and the demo, on the real model
   .venv/bin/python eval/run_agent_eval.py --case clean-month --read rows    # one case, files read from their .rows.json
   .venv/bin/python eval/run_agent_eval.py --runs 3 --case demo
   .venv/bin/python eval/run_agent_eval.py --case demo --transcripts /tmp/runs    # also save each run's transcript
 
-It spends OpenRouter credit (the agent's model, and the vision model unless --read rows) and needs the MongoDB
-cluster; it uses its own database (--db), dropped by nobody. Writes eval/results/<date>-agent.json (every run of
-every case) and prints a table; exits 0 only when every run passed all three scores. With --transcripts DIR it also
-writes DIR/<case>-r<run>.json for each run, right after it: the thread's whole message history as the agent saw it (read
-from the chat's checkpoints), the events of the review turn, what the answer routes were sent and replied, and the
-run's result. A demo reset deletes the demo's checkpoints, so the transcript is taken before the next run starts.
+It spends OpenRouter credit (the one model, OPENROUTER_MODEL, which runs the agent and, unless --read rows, reads the
+files) and needs the MongoDB cluster; it uses its own database (--db), dropped by nobody. Writes
+eval/results/<date>-agent.json (every run of every case) and prints a table; exits 0 only when every run passed all
+three scores. With --transcripts DIR it also writes DIR/<case>-r<run>.json for each run, right after it: the thread's
+whole message history as the agent saw it (read from the chat's checkpoints), the events of the review turn, what the
+answer routes were sent and replied, and the run's result. A demo reset deletes the demo's checkpoints, so the
+transcript is taken before the next run starts.
 
 The scoring functions take plain data, so a test can score a case worked with no model."""
 from __future__ import annotations
@@ -602,10 +603,10 @@ def main(argv=None) -> int:
             for name in chosen:
                 for n in range(1, args.runs + 1):
                     try:
-                        result = run_case(api, store, records, available[name], rows, settings.agent_model, run=n,
+                        result = run_case(api, store, records, available[name], rows, settings.openrouter_model, run=n,
                                           transcripts=args.transcripts, saver=saver, label=name)
                     except Exception as exc:   # a case that can't run is a failed run, not the end of the eval
-                        result = {"case": name, "model": settings.agent_model, "seconds": 0,
+                        result = {"case": name, "model": settings.openrouter_model, "seconds": 0,
                                   "client_id": None, "thread_id": None,
                                   **{s: {"passed": False, "differences": []} for s in
                                      ("trial_balance", "decisions", "questions")},
@@ -622,8 +623,8 @@ def main(argv=None) -> int:
 
     RESULTS_DIR.mkdir(exist_ok=True)
     out = RESULTS_DIR / f"{dt.date.today().isoformat()}-agent.json"
-    out.write_text(json.dumps({"date": dt.date.today().isoformat(), "read": args.read, "model": settings.agent_model,
-                               "runs": runs}, indent=2, ensure_ascii=False) + "\n")
+    out.write_text(json.dumps({"date": dt.date.today().isoformat(), "read": args.read,
+                               "model": settings.openrouter_model, "runs": runs}, indent=2, ensure_ascii=False) + "\n")
     print("\n" + table(runs) + f"\n\nWrote {out.relative_to(ROOT)}"
           + (f"\nTranscripts in {args.transcripts}" if args.transcripts else ""))
     return 0 if all(passed(r) for r in runs) else 1

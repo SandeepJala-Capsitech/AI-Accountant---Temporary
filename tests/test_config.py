@@ -111,12 +111,28 @@ def test_the_mongodb_pool_is_ten_connections_unless_set_otherwise():
     assert Settings.from_env({"LEDGERSYNC_MONGO_MAX_POOL": "0"}).mongodb_max_pool == 1   # never below one
 
 
-def test_the_chat_runs_gpt_oss_for_a_minute_an_answer_without_the_demo_unless_set_otherwise():
+def test_the_chat_takes_a_minute_an_answer_without_the_demo_unless_set_otherwise():
     d = Settings.from_env({})
-    assert (d.agent_model, d.agent_timeout, d.demo) == ("openai/gpt-oss-120b", 60.0, False)
-    chosen = Settings.from_env({"LEDGERSYNC_AGENT_MODEL": " x/y ", "LEDGERSYNC_AGENT_TIMEOUT": "90",
-                                "LEDGERSYNC_DEMO": "1"})
-    assert (chosen.agent_model, chosen.agent_timeout, chosen.demo) == ("x/y", 90.0, True)
+    assert (d.agent_timeout, d.demo) == (60.0, False)
+    chosen = Settings.from_env({"LEDGERSYNC_AGENT_TIMEOUT": "90", "LEDGERSYNC_DEMO": "1"})
+    assert (chosen.agent_timeout, chosen.demo) == (90.0, True)
+
+
+def test_one_model_reads_the_files_and_runs_the_chat():
+    # The chat runs on OPENROUTER_MODEL through OpenRouter: the model that reads the files when OpenRouter reads them.
+    d = Settings.from_env({"OPENROUTER_API_KEY": "sk-or-test"})
+    assert d.openrouter_model == d.model == "qwen/qwen3.8-27b"
+    chosen = Settings.from_env({"OPENROUTER_API_KEY": "sk-or-test", "OPENROUTER_MODEL": " some/model "})
+    assert chosen.openrouter_model == chosen.model == "some/model"
+
+
+def test_the_old_agent_model_variable_changes_nothing():
+    assert "LEDGERSYNC_AGENT_MODEL" not in ENV_NAMES
+    assert not hasattr(Settings(), "agent_model")
+    base = {"OPENROUTER_API_KEY": "sk-or-test", "OPENROUTER_MODEL": "some/model"}
+    assert Settings.from_env({**base, "LEDGERSYNC_AGENT_MODEL": "x/y"}) == Settings.from_env(base)
+    assert Settings.from_env({**base, "LEDGERSYNC_AGENT_MODEL": "x/y"}).openrouter_model == "some/model"
+    assert Settings.from_env({"LEDGERSYNC_AGENT_MODEL": "x/y"}) == Settings.from_env({})
 
 
 def test_a_blank_number_setting_uses_its_default():

@@ -20,7 +20,7 @@ Prior art to port selectively: the `accounting-agent` branch (947ae1b) has a has
 
 ## Agent
 
-- `create_agent` with `ChatOpenRouter` (`langchain-openrouter==0.2.9`), `model=LEDGERSYNC_AGENT_MODEL` (default `openai/gpt-oss-120b`), `reasoning={"effort": "medium"}`, `openrouter_provider={"require_parameters": True, "data_collection": "deny"}`, timeout 60 s, `max_retries=2`.
+- `create_agent` with `ChatOpenRouter` (`langchain-openrouter==0.2.9`), `model=OPENROUTER_MODEL` (default `qwen/qwen3.8-27b`: one model reads the files and runs the agent), `reasoning={"effort": "medium"}`, `openrouter_provider={"require_parameters": True, "data_collection": "deny"}`, timeout 60 s, `max_retries=2`.
 - `context_schema=ChatContext(client_id, thread_id)`, `checkpointer=MongoDBSaver(client, db_name=f"{db}_checkpoints")`.
 - Middleware: `ModelCallLimitMiddleware(run_limit=30, exit_behavior="end")`, `ToolCallLimitMiddleware(run_limit=80, exit_behavior="end")` plus `read_document` ≤ 20, `ModelRetryMiddleware(max_retries=2)`, a `wrap_tool_call` middleware turning validation errors and `LedgerSyncError` into error `ToolMessage`s, `StopWhenCancelled`, `recursion_limit=120`.
 - Images and scanned PDFs: `read_document` asks the existing Qwen vision model for a transcript, cached by SHA-256.
@@ -97,7 +97,7 @@ Reversals: `post_ledger` compares the wanted journal per row with what is alread
 3. OpenRouter: `require_parameters` and `data_collection: deny`; pin a provider if tool calls are unreliable.
 4. Statement bank account: a picker on the attachment chip, defaulting to the first current account.
 5. Plain text with line breaks and lists, plus cards. No markdown library.
-6. gpt-oss reasoning text not shown.
+6. The model's reasoning text is not shown (one model, `OPENROUTER_MODEL`, reads the files and runs the agent).
 7. Expected figures worked by hand in `notes.md` before any code runs on them.
 
 ## Demo data

@@ -125,6 +125,7 @@ The full plan is kept at `docs/2026-11-02-ai-accountant-demo-plan.md`: tools, co
 - **Documents are uploaded in the chat**, stored with the client's files, and read by the existing pipeline. The agent can open an original document again to check a date or an amount.
 - **A chat belongs to one client.** A new chat starts by asking which client, and a client can have many chats. A chat never sees another chat's conversation.
 - **The stack:** FastAPI, Next.js, MongoDB, LangChain `create_agent` with the LangGraph Mongo checkpointer, at the pinned versions. The chat model is `LEDGERSYNC_AGENT_MODEL` (default `openai/gpt-oss-120b`) through OpenRouter, with `data_collection: deny`. Images are transcribed by the existing Qwen vision model.
+  - *Changed 3 Nov:* one model now does both jobs, `OPENROUTER_MODEL` (default `qwen/qwen3.8-27b`): it reads the files and runs the agent. `LEDGERSYNC_AGENT_MODEL` and `openai/gpt-oss-120b` are no longer used.
 - **The services decide, not the model.** The model picks an action and points to evidence. A deterministic service checks the evidence and refuses if it doesn't support the action. The client and the user come from the server, never from model arguments.
 - **Every agent change is recorded** in an append-only decisions log, with its evidence, reason, and before and after values, and is idempotent.
 - Posting checks that debits equal credits, every account exists, and the VAT treatment is valid. Either everything is written or nothing is.

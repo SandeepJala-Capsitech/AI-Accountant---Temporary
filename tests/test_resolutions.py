@@ -19,7 +19,7 @@ from ledgersync.resolutions import (KeepOne, SplitPart, SplitVat, UsePrimary, Va
 pytestmark = pytest.mark.mongo
 
 YEAR = dt.date(2026, 4, 1)
-ACTOR = "agent:openai/gpt-oss-120b"
+ACTOR = "agent:qwen/qwen3.8-27b"
 
 COSTCO = """COSTCO WHOLESALE   Watford
 Printer paper        52.80 A

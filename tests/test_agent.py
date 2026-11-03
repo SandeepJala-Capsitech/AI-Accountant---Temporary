@@ -25,6 +25,7 @@ from ledgersync.agent.tools import make_tools
 from ledgersync.blobs import GridFSBlobStore
 from ledgersync.config import Settings
 from ledgersync.errors import ModelUnavailable
+from ledgersync.model_client import ModelClient
 from ledgersync.models import ClientFields
 from ledgersync.records import AgentRecords
 
@@ -175,7 +176,7 @@ def test_resolve_retried_records_once(mongo_store, deps, staples):
     events = list(stream_turn(agent, context(staples), "Review the books."))
 
     [decision] = deps.records.decisions(staples)
-    assert decision.status == "applied" and decision.actor == "agent:openai/gpt-oss-120b"
+    assert decision.status == "applied" and decision.actor == "agent:qwen/qwen3.8-27b"
     first, again = (json.loads(answered(model, n)[0].content) for n in (1, 2))
     assert first == again and first["decision_id"] == decision.id and first["status"] == "applied"
     assert [e.data["text"] for e in events if e.type == "step" and e.data["state"] == "done"] == [
@@ -339,7 +340,7 @@ def test_chat_model_sends_openrouter_the_agreed_settings():
     def answer(request: httpx.Request) -> httpx.Response:
         sent.append(json.loads(request.content))
         return httpx.Response(200, json={"id": "gen-1", "object": "chat.completion", "created": 1,
-                                         "model": "openai/gpt-oss-120b", "system_fingerprint": None,
+                                         "model": "qwen/qwen3.8-27b", "system_fingerprint": None,
                                          "choices": [{"index": 0, "finish_reason": "stop",
                                                       "message": {"role": "assistant", "content": "Hello."}}]})
 
@@ -349,8 +350,69 @@ def test_chat_model_sends_openrouter_the_agreed_settings():
     assert model.invoke("Hi").content == "Hello."
     assert model.request_timeout == 60_000 and model.max_retries == 2   # milliseconds, as ChatOpenRouter takes them
     [body] = sent
-    assert body["model"] == "openai/gpt-oss-120b" and body["reasoning"] == {"effort": "medium"}
+    assert body["model"] == "qwen/qwen3.8-27b" and body["reasoning"] == {"effort": "medium"}
     assert body["provider"] == {"require_parameters": True, "data_collection": "deny"}
+
+
+def connected(model, answer):
+    """The chat model with its OpenRouter client answering every request through `answer`, a function of the request."""
+    model.client = openrouter.OpenRouter(api_key="test-key", client=httpx.Client(transport=httpx.MockTransport(answer)))
+    return model
+
+
+def sse(*chunks) -> bytes:
+    """What OpenRouter streams back: a chunk for each (delta, finish_reason) given."""
+    return b"".join(
+        b"data: " + json.dumps({"id": "gen-1", "object": "chat.completion.chunk", "created": 1,
+                                "model": "qwen/qwen3.8-27b",
+                                "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}).encode() + b"\n\n"
+        for delta, finish in chunks) + b"data: [DONE]\n\n"
+
+
+def test_the_agent_runs_on_the_model_that_reads_the_files():
+    settings = Settings.from_env({"OPENROUTER_API_KEY": "test-key", "OPENROUTER_MODEL": "some/model",
+                                  "LEDGERSYNC_AGENT_MODEL": "x/y"})   # the old variable changes nothing
+    sent = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json={"id": "gen-1", "object": "chat.completion", "created": 1,
+                                         "model": "some/model", "system_fingerprint": None,
+                                         "choices": [{"index": 0, "finish_reason": "stop",
+                                                      "message": {"role": "assistant", "content": "Hello."}}]})
+
+    connected(chat_model(settings), answer).invoke("Hi")
+
+    assert sent[0]["model"] == ModelClient(settings).model == "some/model"
+
+
+def test_reasoning_sent_the_openrouter_way_is_kept_apart_from_the_reply():
+    # OpenRouter streams a reasoning model's thinking in its own fields (`reasoning`, `reasoning_details`), apart from
+    # the reply's content, whichever model it is: the person never gets it as a token, and the run carries on.
+    thought = "A row id is a number, not a name."
+    tool_call = {"index": 0, "id": "call_1", "type": "function",
+                 "function": {"name": "get_row", "arguments": '{"row_id": "the taxi"}'}}
+    answers = iter([
+        sse(({"role": "assistant", "reasoning": thought,
+              "reasoning_details": [{"type": "reasoning.text", "text": thought, "index": 0, "format": "unknown"}]},
+             None),
+            ({"tool_calls": [tool_call]}, None), ({}, "tool_calls")),
+        sse(({"role": "assistant", "reasoning": "The tool wants a number."}, None),
+            ({"content": "Row ids are "}, None), ({"content": "numbers."}, None), ({}, "stop")),
+    ])
+    model = connected(chat_model(Settings(openrouter_api_key="test-key")),
+                      lambda request: httpx.Response(200, headers={"content-type": "text/event-stream"},
+                                                     content=next(answers)))
+    agent, ctx = offline_agent(model), context()
+
+    events = list(stream_turn(agent, ctx, "Look at the taxi."))
+
+    assert set(kinds(events)) == {"token"} and "".join(e.data["text"] for e in events) == "Row ids are numbers."
+    assert "number, not a name" not in "".join(e.sse() for e in events)
+    kept = agent.get_state({"configurable": {"thread_id": ctx.thread_id}}).values["messages"]
+    assert [m.type for m in kept] == ["human", "ai", "tool", "ai"] and kept[2].status == "error"
+    assert kept[1].content == "" and kept[1].additional_kwargs["reasoning_content"] == thought   # kept, not said
+    assert kept[3].text == "Row ids are numbers."
 
 
 def test_chat_model_needs_the_openrouter_key():
