@@ -34,6 +34,31 @@ def test_an_ai_message_keeps_its_text_and_its_tool_calls():
         "tool_calls": [{"name": "get_overview", "args": {"year": "2026"}, "id": "call_1"}]}
 
 
+def test_an_ai_message_keeps_the_provider_and_model_that_answered():
+    metadata = {"finish_reason": "stop", "provider": "DeepInfra", "model_name": "qwen/qwen3.8-27b",
+                "model_provider": "openrouter", "id": "gen-1"}   # model_provider is LangChain's, not the host
+    out = agent_eval.message_json(AIMessage(content="Done.", response_metadata=metadata))
+    assert out["served_by"] == {"provider": "DeepInfra", "model_name": "qwen/qwen3.8-27b"}
+    assert out["finish_reason"] == "stop"
+
+
+def test_served_by_holds_what_the_metadata_has_and_is_left_out_when_it_has_nothing():
+    # langchain-openrouter 0.2.9 names the model but not the host: the SDK drops OpenRouter's `provider` field.
+    only_model = AIMessage(content="Done.", response_metadata={"model_name": "qwen/qwen3.8-27b",
+                                                               "model_provider": "openrouter"})
+    assert agent_eval.message_json(only_model)["served_by"] == {"model_name": "qwen/qwen3.8-27b"}
+    nothing = ({}, {"finish_reason": "stop", "model_provider": "openrouter"}, {"provider": None, "model_name": ""})
+    for metadata in nothing:
+        assert "served_by" not in agent_eval.message_json(AIMessage(content="Done.", response_metadata=metadata))
+
+
+def test_only_an_ai_message_says_who_served_it():
+    metadata = {"provider": "DeepInfra", "model_name": "qwen/qwen3.8-27b"}
+    for message in (HumanMessage("Hi", response_metadata=metadata),
+                    ToolMessage(content="ok", tool_call_id="call_1", response_metadata=metadata)):
+        assert "served_by" not in agent_eval.message_json(message)
+
+
 def test_an_ai_message_with_no_tool_calls_has_an_empty_list():
     assert agent_eval.message_json(AIMessage(content="Done."))["tool_calls"] == []
 

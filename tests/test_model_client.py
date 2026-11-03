@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from ledgersync.config import Settings
 from ledgersync.errors import LedgerSyncError, ModelError, ModelRateLimited, ModelTimeout, ModelUnavailable
-from ledgersync.model_client import ModelClient, strict_schema
+from ledgersync.model_client import ModelClient, openrouter_route, strict_schema
 
 KEY = "sk-test-1234"
 SETTINGS = Settings(groq_api_key=KEY)
@@ -69,6 +69,16 @@ def test_blank_routing_settings_leave_the_host_to_openrouter():
     client, http, _, _ = make_client(chat_answer(), settings=settings)
     client.chat_json(MSG, SCHEMA)
     assert http.payload()["provider"] == {"require_parameters": True}
+
+
+def test_the_route_is_one_builder_for_the_reader_and_the_chat_agent():
+    # The chat agent (tests/test_agent.py) sends this same route, with its own data_collection added.
+    default = {"order": ["deepinfra/bf16"], "quantizations": ["bf16", "fp16", "fp32", "fp8"]}
+    assert openrouter_route(Settings()) == default
+    assert openrouter_route(Settings(), require_parameters=True) == {"require_parameters": True, **default}
+    chosen = Settings(openrouter_providers=("parasail/fp8", "wafer"), openrouter_quantizations=("bf16",))
+    assert openrouter_route(chosen) == {"order": ["parasail/fp8", "wafer"], "quantizations": ["bf16"]}
+    assert openrouter_route(Settings(openrouter_providers=(), openrouter_quantizations=())) == {}
 
 
 def test_the_answer_names_the_host_that_wrote_it():

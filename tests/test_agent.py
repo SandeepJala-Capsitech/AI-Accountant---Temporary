@@ -351,7 +351,23 @@ def test_chat_model_sends_openrouter_the_agreed_settings():
     assert model.request_timeout == 60_000 and model.max_retries == 2   # milliseconds, as ChatOpenRouter takes them
     [body] = sent
     assert body["model"] == "qwen/qwen3.8-27b" and body["reasoning"] == {"effort": "medium"}
-    assert body["provider"] == {"require_parameters": True, "data_collection": "deny"}
+    # The reader's hosts, a full-precision one first and never a 4-bit one (tests/test_model_client.py), and none that
+    # keeps the data.
+    assert body["provider"] == {"order": ["deepinfra/bf16"], "quantizations": ["bf16", "fp16", "fp32", "fp8"],
+                                "require_parameters": True, "data_collection": "deny"}
+
+
+@pytest.mark.parametrize("env, route", [
+    ({}, {"order": ["deepinfra/bf16"], "quantizations": ["bf16", "fp16", "fp32", "fp8"]}),
+    ({"OPENROUTER_PROVIDERS": "parasail/fp8, wafer", "OPENROUTER_QUANTIZATIONS": "bf16"},
+     {"order": ["parasail/fp8", "wafer"], "quantizations": ["bf16"]}),
+    ({"OPENROUTER_PROVIDERS": "", "OPENROUTER_QUANTIZATIONS": ""}, {}),   # blank: left to OpenRouter, as for the reader
+], ids=["defaults", "set", "blank"])
+def test_the_agent_goes_to_the_hosts_the_reader_does(env, route):
+    # Left to choose, OpenRouter sent reads of this one model to a 4-bit host that dropped lines: the agent must not
+    # land there either, and follows the same two settings.
+    settings = Settings.from_env({"OPENROUTER_API_KEY": "test-key", **env})
+    assert chat_model(settings).openrouter_provider == {"require_parameters": True, "data_collection": "deny", **route}
 
 
 def connected(model, answer):

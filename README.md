@@ -249,7 +249,9 @@ decide whether a host that may keep the documents can be used. The startup log n
 It asks a full-precision host first (DeepInfra), then any host running the model at 8-bit precision or
 better, never a 4-bit one: left to choose, OpenRouter sent every read to a 4-bit host, which left a line
 out of an expense claim every time (`OPENROUTER_PROVIDERS` and `OPENROUTER_QUANTIZATIONS` change this).
-Each upload keeps the model and host that read it, e.g. `qwen/qwen3.8-27b via DeepInfra`.
+Each upload keeps the model and host that read it, e.g. `qwen/qwen3.8-27b via DeepInfra`. The accountant chat
+runs on that same model over the same route (the same hosts first, the same precisions, so never a 4-bit one
+either) and tells OpenRouter besides to use only hosts that keep none of the data.
 
 Pasted text, spreadsheets and PDFs with a text layer go to the model as text; photos and scanned
 pages go as images (turned upright, at most 1600 px, up to three pages per request). The model answers in a

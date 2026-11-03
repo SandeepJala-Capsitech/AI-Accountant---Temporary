@@ -271,8 +271,9 @@ def _blocks(content) -> tuple[str, list[dict], list]:
 def message_json(message) -> dict:
     """One message of the agent's history as plain JSON: its type (human, ai, tool, system), its content in full as
     text, the reasoning it carries (from its content blocks or from additional_kwargs, labelled), and for an AI message
-    its tool calls (name, args, id; those the model garbled under invalid_tool_calls), for a tool message its name,
-    tool_call_id and status."""
+    its tool calls (name, args, id; those the model garbled under invalid_tool_calls), its finish_reason and
+    served_by (the provider and model_name its response_metadata names, whichever it has; left out when it has
+    neither), for a tool message its name, tool_call_id and status."""
     text, reasoning, other = _blocks(message.content)
     extra = getattr(message, "additional_kwargs", None) or {}
     for key in ("reasoning_content", "reasoning"):
@@ -292,9 +293,12 @@ def message_json(message) -> dict:
                              for c in getattr(message, "tool_calls", None) or []]
         if getattr(message, "invalid_tool_calls", None):
             out["invalid_tool_calls"] = list(message.invalid_tool_calls)
-        finish = (getattr(message, "response_metadata", None) or {}).get("finish_reason")
-        if finish:
-            out["finish_reason"] = finish
+        meta = getattr(message, "response_metadata", None) or {}
+        if meta.get("finish_reason"):
+            out["finish_reason"] = meta["finish_reason"]
+        served_by = {key: meta[key] for key in ("provider", "model_name") if meta.get(key)}
+        if served_by:
+            out["served_by"] = served_by
     if message.type == "tool":
         out["tool_call_id"] = message.tool_call_id
         out["status"] = getattr(message, "status", None)

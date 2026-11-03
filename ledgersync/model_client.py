@@ -73,6 +73,19 @@ def strict_schema(schema: dict) -> dict:
     return convert(schema)
 
 
+def openrouter_route(settings: Settings, *, require_parameters: bool = False) -> dict:
+    """OpenRouter's `provider` routing for the one model, shared by everything that asks it (the reader here and the
+    chat agent): the hosts set are asked first (settings.openrouter_providers), and only hosts running the model at a
+    precision set are used (settings.openrouter_quantizations), so never a 4-bit one; a blank setting leaves that to
+    OpenRouter. With require_parameters, a host that would ignore a parameter of the request is not used."""
+    route = {"require_parameters": True} if require_parameters else {}
+    if settings.openrouter_providers:
+        route["order"] = list(settings.openrouter_providers)
+    if settings.openrouter_quantizations:
+        route["quantizations"] = list(settings.openrouter_quantizations)
+    return route
+
+
 class ModelClient:
     def __init__(self, settings: Settings, opener: Callable = urllib.request.urlopen,
                  clock: Callable[[], float] = time.monotonic,
@@ -153,14 +166,8 @@ class ModelClient:
         return ModelAnswer(content, host=response.get("provider"))
 
     def _route(self, require_parameters: bool = False) -> dict:
-        """OpenRouter's routing: the hosts set are asked first, and only hosts running the model at a precision
-        set are used (settings.openrouter_quantizations)."""
-        route = {"require_parameters": True} if require_parameters else {}
-        if self._s.openrouter_providers:
-            route["order"] = list(self._s.openrouter_providers)
-        if self._s.openrouter_quantizations:
-            route["quantizations"] = list(self._s.openrouter_quantizations)
-        return route
+        """OpenRouter's routing for a read: openrouter_route(), the same the chat agent is held to."""
+        return openrouter_route(self._s, require_parameters=require_parameters)
 
     def transcribe(self, image_b64: str) -> str:
         """Everything printed on one page image (a base64 JPEG from pipeline.prepare_image), as plain text:
