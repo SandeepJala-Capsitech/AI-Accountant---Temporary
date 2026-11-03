@@ -4,7 +4,10 @@ answer routes, then
 
 - the posted trial balance against the expected one, to the penny (the demo: before the answers and after them);
 - the decisions, a rule for each row, against expected_decisions.json;
-- the questions open or waiting after the review turn, a kind and a row each, against expected_questions.json.
+- the questions open or waiting after the review turn and after the answers, a kind and a row each, against
+  expected_questions.json;
+
+and a run fails if it has an error event, a failed step, an answer that could not be applied or changes left unposted.
 
   .venv/bin/python eval/run_agent_eval.py                                   # every case and the demo, on the real models
   .venv/bin/python eval/run_agent_eval.py --case clean-month --read rows    # one case, files read from their .rows.json
@@ -82,9 +85,15 @@ def score_decisions(expected: dict, decisions: list[dict], names: dict[int, dict
     first. names: each row's {"file", "description"} by id."""
     wanted = [(*_key(e["row"]), e["rule"]) for part in ("resolutions", "automatic", "from_answers")
               for e in expected[part]]
-    made = [(*_key(names[d["row_ids"][0]]), d["rule"]) for d in decisions
-            if d["status"] == "applied" and d["row_ids"] and d["row_ids"][0] in names]
-    return _missing_and_extra(sorted(wanted), sorted(made))
+    made, unmapped = [], []
+    for d in decisions:
+        if d["status"] != "applied":
+            continue
+        if d["row_ids"] and d["row_ids"][0] in names:
+            made.append((*_key(names[d["row_ids"][0]]), d["rule"]))
+        else:   # on no row, or one the year doesn't hold: never expected
+            unmapped.append({"unexpected": {"row_ids": d["row_ids"], "rule": d["rule"]}})
+    return _missing_and_extra(sorted(wanted), sorted(made)) + unmapped
 
 
 def named_questions(questions: list[dict], names: dict[int, dict]) -> list[dict]:
@@ -102,9 +111,10 @@ def score_questions(expected: list[dict], asked: list[dict]) -> list[dict]:
 
 class PreparedRows:
     """Replaces the vision model: ledgersync.pipeline.analyze finds which file it was given and returns nothing, and
-    adapter.to_transactions then returns that file's rows from its .rows.json. Files are known by their bytes
-    (pdf, image) or their text (text, table); `use` says which case's files are in play, since two cases may hold a
-    file of the same name with different rows."""
+    adapter.to_transactions then returns that file's rows from its .rows.json. Files are known as the server's
+    intake.load_upload reads them: by their bytes (pdf, image) or their text (text, table, a spreadsheet's cells
+    comma-separated). `use` says which case's files are in play, since two cases may hold a file of the same name
+    with different rows."""
 
     def __init__(self):
         self.by_bytes: dict[bytes, Path] = {}
@@ -116,12 +126,11 @@ class PreparedRows:
         from ledgersync import intake
         self.by_bytes, self.by_text = {}, {}
         for path in files:
-            data = path.read_bytes()
-            text = intake.text_of_bytes(path.name, data)
-            if text is None:
-                self.by_bytes[data] = path
-            else:
-                self.by_text[text.strip()] = path
+            item = intake.load_upload(path.name, path.read_bytes(), 1000)
+            known, key = (self.by_bytes, item.data) if item.data is not None else (self.by_text, item.text.strip())
+            if known.get(key, path) != path:
+                raise ValueError(f"{path.name} and {known[key].name} read the same, so their rows can't be told apart.")
+            known[key] = path
 
     def _find(self, item) -> Path:
         path = None
@@ -198,8 +207,9 @@ def _add_client(api, store, records, case_dir: Path) -> int:
     return client_id
 
 
-def _posted(api, client_id: int, year_start: dt.date) -> dict[str, Decimal]:
-    return net_by_account(_check(api.get(f"/api/clients/{client_id}/years/{year_start}/posted-trial-balance")))
+def _posted(api, client_id: int, year_start: dt.date) -> dict:
+    """The year's posted trial balance as the route gives it."""
+    return _check(api.get(f"/api/clients/{client_id}/years/{year_start}/posted-trial-balance"))
 
 
 def _apply_answer(api, store, client_id: int, thread_id: str, case_dir: Path, item: dict) -> Optional[str]:
@@ -246,41 +256,60 @@ def run_case(api, store, records, case_dir: Path, rows: Optional[PreparedRows], 
             steps[data["id"]] = data
     names = scripted._names(store, client_id)
     asked = named_questions(_check(api.get(f"/api/clients/{client_id}/questions")), names)
-    review_tb = _posted(api, client_id, year_start)
+    review_posted = _posted(api, client_id, year_start)
+    review_tb = net_by_account(review_posted)
 
     unapplied = [problem for item in scripted.answers(case_dir)
                  if (problem := _apply_answer(api, store, client_id, thread["id"], case_dir, item))]
     seconds = round(time.monotonic() - started, 1)
     names = scripted._names(store, client_id)   # an answer's document adds rows
-    final_tb = _posted(api, client_id, year_start)
+    asked_after = named_questions(_check(api.get(f"/api/clients/{client_id}/questions")), names)
+    final_posted = _posted(api, client_id, year_start)
+    final_tb = net_by_account(final_posted)
     decisions = _check(api.get(f"/api/clients/{client_id}/decisions?year_start={year_start}"))
 
     tb_diff = score_trial_balance(after_tb, final_tb)
     if before_tb is not None:
         tb_diff = [{"stage": "after answers", **d} for d in tb_diff] + \
                   [{"stage": "before answers", **d} for d in score_trial_balance(before_tb, review_tb)]
+    q_diff = [{"stage": "before answers", **d}
+              for d in score_questions(expected_questions["before_answers"], asked)]
+    if "after_answers" in expected_questions:
+        q_diff += [{"stage": "after answers", **d}
+                   for d in score_questions(expected_questions["after_answers"], asked_after)]
+    d_diff = score_decisions(expected_decisions, decisions, names)
+    failed = [s["text"] for s in steps.values() if s["state"] == "failed"]
+    errors = [data for kind, data in events if kind == "error"]
+    problems = ([f"error event: {e.get('code')}: {e.get('message')}" for e in errors]
+                + [f"failed step: {t}" for t in failed] + [f"answer not applied: {u}" for u in unapplied]
+                + ([f"{final_posted['unposted_changes']} changes are not posted"]
+                   if final_posted["unposted_changes"] else []))
     return {
-        "case": case_dir.name, "model": model, "seconds": seconds,
+        "case": case_dir.name, "model": model, "seconds": seconds,   # the review turn and the answers
         "trial_balance": {"passed": not tb_diff, "differences": tb_diff},
-        "decisions": {"passed": not (d := score_decisions(expected_decisions, decisions, names)), "differences": d},
-        "questions": {"passed": not (q := score_questions(expected_questions["before_answers"], asked)),
-                      "differences": q},
-        "steps": len(steps),
-        "failed_steps": [s["text"] for s in steps.values() if s["state"] == "failed"],
-        "error_events": [data for kind, data in events if kind == "error"],
+        "decisions": {"passed": not d_diff, "differences": d_diff},
+        "questions": {"passed": not q_diff, "differences": q_diff},
+        "problems": problems,   # a run with any of these fails, however its scores come out
+        "posted_problems": final_posted["problems"],   # why the books couldn't be fully worked out; not gating
+        "steps": len(steps), "failed_steps": failed, "error_events": errors,
         "refused_decisions": [{"rule": d["rule"], "reason": d["reason"]} for d in decisions
                               if d["status"] == "refused"],
         "answers_not_applied": unapplied,
     }
 
 
+def passed(result: dict) -> bool:
+    """Whether a run passed all three scores and had no problems."""
+    return all(result[s]["passed"] for s in ("trial_balance", "decisions", "questions")) and not result["problems"]
+
+
 def _table(runs: list[dict]) -> str:
-    rows = [("case", "run", "TB", "decisions", "questions", "seconds")]
+    rows = [("case", "run", "TB", "decisions", "questions", "clean", "seconds")]
     for r in runs:
         mark = lambda score: "pass" if r[score]["passed"] else "FAIL"
         rows.append((r["case"], str(r["run"]), mark("trial_balance"), mark("decisions"), mark("questions"),
-                     str(r["seconds"])))
-    widths = [max(len(row[i]) for row in rows) for i in range(6)]
+                     "yes" if not r["problems"] else "NO", str(r["seconds"])))
+    widths = [max(len(row[i]) for row in rows) for i in range(7)]
     return "\n".join("  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)) for row in rows)
 
 
@@ -308,11 +337,11 @@ def main(argv=None) -> int:
 
     settings = dataclasses.replace(Settings.from_env(), warmup=False, mongodb_db_name=args.db)
     rows = PreparedRows() if args.read == "rows" else None
-    if rows:
-        rows.install()
     store = MongoStore(settings.mongodb_uri, args.db, max_pool=settings.mongodb_max_pool)
     runs = []
     try:
+        if rows:
+            rows.install()
         with TestClient(create_app(settings, store=store), headers={"X-LedgerSync": "1"}) as api:
             records = AgentRecords(store.db)
             for name in chosen:
@@ -323,13 +352,14 @@ def main(argv=None) -> int:
                         result = {"case": name, "model": settings.agent_model, "seconds": 0,
                                   **{s: {"passed": False, "differences": []} for s in
                                      ("trial_balance", "decisions", "questions")},
-                                  "error": f"{type(exc).__name__}: {exc}"}
+                                  "problems": [f"the run failed: {type(exc).__name__}: {exc}"], "posted_problems": [],
+                                  "steps": 0, "failed_steps": [], "error_events": [], "refused_decisions": [],
+                                  "answers_not_applied": []}
                     result["run"] = n
                     runs.append(result)
-                    print(f"{name} run {n}: " + ("passed" if all(result[s]["passed"] for s in (
-                        "trial_balance", "decisions", "questions")) else "FAILED"), flush=True)
+                    print(f"{name} run {n}: " + ("passed" if passed(result) else "FAILED"), flush=True)
     finally:
-        if rows:
+        if rows and rows._analyze:
             rows.uninstall()
         store.close()
 
@@ -338,7 +368,7 @@ def main(argv=None) -> int:
     out.write_text(json.dumps({"date": dt.date.today().isoformat(), "read": args.read, "model": settings.agent_model,
                                "runs": runs}, indent=2, ensure_ascii=False) + "\n")
     print("\n" + _table(runs) + f"\n\nWrote {out.relative_to(ROOT)}")
-    return 0 if all(r[s]["passed"] for r in runs for s in ("trial_balance", "decisions", "questions")) else 1
+    return 0 if all(passed(r) for r in runs) else 1
 
 
 if __name__ == "__main__":

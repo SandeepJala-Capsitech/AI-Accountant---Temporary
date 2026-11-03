@@ -35,6 +35,7 @@ def test_scripted_case_passes_every_score(case, mongo_store, records):
         assert agent_eval.score_trial_balance(before, result.review.trial_balance) == []
     assert agent_eval.score_decisions(expected_decisions, decisions, scripted._names(mongo_store, result.client_id)) == []
     assert agent_eval.score_questions(expected_questions["before_answers"], result.review.questions) == []
+    assert agent_eval.score_questions(expected_questions["after_answers"], result.answered.questions) == []
 
 
 def test_a_wrong_posted_figure_fails_the_trial_balance(mongo_store, records):
@@ -56,3 +57,51 @@ def test_missing_and_unexpected_questions_and_decisions_fail():
         {"unexpected": ("date", "a.csv", "X")}]
     expected = {"resolutions": [], "automatic": [{"rule": "R1", "row": row}], "from_answers": []}
     assert agent_eval.score_decisions(expected, [], {}) == [{"missing": ("a.csv", "X", "R1")}]
+
+
+def _every_file():
+    cases = [p for p in sorted((ROOT / "eval" / "agent_cases").iterdir()) if (p / "client.json").exists()]
+    return [(case, f) for case in [*cases, ROOT / "demo" / "northbridge"] for f in agent_eval.case_files(case)]
+
+
+@pytest.mark.parametrize("case, path", _every_file(), ids=lambda v: v.name)
+def test_prepared_rows_finds_every_file_as_the_server_reads_it(case, path):
+    """The file as intake.load_upload gives it to pipeline.analyze maps back to its own .rows.json."""
+    from ledgersync import intake
+    rows = agent_eval.PreparedRows()
+    rows.use(agent_eval.case_files(case))
+    assert rows._find(intake.load_upload(path.name, path.read_bytes(), 1000)) == path
+    assert path.with_name(f"{path.name}.rows.json").exists()
+
+
+def test_run_case_goes_through_the_routes_with_prepared_rows(mongo_store, records):
+    """The demo, on a chat model that decides nothing: the run completes, the rules' questions are answered through
+    the answer and document routes, and the scores and problems are recorded (the scores fail: no decisions)."""
+    from agent_fakes import ScriptedChatModel, say
+    from fakes import FakeModel
+    from fastapi.testclient import TestClient
+
+    from ledgersync.config import Settings
+    from server import create_app
+
+    rows = agent_eval.PreparedRows()
+    rows.install()
+    try:
+        app = create_app(Settings(warmup=False), model_client=FakeModel([]), store=mongo_store,
+                         chat_model=ScriptedChatModel(then=say("Done.")))
+        with TestClient(app, headers={"X-LedgerSync": "1"}) as api:
+            result = agent_eval.run_case(api, mongo_store, records, ROOT / "demo" / "northbridge", rows, "scripted")
+    finally:
+        rows.uninstall()
+
+    assert result["error_events"] == [] and result["failed_steps"] == []
+    assert result["answers_not_applied"] == [] and result["steps"] >= 3
+    assert result["trial_balance"]["passed"] is False or result["decisions"]["passed"] is False
+    assert {"trial_balance", "decisions", "questions", "problems", "seconds", "refused_decisions"} <= set(result)
+    assert agent_eval.passed(result) is False
+
+
+def test_an_applied_decision_on_an_unknown_row_is_unexpected():
+    odd = {"status": "applied", "row_ids": [99], "rule": "R9"}
+    assert agent_eval.score_decisions({"resolutions": [], "automatic": [], "from_answers": []}, [odd], {}) == [
+        {"unexpected": {"row_ids": [99], "rule": "R9"}}]
