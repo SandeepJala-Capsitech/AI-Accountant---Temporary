@@ -113,7 +113,7 @@ def test_a_duplicate_resolution_matches_whatever_order_its_rows_come_in():
     expected = {"resolutions": [{"rule": "R2", "row": keep, "arguments": {"keep": keep, "drop": [drop]}}],
                 "automatic": [], "from_answers": []}
     ids = agent_eval.exact_ids({1: keep, 2: drop})
-    for row_ids in ([1, 2], [2, 1], [2]):
+    for row_ids in ([1, 2], [2, 1]):
         assert agent_eval.score_decisions(expected, [{"status": "applied", "rule": "R2", "row_ids": row_ids}],
                                           ids) == []
     assert agent_eval.score_decisions(expected, [{"status": "applied", "rule": "R3", "row_ids": [1]}], ids) == [
@@ -123,10 +123,10 @@ def test_a_duplicate_resolution_matches_whatever_order_its_rows_come_in():
 def test_a_run_with_a_failed_step_but_right_scores_passes_and_is_not_clean():
     ok = {"passed": True, "differences": []}
     run = {"case": "c", "run": 1, "seconds": 1, "trial_balance": ok, "decisions": ok, "questions": ok,
-           "problems": [], "failed_steps": ["Reading x.png failed"], "refused_decisions": []}
+           "problems": [], "failed_steps": ["Reading x.png failed"], "refused_decisions": [], "row_fallbacks": []}
     assert agent_eval.passed(run) and not agent_eval.clean(run)
     assert agent_eval.passed({**run, "problems": ["answer not applied: x"]}) is False
-    assert agent_eval.table([run]).splitlines()[1].split()[-2] == "NO"
+    assert agent_eval.table([run]).splitlines()[1].split()[-3] == "NO"
 
 
 def test_a_renamed_row_is_found_by_file_and_amount_for_answers_and_questions(mongo_store, records):
@@ -151,7 +151,8 @@ def test_a_renamed_row_is_found_by_file_and_amount_for_answers_and_questions(mon
         app = create_app(Settings(warmup=False), model_client=FakeModel([]), store=mongo_store,
                          chat_model=ScriptedChatModel(then=say("Done.")))
         with TestClient(app, headers={"X-LedgerSync": "1"}) as api:
-            result = agent_eval.run_case(api, mongo_store, records, case, rows, "scripted")
+            rows.use(agent_eval.case_files(case))   # read as --read model would: rows from the files, names by amount
+            result = agent_eval.run_case(api, mongo_store, records, case, None, "scripted")
     finally:
         rows.uninstall()
 
@@ -160,3 +161,77 @@ def test_a_renamed_row_is_found_by_file_and_amount_for_answers_and_questions(mon
     assert result["row_fallbacks"] == [{"expected": {"file": "IMG_20261009_081502.png",
                                                      "description": "Leeds City Cabs taxi, Leeds Station to Kirkstall"},
                                         "found": {"file": "IMG_20261009_081502.png", "description": "Taxi fare"}}]
+
+
+def test_a_decision_must_cover_exactly_the_expected_rows():
+    keep, drop = {"file": "a.txt", "description": "K"}, {"file": "b.csv", "description": "D"}
+    expected = {"resolutions": [{"rule": "R2", "row": keep, "arguments": {"keep": keep, "drop": [drop]}}],
+                "automatic": [], "from_answers": []}
+    ids = agent_eval.exact_ids({1: keep, 2: drop, 7: {"file": "c", "description": "X"}})
+    for row_ids in ([1, 2, 7], [2], [1]):   # an extra wrong row; only the secondary row; only the main row
+        diff = agent_eval.score_decisions(expected, [{"status": "applied", "rule": "R2", "row_ids": row_ids}], ids)
+        assert diff == [{"missing": {"rule": "R2", "row": keep}},
+                        {"unexpected": {"row_ids": row_ids, "rule": "R2"}}]
+
+
+def _names_case(folder, rows):
+    """A case folder with one file, x.csv, whose prepared rows are `rows`, and no answers."""
+    (folder / "documents").mkdir(parents=True)
+    (folder / "documents" / "x.csv").write_text("x")
+    (folder / "documents" / "x.csv.rows.json").write_text(json.dumps({"file": "x.csv", "kind": "table",
+                                                                       "bank_account": None, "transactions": rows}))
+    (folder / "notes.md").write_text("## Answers\n\n```json\n[]\n```\n")
+    return folder
+
+
+def _row(description, gross="10.00", direction="out", date="2026-10-01"):
+    return {"description": description, "gross": gross, "direction": direction, "date": date,
+            "account_code": "7500", "source": "table", "method": "llm", "document_type": "statement"}
+
+
+def _store_rows(mongo_store, *rows):
+    """The year holds x.csv with these rows, as the model read them."""
+    import datetime as dt
+    from ledgersync import ledger
+    from ledgersync.models import ClientFields, Transaction
+    client = ledger.add_client(mongo_store, ClientFields.model_validate(json.loads(
+        (ROOT / "eval" / "agent_cases" / "clean-month" / "client.json").read_text())))
+    mongo_store.add_upload(client.id, "x.csv", "table", [Transaction.model_validate(r) for r in rows],
+                           year_start=dt.date(2026, 4, 1))
+    return client.id
+
+
+def name(description):
+    return {"file": "x.csv", "description": description}
+
+
+def test_the_amount_fallback_checks_direction_and_date_and_flags_what_it_used(mongo_store, tmp_path):
+    case = _names_case(tmp_path / "one", [_row("Payment")])
+    client_id = _store_rows(mongo_store, _row("Credit", direction="in"), _row("Pay"), _row("Late", date="2026-10-09"))
+    names = agent_eval.RowNames(mongo_store, client_id, case, fallback=True)
+    assert names.id(name("Payment")) is not None and names.id(name("Payment")) == names.id(name("Payment"))
+    assert [f["expected"]["description"] for f in names.fallbacks] == ["Payment"]
+    assert names.fallbacks[0]["found"]["description"] == "Pay"   # not the refund, nor the other date
+
+    refund = _names_case(tmp_path / "two", [_row("Refund")])
+    client_id = _store_rows(mongo_store, _row("Credit", direction="in"))
+    assert agent_eval.RowNames(mongo_store, client_id, refund, fallback=True).id(name("Refund")) is None
+
+
+def test_two_names_cannot_map_to_one_row_and_a_tie_is_not_guessed(mongo_store, tmp_path):
+    case = _names_case(tmp_path / "one", [_row("A"), _row("B")])
+    client_id = _store_rows(mongo_store, _row("Only one"))
+    names = agent_eval.RowNames(mongo_store, client_id, case, fallback=True)
+    assert [names.id(name("A")), names.id(name("B"))].count(None) == 1
+
+    tied = _names_case(tmp_path / "tied", [_row("A")])
+    client_id = _store_rows(mongo_store, _row("P"), _row("Q"))
+    names = agent_eval.RowNames(mongo_store, client_id, tied, fallback=True)
+    assert names.id(name("A")) is None and "2 rows" in names.unmatched[0]["why"]
+
+
+def test_without_the_fallback_an_unmatched_name_stays_unmatched(mongo_store, tmp_path):
+    case = _names_case(tmp_path, [_row("A")])
+    client_id = _store_rows(mongo_store, _row("Renamed"))
+    names = agent_eval.RowNames(mongo_store, client_id, case)
+    assert names.id(name("A")) is None and names.fallbacks == []
