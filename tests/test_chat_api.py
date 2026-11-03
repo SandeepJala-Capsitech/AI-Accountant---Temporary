@@ -4,6 +4,7 @@ reply and the summary, answers to questions, and one run at a time on each threa
 import datetime as dt
 import json
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from langgraph.checkpoint.mongodb import MongoDBSaver
 
 from ledgersync import ledger
 from ledgersync.agent import AgentDeps, build_agent
+from ledgersync.agent import chat as chat_module
 from ledgersync.blobs import MemoryBlobStore
 from ledgersync.config import Settings
 from ledgersync.models import ClientFields
@@ -41,11 +43,12 @@ INVOICE = {"description": "Brightline: business cards and A5 brochures", "date":
            "document_type": "invoice", "counterparty": "Brightline Print Ltd", "document_number": "BP-2210",
            "document_total": 240.0, "document_net": 200.0, "document_vat": 40.0,
            "supplier_vat_number": "GB999225861"}
-# Another supplier's invoice for the same amount, which isn't for this payment.
-OTHER_INVOICE_FILE = ("harbour-signs-invoice-HS-17.txt", "Harbour Signs Ltd. Invoice HS-17. £240.00")
-OTHER_INVOICE = {**INVOICE, "description": "Harbour Signs: shop sign", "vat": None,
-                 "counterparty": "Harbour Signs Ltd", "document_number": "HS-17", "document_net": None,
-                 "document_vat": None, "supplier_vat_number": None}
+
+def other_invoice(who: str, total: float, number: str) -> dict:
+    """An invoice that isn't the £240.00 Brightline payment's: another payee, or another total."""
+    return {**INVOICE, "description": f"{who}: leaflets", "amount": total, "vat": None, "counterparty": who,
+            "document_number": number, "document_total": total, "document_net": None, "document_vat": None,
+            "supplier_vat_number": None}
 
 
 @pytest.fixture
@@ -200,10 +203,13 @@ def test_without_the_openrouter_key_a_turn_says_the_model_is_unavailable(mongo_s
         thread = new_thread(api, client_id)
         events = send(api, thread["id"], "Review October.", STATEMENT)
 
+        detail = api.get(f"/api/chat/threads/{thread['id']}").json()
+
     [error] = [data for kind, data in events if kind == "error"]
     assert error["code"] == "model_unavailable" and "OPENROUTER_API_KEY" in error["message"]
     assert [kind for kind, _ in events][-2:] == ["summary", "done"]   # the file was read, and the year posted
     assert summary_of(events)["trial_balance"]["suspense"][0]["gross"] == "240.00"
+    assert detail["messages"] == [{"role": "user", "text": "Review October."}]   # kept, for when the model is back
 
 
 # ─── Answers ───────────────────────────────────────────────────────────────────
@@ -229,6 +235,22 @@ def test_answer_date_returns_updated_summary(make, client_id):
     assert detail["summary"]["sorted"] == summary["sorted"]
 
 
+def test_the_next_turn_sees_the_answer(make, client_id):
+    api = make(say("The taxi has no date."), say("Noted."), reads=[transactions_json(TAXI)])
+    thread = new_thread(api, client_id)
+    [question] = summary_of(send(api, thread["id"], "Review October.", TAXI_RECEIPT))["questions"]
+    api.post(f"/api/chat/threads/{thread['id']}/questions/{question['id']}/answer",
+             json={"kind": "date", "date": "2026-10-09"})
+
+    events = send(api, thread["id"], "Thanks.")
+
+    assert len(api.model.seen) == 2   # one model call each turn
+    assert [(m.type, m.text) for m in api.model.seen[1][-3:]] == [
+        ("ai", "The taxi has no date."), ("human", "Answered: When was this Leeds City Cabs taxi? → 9 Oct 2026"),
+        ("human", "Thanks.")]
+    assert [data["text"] for kind, data in events if kind == "token"] == ["Noted."]
+
+
 def test_upload_answer_moves_out_of_suspense(make, client_id):
     api, thread, question = held_payment(make, client_id, transactions_json(INVOICE))
 
@@ -242,32 +264,47 @@ def test_upload_answer_moves_out_of_suspense(make, client_id):
     assert (net(summary, "7500"), net(summary, "2201"), net(summary, "1200")) == ("200.00", "40.00", "-240.00")
 
 
-def test_upload_that_does_not_fit_says_why(make, client_id):
-    api, thread, question = held_payment(make, client_id, transactions_json(OTHER_INVOICE))
+@pytest.mark.parametrize("who, total, file", [
+    ("Acme Print Ltd", 240.0, "acme-invoice-A-17.txt"),           # another payee sharing a trade word
+    ("Acme Print Ltd", 200.0, "acme-invoice-A-17.txt"),           # and another total
+    ("Brightline Print Ltd", 200.0, "brightline-invoice-BP-2199.txt"),   # the payee, but another total
+])
+def test_upload_that_does_not_fit_says_why(make, client_id, who, total, file):
+    api, thread, question = held_payment(make, client_id, transactions_json(other_invoice(who, total, "A-17")))
 
     uploaded = api.post(f"/api/chat/threads/{thread['id']}/questions/{question['id']}/document",
-                        files={"file": (OTHER_INVOICE_FILE[0], OTHER_INVOICE_FILE[1].encode(), "text/plain")})
+                        files={"file": (file, b"An invoice.", "text/plain")})
 
     assert uploaded.status_code == 200, uploaded.text
     [still] = uploaded.json()["questions"]
     assert (still["id"], still["status"]) == (question["id"], "open")
-    assert still["why"] == ("Read harbour-signs-invoice-HS-17.txt, but it doesn't match: Harbour Signs Ltd, £240.00 "
-                            "against Brightline Print, £240.00.")
+    assert still["why"] == f"Read {file}, but it doesn't match: {who}, £{total:.2f} against Brightline Print, £240.00."
     assert uploaded.json()["trial_balance"]["suspense"][0]["gross"] == "240.00"
+    assert net(uploaded.json(), "9998") == "240.00"
 
 
 def test_questions_survive_restart(make, client_id):
-    _, thread, question = held_payment(make, client_id)
+    # The Brightline invoice has no date, so it can't be the payment's yet: the £240.00 is held, and both ask.
+    api = make(say("Two things need you."),
+               reads=[transactions_json(PAYMENT), transactions_json({**INVOICE, "date": None})],
+               max_parallel_jobs=1)   # the files are read in turn, so each gets its own reading
+    thread = new_thread(api, client_id)
+    asked = summary_of(send(api, thread["id"], "Review October.", STATEMENT, INVOICE_FILE))
+    assert sorted(q["kind"] for q in asked["questions"]) == ["date", "receipt_or_invoice"]
+    assert net(asked, "9998") == "240.00"
+    [dating] = [q for q in asked["questions"] if q["kind"] == "date"]
 
     restarted = make()   # a new app on the same database
-    assert [q["id"] for q in restarted.get(f"/api/clients/{client_id}/questions").json()] == [question["id"]]
-    answered = restarted.post(f"/api/chat/threads/{thread['id']}/questions/{question['id']}/answer",
-                              json={"kind": "no_document"})
+    listed = restarted.get(f"/api/clients/{client_id}/questions").json()
+    assert sorted(q["id"] for q in listed) == sorted(q["id"] for q in asked["questions"])
+    answered = restarted.post(f"/api/chat/threads/{thread['id']}/questions/{dating['id']}/answer",
+                              json={"kind": "date", "date": "2026-10-19"})
 
     assert answered.status_code == 200, answered.text
-    [waiting] = answered.json()["questions"]
-    assert (waiting["id"], waiting["status"], waiting["answer"]) == (question["id"], "waiting", "I don't have it")
-    assert answered.json()["trial_balance"]["suspense"][0]["needs"] == "receipt_or_invoice"   # still held
+    summary = answered.json()   # dated, the invoice is the payment's: both questions go, and so does the Suspense
+    assert summary["questions"] == [] and summary["trial_balance"]["suspense"] == []
+    assert (net(summary, "9998"), net(summary, "7500"), net(summary, "2201")) == ("0.00", "200.00", "40.00")
+    assert summary["post"]["batch_id"] and summary["post"]["reversals_added"] > 0
 
 
 def test_thread_history_survives_restart(make, client_id):
@@ -308,6 +345,76 @@ def test_second_message_while_running_409(make, client_id):
     assert second.json()["detail"]["message"] == "Still working on the last message."
     assert stopped.status_code == 200 and stopped.json() == {"stopping": True}
     assert [kind for kind, _ in send(api, thread["id"], "And again?")][-1] == "done"   # the run was let go
+
+
+def test_an_answer_waits_for_the_message_running_on_its_chat(make, client_id):
+    started, release = threading.Event(), threading.Event()
+
+    def slow(messages):
+        started.set()
+        release.wait(30)
+        return say("Done.")
+
+    api = make(say("One payment needs its invoice."), slow, reads=[transactions_json(PAYMENT)])
+    thread = new_thread(api, client_id)
+    [question] = summary_of(send(api, thread["id"], "Review October.", STATEMENT))["questions"]
+    running = threading.Thread(target=send, args=(api, thread["id"], "Anything else?"))
+    answered = []
+    answering = threading.Thread(target=lambda: answered.append(api.post(
+        f"/api/chat/threads/{thread['id']}/questions/{question['id']}/answer", json={"kind": "no_document"})))
+    running.start()
+    try:
+        assert started.wait(30)
+        answering.start()
+        answering.join(1)
+        assert answering.is_alive()   # waiting for the run, not refused
+    finally:
+        release.set()
+        running.join(30)
+        answering.join(60)
+
+    assert answered[0].status_code == 200, answered[0].text
+    assert answered[0].json()["questions"][0]["status"] == "waiting"
+
+
+def test_two_chats_on_one_client_run_together_and_post_in_turn(make, client_id, monkeypatch):
+    started, release = threading.Event(), threading.Event()
+
+    def slow(messages):
+        started.set()
+        release.wait(30)
+        return say("Done.")
+
+    writes, lock = [], threading.Lock()
+    write = chat_module.Chat._write
+
+    def timed(self, thread, since):   # the write steps, timed
+        begun = time.monotonic()
+        time.sleep(0.3)
+        done = write(self, thread, since)
+        with lock:
+            writes.append((begun, time.monotonic()))
+        return done
+
+    monkeypatch.setattr(chat_module.Chat, "_write", timed)
+    api = make(slow, say("Done too."))
+    first, second = new_thread(api, client_id), new_thread(api, client_id)
+    events = {}
+    running = threading.Thread(target=lambda: events.update(first=send(api, first["id"], "Review October.")))
+    running.start()
+    try:
+        assert started.wait(30)
+        other = threading.Thread(target=lambda: events.update(second=send(api, second["id"], "Anything else?")))
+        other.start()   # the second chat isn't refused while the first runs
+        time.sleep(0.1)
+    finally:
+        release.set()
+        running.join(30)
+        other.join(30)
+
+    assert [kind for kind, _ in events["first"]][-1] == [kind for kind, _ in events["second"]][-1] == "done"
+    (a_start, a_end), (b_start, b_end) = sorted(writes)
+    assert a_end <= b_start   # one chat's write steps after the other's, never at once
 
 
 def test_stop_ends_the_run_before_its_next_model_call(make, client_id):

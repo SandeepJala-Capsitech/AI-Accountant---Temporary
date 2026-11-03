@@ -83,6 +83,54 @@ def names_match(a: Optional[str], b: Optional[str]) -> bool:
             or any(_abbreviates(x, y) or _abbreviates(y, x) for x in wa for y in wb))
 
 
+# What a bank line's reference can add to a payee's name about why it was paid: never part of who was paid.
+_REFERENCE = {"expenses", "expense", "claim", "claims", "reimbursement", "refund"}
+# Trade words many businesses share: part of a name, but two names sharing only these may be anyone.
+_GENERIC = {"print", "printing", "printers", "consulting", "consultancy", "consultants", "design", "designs",
+            "media", "marketing", "management", "associates", "partners", "enterprises", "systems", "supplies",
+            "office", "studio", "digital", "technology", "technologies", "cabs", "taxis", "cars", "hotel", "hotels",
+            "cafe", "restaurant", "shop", "store", "stores", "city", "solicitors", "accountants", "builders"}
+
+
+def _same_word(x: str, y: str) -> bool:
+    """One word, as two names write it: the same, or one abbreviates the other ('mgmt', 'management')."""
+    return x == y or _abbreviates(x, y) or _abbreviates(y, x)
+
+
+def _inside(short: list[str], long: list[str]) -> bool:
+    """Every word of the shorter name is a word of the longer, or abbreviates one, or is the initial of one ('M' of
+    'Matt'), and at least one word that isn't a trade word many share is found whole or abbreviated."""
+    distinctive = False
+    for word in short:
+        found = [w for w in long if _same_word(word, w)]
+        if found:
+            distinctive = distinctive or word not in _GENERIC
+        elif not (len(word) == 1 and any(w[0] == word for w in long)):
+            return False
+    return distinctive
+
+
+def same_payee(a: Optional[str], b: Optional[str]) -> bool:
+    """Whether two names are surely the same payee, strictly enough to pay a document automatically. After legal
+    forms, bank words, place and national words and the payment's reference are set aside: the names are the
+    same ("HML PM Ltd"); or every word of the shorter is in the longer, whole, abbreviated or as an initial, with at
+    least one that isn't a trade word many businesses share ("BRIGHTLINE PRI" and "Brightline Print Ltd", "M
+    BARNES" and "Matt Barnes", but not "Brightline Print" and "Acme Print Ltd", nor "Leeds Print" and "Leeds City
+    Cabs"); or one name is the other's initials (NCP, National Car Parks). names_match, which one shared word
+    satisfies, only suggests a document for a person to Link."""
+    wa, wb = ([w for w in _words(name) if w not in _REFERENCE] for name in (a, b))
+    if not wa or not wb:
+        return False
+    if wa == wb:
+        return True
+    if any(len(i) >= 3 and words == [i] for words, i in ((wa, _initials(b)), (wb, _initials(a)))):
+        return True
+    short, long = sorted((wa, wb), key=len)
+    if sum(map(len, short)) < 3:   # "BT" in "BT Sport": too short to tell
+        return False
+    return _inside(short, long) or (len(short) == len(long) and _inside(long, short))
+
+
 @dataclass
 class _Document:
     """An open invoice, claim or included document: the rows that share its document_ref."""
@@ -334,7 +382,7 @@ def _pair_receipts(rows: list[Transaction], changes: list[dict], lines: list[int
     def agrees(receipt: _Document, n: int) -> bool:
         line = rows[n]
         return (receipt.total == line.gross and receipt.direction == line.direction.value
-                and names_match(line.counterparty, receipt.counterparty) and not kept_apart(n, receipt)
+                and same_payee(line.counterparty, receipt.counterparty) and not kept_apart(n, receipt)
                 and (receipt.date is None or abs(line.date - receipt.date) <= YEAR))
 
     settled = _only_each_other(receipts, open_lines, agrees)
@@ -752,8 +800,8 @@ def _apply_link(n: int, line: Transaction, documents: dict[str, _Document], chan
 
 
 def _exact(line: Transaction, docs: list[_Document]) -> list[_Document]:
-    """The documents from the line's counterparty with exactly the line's amount open on them."""
-    return [d for d in docs if line.counterparty and names_match(line.counterparty, d.counterparty)
+    """The documents surely from the line's counterparty (same_payee) with exactly the line's amount open on them."""
+    return [d for d in docs if line.counterparty and same_payee(line.counterparty, d.counterparty)
             and d.open == line.gross]
 
 
@@ -804,9 +852,10 @@ def _why_not_matched(line: Transaction, docs: list[_Document]) -> str:
 
 def _decide(line: Transaction, docs: list[_Document]) -> tuple[str, list[list[_Document]]]:
     """What to do with a bank line, given the open documents it could pay (same direction, dated on or before it):
-    pay them, ask a person to choose, suggest them, or nothing. Only documents from the same counterparty
-    are ever paid automatically, and only those within 120 days unless they owe exactly what the line pays."""
-    named = [d for d in docs if line.counterparty and names_match(line.counterparty, d.counterparty)]
+    pay them, ask a person to choose, suggest them, or nothing. Only documents surely from the same counterparty
+    (same_payee) are ever paid automatically, and only those within 120 days unless they owe exactly what the line
+    pays. A document whose name only resembles the line's is suggested (_outcome), for a person to Link."""
+    named = [d for d in docs if line.counterparty and same_payee(line.counterparty, d.counterparty)]
     exact = _exact(line, named)
     if exact:
         return ("pay", [exact]) if len(exact) == 1 else ("choose", [[d] for d in exact])

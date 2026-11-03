@@ -48,8 +48,9 @@ def refresh(store, records, client_id):
 
 
 def answer(store, records, client_id, question, given):
+    """The open and waiting questions the answer leaves."""
     return questions.answer(store, records, client_id=client_id, thread_id="t1", question_id=question.id,
-                            answer=given)
+                            answer=given).questions
 
 
 def row_named(store, client_id, description):

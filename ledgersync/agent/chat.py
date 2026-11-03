@@ -45,6 +45,7 @@ logger = logging.getLogger(__name__)
 NEW_CHAT = "New chat"
 STOPPED_CALL = "Stopped before this finished."
 FAILED = "Something went wrong while I was working, so I stopped. The server log says what."
+ANSWER_WAIT = 120.0   # seconds an answer waits for the message running on its chat, before it is refused
 _DOCUMENT_KINDS = ("receipt_or_invoice", "vat_invoice")
 
 
@@ -180,6 +181,13 @@ def _close_open_calls(agent, thread_id: str) -> None:
         agent.update_state(config, {"messages": [ToolMessage(STOPPED_CALL, tool_call_id=c["id"], name=c["name"],
                                                              status="error") for c in open_calls]},
                            as_node="tools")
+
+
+def _say(agent, thread_id: str, text: str) -> None:
+    """Adds a message from the person to the chat's memory without running the agent (after answering any tool call
+    left open, so it follows a complete exchange)."""
+    _close_open_calls(agent, thread_id)
+    agent.update_state(_config(thread_id), {"messages": [HumanMessage(text)]}, as_node=START)
 
 
 def _outcome(job: Job) -> tuple[list[dict], Optional[dict]]:
@@ -337,7 +345,8 @@ class Chat:
             yield from self._read_all(client, thread.year_start, files)
         yield ChatEvent("status", {"text": "Working on it…"})
         agent = self.agent
-        if self.unavailable:
+        if self.unavailable:   # the message is kept, so the chat shows it
+            _say(agent, thread.id, text)
             yield _error("model_unavailable", self.unavailable)
         else:
             _close_open_calls(agent, thread.id)
@@ -388,25 +397,21 @@ class Chat:
 
     def answer(self, thread: ChatThread, question_id: str, answer: questions.Answer) -> ReviewSummary:
         """Applies the person's answer without the model (questions.answer works the questions out and posts),
-        notes it in the chat's memory as "Answered: <question> → <answer>", and returns the summary. StillWorking
-        while a message runs on the chat; an answer to a question already resolved changes nothing."""
+        notes it in the chat's memory as "Answered: <question> → <answer>", and returns the summary. It waits for a
+        message running on the chat (ANSWER_WAIT, then StillWorking), as the note mustn't race the run; an answer to
+        a question already resolved changes nothing."""
         require_active(self.store.get_client(thread.client_id))
-        with self.runs.running(thread.id):
+        with self.runs.running(thread.id, wait=ANSWER_WAIT):
             asked = self._question(thread, question_id)
             since = since_now(self.records, thread.client_id)
             with self.locks.hold(thread.client_id):
-                questions.answer(self.store, self.records, client_id=thread.client_id, thread_id=thread.id,
-                                 question_id=question_id, answer=answer)
-                post = ledger_book.post(self.store, self.records, thread.client_id, thread.year_start)
+                answered = questions.answer(self.store, self.records, client_id=thread.client_id,
+                                            thread_id=thread.id, question_id=question_id, answer=answer)
             if asked.status != "resolved":
                 said = self.records.question(question_id)
-                agent = self.agent
-                _close_open_calls(agent, thread.id)
-                agent.update_state(_config(thread.id),
-                                   {"messages": [HumanMessage(f"Answered: {said.text} → {said.answer}")]},
-                                   as_node=START)
+                _say(self.agent, thread.id, f"Answered: {said.text} → {said.answer}")
             self.records.touch_thread(thread.id)
-            return self._summarised(thread, since, post)
+            return self._summarised(thread, since, answered.post)
 
     def document(self, thread: ChatThread, question_id: str, file: ChatFile) -> ReviewSummary:
         """Reads the file sent for a question into the client's documents, then records, works the questions out and

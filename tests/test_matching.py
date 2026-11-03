@@ -1,6 +1,6 @@
 import pytest
 
-from ledgersync.matching import names_match
+from ledgersync.matching import names_match, same_payee
 
 
 @pytest.mark.parametrize("a, b", [
@@ -39,6 +39,45 @@ def test_names_that_match(a, b):
 ])
 def test_names_that_do_not_match(a, b):
     assert not names_match(a, b)
+
+
+@pytest.mark.parametrize("a, b", [
+    ("BRIGHTLINE PRINT", "Brightline Print Ltd"),
+    ("BRIGHTLINE PRI", "Brightline Print Ltd"),          # a bank line cut short
+    ("M BARNES EXPENSES", "Matt Barnes"),                # an initial, and the payment's reference
+    ("BUS CUBE MGMT", "Business Cube Management Solutions Limited"),
+    ("FIN: CURRYS ONLINE", "Currys Ltd"),
+    ("HML PM Ltd", "HML PM Ltd"),                        # names_match's own cases
+    ("R+R PR LTD CL AC", "R+R PR Ltd"),
+    ("NCP", "National Car Parks Ltd"),
+    ("TFL", "Transport for London"),
+])
+def test_the_same_payee(a, b):
+    assert same_payee(a, b) and same_payee(b, a) and names_match(a, b)
+
+
+@pytest.mark.parametrize("a, b", [
+    ("Brightline Print", "Acme Print Ltd"),              # one trade word shared, the names themselves differ
+    ("Leeds City Cabs", "Leeds Print"),
+    ("Northern Consulting", "Southern Consulting Ltd"),
+    ("M BARNES", "Barnes Plumbing"),
+    ("Print Ltd", "Brightline Print"),                   # only a trade word
+    ("BT", "BT Sport"),                                  # too short to tell
+    ("", "Brightline Print"),
+    (None, "Brightline Print"),
+])
+def test_names_that_are_not_surely_the_same_payee(a, b):
+    assert not same_payee(a, b) and not same_payee(b, a)
+
+
+@pytest.mark.parametrize("total, asks", [("240.00", "possible_payment"), ("200.00", "open_document")])
+def test_another_payee_sharing_a_trade_word_is_only_suggested(total, asks):
+    # Acme Print Ltd's invoice is not Brightline Print's: the £240 payment is not paid against it, at its own amount
+    # or another, and a person can Link it if it is.
+    acme = bill(total, date="2026-10-19", who="Acme Print Ltd", ref="acme", account="7500")
+    invoice, line = matched(acme, bank("240.00", "2026-10-22", "Brightline Print", account="7500"))
+    assert line.pays == [] and line.paid_against is None and invoice.owed == Decimal(total)
+    assert [code for code, _ in codes(line)] == [asks] and [c[0].ref for c in line.candidates] == ["acme"]
 
 
 import datetime as dt
@@ -326,10 +365,11 @@ def test_a_bank_line_without_a_counterparty_is_only_a_suggestion():
 
 
 def test_one_payment_never_clears_documents_owed_on_different_accounts():
-    # A £300 claim (owed to staff) and a £200 bill (owed to a supplier), both named like "M BARNES", must not be
-    # settled together by one £500 line: the whole £500 would post against just one of the two accounts.
+    # A £300 claim (owed to staff) and a £200 bill (owed to a supplier), both from payees "M BARNES" names, must not
+    # be settled together by one £500 line: the whole £500 would post against just one of the two accounts. (Barnes
+    # Plumbing alone is not surely M Barnes: same_payee.)
     claim = row("expense_claim", "out", "300.00", "2026-10-01", "Matt Barnes", "claim", account="7402")
-    plumber = bill("200.00", date="2026-10-01", ref="plumber", who="Barnes Plumbing", account="7800")
+    plumber = bill("200.00", date="2026-10-01", ref="plumber", who="Matt Barnes Plumbing", account="7800")
     *_, line = matched(claim, plumber, bank("500.00", "2026-10-05", "M BARNES"))
     assert line.pays == [] and codes(line) == [("choose_payment", "error")]
 

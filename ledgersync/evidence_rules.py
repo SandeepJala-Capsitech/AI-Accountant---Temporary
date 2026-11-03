@@ -33,13 +33,24 @@ def _fixed_asset(account: Account) -> bool:
             and account.vat != VatTreatment.OUTSIDE_SCOPE)
 
 
+def _pays_its_document(tx: Transaction) -> bool:
+    """Whether the row pays a document that fits it, which was booked, and checked, with the document: one a person
+    linked, or one matching paid for exactly what the document owed. A payment of £50 or more that matching took as
+    a part payment or an overpayment doesn't: the document's total differs from the payment, so it isn't the
+    payment's document, and the payment waits for its own or for a person's Link."""
+    if tx.paid_against is None:
+        return False
+    return (tx.link is not None or tx.gross < NO_DOCUMENT_LIMIT
+            or not any(i.code in ("part_payment", "overpayment") for i in tx.issues))
+
+
 def _covered(tx: Transaction) -> bool:
     """Whether the rules apply: money out on an expense account or a fixed asset, not one of the client's own
-    bank accounts, and not a payment of a document (that was booked, and checked, with the document)."""
+    bank accounts, and not a payment of its document (_pays_its_document)."""
     account = BY_CODE.get(tx.account_code)
     return (tx.direction == Direction.OUT and account is not None
             and (account.type == AccountType.EXPENSE or _fixed_asset(account))
-            and tx.account_code not in ALL_BANK_CODES and tx.paid_against is None)
+            and tx.account_code not in ALL_BANK_CODES and not _pays_its_document(tx))
 
 
 def _hold(needs: Literal["receipt_or_invoice", "vat_invoice"], reason: str) -> DocumentRule:

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
-from typing import Annotated, Literal, Optional, Union
+from typing import Annotated, Literal, NamedTuple, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -17,7 +17,8 @@ from .checks import booked, long_date
 from .errors import InvalidInput, NotFound
 from .evidence_rules import document_rule
 from .ledger import settings_for
-from .models import Question, QuestionDraft, Transaction
+from .models import PostResult, Question, QuestionDraft, Transaction
+from .money import ZERO
 from .records import AgentRecords
 from .resolutions import set_date
 from .store_mongo import MongoStore
@@ -41,6 +42,16 @@ class NotSureAnswer(BaseModel):
 
 
 Answer = Annotated[Union[DateAnswer, NoDocumentAnswer, NotSureAnswer], Field(discriminator="kind")]
+
+
+class Answered(NamedTuple):
+    """What an answer leaves: the year's open and waiting questions, and the posting of the question's year."""
+    questions: list[Question]
+    post: PostResult
+
+
+def _not_posted() -> PostResult:
+    return PostResult(batch_id=None, entries_added=0, reversals_added=0, total_debits=ZERO, total_credits=ZERO)
 
 
 def _gbp(amount) -> str:
@@ -105,17 +116,18 @@ def ask(records: AgentRecords, *, client_id: int, year_start: dt.date, row_ids: 
 
 
 def answer(store: MongoStore, records: AgentRecords, *, client_id: int, thread_id: Optional[str], question_id: str,
-           answer: Answer) -> list[Question]:
+           answer: Answer) -> Answered:
     """Applies the person's answer, then works the questions out again and posts the year. A date answers a date
     question: the row is dated by resolutions.set_date (a date outside the books is InvalidInput, and the question
     stays open) and the question is resolved. "I don't have it" and "Not sure" leave the question waiting. A
-    question already resolved is left as it is; the same answer twice is one decision. Returns the year's open and
-    waiting questions."""
+    question already resolved is left as it is (and nothing is posted); the same answer twice is one decision.
+    Returns the year's open and waiting questions, and the posting of the question's year (the year a date moved
+    the row to is posted too)."""
     q = records.question(question_id)
     if q is None or q.client_id != client_id:
         raise NotFound("This question was not found.")
     if q.status == "resolved":
-        return records.questions(client_id, q.year_start)
+        return Answered(records.questions(client_id, q.year_start), _not_posted())
     years, decision_ids = [q.year_start], []
     if isinstance(answer, DateAnswer):
         if q.kind != "date" or not q.row_ids:
@@ -134,7 +146,8 @@ def answer(store: MongoStore, records: AgentRecords, *, client_id: int, thread_i
         records.set_question(q.id, "waiting", "I don't have it")
     else:
         records.set_question(q.id, "waiting", "Not sure")
+    posts = []
     for year in years:
         refresh(store, records, client_id, year)
-        ledger_book.post(store, records, client_id, year, decision_ids=decision_ids)
-    return records.questions(client_id, q.year_start)
+        posts.append(ledger_book.post(store, records, client_id, year, decision_ids=decision_ids))
+    return Answered(records.questions(client_id, q.year_start), posts[0])
