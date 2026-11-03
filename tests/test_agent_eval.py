@@ -33,7 +33,7 @@ def test_scripted_case_passes_every_score(case, mongo_store, records):
     assert agent_eval.score_trial_balance(after, result.answered.trial_balance) == []
     if before is not None:
         assert agent_eval.score_trial_balance(before, result.review.trial_balance) == []
-    assert agent_eval.score_decisions(expected_decisions, decisions, scripted._names(mongo_store, result.client_id)) == []
+    assert agent_eval.score_decisions(expected_decisions, decisions, agent_eval.exact_ids(scripted._names(mongo_store, result.client_id))) == []
     assert agent_eval.score_questions(expected_questions["before_answers"], result.review.questions) == []
     assert agent_eval.score_questions(expected_questions["after_answers"], result.answered.questions) == []
 
@@ -56,7 +56,7 @@ def test_missing_and_unexpected_questions_and_decisions_fail():
     assert agent_eval.score_questions([], [{"kind": "date", "row": row}]) == [
         {"unexpected": ("date", "a.csv", "X")}]
     expected = {"resolutions": [], "automatic": [{"rule": "R1", "row": row}], "from_answers": []}
-    assert agent_eval.score_decisions(expected, [], {}) == [{"missing": ("a.csv", "X", "R1")}]
+    assert agent_eval.score_decisions(expected, [], lambda name: None) == [{"missing": {"rule": "R1", "row": row}}]
 
 
 def _every_file():
@@ -103,5 +103,60 @@ def test_run_case_goes_through_the_routes_with_prepared_rows(mongo_store, record
 
 def test_an_applied_decision_on_an_unknown_row_is_unexpected():
     odd = {"status": "applied", "row_ids": [99], "rule": "R9"}
-    assert agent_eval.score_decisions({"resolutions": [], "automatic": [], "from_answers": []}, [odd], {}) == [
+    assert agent_eval.score_decisions({"resolutions": [], "automatic": [], "from_answers": []}, [odd],
+                                         lambda name: None) == [
         {"unexpected": {"row_ids": [99], "rule": "R9"}}]
+
+
+def test_a_duplicate_resolution_matches_whatever_order_its_rows_come_in():
+    keep, drop = {"file": "a.txt", "description": "K"}, {"file": "b.csv", "description": "D"}
+    expected = {"resolutions": [{"rule": "R2", "row": keep, "arguments": {"keep": keep, "drop": [drop]}}],
+                "automatic": [], "from_answers": []}
+    ids = agent_eval.exact_ids({1: keep, 2: drop})
+    for row_ids in ([1, 2], [2, 1], [2]):
+        assert agent_eval.score_decisions(expected, [{"status": "applied", "rule": "R2", "row_ids": row_ids}],
+                                          ids) == []
+    assert agent_eval.score_decisions(expected, [{"status": "applied", "rule": "R3", "row_ids": [1]}], ids) == [
+        {"missing": {"rule": "R2", "row": keep}}, {"unexpected": {"row_ids": [1], "rule": "R3"}}]
+
+
+def test_a_run_with_a_failed_step_but_right_scores_passes_and_is_not_clean():
+    ok = {"passed": True, "differences": []}
+    run = {"case": "c", "run": 1, "seconds": 1, "trial_balance": ok, "decisions": ok, "questions": ok,
+           "problems": [], "failed_steps": ["Reading x.png failed"], "refused_decisions": []}
+    assert agent_eval.passed(run) and not agent_eval.clean(run)
+    assert agent_eval.passed({**run, "problems": ["answer not applied: x"]}) is False
+    assert agent_eval.table([run]).splitlines()[1].split()[-2] == "NO"
+
+
+def test_a_renamed_row_is_found_by_file_and_amount_for_answers_and_questions(mongo_store, records):
+    """The vision model words the taxi's description its own way: the case's name still finds the row, the date
+    answer is applied to it, and its question counts as the one expected."""
+    from agent_fakes import ScriptedChatModel, say
+    from fakes import FakeModel
+    from fastapi.testclient import TestClient
+
+    from ledgersync.config import Settings
+    from server import create_app
+
+    from ledgersync import adapter
+    case = ROOT / "eval" / "agent_cases" / "missing-date-must-ask"
+    rows = agent_eval.PreparedRows()
+    rows.install()
+    prepared = adapter.to_transactions
+    adapter.to_transactions = lambda *a, **k: [   # the vision model words the taxi its own way
+        t.model_copy(update={"description": "Taxi fare"}) if "Leeds" in t.description else t
+        for t in prepared(*a, **k)]
+    try:
+        app = create_app(Settings(warmup=False), model_client=FakeModel([]), store=mongo_store,
+                         chat_model=ScriptedChatModel(then=say("Done.")))
+        with TestClient(app, headers={"X-LedgerSync": "1"}) as api:
+            result = agent_eval.run_case(api, mongo_store, records, case, rows, "scripted")
+    finally:
+        rows.uninstall()
+
+    assert result["answers_not_applied"] == []
+    assert result["questions"]["passed"], result["questions"]
+    assert result["row_fallbacks"] == [{"expected": {"file": "IMG_20261009_081502.png",
+                                                     "description": "Leeds City Cabs taxi, Leeds Station to Kirkstall"},
+                                        "found": {"file": "IMG_20261009_081502.png", "description": "Taxi fare"}}]

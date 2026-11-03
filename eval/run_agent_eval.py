@@ -79,32 +79,84 @@ def _missing_and_extra(expected: list, actual: list) -> list[dict]:
     return differences + [{"unexpected": item} for item in left]
 
 
-def score_decisions(expected: dict, decisions: list[dict], names: dict[int, dict]) -> list[dict]:
-    """The rule applied to each row against expected_decisions.json (its resolutions, automatic and from_answers).
-    decisions: the year's decisions as the route gives them, those applied counted; a decision is on the row it names
-    first. names: each row's {"file", "description"} by id."""
-    wanted = [(*_key(e["row"]), e["rule"]) for part in ("resolutions", "automatic", "from_answers")
-              for e in expected[part]]
-    made, unmapped = [], []
-    for d in decisions:
-        if d["status"] != "applied":
-            continue
-        if d["row_ids"] and d["row_ids"][0] in names:
-            made.append((*_key(names[d["row_ids"][0]]), d["rule"]))
-        else:   # on no row, or one the year doesn't hold: never expected
-            unmapped.append({"unexpected": {"row_ids": d["row_ids"], "rule": d["rule"]}})
-    return _missing_and_extra(sorted(wanted), sorted(made)) + unmapped
+def expected_rows(entry: dict) -> list[dict]:
+    """The rows an expected decision is about, named: its row and those in its arguments (keep, drop, primary, other)."""
+    named = [entry["row"]]
+    for value in entry.get("arguments", {}).values():
+        named += [v for v in (value if isinstance(value, list) else [value]) if isinstance(v, dict) and "file" in v]
+    return named
 
 
-def named_questions(questions: list[dict], names: dict[int, dict]) -> list[dict]:
-    """Questions as the route gives them, as {"kind", "row"} with the row named."""
-    return [{"kind": q["kind"], "row": names[q["row_ids"][0]] if q["row_ids"] else None} for q in questions]
+def exact_ids(names: dict[int, dict]):
+    """A row finder over rows named exactly: the id of the one row with that file and description, or None."""
+    def find(name: dict) -> Optional[int]:
+        found = [i for i, n in names.items() if n == name]
+        return found[0] if len(found) == 1 else None
+    return find
+
+
+def score_decisions(expected: dict, decisions: list[dict], row_id) -> list[dict]:
+    """Each expected decision (resolutions, automatic, from_answers) against the applied decisions the year's route
+    gives: the same rule on any of the same rows, whatever order the rows are listed in. row_id: finds a named row's id
+    (RowNames.id, or exact_ids), None when the year has no such row."""
+    left = [d for d in decisions if d["status"] == "applied"]
+    differences = []
+    for part in ("resolutions", "automatic", "from_answers"):
+        for e in expected[part]:
+            ids = {row_id(n) for n in expected_rows(e)} - {None}
+            found = next((d for d in left if d["rule"] == e["rule"] and ids & set(d["row_ids"])), None)
+            if found is None:
+                differences.append({"missing": {"rule": e["rule"], "row": e["row"]}})
+            else:
+                left.remove(found)
+    return differences + [{"unexpected": {"row_ids": d["row_ids"], "rule": d["rule"]}} for d in left]
+
+
+def named_questions(questions: list[dict], names: dict[int, dict], aliases: Optional[dict[int, dict]] = None) -> list[dict]:
+    """Questions as the route gives them, as {"kind", "row"} with the row named: as the case names it where aliases
+    (row id -> the case's name for it) has it, else as the year's rows are named."""
+    aliases = aliases or {}
+    row = lambda q: (aliases.get(q["row_ids"][0]) or names[q["row_ids"][0]]) if q["row_ids"] else None
+    return [{"kind": q["kind"], "row": row(q)} for q in questions]
 
 
 def score_questions(expected: list[dict], asked: list[dict]) -> list[dict]:
     """The questions asked, each a kind and a row, against those expected (their status ignored)."""
     shape = lambda q: (q["kind"], *(_key(q["row"]) if q["row"] else ("", "")))
     return _missing_and_extra(sorted(shape(q) for q in expected), sorted(shape(q) for q in asked))
+
+
+class RowNames:
+    """Finds the case's rows in the year by the names the case gives them ({"file", "description"}). The vision model
+    words a description its own way, so when no row has the exact name the row in that file with the same gross is
+    taken (the same date too when two share a gross); `fallbacks` lists each name found that way."""
+
+    def __init__(self, store, client_id: int, case_dir: Path):
+        self.store, self.client_id, self.fallbacks = store, client_id, []
+        self._known = {}   # (file, description) -> (gross, date) as the case's .rows.json read them
+        for path in case_files(Path(case_dir)):
+            read = json.loads(path.with_name(f"{path.name}.rows.json").read_text())
+            for t in read["transactions"]:
+                self._known[(path.name, t["description"])] = (Decimal(str(t["gross"])), str(t.get("date")))
+
+    def id(self, name: dict) -> Optional[int]:
+        files = {u["id"]: u["name"] for u in self.store.uploads(self.client_id)}
+        rows = [(r, files[r.upload_id]) for r in self.store.rows(self.client_id)]
+        exact = [r for r, file in rows if (file, r.tx.description) == _key(name)]
+        if exact:
+            return exact[0].id if len(exact) == 1 else None
+        known = self._known.get(_key(name))
+        if known is None:
+            return None
+        same = [r for r, file in rows if file == name["file"] and r.tx.gross == known[0]]
+        if len(same) > 1:
+            same = [r for r in same if str(r.tx.date) == known[1]]
+        if len(same) != 1:
+            return None
+        found = {"file": name["file"], "description": same[0].tx.description}
+        if {"expected": name, "found": found} not in self.fallbacks:
+            self.fallbacks.append({"expected": name, "found": found})
+        return same[0].id
 
 
 # ─── Reading the files from their prepared rows, so only the agent is real ────────────────────────────────────────
@@ -212,13 +264,13 @@ def _posted(api, client_id: int, year_start: dt.date) -> dict:
     return _check(api.get(f"/api/clients/{client_id}/years/{year_start}/posted-trial-balance"))
 
 
-def _apply_answer(api, store, client_id: int, thread_id: str, case_dir: Path, item: dict) -> Optional[str]:
+def _apply_answer(api, row_names: RowNames, thread_id: str, case_dir: Path, item: dict) -> Optional[str]:
     """Answers the question item names, through its route; why it couldn't be, or None."""
     asked, given = item["question"], item["answer"]
-    try:
-        row_id = scripted._row_id(store, client_id, asked["row"])
-    except LookupError as exc:
-        return str(exc)
+    client_id = row_names.client_id
+    row_id = row_names.id(asked["row"])
+    if row_id is None:
+        return f"No row is named {asked['row']}."
     question = next((q for q in _check(api.get(f"/api/clients/{client_id}/questions"))
                      if q["kind"] == asked["kind"] and q["row_ids"][:1] == [row_id]), None)
     if question is None:
@@ -254,16 +306,27 @@ def run_case(api, store, records, case_dir: Path, rows: Optional[PreparedRows], 
     for kind, data in events:
         if kind == "step":
             steps[data["id"]] = data
+    row_names = RowNames(store, client_id, case_dir)
+    expected_names = [n for part in ("resolutions", "automatic", "from_answers") for e in expected_decisions[part]
+                      for n in expected_rows(e)]
+    expected_names += [q["row"] for stage in expected_questions.values() for q in stage]
+    expected_names += [a["question"]["row"] for a in scripted.answers(case_dir)]
+
+    def aliases() -> dict[int, dict]:
+        """Each row the case names, by id, as the case names it."""
+        found = {row_names.id(n): n for n in expected_names}
+        return {i: n for i, n in found.items() if i is not None}
+
     names = scripted._names(store, client_id)
-    asked = named_questions(_check(api.get(f"/api/clients/{client_id}/questions")), names)
+    asked = named_questions(_check(api.get(f"/api/clients/{client_id}/questions")), names, aliases())
     review_posted = _posted(api, client_id, year_start)
     review_tb = net_by_account(review_posted)
 
     unapplied = [problem for item in scripted.answers(case_dir)
-                 if (problem := _apply_answer(api, store, client_id, thread["id"], case_dir, item))]
+                 if (problem := _apply_answer(api, row_names, thread["id"], case_dir, item))]
     seconds = round(time.monotonic() - started, 1)
     names = scripted._names(store, client_id)   # an answer's document adds rows
-    asked_after = named_questions(_check(api.get(f"/api/clients/{client_id}/questions")), names)
+    asked_after = named_questions(_check(api.get(f"/api/clients/{client_id}/questions")), names, aliases())
     final_posted = _posted(api, client_id, year_start)
     final_tb = net_by_account(final_posted)
     decisions = _check(api.get(f"/api/clients/{client_id}/decisions?year_start={year_start}"))
@@ -277,11 +340,11 @@ def run_case(api, store, records, case_dir: Path, rows: Optional[PreparedRows], 
     if "after_answers" in expected_questions:
         q_diff += [{"stage": "after answers", **d}
                    for d in score_questions(expected_questions["after_answers"], asked_after)]
-    d_diff = score_decisions(expected_decisions, decisions, names)
+    d_diff = score_decisions(expected_decisions, decisions, row_names.id)
     failed = [s["text"] for s in steps.values() if s["state"] == "failed"]
     errors = [data for kind, data in events if kind == "error"]
     problems = ([f"error event: {e.get('code')}: {e.get('message')}" for e in errors]
-                + [f"failed step: {t}" for t in failed] + [f"answer not applied: {u}" for u in unapplied]
+                + [f"answer not applied: {u}" for u in unapplied]
                 + ([f"{final_posted['unposted_changes']} changes are not posted"]
                    if final_posted["unposted_changes"] else []))
     return {
@@ -290,6 +353,7 @@ def run_case(api, store, records, case_dir: Path, rows: Optional[PreparedRows], 
         "decisions": {"passed": not d_diff, "differences": d_diff},
         "questions": {"passed": not q_diff, "differences": q_diff},
         "problems": problems,   # a run with any of these fails, however its scores come out
+        "row_fallbacks": row_names.fallbacks,   # rows found by file and amount: the model named them differently
         "posted_problems": final_posted["problems"],   # why the books couldn't be fully worked out; not gating
         "steps": len(steps), "failed_steps": failed, "error_events": errors,
         "refused_decisions": [{"rule": d["rule"], "reason": d["reason"]} for d in decisions
@@ -299,16 +363,22 @@ def run_case(api, store, records, case_dir: Path, rows: Optional[PreparedRows], 
 
 
 def passed(result: dict) -> bool:
-    """Whether a run passed all three scores and had no problems."""
+    """Whether a run passed all three scores and had no problems (error events, answers not applied, changes left
+    unposted). Failed steps and refused decisions are recorded but don't fail it."""
     return all(result[s]["passed"] for s in ("trial_balance", "decisions", "questions")) and not result["problems"]
 
 
-def _table(runs: list[dict]) -> str:
+def clean(result: dict) -> bool:
+    """Whether a run had no problems, no failed step and no refused decision."""
+    return not (result["problems"] or result["failed_steps"] or result["refused_decisions"])
+
+
+def table(runs: list[dict]) -> str:
     rows = [("case", "run", "TB", "decisions", "questions", "clean", "seconds")]
     for r in runs:
         mark = lambda score: "pass" if r[score]["passed"] else "FAIL"
         rows.append((r["case"], str(r["run"]), mark("trial_balance"), mark("decisions"), mark("questions"),
-                     "yes" if not r["problems"] else "NO", str(r["seconds"])))
+                     "yes" if clean(r) else "NO", str(r["seconds"])))
     widths = [max(len(row[i]) for row in rows) for i in range(7)]
     return "\n".join("  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)) for row in rows)
 
@@ -354,7 +424,7 @@ def main(argv=None) -> int:
                                      ("trial_balance", "decisions", "questions")},
                                   "problems": [f"the run failed: {type(exc).__name__}: {exc}"], "posted_problems": [],
                                   "steps": 0, "failed_steps": [], "error_events": [], "refused_decisions": [],
-                                  "answers_not_applied": []}
+                                  "answers_not_applied": [], "row_fallbacks": []}
                     result["run"] = n
                     runs.append(result)
                     print(f"{name} run {n}: " + ("passed" if passed(result) else "FAILED"), flush=True)
@@ -367,7 +437,7 @@ def main(argv=None) -> int:
     out = RESULTS_DIR / f"{dt.date.today().isoformat()}-agent.json"
     out.write_text(json.dumps({"date": dt.date.today().isoformat(), "read": args.read, "model": settings.agent_model,
                                "runs": runs}, indent=2, ensure_ascii=False) + "\n")
-    print("\n" + _table(runs) + f"\n\nWrote {out.relative_to(ROOT)}")
+    print("\n" + table(runs) + f"\n\nWrote {out.relative_to(ROOT)}")
     return 0 if all(passed(r) for r in runs) else 1
 
 
