@@ -161,6 +161,19 @@ def test_threads_are_created_listed_touched_and_deleted(records):
         records.touch_thread("nope")
 
 
+def test_a_threads_turns_are_kept_in_order_and_its_reads_give_the_thread_alone(records):
+    t = records.create_thread(1, YEAR, "Taxis")
+    assert records.turns(t.id) == [] and records.turns("nope") == []
+    first = {"message_id": "m1", "files": [], "result": {"sorted": [], "questions": [], "post": None}}
+    second = {"message_id": "m2", "files": [{"name": "a.csv", "state": "done", "rows": 2}], "result": {}}
+    records.add_turn(t.id, first)
+    touched = records.touch_thread(t.id, title="Taxis 2025")   # touching a thread keeps its turns
+    records.add_turn(t.id, second)
+
+    assert records.turns(t.id) == [first, second]
+    assert records.thread(t.id) == touched and records.threads(1) == [touched]
+
+
 def test_document_text_is_cached_by_hash(records, mongo_db):
     assert records.document_text("ab") is None
     records.save_document_text("ab", ["page one", "page two"], "vlm", "m1")

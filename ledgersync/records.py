@@ -22,6 +22,8 @@ from .rows import now_iso
 # nanoseconds it was added, which orders records that were added in the same second, a thread's turns, and the last
 # summary an older thread kept in their place.
 _KEPT_APART = ("_id", "idempotency_key", "key", "seq", "turns", "summary")
+# Leaves a thread's turns out of a read: they hold every result the chat gave, so only turns() reads them.
+_WITHOUT_TURNS = {"turns": 0}
 
 
 def _model(cls, doc: dict):
@@ -151,17 +153,17 @@ class AgentRecords:
     def threads(self, client_id: Optional[int] = None) -> list[ChatThread]:
         """The threads, of one client if given, the most recently used first."""
         query = {} if client_id is None else {"client_id": client_id}
-        return [_model(ChatThread, doc) for doc in self.db.chat_threads.find(query).sort(
+        return [_model(ChatThread, doc) for doc in self.db.chat_threads.find(query, _WITHOUT_TURNS).sort(
             [("updated_at", pymongo.DESCENDING), ("_id", pymongo.ASCENDING)])]
 
     def thread(self, id: str) -> Optional[ChatThread]:
-        doc = self.db.chat_threads.find_one({"_id": id})
+        doc = self.db.chat_threads.find_one({"_id": id}, _WITHOUT_TURNS)
         return _model(ChatThread, doc) if doc else None
 
     def touch_thread(self, id: str, title: Optional[str] = None) -> ChatThread:
         """Marks the thread as used now, and retitles it if given a title."""
         changes = {"updated_at": now_iso(), **({"title": title} if title is not None else {})}
-        doc = self.db.chat_threads.find_one_and_update({"_id": id}, {"$set": changes},
+        doc = self.db.chat_threads.find_one_and_update({"_id": id}, {"$set": changes}, projection=_WITHOUT_TURNS,
                                                        return_document=ReturnDocument.AFTER)
         if not doc:
             raise NotFound("This chat was not found.")
