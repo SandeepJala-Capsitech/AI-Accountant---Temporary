@@ -21,7 +21,8 @@ from ledgersync.blobs import BlobStore
 from ledgersync.checks import booked
 from ledgersync.errors import InvalidInput, NotFound
 from ledgersync.evidence_rules import DocumentRule, document_rule
-from ledgersync.ledger import settings_for
+from ledgersync.accounts import choosable
+from ledgersync.ledger import bank_choices, settings_for
 from ledgersync.models import Evidence, Ledger, SavedRow
 from ledgersync.records import AgentRecords
 from ledgersync.resolutions import Resolution, resolve
@@ -166,7 +167,7 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
     def get_overview(runtime: ToolRuntime[ChatContext]) -> dict:
         """The client, its years, and the year this chat is on: its rows and documents, how many rows need a look in
         each family of issue, how many are held in Suspense for a document, the questions still open and the
-        decisions made so far."""
+        decisions made so far, and the accounts a row can be coded to (code and name)."""
         ctx = runtime.context
         _step(runtime, "Looking over the books…")
         built = books.ledger(store, ctx.client_id, ctx.year_start)
@@ -182,6 +183,8 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
             "held_in_suspense": sum(held is not None for _, held, _ in looked),
             "open_questions": len(records.questions(ctx.client_id, ctx.year_start)),
             "decisions": len(records.decisions(ctx.client_id, ctx.year_start)),
+            "accounts": [{"code": a.code, "name": a.name}
+                         for a in choosable(built.client.business_type, bank_choices(built.client))],
         }
         _step(runtime, "Looked over the books", "done")
         return _out(result)
@@ -319,10 +322,28 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
         stray = [n for n in row_ids if n not in known]
         if stray:
             raise NotFound(f"Row {stray[0]} was not found among this client's rows.")
+        # The books ask these after the turn; asking too would put two questions to the person about one thing.
+        covered: dict[int, list[str]] = {}
+        for q in questions.rule_questions(store, ctx.client_id, ctx.year_start):
+            for n in q.row_ids:
+                if n in row_ids:
+                    covered.setdefault(n, []).append(q.kind)
+        if covered:
+            what = {"date": "a date", "receipt_or_invoice": "a receipt or invoice", "vat_invoice": "a VAT invoice"}
+            named = ", ".join(f"row {n} ({' and '.join(what.get(k, k) for k in kinds)})"
+                              for n, kinds in sorted(covered.items()))
+            if len(covered) == len(set(row_ids)):
+                message = f"The books already ask the person about {named}, so there's no need to ask."
+                _step(runtime, "The books already ask this", "done")
+                return {"asked": False, "message": message}
+            row_ids = [n for n in row_ids if n not in covered]
+            dropped = f"The books already ask the person about {named}, so the question is about the other rows only."
+        else:
+            dropped = None
         asked = questions.ask(records, client_id=ctx.client_id, year_start=ctx.year_start, row_ids=row_ids,
                               text=question.strip(), why=why.strip())
         _step(runtime, f"Asked: {asked.text}", "done")
-        return {"question_id": asked.id, "status": asked.status}
+        return {"question_id": asked.id, "status": asked.status, **({"note": dropped} if dropped else {})}
 
     @tool
     def list_questions(runtime: ToolRuntime[ChatContext]) -> dict:

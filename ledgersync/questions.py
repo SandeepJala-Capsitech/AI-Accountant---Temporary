@@ -88,6 +88,11 @@ def _wanted(store: MongoStore, client_id: int, year_start: dt.date) -> dict[str,
     return wanted
 
 
+def rule_questions(store: MongoStore, client_id: int, year_start: dt.date) -> list[QuestionDraft]:
+    """The questions the year's books ask the person now, so the agent doesn't ask them again."""
+    return list(_wanted(store, client_id, year_start).values())
+
+
 def refresh(store: MongoStore, records: AgentRecords, client_id: int, year_start: dt.date) -> list[Question]:
     """Works the year's rule questions out from the books and keeps them: each is asked once under its key (asked
     again, it keeps its status and answer, so one waiting stays waiting), one that was resolved and is needed again

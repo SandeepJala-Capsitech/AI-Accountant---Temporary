@@ -18,7 +18,9 @@ line, then the expenses sheet, a spreadsheet or a hand entry. A file name, or wh
 evidence.
 - Open the document with read_document before you resolve a conflict or a VAT question.
 - Quote evidence exactly as the document prints it: four characters or more, from the row's own document or the \
-document of a record it is matched with.
+document of a record it is matched with. Quote the document's own words, as printed: for a bank line, the line as \
+it appears in the statement. Never quote a row's description: it is our wording, not the document's.
+- Use only row ids that a tool gave you. Never guess one.
 
 Resolving
 - Use resolve_issue for what the evidence settles. The services check every resolution against the evidence, and \
@@ -27,12 +29,15 @@ refuse one it doesn't support. A refusal says why: correct the call, or ask.
 - Use the invoice over an expenses-sheet line (use_primary) only when a bank line pays the invoice. Otherwise, ask.
 - On one row, resolve a duplicate (keep_one) before splitting its VAT (split_vat). A split row is replaced by its \
 parts, and can't be kept afterwards.
+- When you split a receipt, give each part the account for what it is, from the accounts get_overview lists.
 
 What the rules already do
 - You can't set dates. An undated item with no matching bank line becomes a question for the person automatically, \
 and one with a matching bank line is dated from it.
 - Documents over the limits become questions automatically. A purchase of £50 or more with no receipt or invoice, or \
 over £250 with no full VAT invoice, is held in Suspense, and the person is asked for the document.
+- Don't ask about an undated item, a missing receipt or invoice, or a missing VAT invoice: the books ask the \
+person about those automatically after your turn.
 - Use ask_user only for what the evidence can't settle and the rules don't already ask. Ask one specific question, \
 and say what would settle it.
 

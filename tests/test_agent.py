@@ -3,6 +3,7 @@ and the thread from the run's context, a tool error goes back to the model and t
 or loops ends the turn with an error event, and no tool can set a date."""
 import datetime as dt
 import json
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -16,8 +17,10 @@ from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
 import run_scripted_resolutions as scripted
+from helpers import add_rows, row
 from ledgersync.agent import AgentDeps, ChatContext, ChatEvent, build_agent, stream_turn
 from ledgersync.agent.llm import chat_model
+from ledgersync.agent.prompt import SYSTEM_PROMPT
 from ledgersync.agent.tools import make_tools
 from ledgersync.blobs import GridFSBlobStore
 from ledgersync.config import Settings
@@ -212,6 +215,62 @@ def test_list_issues_by_family(mongo_store, deps, staples):
     # The bank line is held for its receipt; the sheet line is booked from the receipt, so it isn't held.
     assert [(names[r["row_id"]][0], r["held"]["needs"]) for r in documents["rows"]] == [
         ("statement", "receipt_or_invoice")]
+
+
+@pytest.mark.mongo
+def test_get_overview_lists_the_accounts_a_row_can_be_coded_to(mongo_store, deps, acme):
+    model = ScriptedChatModel(replies=[call("get_overview"), say("Looked.")])
+    agent = build_agent(SETTINGS, deps, model=model, checkpointer=InMemorySaver())
+
+    list(stream_turn(agent, context(acme), "Look over the books."))
+
+    [result] = answered(model, 1)
+    accounts = json.loads(result.content)["accounts"]
+    assert {"code": "8205", "name": next(a["name"] for a in accounts if a["code"] == "8205")} in accounts
+    assert all(set(a) == {"code", "name"} for a in accounts)
+
+
+def ask_about(deps, client_id: int, *row_ids: int) -> tuple[dict, list]:
+    """What ask_user answers when called on the rows in the client's first year, and the agent's questions then."""
+    model = ScriptedChatModel(replies=[call("ask_user", row_ids=list(row_ids), question="When was it?",
+                                            why="No date."), say("Asked.")])
+    agent = build_agent(SETTINGS, deps, model=model, checkpointer=InMemorySaver())
+    list(stream_turn(agent, ChatContext(client_id=client_id, thread_id=uuid4().hex, year_start=dt.date(2025, 4, 1)),
+                     "Ask."))
+    [result] = answered(model, 1)
+    mine = [q for q in deps.records.questions(client_id, dt.date(2025, 4, 1)) if q.source == "agent"]
+    return json.loads(result.content), mine
+
+
+@pytest.mark.mongo
+def test_ask_user_leaves_out_what_the_books_already_ask(mongo_store, deps, acme):
+    add_rows(mongo_store, acme, row(date=None, gross=Decimal("12.00"), account_code="7400", description="taxi"),
+             row(date=dt.date(2025, 6, 1), gross=Decimal("12.00"), account_code="7400", description="bus",
+                 document_type="statement"), year_start=dt.date(2025, 4, 1))
+    taxi, bus = (next(r.id for r in mongo_store.rows(acme) if r.tx.description == d) for d in ("taxi", "bus"))
+
+    result, mine = ask_about(deps, acme, taxi)
+    assert result["asked"] is False and f"row {taxi} (a date)" in result["message"] and mine == []
+
+    result, mine = ask_about(deps, acme, taxi, bus)
+    assert [q.row_ids for q in mine] == [[bus]] and f"row {taxi} (a date)" in result["note"]
+
+
+@pytest.mark.mongo
+def test_ask_user_asks_about_a_row_the_books_do_not_ask_about(mongo_store, deps, acme):
+    add_rows(mongo_store, acme, row(date=dt.date(2025, 6, 1), gross=Decimal("12.00"), account_code="7400",
+                                    description="bus", document_type="statement"), year_start=dt.date(2025, 4, 1))
+    bus = mongo_store.rows(acme)[0].id
+
+    result, mine = ask_about(deps, acme, bus)
+
+    assert result["status"] == "open" and [q.row_ids for q in mine] == [[bus]]
+
+
+def test_the_prompt_names_the_rules_the_live_runs_broke():
+    for rule in ("Never quote a row's description", "Use only row ids that a tool gave you",
+                 "the books ask the person about those automatically", "from the accounts get_overview lists"):
+        assert rule in " ".join(SYSTEM_PROMPT.split())
 
 
 def test_tools_use_context_client_not_args():

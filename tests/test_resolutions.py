@@ -267,6 +267,13 @@ def test_quote_not_in_document_refused(mongo_store, records, pages, nb):
     assert not saved(mongo_store, nb.id, nb.sheet_costco).excluded
 
 
+def test_a_quote_with_spaces_after_commas_is_found_in_a_csv_line(mongo_store, records, pages, nb):
+    pages[nb.upload("costco.txt")].append("07/10/2026,-58.00,Card Purchase,COSTCO WHOLESALE")
+    decision = call(mongo_store, records, pages, nb, nb.sheet_costco, keep_receipt(nb),
+                    "-58.00, Card Purchase, COSTCO WHOLESALE")
+    assert decision.status == "applied", decision.reason
+
+
 def test_evidence_from_another_clients_upload_refused(mongo_store, records, pages, nb):
     other = new_client(mongo_store, "Other Ltd")
     add(mongo_store, other, pages, "theirs.txt", COSTCO, row(gross=Decimal("1.00")))

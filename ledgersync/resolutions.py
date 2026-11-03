@@ -96,9 +96,13 @@ def _key(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+_SEPARATOR_SPACE = re.compile(r"\s*([,;|\t])\s*")
+
+
 def _normalised(text: str) -> str:
-    """Text with each run of whitespace one space, in lower case, so a quote is found however it was spaced."""
-    return " ".join(text.split()).lower()
+    """Text with each run of whitespace one space, none beside a separator (a comma, semicolon, bar or tab), in
+    lower case, so a quote is found however it was spaced."""
+    return " ".join(_SEPARATOR_SPACE.sub(r"\1", text.lower()).split())
 
 
 def _kind(tx: Transaction) -> str:
