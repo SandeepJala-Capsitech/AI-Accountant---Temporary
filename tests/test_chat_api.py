@@ -1,6 +1,7 @@
-"""The chat API (design of 2026-11-02) on a scripted chat model (tests/agent_fakes.py) and a fake model client that
-reads the files, never real ones: threads on a client's open year, a message streamed back as steps, the agent's
-reply and the summary, answers to questions, and one run at a time on each thread."""
+"""The chat API (design of 2026-11-02, replies of 2026-11-03) on a scripted chat model (tests/agent_fakes.py) and a fake
+model client that reads the files, never real ones: threads on a client's open year, a message streamed back as steps,
+the agent's reply and its turn's result, a reopened chat's replies with their results, answers to questions, and one
+run at a time on each thread."""
 import datetime as dt
 import json
 import threading
@@ -105,14 +106,20 @@ def send(api, thread_id: str, text: str, *files: tuple[str, str]) -> list[tuple[
     return events_of(sent.text)
 
 
-def summary_of(events) -> dict:
-    [summary] = [data for kind, data in events if kind == "summary"]
-    return summary
+def result_of(events) -> dict:
+    """The result a turn ended with: the one result event of its stream."""
+    [result] = [data for kind, data in events if kind == "result"]
+    return result
 
 
-def net(summary: dict, code: str) -> str:
-    """Debit less credit of the posted trial balance's line for the account, as pounds and pence."""
-    line = next((l for l in summary["trial_balance"]["lines"] if l["code"] == code), None)
+# The result of a turn that sorted, raised, asked for and posted nothing.
+EMPTY = {"sorted": [], "questions": [], "trial_balance": None, "post": None}
+
+
+def net(found: dict, code: str) -> str:
+    """Debit less credit of the posted trial balance's line for the account, as pounds and pence: found is anything
+    with a trial_balance, such as a turn's result."""
+    line = next((l for l in found["trial_balance"]["lines"] if l["code"] == code), None)
     return "0.00" if line is None else f"{float(line['debit']) - float(line['credit']):.2f}"
 
 
@@ -121,7 +128,7 @@ def held_payment(make, client_id: int, *more_reads: str):
     the API, the thread and the question asking for the invoice."""
     api = make(say("One payment needs its invoice."), reads=[transactions_json(PAYMENT), *more_reads])
     thread = new_thread(api, client_id)
-    [question] = summary_of(send(api, thread["id"], "Review October.", STATEMENT))["questions"]
+    [question] = result_of(send(api, thread["id"], "Review October.", STATEMENT))["questions"]
     return api, thread, question
 
 
@@ -137,7 +144,7 @@ def test_new_thread_belongs_to_client(make, mongo_store, client_id):
     assert (thread["client_id"], thread["year_start"], thread["title"]) == (client_id, YEAR, "New chat")
     assert [t["id"] for t in api.get(f"/api/chat/threads?client_id={client_id}").json()] == [thread["id"]]
     assert api.get(f"/api/chat/threads?client_id={other}").json() == []
-    assert api.get(f"/api/chat/threads/{thread['id']}").json() == {"thread": thread, "messages": [], "summary": None}
+    assert api.get(f"/api/chat/threads/{thread['id']}").json() == {"thread": thread, "messages": []}
 
 
 def test_rename_and_delete_thread(make, mongo_store, client_id):
@@ -157,15 +164,15 @@ def test_rename_and_delete_thread(make, mongo_store, client_id):
 
 # ─── A message ─────────────────────────────────────────────────────────────────
 
-def test_message_streams_steps_then_summary_then_done(make, client_id):
+def test_message_streams_steps_then_result_then_done(make, client_id):
     api = make(say("I read the statement."), reads=[transactions_json(PAYMENT)])
     thread = new_thread(api, client_id)
 
     events = send(api, thread["id"], "Review October.", STATEMENT, ("empty.txt", ""))
 
     kinds = [kind for kind, _ in events]
-    assert kinds[0] == "status" and kinds[-2:] == ["summary", "done"]
-    assert max(k for k, kind in enumerate(kinds) if kind == "step") < kinds.index("token") < kinds.index("summary")
+    assert kinds[0] == "status" and kinds[-2:] == ["result", "done"]
+    assert max(k for k, kind in enumerate(kinds) if kind == "step") < kinds.index("token") < kinds.index("result")
     steps = [data for kind, data in events if kind == "step"]
     statement = [s for s in steps if s["file"] == "barclays-october.csv"]
     assert [(s["text"], s["state"]) for s in statement] == [("Reading barclays-october.csv…", "running"),
@@ -176,25 +183,70 @@ def test_message_streams_steps_then_summary_then_done(make, client_id):
                                                         ("Couldn't read empty.txt: 'empty.txt' is empty.", "failed")]
     assert empty[1]["reason"] == "'empty.txt' is empty."
     assert "".join(data["text"] for kind, data in events if kind == "token") == "I read the statement."
-    assert api.get(f"/api/chat/threads/{thread['id']}").json()["thread"]["title"] == "Review October."
+    detail = api.get(f"/api/chat/threads/{thread['id']}").json()
+    assert detail["thread"]["title"] == "Review October."
+    assert sorted(detail["messages"][0]["files"], key=lambda f: f["name"]) == [   # each file's reading is kept
+        {"name": "barclays-october.csv", "state": "done", "rows": 1, "reason": None},
+        {"name": "empty.txt", "state": "failed", "rows": None, "reason": "'empty.txt' is empty."}]
 
 
-def test_summary_lists_held_payment_and_question(make, client_id):
+def test_a_review_result_holds_its_questions_and_posting(make, client_id):
     api = make(say("One payment needs its invoice."), reads=[transactions_json(PAYMENT)])
     thread = new_thread(api, client_id)
 
-    summary = summary_of(send(api, thread["id"], "Review October.", STATEMENT))
+    result = result_of(send(api, thread["id"], "Review October.", STATEMENT))
 
-    [held] = summary["trial_balance"]["suspense"]
+    [held] = result["trial_balance"]["suspense"]
     assert (held["gross"], held["needs"]) == ("240.00", "receipt_or_invoice")
-    [question] = summary["questions"]
+    [question] = result["questions"]
     assert (question["kind"], question["status"], question["row_ids"]) == ("receipt_or_invoice", "open",
                                                                           [held["row_id"]])
     assert question["text"] == "Can you upload the receipt or invoice?"
-    assert net(summary, "9998") == "240.00" and net(summary, "1200") == "-240.00"
-    assert summary["trial_balance"]["is_balanced"]
-    assert summary["post"]["batch_id"] and summary["post"]["problems"] == []
-    assert summary["sorted"] == []
+    assert net(result, "9998") == "240.00" and net(result, "1200") == "-240.00"
+    assert result["trial_balance"]["is_balanced"]
+    assert result["post"]["batch_id"] and result["post"]["problems"] == []
+    assert result["sorted"] == []
+
+
+def test_a_plain_message_after_a_review_has_an_empty_result(make, client_id):
+    api = make(say("One payment needs its invoice."), say("You're welcome."), reads=[transactions_json(PAYMENT)])
+    thread = new_thread(api, client_id)
+    send(api, thread["id"], "Review October.", STATEMENT)   # raises the question for the invoice
+
+    assert result_of(send(api, thread["id"], "Thanks.")) == EMPTY
+
+
+def test_listing_the_open_items_shows_them_as_cards(make, client_id):
+    api = make(say("One payment needs its invoice."), call("list_questions"), say("One thing needs you."),
+               reads=[transactions_json(PAYMENT)])
+    thread = new_thread(api, client_id)
+    first = result_of(send(api, thread["id"], "Review October.", STATEMENT))
+
+    listed = result_of(send(api, thread["id"], "What needs my attention?"))
+
+    assert [q["id"] for q in first["questions"]] != []
+    assert [q["id"] for q in listed["questions"]] == [q["id"] for q in first["questions"]]
+    assert listed["trial_balance"] is None and listed["sorted"] == []
+
+
+def test_fetching_the_trial_balance_shows_it(make, client_id):
+    api = make(say("Hi."), call("get_trial_balance"), say("Here it is."))
+    thread = new_thread(api, client_id)
+    send(api, thread["id"], "Hello")   # this turn's posting is done, so the next has nothing new to post
+
+    shown = result_of(send(api, thread["id"], "Show the trial balance"))
+
+    assert shown["trial_balance"]["is_balanced"] and shown["post"] is None and shown["questions"] == []
+
+
+def test_a_new_chat_does_not_bring_up_earlier_items(make, client_id):
+    api = make(say("One payment needs its invoice."), say("Hello."), reads=[transactions_json(PAYMENT)])
+    a = new_thread(api, client_id)
+    raised = result_of(send(api, a["id"], "Review October.", STATEMENT))
+    assert raised["questions"] != []
+    b = new_thread(api, client_id)   # another chat on the same client, which still has the question open
+
+    assert result_of(send(api, b["id"], "Hello")) == EMPTY
 
 
 def test_without_the_openrouter_key_a_turn_says_the_model_is_unavailable(mongo_store, client_id):
@@ -208,9 +260,104 @@ def test_without_the_openrouter_key_a_turn_says_the_model_is_unavailable(mongo_s
 
     [error] = [data for kind, data in events if kind == "error"]
     assert error["code"] == "model_unavailable" and "OPENROUTER_API_KEY" in error["message"]
-    assert [kind for kind, _ in events][-2:] == ["summary", "done"]   # the file was read, and the year posted
-    assert summary_of(events)["trial_balance"]["suspense"][0]["gross"] == "240.00"
-    assert detail["messages"] == [{"role": "user", "text": "Review October."}]   # kept, for when the model is back
+    assert [kind for kind, _ in events][-2:] == ["result", "done"]   # the file was read, and the year posted
+    assert result_of(events)["trial_balance"]["suspense"][0]["gross"] == "240.00"
+    assert detail["messages"][0]["text"] == "Review October."   # kept, for when the model is back
+
+
+def test_a_turn_with_no_reply_keeps_its_result(mongo_store, client_id):
+    app = create_app(Settings(warmup=False), model_client=FakeModel([transactions_json(PAYMENT)]), store=mongo_store,
+                     blobs=MemoryBlobStore())
+    with TestClient(app, headers={"X-LedgerSync": "1"}) as api:   # no model, so no reply
+        thread = new_thread(api, client_id)
+        send(api, thread["id"], "Review October.", STATEMENT)   # the turn still reads, refreshes and posts
+
+        messages = api.get(f"/api/chat/threads/{thread['id']}").json()["messages"]
+
+    assert [(m["role"], m["text"]) for m in messages] == [("user", "Review October."), ("assistant", "")]
+    assert messages[0]["files"] == [{"name": "barclays-october.csv", "state": "done", "rows": 1, "reason": None}]
+    assert [q["kind"] for q in messages[1]["result"]["questions"]] == ["receipt_or_invoice"]
+
+
+# ─── Reopening a chat ──────────────────────────────────────────────────────────
+
+def test_reload_keeps_each_reply_with_its_result(make, client_id):
+    api = make(say("One payment needs its invoice."), say("You're welcome."), reads=[transactions_json(PAYMENT)])
+    thread = new_thread(api, client_id)
+    send(api, thread["id"], "Review October.", STATEMENT)
+    send(api, thread["id"], "Thanks.")
+
+    messages = api.get(f"/api/chat/threads/{thread['id']}").json()["messages"]
+
+    assert [(m["role"], m["text"]) for m in messages] == [
+        ("user", "Review October."), ("assistant", "One payment needs its invoice."),
+        ("user", "Thanks."), ("assistant", "You're welcome.")]
+    assert messages[0]["files"] == [{"name": "barclays-october.csv", "state": "done", "rows": 1, "reason": None}]
+    assert [q["kind"] for q in messages[1]["result"]["questions"]] == ["receipt_or_invoice"]
+    assert messages[2]["files"] == [] and messages[3]["result"] is None
+
+
+def test_a_card_shows_the_question_as_it_stands_now(make, client_id):
+    api = make(say("The taxi has no date."), reads=[transactions_json(TAXI)])
+    thread = new_thread(api, client_id)
+    [question] = result_of(send(api, thread["id"], "Review October.", TAXI_RECEIPT))["questions"]
+    assert question["status"] == "open"
+    api.post(f"/api/chat/threads/{thread['id']}/questions/{question['id']}/answer",
+             json={"kind": "date", "date": "2026-10-09"})   # answered after the reply was written
+
+    [card] = api.get(f"/api/chat/threads/{thread['id']}").json()["messages"][1]["result"]["questions"]
+
+    assert (card["status"], card["answer"]) == ("resolved", "9 Oct 2026")
+
+
+def test_a_reply_never_gains_questions_from_another_chat(make, client_id):
+    api = make(say("One payment needs its invoice."), say("The taxi has no date."),
+               reads=[transactions_json(PAYMENT), transactions_json(TAXI)])
+    a, b = new_thread(api, client_id), new_thread(api, client_id)
+    send(api, a["id"], "Review October.", STATEMENT)      # asks for the receipt or invoice
+    send(api, b["id"], "Review the taxi.", TAXI_RECEIPT)   # asks for the date
+
+    [card] = api.get(f"/api/chat/threads/{a['id']}").json()["messages"][1]["result"]["questions"]
+
+    assert card["kind"] == "receipt_or_invoice"
+
+
+def test_a_chat_from_before_this_change_shows_its_messages_without_cards(make, mongo_store, client_id):
+    api = make()
+    thread = new_thread(api, client_id)
+    # A chat saved before the turns were kept: the thread has a last "summary" and no "turns", and its messages are in
+    # the checkpoints.
+    mongo_store.db.chat_threads.update_one({"_id": thread["id"]}, {"$set": {"summary": {
+        "sorted": [], "questions": [], "trial_balance": None, "post": None}}})
+    saved = build_agent(Settings(), AgentDeps(store=mongo_store, records=AgentRecords(mongo_store.db), blobs=None),
+                        model=ScriptedChatModel(), checkpointer=MongoDBSaver(
+                            mongo_store.client, db_name=f"{mongo_store.db_name}_checkpoints"))
+    saved.update_state({"configurable": {"thread_id": thread["id"]}},
+                       {"messages": [HumanMessage("Hello"), AIMessage("Hi.")]}, as_node="model")
+
+    detail = api.get(f"/api/chat/threads/{thread['id']}").json()
+
+    assert [(m["role"], m["text"], m["files"], m["result"]) for m in detail["messages"]] == [
+        ("user", "Hello", [], None), ("assistant", "Hi.", [], None)]
+
+
+def test_a_note_for_the_agent_is_kept_in_its_memory_but_not_shown(make, mongo_store, client_id):
+    api = make(say("Hi."))
+    thread = new_thread(api, client_id)
+    send(api, thread["id"], "Hello")
+    config = {"configurable": {"thread_id": thread["id"]}}
+    memory = build_agent(Settings(), AgentDeps(store=mongo_store, records=AgentRecords(mongo_store.db), blobs=None),
+                         model=ScriptedChatModel(), checkpointer=MongoDBSaver(
+                             mongo_store.client, db_name=f"{mongo_store.db_name}_checkpoints"))
+
+    said = "Answered: When was this taxi? → 9 Oct 2026"
+
+    chat_module._say(memory, thread["id"], said, note=True)
+
+    kept = memory.get_state(config).values["messages"][-1]
+    assert (kept.type, kept.text, kept.additional_kwargs) == ("human", said, {"note": True})
+    messages = api.get(f"/api/chat/threads/{thread['id']}").json()["messages"]
+    assert [(m["role"], m["text"]) for m in messages] == [("user", "Hello"), ("assistant", "Hi.")]
 
 
 # ─── Answers ───────────────────────────────────────────────────────────────────
@@ -218,7 +365,7 @@ def test_without_the_openrouter_key_a_turn_says_the_model_is_unavailable(mongo_s
 def test_answer_date_returns_updated_summary(make, client_id):
     api = make(say("The taxi has no date."), reads=[transactions_json(TAXI)])
     thread = new_thread(api, client_id)
-    [question] = summary_of(send(api, thread["id"], "Review October.", TAXI_RECEIPT))["questions"]
+    [question] = result_of(send(api, thread["id"], "Review October.", TAXI_RECEIPT))["questions"]
     assert question["kind"] == "date"
 
     answered = api.post(f"/api/chat/threads/{thread['id']}/questions/{question['id']}/answer",
@@ -231,15 +378,14 @@ def test_answer_date_returns_updated_summary(make, client_id):
     [row_id] = question["row_ids"]
     assert decision["rule"] == "R1 Date from the person" and decision["after"] == {str(row_id): {"date": "2026-10-09"}}
     detail = api.get(f"/api/chat/threads/{thread['id']}").json()
-    assert detail["messages"][-1] == {"role": "user",
-                                      "text": "Answered: When was this Leeds City Cabs taxi? → 9 Oct 2026"}
-    assert detail["summary"]["sorted"] == summary["sorted"]
+    assert [(m["role"], m["text"]) for m in detail["messages"]][-1] == (
+        "user", "Answered: When was this Leeds City Cabs taxi? → 9 Oct 2026")
 
 
 def test_the_next_turn_sees_the_answer(make, client_id):
     api = make(say("The taxi has no date."), say("Noted."), reads=[transactions_json(TAXI)])
     thread = new_thread(api, client_id)
-    [question] = summary_of(send(api, thread["id"], "Review October.", TAXI_RECEIPT))["questions"]
+    [question] = result_of(send(api, thread["id"], "Review October.", TAXI_RECEIPT))["questions"]
     api.post(f"/api/chat/threads/{thread['id']}/questions/{question['id']}/answer",
              json={"kind": "date", "date": "2026-10-09"})
 
@@ -290,7 +436,7 @@ def test_questions_survive_restart(make, client_id):
                reads=[transactions_json(PAYMENT), transactions_json({**INVOICE, "date": None})],
                max_parallel_jobs=1)   # the files are read in turn, so each gets its own reading
     thread = new_thread(api, client_id)
-    asked = summary_of(send(api, thread["id"], "Review October.", STATEMENT, INVOICE_FILE))
+    asked = result_of(send(api, thread["id"], "Review October.", STATEMENT, INVOICE_FILE))
     assert sorted(q["kind"] for q in asked["questions"]) == ["date", "receipt_or_invoice"]
     assert net(asked, "9998") == "240.00"
     [dating] = [q for q in asked["questions"] if q["kind"] == "date"]
@@ -309,15 +455,17 @@ def test_questions_survive_restart(make, client_id):
 
 
 def test_thread_history_survives_restart(make, client_id):
-    api = make(say("Nothing to sort this time."))
+    api = make(say("One payment needs its invoice."), reads=[transactions_json(PAYMENT)])
     thread = new_thread(api, client_id)
-    send(api, thread["id"], "Anything to do?")
+    result = result_of(send(api, thread["id"], "Review October.", STATEMENT))
+    before = api.get(f"/api/chat/threads/{thread['id']}").json()["messages"]
 
-    detail = make().get(f"/api/chat/threads/{thread['id']}").json()
+    detail = make().get(f"/api/chat/threads/{thread['id']}").json()   # a new app on the same database
 
-    assert detail["messages"] == [{"role": "user", "text": "Anything to do?"},
-                                  {"role": "assistant", "text": "Nothing to sort this time."}]
-    assert detail["summary"]["questions"] == [] and detail["summary"]["trial_balance"]["is_balanced"]
+    assert [(m["role"], m["text"]) for m in detail["messages"]] == [
+        ("user", "Review October."), ("assistant", "One payment needs its invoice.")]
+    assert detail["messages"] == before
+    assert detail["messages"][1]["result"] == result   # kept as the turn streamed it
 
 
 # ─── One run at a time ─────────────────────────────────────────────────────────
@@ -358,7 +506,7 @@ def test_an_answer_waits_for_the_message_running_on_its_chat(make, client_id):
 
     api = make(say("One payment needs its invoice."), slow, reads=[transactions_json(PAYMENT)])
     thread = new_thread(api, client_id)
-    [question] = summary_of(send(api, thread["id"], "Review October.", STATEMENT))["questions"]
+    [question] = result_of(send(api, thread["id"], "Review October.", STATEMENT))["questions"]
     running = threading.Thread(target=send, args=(api, thread["id"], "Anything else?"))
     answered = []
     answering = threading.Thread(target=lambda: answered.append(api.post(
@@ -440,7 +588,7 @@ def test_stop_ends_the_run_before_its_next_model_call(make, client_id):
 
     assert len(api.model.seen) == 1
     assert "".join(data["text"] for kind, data in events if kind == "token") == "I stopped there, as you asked."
-    assert [kind for kind, _ in events][-2:] == ["summary", "done"]
+    assert [kind for kind, _ in events][-2:] == ["result", "done"]
 
 
 def test_a_tool_call_left_by_a_crash_is_closed_before_the_next_turn(make, mongo_store, client_id):
@@ -504,7 +652,7 @@ def test_demo_reset_hidden_unless_demo(make, mongo_store):
 def test_client_routes_list_questions_decisions_and_posted_trial_balance(make, client_id):
     api = make(say("The taxi has no date."), reads=[transactions_json(TAXI)])
     thread = new_thread(api, client_id)
-    [question] = summary_of(send(api, thread["id"], "Review October.", TAXI_RECEIPT))["questions"]
+    [question] = result_of(send(api, thread["id"], "Review October.", TAXI_RECEIPT))["questions"]
     api.post(f"/api/chat/threads/{thread['id']}/questions/{question['id']}/answer",
              json={"kind": "date", "date": "2026-10-09"})
 
@@ -518,7 +666,7 @@ def test_client_routes_list_questions_decisions_and_posted_trial_balance(make, c
 def test_posted_trial_balance_reports_unposted_changes(make, mongo_store, mongo_db, client_id):
     api = make(say("The taxi has no date."), reads=[transactions_json(TAXI)])
     thread = new_thread(api, client_id)
-    [question] = summary_of(send(api, thread["id"], "Review October.", TAXI_RECEIPT))["questions"]
+    [question] = result_of(send(api, thread["id"], "Review October.", TAXI_RECEIPT))["questions"]
     api.post(f"/api/chat/threads/{thread['id']}/questions/{question['id']}/answer",
              json={"kind": "date", "date": "2026-10-09"})
     route = f"/api/clients/{client_id}/years/{YEAR}/posted-trial-balance"

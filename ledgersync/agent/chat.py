@@ -1,9 +1,13 @@
-"""The accountant chat as the API serves it (design of 2026-11-02): its threads, a message's turn, and the answers.
+"""The accountant chat as the API serves it (design of 2026-11-02, replies of 2026-11-03): its threads, a message's
+turn, and the answers.
 
 A turn reads the files sent with the message into the client's documents, runs the agent on the message, and then,
 whatever the agent did, records the dates matching took from the bank, works the questions out and posts the year,
-under the client's lock. It ends with the summary built from the records: what this chat sorted, the questions on the
-year, and the posted trial balance. It runs on a thread of its own and goes on to the end if the person goes away.
+under the client's lock. It ends with its result, built from the records: what this chat sorted in the turn, the
+questions the turn raised (every open one when the agent listed them), and the posted trial balance when the turn
+posted something or the agent fetched it. The thread keeps the result with the files the turn read, under the id of
+the person's message, and reopening the chat shows each with its reply. A turn runs on a thread of its own and goes
+on to the end if the person goes away.
 An answer is applied without the model (questions.answer) and then noted in the chat's memory; a document sent for
 a question is read, the year posted again, and the question says why the document didn't settle it if it didn't."""
 from __future__ import annotations
@@ -15,6 +19,7 @@ import threading
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Annotated, Callable, Iterator, Literal, Optional
+from uuid import uuid4
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -50,23 +55,56 @@ _DOCUMENT_KINDS = ("receipt_or_invoice", "vat_invoice")
 
 
 class ReviewSummary(BaseModel):
-    """What a turn (or an answer) ends with."""
+    """What an answer, or a document sent for a question, ends with."""
     sorted: list[Decision]          # the applied decisions this chat made since the turn started
     questions: list[Question]       # every open or waiting question on the client's year
     trial_balance: PostedTrialBalance
     post: PostResult
 
 
+class FileRead(BaseModel):
+    """How reading a file sent with a message went: the rows it gave, or why it wasn't read."""
+    name: str
+    state: Literal["done", "failed"]
+    rows: Optional[int] = None
+    reason: Optional[str] = None
+
+
+class TurnResult(BaseModel):
+    """What a turn did, and only that: a turn that did none of it has an empty result, and its reply no cards.
+    sorted: the applied decisions this chat made since the message was sent. questions: those open or waiting when
+    the turn ended but not when it began (every open one when the agent listed them). trial_balance: the posted one,
+    when the turn's posting wrote something or the agent fetched it. post: the posting, when it wrote something or
+    couldn't."""
+    sorted: list[Decision] = []
+    questions: list[Question] = []
+    trial_balance: Optional[PostedTrialBalance] = None
+    post: Optional[PostResult] = None
+
+    def is_empty(self) -> bool:
+        return not self.sorted and not self.questions and self.trial_balance is None and self.post is None
+
+
+class TurnRecord(BaseModel):
+    """A turn as its thread keeps it: the id of the person's message, the files it carried and the turn's result."""
+    message_id: str
+    files: list[FileRead] = []
+    result: TurnResult
+
+
 class ChatMessage(BaseModel):
+    """A message as the page shows it: the person's with the files it carried; an assistant's with the result of the
+    turn it ends (None when the turn did nothing)."""
     role: Literal["user", "assistant"]
     text: str
+    files: list[FileRead] = []
+    result: Optional[TurnResult] = None
 
 
 class ThreadDetail(BaseModel):
-    """A thread with its messages so far and the summary its last turn or answer ended with."""
+    """A thread with its messages so far."""
     thread: ChatThread
     messages: list[ChatMessage]
-    summary: Optional[ReviewSummary]
 
 
 class NewThread(BaseModel):
@@ -153,18 +191,33 @@ def _open_year(store: MongoStore, client_id: int) -> dt.date:
     return next((y.start for y in open_years if y.start <= today <= y.end), open_years[-1].start)
 
 
-def _messages(messages: list) -> list[ChatMessage]:
-    """The chat's messages as the page shows them: the person's, and the agent's replies (a turn's replies in one,
-    apart by a blank line). Tool calls and their results are left out."""
-    shown: list[ChatMessage] = []
+def _messages(messages: list, turns: dict[str, TurnRecord]) -> list[ChatMessage]:
+    """The chat's messages as the page shows them: the person's, with the files they carried, and the agent's replies
+    (a turn's replies in one, apart by a blank line) with their turn's result when that isn't empty. A turn that has
+    a result but no reply gets a reply with no text. `turns` holds the kept turns by the id of the person's message;
+    one whose message isn't in the memory is shown after the rest, as a reply with no text. Tool calls and their
+    results are left out, and so are notes, which are for the agent alone."""
+    kept = dict(turns)
+    replies: list[str] = []   # the texts of the replies since the person's last message
+    exchanges: list[tuple[Optional[HumanMessage], list[str]]] = [(None, replies)]   # a reply before any message
     for m in messages:
         if isinstance(m, HumanMessage):
-            shown.append(ChatMessage(role="user", text=m.text))
+            if not m.additional_kwargs.get("note"):
+                replies = []
+                exchanges.append((m, replies))
         elif isinstance(m, AIMessage) and m.text:
-            if shown and shown[-1].role == "assistant":
-                shown[-1] = ChatMessage(role="assistant", text=f"{shown[-1].text}\n\n{m.text}")
-            else:
-                shown.append(ChatMessage(role="assistant", text=m.text))
+            replies.append(m.text)
+    shown: list[ChatMessage] = []
+    for person, texts in exchanges:
+        turn = kept.pop(person.id, None) if person else None
+        if person:
+            shown.append(ChatMessage(role="user", text=person.text, files=turn.files if turn else []))
+        result = turn.result if turn and not turn.result.is_empty() else None
+        if texts or result:
+            shown.append(ChatMessage(role="assistant", text="\n\n".join(texts), result=result))
+    for turn in kept.values():   # their messages aren't in the memory
+        if not turn.result.is_empty():
+            shown.append(ChatMessage(role="assistant", text="", result=turn.result))
     return shown
 
 
@@ -183,11 +236,13 @@ def _close_open_calls(agent, thread_id: str) -> None:
                            as_node="tools")
 
 
-def _say(agent, thread_id: str, text: str) -> None:
+def _say(agent, thread_id: str, text: str, *, message_id: Optional[str] = None, note: bool = False) -> None:
     """Adds a message from the person to the chat's memory without running the agent (after answering any tool call
-    left open, so it follows a complete exchange)."""
+    left open, so it follows a complete exchange), under message_id if given. A note is for the agent alone: the chat
+    doesn't show it."""
     _close_open_calls(agent, thread_id)
-    agent.update_state(_config(thread_id), {"messages": [HumanMessage(text)]}, as_node=START)
+    said = HumanMessage(text, id=message_id, additional_kwargs={"note": True} if note else {})
+    agent.update_state(_config(thread_id), {"messages": [said]}, as_node=START)
 
 
 def _outcome(job: Job) -> tuple[list[dict], Optional[dict]]:
@@ -200,6 +255,11 @@ def _outcome(job: Job) -> tuple[list[dict], Optional[dict]]:
 
 def _unread(step: dict, name: str, reason: str) -> dict:
     return {**step, "text": f"Couldn't read {name}: {reason}", "state": "failed", "reason": reason}
+
+
+def _file_read(step: dict) -> FileRead:
+    """How a file's reading went, from its last step."""
+    return FileRead(name=step["file"], state=step["state"], rows=step.get("rows"), reason=step.get("reason"))
 
 
 def _mismatch(name: str, rows: list[dict], payment: Optional[Transaction]) -> str:
@@ -290,15 +350,17 @@ class Chat:
         return self.records.create_thread(client_id, _open_year(self.store, client_id), NEW_CHAT)
 
     def detail(self, thread: ChatThread) -> ThreadDetail:
-        """The chat's messages from its memory, and its last summary with the questions and the posted trial
-        balance as they are now (another chat on the client may have answered or posted since)."""
+        """The chat's messages from its memory, with each turn's files on the person's message and its result on the
+        reply. A result's questions are read as they are now (an answer, or a document sent in another chat, may have
+        settled one since). A chat saved before turns were kept shows its messages alone."""
+        turns: dict[str, TurnRecord] = {}   # read first: a turn is kept only after its messages are in the memory
+        for kept in self.records.turns(thread.id):
+            turn = TurnRecord.model_validate(kept)
+            current = (self.records.question(q.id) for q in turn.result.questions)
+            turn.result.questions = [q for q in current if q is not None]
+            turns[turn.message_id] = turn
         state = self.agent.get_state(_config(thread.id))
-        kept = self.records.summary(thread.id)
-        last = None if kept is None else ReviewSummary.model_validate(kept).model_copy(update={
-            "questions": self.records.questions(thread.client_id, thread.year_start),
-            "trial_balance": ledger_book.posted_trial_balance(self.store, self.records, thread.client_id,
-                                                              thread.year_start)})
-        return ThreadDetail(thread=thread, messages=_messages(state.values.get("messages", [])), summary=last)
+        return ThreadDetail(thread=thread, messages=_messages(state.values.get("messages", []), turns))
 
     def delete(self, thread: ChatThread) -> None:
         """Removes the chat and its memory; StillWorking while a message runs on it."""
@@ -336,30 +398,48 @@ class Chat:
 
     def turn(self, thread: ChatThread, text: str, files: list[ChatFile]) -> Iterator[ChatEvent]:
         """One message: the files read, the agent's run (or model_unavailable), then the dates from the bank
-        recorded, the questions worked out and the year posted, and the summary. The first message titles the
-        chat."""
+        recorded, the questions worked out and the year posted, and the turn's result, which the thread keeps with the
+        files read. The first message titles the chat."""
         client = self.store.get_client(thread.client_id)
         since = since_now(self.records, client.id)
+        before = {q.id for q in self.records.questions(client.id, thread.year_start)}   # open or waiting already
+        message_id = uuid4().hex   # the person's message in the chat's memory, and the turn on the thread
+        called: set[str] = set()   # the tools the agent calls
+        read: list[FileRead] = []
         self.records.touch_thread(thread.id, title=_title(text) if thread.title == NEW_CHAT else None)
         if files:
             yield ChatEvent("status", {"text": f"Reading {_count(len(files), 'file')}…"})
-            yield from self._read_all(client, thread.year_start, files)
+            yield from self._read_all(client, thread.year_start, files, read)
         yield ChatEvent("status", {"text": "Working on it…"})
         agent = self.agent
         if self.unavailable:   # the message is kept, so the chat shows it
-            _say(agent, thread.id, text)
+            _say(agent, thread.id, text, message_id=message_id)
             yield _error("model_unavailable", self.unavailable)
         else:
             _close_open_calls(agent, thread.id)
-            yield from stream_turn(agent, ChatContext(client.id, thread.id, thread.year_start), text)
+            yield from stream_turn(agent, ChatContext(client.id, thread.id, thread.year_start), text,
+                                   message_id=message_id, called=called)
         yield ChatEvent("status", {"text": "Posting the books…"})
         with self.locks.hold(client.id):
             post = self._write(thread, since)
-        yield ChatEvent("summary", self._summarised(thread, since, post).model_dump(mode="json"))
+        open_now = self.records.questions(thread.client_id, thread.year_start)
+        raised = open_now if "list_questions" in called else [q for q in open_now if q.id not in before]
+        wrote = post.batch_id is not None
+        result = TurnResult(
+            sorted=sorted_since(self.records, thread, since), questions=raised,
+            trial_balance=(ledger_book.posted_trial_balance(self.store, self.records, thread.client_id,
+                                                            thread.year_start)
+                           if wrote or "get_trial_balance" in called else None),
+            post=post if wrote or post.problems else None)
+        self.records.add_turn(thread.id, TurnRecord(message_id=message_id, files=read,
+                                                    result=result).model_dump(mode="json"))
+        yield ChatEvent("result", result.model_dump(mode="json"))
 
-    def _read_all(self, client: Client, year_start: dt.date, files: list[ChatFile]) -> Iterator[ChatEvent]:
+    def _read_all(self, client: Client, year_start: dt.date, files: list[ChatFile],
+                  read: list[FileRead]) -> Iterator[ChatEvent]:
         """Starts reading every file (side by side, as many as the job registry runs at once), then says how each
-        went, in order: "Reading <name>…", then "Read <name> (n rows)" or "Couldn't read <name>: <reason>"."""
+        went, in order: "Reading <name>…", then "Read <name> (n rows)" or "Couldn't read <name>: <reason>". Each
+        file's outcome is added to `read` as its last step is said."""
         reading = []
         for k, file in enumerate(files):
             step = {"id": f"read-{k}", "text": f"Reading {file.name}…", "state": "running", "file": file.name}
@@ -367,11 +447,15 @@ class Chat:
             try:
                 reading.append((step, file.name, self.read_file(client, file, year_start)))
             except LedgerSyncError as exc:
-                yield ChatEvent("step", _unread(step, file.name, exc.message))
+                unread = _unread(step, file.name, exc.message)
+                read.append(_file_read(unread))
+                yield ChatEvent("step", unread)
         for step, name, job in reading:
             rows, error = _outcome(job)
-            yield ChatEvent("step", _unread(step, name, error["message"]) if error else {
-                **step, "text": f"Read {name} ({_count(len(rows), 'row')})", "state": "done", "rows": len(rows)})
+            last = _unread(step, name, error["message"]) if error else {
+                **step, "text": f"Read {name} ({_count(len(rows), 'row')})", "state": "done", "rows": len(rows)}
+            read.append(_file_read(last))
+            yield ChatEvent("step", last)
 
     def _write(self, thread: ChatThread, since: Since) -> PostResult:
         """With the client's lock held: records the rows matching dated from the bank, works the questions out and

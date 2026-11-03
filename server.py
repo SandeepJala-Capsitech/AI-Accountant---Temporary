@@ -459,7 +459,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
     @app.post("/api/chat/threads/{thread_id}/messages")
     def send_message(thread_id: str, text: str = Form(""), files: Optional[list[UploadFile]] = File(None),
                      bank_accounts: Optional[list[str]] = Form(None), x_ledgersync: Optional[str] = Header(None)):
-        """Streams the turn back as server-sent events (status, step, token, summary, error, done). files[i] is a
+        """Streams the turn back as server-sent events (status, step, token, result, error, done). files[i] is a
         statement for bank_accounts[i] ('' or none: the client's first current account). 409 while the chat is
         still working on its last message."""
         from_our_pages(x_ledgersync)
