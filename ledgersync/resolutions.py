@@ -147,6 +147,24 @@ def _uploads_of(rows: dict[int, SavedRow], row: SavedRow, partners=_PARTNERS) ->
     return {row.upload_id} | {o.upload_id for o in rows.values() if o.document_ref in refs}
 
 
+def _paying_lines(rows: dict[int, SavedRow], doc: SavedRow) -> list[SavedRow]:
+    """The bank lines that would pay the document, by matching's rules: a statement row still in the books, paying
+    nothing and not set aside by a person, the same way, for exactly the document's total, dated on or after it
+    (within a few days when it is a receipt), and to the same payee."""
+    total = doc.document_total or doc.gross
+    if doc.date is None:
+        return []
+    found = []
+    for line in rows.values():
+        if (line.document_type != "statement" or line.excluded or line.superseded_by or line.link is not None
+                or line.pays or line.direction != doc.direction or line.gross != total or line.date is None
+                or line.date < doc.date or (doc.document_type == "receipt" and line.date - doc.date > CARD_DAYS)):
+            continue
+        if names_match(line.counterparty or line.description, doc.counterparty):
+            found.append(line)
+    return found
+
+
 def _usable(row: SavedRow, kept: bool = True) -> None:
     """Refuses a row a split replaced, or, for a row the change keeps, one left out of the books."""
     if row.superseded_by:
@@ -347,9 +365,9 @@ def resolve(store: MongoStore, records: AgentRecords, *, client_id: int, thread_
     """Checks the resolution against its evidence and the rules, and makes it, or refuses it; either way it is
     recorded. Asked again with the same rows and arguments once applied, it returns that decision; a refusal is
     tried afresh. R0, for every action: the rows are the client's, their year is open, each upload cited is the
-    client's and holds one of the rows or a record matched with one, each quote (four characters or more, spaces
-    aside) is in the text of its upload whatever its spacing and case, and afterwards no row touched has a new
-    error."""
+    client's and holds one of the rows, a record matched with one, or (for the invoice or receipt kept) the bank
+    line that pays it, each quote (four characters or more, spaces aside) is in the text of its upload whatever its
+    spacing and case, and afterwards no row touched has a new error."""
     named = _named(row_id, resolution)
     key = _key(f"{client_id}|{named}|{resolution.model_dump_json()}")
     if (done := _applied(records, client_id, key)) is not None:
@@ -385,12 +403,18 @@ def resolve(store: MongoStore, records: AgentRecords, *, client_id: int, thread_
         if not evidence:
             raise _Refused("No evidence was cited.")
         theirs = set().union(*(_uploads_of(rows, rows[n]) for n in named))
+        kept = {"use_primary": getattr(resolution, "primary_row_id", None),
+                "keep_one": getattr(resolution, "keep_row_id", None)}.get(resolution.action)
+        if kept in rows and (resolution.action == "use_primary" or rows[kept].document_type in ("receipt", "invoice")):
+            theirs |= {line.upload_id for line in _paying_lines(rows, rows[kept])}
         for e in evidence:
             if e.upload_id not in uploads:
                 raise _Refused(f"Upload {e.upload_id} isn't one of {b.client.name}'s documents.")
             if e.upload_id not in theirs:
-                raise _Refused(f"{uploads[e.upload_id]} holds none of rows {', '.join(map(str, named))}, nor a record "
-                               "matched with them.")
+                raise _Refused(f"{uploads[e.upload_id]} can't be quoted for rows {', '.join(map(str, named))}: it "
+                               "isn't one of their documents, nor a record matched with them, nor a bank line paying "
+                               "the one kept. This is only about which documents can be quoted. Quote from: "
+                               f"{', '.join(sorted(uploads[u] for u in theirs))}.")
             if len("".join(e.quote.split())) < _SHORTEST_QUOTE:
                 raise _Refused(f"\"{e.quote}\" is too short to show anything: quote {_SHORTEST_QUOTE} characters or "
                                "more.")

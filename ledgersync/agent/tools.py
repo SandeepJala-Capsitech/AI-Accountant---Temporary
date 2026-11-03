@@ -283,7 +283,8 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
                       evidence: Annotated[list[Evidence], Field(
                           min_length=1, max_length=3,
                           description="One to three quotes, each exactly as printed in the document with this upload "
-                                      "id: the row's own, or that of a record it is matched with. upload_name is "
+                                      "id: the row's own, that of a record it is matched with, or the bank line "
+                                      "that pays the invoice or receipt being kept. upload_name is "
                                       "filled in for you.")],
                       reason: Annotated[str, Field(min_length=1, max_length=400,
                                                    description="Why, in a sentence or two the person will read.")],

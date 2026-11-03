@@ -181,6 +181,53 @@ def test_use_primary_links_a_bank_line_to_the_invoice(mongo_store, records, page
     assert [p.ref for p in shown(mongo_store, nb.id, line).pays] == [ref]
 
 
+def bank_line(nb, store, pages, gross: str, date: dt.date, who: str = "INKWELL SUPPLIES") -> tuple[int, int]:
+    """A barclays statement of one card/bank line out; its row id and upload id."""
+    [line] = add(store, nb.id, pages, "barclays-october.csv", f"{date:%d/%m/%Y} {who} {gross}",
+                 row(date=date, description=who, counterparty=who, gross=Decimal(gross), account_code="7500",
+                     document_type="statement"), kind="table")
+    return line, nb.upload("barclays-october.csv")
+
+
+def test_use_primary_accepts_the_bank_line_that_pays_the_held_invoice(mongo_store, records, pages, nb):
+    _, statement = bank_line(nb, mongo_store, pages, "30.22", dt.date(2026, 10, 12))
+    primary = UsePrimary(action="use_primary", primary_row_id=nb.invoice, other_row_id=nb.sheet_inkwell)
+    decision = resolve(mongo_store, records, client_id=nb.id, thread_id="t1", actor=ACTOR, row_id=nb.sheet_inkwell,
+                       resolution=primary, reason="Checked the documents.", texts=lambda uid: pages.get(uid, []),
+                       evidence=[Evidence(upload_id=nb.upload("inkwell-invoice.pdf"), quote="Total £30.22"),
+                                 Evidence(upload_id=statement, quote="12/10/2026 INKWELL SUPPLIES 30.22")])
+    assert decision.status == "applied"
+    assert "12/10/2026 INKWELL SUPPLIES 30.22" in [e.quote for e in decision.evidence]
+    assert saved(mongo_store, nb.id, nb.sheet_inkwell).excluded
+
+
+@pytest.mark.parametrize("gross, date, who", [("30.00", dt.date(2026, 10, 12), "INKWELL SUPPLIES"),
+                                              ("30.22", dt.date(2026, 10, 9), "INKWELL SUPPLIES"),
+                                              ("30.22", dt.date(2026, 10, 12), "ACME TOOLS")])
+def test_use_primary_refuses_a_bank_line_that_does_not_pay_the_invoice(mongo_store, records, pages, nb, gross, date,
+                                                                       who):
+    _, statement = bank_line(nb, mongo_store, pages, gross, date, who)
+    primary = UsePrimary(action="use_primary", primary_row_id=nb.invoice, other_row_id=nb.sheet_inkwell)
+    quote = f"{date:%d/%m/%Y} {who} {gross}"
+    decision = resolve(mongo_store, records, client_id=nb.id, thread_id="t1", actor=ACTOR, row_id=nb.sheet_inkwell,
+                       resolution=primary, reason="Checked the documents.", texts=lambda uid: pages.get(uid, []),
+                       evidence=[Evidence(upload_id=statement, quote=quote)])
+    assert decision.status == "refused"
+    assert "This is only about which documents can be quoted" in decision.reason
+    assert "inkwell-invoice.pdf" in decision.reason and "staff-expenses-october.xlsx" in decision.reason
+    assert not saved(mongo_store, nb.id, nb.sheet_inkwell).excluded
+
+
+def test_keep_one_accepts_the_card_line_that_pays_the_kept_receipt(mongo_store, records, pages, nb):
+    _, statement = bank_line(nb, mongo_store, pages, "64.80", dt.date(2026, 10, 7), "COSTCO WHOLESALE")
+    decision = resolve(mongo_store, records, client_id=nb.id, thread_id="t1", actor=ACTOR, row_id=nb.receipt,
+                       resolution=keep_receipt(nb), reason="Checked the documents.",
+                       texts=lambda uid: pages.get(uid, []),
+                       evidence=[Evidence(upload_id=nb.upload("costco.txt"), quote="TOTAL  £64.80"),
+                                 Evidence(upload_id=statement, quote="07/10/2026 COSTCO WHOLESALE 64.80")])
+    assert decision.status == "applied" and saved(mongo_store, nb.id, nb.sheet_costco).excluded
+
+
 def test_use_primary_refuses_a_lower_ranked_primary(mongo_store, records, pages, nb):
     backwards = UsePrimary(action="use_primary", primary_row_id=nb.sheet_inkwell, other_row_id=nb.invoice)
     decision = call(mongo_store, records, pages, nb, nb.invoice, backwards, "Total £30.22",
