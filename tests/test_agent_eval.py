@@ -269,3 +269,7 @@ def test_run_case_saves_the_runs_transcript(mongo_store, records, tmp_path):
     assert "Done." in [m["content"] for m in saved["messages"] if m["type"] == "ai"]
     assert [kind for kind, data in saved["events"]][-1] == "done"
     assert saved["answers"] and all(a["status"] == 200 for a in saved["answers"] if "status" in a)
+    # what the review left and what the answers added, as stored
+    assert {r["description"] for r in saved["rows_after_review"]} <= {r["description"] for r in saved["rows_final"]}
+    assert len(saved["rows_final"]) > len(saved["rows_after_review"])   # the Brightline invoice's row
+    assert saved["questions_after_review"] and isinstance(saved["decisions"], list)

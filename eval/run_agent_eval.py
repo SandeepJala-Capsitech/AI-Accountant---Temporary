@@ -300,6 +300,12 @@ def message_json(message) -> dict:
     return out
 
 
+def stored_rows(store, client_id: int) -> list[dict]:
+    """The client's rows as stored, for a transcript: each row's id and upload with its fields."""
+    return [{"id": r.id, "upload_id": r.upload_id, **r.tx.model_dump(mode="json"), "edited": r.original is not None}
+            for r in store.rows(client_id)]
+
+
 def thread_messages(saver, thread_id: str) -> list[dict]:
     """The thread's whole message history, read from the checkpointer the chat keeps it in (the latest checkpoint's
     "messages"), each as message_json gives it; [] when the thread has no checkpoint or no messages in it."""
@@ -328,6 +334,9 @@ def write_transcript(directory: Path, name: str, run: int, *, saver, trace: dict
             messages_error = _safe_error(exc)
     document = {"case": name, "run": run, "thread_id": trace.get("thread_id"), "client_id": trace.get("client_id"),
                 "messages": messages, "events": trace.get("events", []), "answers": trace.get("answers", []),
+                "rows_after_review": trace.get("rows_after_review", []),
+                "questions_after_review": trace.get("questions_after_review", []),
+                "rows_final": trace.get("rows_final", []), "decisions": trace.get("decisions", []),
                 "result": result}
     if messages_error:
         document["messages_error"] = messages_error
@@ -475,9 +484,13 @@ def _run_case(api, store, records, case_dir: Path, rows: Optional[PreparedRows],
         return {i: n for i, n in found.items() if i is not None}
 
     names = scripted._names(store, client_id)
-    asked = named_questions(_check(api.get(f"/api/clients/{client_id}/questions")), names, aliases())
+    questions_after_review = _check(api.get(f"/api/clients/{client_id}/questions"))
+    asked = named_questions(questions_after_review, names, aliases())
     review_posted = _posted(api, client_id, year_start)
     review_tb = net_by_account(review_posted)
+    # What the review left, for the transcript: the rows as stored and the questions as the routes give them.
+    trace["rows_after_review"] = stored_rows(store, client_id)
+    trace["questions_after_review"] = questions_after_review
 
     unapplied = [problem for item in scripted.answers(case_dir)
                  if (problem := _apply_answer(api, row_names, thread["id"], case_dir, item, trace["answers"]))]
@@ -487,6 +500,8 @@ def _run_case(api, store, records, case_dir: Path, rows: Optional[PreparedRows],
     final_posted = _posted(api, client_id, year_start)
     final_tb = net_by_account(final_posted)
     decisions = _check(api.get(f"/api/clients/{client_id}/decisions?year_start={year_start}"))
+    trace["rows_final"] = stored_rows(store, client_id)
+    trace["decisions"] = decisions
 
     tb_diff = score_trial_balance(after_tb, final_tb)
     if before_tb is not None:
