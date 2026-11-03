@@ -101,6 +101,7 @@ def send(api, thread_id: str, text: str, *files: tuple[str, str]) -> list[tuple[
                     files=[("files", (name, body.encode(), "text/plain")) for name, body in files])
     assert sent.status_code == 200, sent.text
     assert sent.headers["content-type"].startswith("text/event-stream")
+    assert "no-transform" in sent.headers["cache-control"]   # or the web app's proxy gzips it and holds it back
     return events_of(sent.text)
 
 

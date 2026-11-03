@@ -474,8 +474,9 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         sent = [sent_file(f, (codes[k] if k < len(codes) else "") or None)
                 for k, f in enumerate(files or []) if f.filename]
         events = chat.send(thread, text.strip(), sent)
+        # no-transform: a compressing proxy, such as the web app's rewrites, would otherwise hold the stream back
         return StreamingResponse((event.sse() for event in events), media_type="text/event-stream",
-                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+                                 headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"})
 
     @app.post("/api/chat/threads/{thread_id}/questions/{question_id}/answer", response_model=ReviewSummary)
     def answer_question(thread_id: str, question_id: str, answer: Answer,
