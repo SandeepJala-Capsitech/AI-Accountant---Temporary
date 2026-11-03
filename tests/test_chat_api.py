@@ -362,7 +362,7 @@ def test_a_note_for_the_agent_is_kept_in_its_memory_but_not_shown(make, mongo_st
 
 # ─── Answers ───────────────────────────────────────────────────────────────────
 
-def test_answer_date_returns_updated_summary(make, client_id):
+def test_answer_date_returns_the_question_and_its_effect(make, client_id):
     api = make(say("The taxi has no date."), reads=[transactions_json(TAXI)])
     thread = new_thread(api, client_id)
     [question] = result_of(send(api, thread["id"], "Review October.", TAXI_RECEIPT))["questions"]
@@ -372,14 +372,48 @@ def test_answer_date_returns_updated_summary(make, client_id):
                         json={"kind": "date", "date": "2026-10-09"})
 
     assert answered.status_code == 200, answered.text
-    summary = answered.json()
-    assert summary["questions"] == []
-    [decision] = summary["sorted"]
+    answered = answered.json()
+    assert (answered["question"]["id"], answered["question"]["status"], answered["question"]["answer"]) == (
+        question["id"], "resolved", "9 Oct 2026")
+    [decision] = answered["sorted"]
     [row_id] = question["row_ids"]
     assert decision["rule"] == "R1 Date from the person" and decision["after"] == {str(row_id): {"date": "2026-10-09"}}
+    # The turn posted the taxi already and its date moves no line: the posting wrote nothing, so nothing is shown.
+    assert (answered["trial_balance"], answered["post"]) == (None, None)
+    assert set(answered) == {"question", "sorted", "trial_balance", "post"}
+
+
+def test_answering_a_question_already_resolved_returns_it_with_no_effect(make, client_id):
+    api = make(say("The taxi has no date."), reads=[transactions_json(TAXI)])
+    thread = new_thread(api, client_id)
+    [question] = result_of(send(api, thread["id"], "Review October.", TAXI_RECEIPT))["questions"]
+    route = f"/api/chat/threads/{thread['id']}/questions/{question['id']}/answer"
+    api.post(route, json={"kind": "date", "date": "2026-10-09"})
+
+    again = api.post(route, json={"kind": "date", "date": "2026-10-09"})
+
+    assert again.status_code == 200, again.text
+    assert again.json()["question"]["status"] == "resolved"
+    assert {k: v for k, v in again.json().items() if k != "question"} == {
+        "sorted": [], "trial_balance": None, "post": None}
+
+
+def test_the_answer_note_is_for_the_agent_not_the_history(make, client_id):
+    api = make(say("The taxi has no date."), say("Noted."), reads=[transactions_json(TAXI)])
+    thread = new_thread(api, client_id)
+    [question] = result_of(send(api, thread["id"], "Review October.", TAXI_RECEIPT))["questions"]
+    note = "Answered: When was this Leeds City Cabs taxi? → 9 Oct 2026"
+
+    api.post(f"/api/chat/threads/{thread['id']}/questions/{question['id']}/answer",
+             json={"kind": "date", "date": "2026-10-09"})
+    send(api, thread["id"], "Thanks.")
+
+    assert [(m.type, m.text) for m in api.model.seen[1][-3:]] == [
+        ("ai", "The taxi has no date."), ("human", note), ("human", "Thanks.")]   # the agent has the note...
     detail = api.get(f"/api/chat/threads/{thread['id']}").json()
-    assert [(m["role"], m["text"]) for m in detail["messages"]][-1] == (
-        "user", "Answered: When was this Leeds City Cabs taxi? → 9 Oct 2026")
+    assert [(m["role"], m["text"]) for m in detail["messages"]] == [
+        ("user", "Review October."), ("assistant", "The taxi has no date."), ("user", "Thanks."),
+        ("assistant", "Noted.")]   # ...and the chat's history doesn't
 
 
 def test_the_next_turn_sees_the_answer(make, client_id):
@@ -405,10 +439,11 @@ def test_upload_answer_moves_out_of_suspense(make, client_id):
                         files={"file": (INVOICE_FILE[0], INVOICE_FILE[1].encode(), "text/plain")})
 
     assert uploaded.status_code == 200, uploaded.text
-    summary = uploaded.json()
-    assert summary["questions"] == [] and summary["trial_balance"]["suspense"] == []
-    assert net(summary, "9998") == "0.00"
-    assert (net(summary, "7500"), net(summary, "2201"), net(summary, "1200")) == ("200.00", "40.00", "-240.00")
+    answered = uploaded.json()
+    assert (answered["question"]["id"], answered["question"]["status"]) == (question["id"], "resolved")
+    assert answered["trial_balance"]["suspense"] == [] and net(answered, "9998") == "0.00"
+    assert (net(answered, "7500"), net(answered, "2201"), net(answered, "1200")) == ("200.00", "40.00", "-240.00")
+    assert answered["post"]["batch_id"]
 
 
 @pytest.mark.parametrize("who, total, file", [
@@ -423,11 +458,24 @@ def test_upload_that_does_not_fit_says_why(make, client_id, who, total, file):
                         files={"file": (file, b"An invoice.", "text/plain")})
 
     assert uploaded.status_code == 200, uploaded.text
-    [still] = uploaded.json()["questions"]
-    assert (still["id"], still["status"]) == (question["id"], "open")
-    assert still["why"] == f"Read {file}, but it doesn't match: {who}, £{total:.2f} against Brightline Print, £240.00."
-    assert uploaded.json()["trial_balance"]["suspense"][0]["gross"] == "240.00"
-    assert net(uploaded.json(), "9998") == "240.00"
+    answered = uploaded.json()
+    assert (answered["question"]["id"], answered["question"]["status"]) == (question["id"], "open")
+    assert answered["question"]["why"] == (
+        f"Read {file}, but it doesn't match: {who}, £{total:.2f} against Brightline Print, £240.00.")
+    assert answered["trial_balance"] is None or answered["trial_balance"]["suspense"][0]["gross"] == "240.00"
+
+
+def test_no_document_leaves_the_question_waiting(make, client_id):
+    api, thread, question = held_payment(make, client_id)
+
+    answered = api.post(f"/api/chat/threads/{thread['id']}/questions/{question['id']}/answer",
+                        json={"kind": "no_document"})
+
+    assert answered.status_code == 200, answered.text
+    answered = answered.json()
+    assert (answered["question"]["id"], answered["question"]["status"], answered["question"]["answer"]) == (
+        question["id"], "waiting", "I don't have it")
+    assert (answered["sorted"], answered["trial_balance"], answered["post"]) == ([], None, None)   # nothing changed
 
 
 def test_questions_survive_restart(make, client_id):
@@ -448,10 +496,11 @@ def test_questions_survive_restart(make, client_id):
                               json={"kind": "date", "date": "2026-10-19"})
 
     assert answered.status_code == 200, answered.text
-    summary = answered.json()   # dated, the invoice is the payment's: both questions go, and so does the Suspense
-    assert summary["questions"] == [] and summary["trial_balance"]["suspense"] == []
-    assert (net(summary, "9998"), net(summary, "7500"), net(summary, "2201")) == ("0.00", "200.00", "40.00")
-    assert summary["post"]["batch_id"] and summary["post"]["reversals_added"] > 0
+    answered = answered.json()   # dated, the invoice is the payment's: both questions go, and so does the Suspense
+    assert answered["question"]["status"] == "resolved" and answered["trial_balance"]["suspense"] == []
+    assert restarted.get(f"/api/clients/{client_id}/questions").json() == []
+    assert (net(answered, "9998"), net(answered, "7500"), net(answered, "2201")) == ("0.00", "200.00", "40.00")
+    assert answered["post"]["batch_id"] and answered["post"]["reversals_added"] > 0
 
 
 def test_thread_history_survives_restart(make, client_id):
@@ -523,7 +572,7 @@ def test_an_answer_waits_for_the_message_running_on_its_chat(make, client_id):
         answering.join(60)
 
     assert answered[0].status_code == 200, answered[0].text
-    assert answered[0].json()["questions"][0]["status"] == "waiting"
+    assert answered[0].json()["question"]["status"] == "waiting"
 
 
 def test_two_chats_on_one_client_run_together_and_post_in_turn(make, client_id, monkeypatch):

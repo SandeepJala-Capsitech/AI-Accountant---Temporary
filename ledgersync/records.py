@@ -169,15 +169,6 @@ class AgentRecords:
             raise NotFound("This chat was not found.")
         return _model(ChatThread, doc)
 
-    def save_summary(self, id: str, summary: dict) -> None:
-        """Keeps the summary (as JSON) the thread's last turn or answer ended with."""
-        self.db.chat_threads.update_one({"_id": id}, {"$set": {"summary": summary}})
-
-    def summary(self, id: str) -> Optional[dict]:
-        """The summary the thread's last turn or answer ended with, as JSON; None before its first."""
-        doc = self.db.chat_threads.find_one({"_id": id}, {"summary": 1})
-        return doc.get("summary") if doc else None
-
     def add_turn(self, thread_id: str, turn: dict) -> None:
         """Keeps the turn (as JSON) after the thread's earlier ones: the id of the person's message, the files it
         carried and the result its turn ended with."""

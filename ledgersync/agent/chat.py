@@ -8,8 +8,9 @@ questions the turn raised (every open one when the agent listed them), and the p
 posted something or the agent fetched it. The thread keeps the result with the files the turn read, under the id of
 the person's message, and reopening the chat shows each with its reply. A turn runs on a thread of its own and goes
 on to the end if the person goes away.
-An answer is applied without the model (questions.answer) and then noted in the chat's memory; a document sent for
-a question is read, the year posted again, and the question says why the document didn't settle it if it didn't."""
+An answer is applied without the model (questions.answer) and then noted in the chat's memory, for the agent alone; a
+document sent for a question is read, the year posted again, and the question says why the document didn't settle it
+if it didn't. Each returns the question as it stands and only what that did."""
 from __future__ import annotations
 
 import datetime as dt
@@ -54,14 +55,6 @@ ANSWER_WAIT = 120.0   # seconds an answer waits for the message running on its c
 _DOCUMENT_KINDS = ("receipt_or_invoice", "vat_invoice")
 
 
-class ReviewSummary(BaseModel):
-    """What an answer, or a document sent for a question, ends with."""
-    sorted: list[Decision]          # the applied decisions this chat made since the turn started
-    questions: list[Question]       # every open or waiting question on the client's year
-    trial_balance: PostedTrialBalance
-    post: PostResult
-
-
 class FileRead(BaseModel):
     """How reading a file sent with a message went: the rows it gave, or why it wasn't read."""
     name: str
@@ -83,6 +76,16 @@ class TurnResult(BaseModel):
 
     def is_empty(self) -> bool:
         return not self.sorted and not self.questions and self.trial_balance is None and self.post is None
+
+
+class AnswerResult(BaseModel):
+    """What an answer, or a document sent for a question, returns: the question as it stands, the applied decisions
+    this chat made since the answer began, and, when the posting wrote something, the posted trial balance and the
+    posting (the posting too when it couldn't write)."""
+    question: Question
+    sorted: list[Decision] = []
+    trial_balance: Optional[PostedTrialBalance] = None
+    post: Optional[PostResult] = None
 
 
 class TurnRecord(BaseModel):
@@ -148,17 +151,6 @@ def sorted_since(records: AgentRecords, thread: ChatThread, since: Since) -> lis
     """The decisions this chat applied since then, oldest first."""
     return [d for d in records.decisions(thread.client_id, since=since.at)
             if d.id not in since.before and d.status == "applied" and d.thread_id == thread.id]
-
-
-def summary(store: MongoStore, records: AgentRecords, thread: ChatThread, since: Since,
-            post: PostResult) -> ReviewSummary:
-    """The summary from the records: what this chat sorted since then, the open and waiting questions on its year,
-    the year's posted trial balance, and the posting."""
-    return ReviewSummary(sorted=sorted_since(records, thread, since),
-                         questions=records.questions(thread.client_id, thread.year_start),
-                         trial_balance=ledger_book.posted_trial_balance(store, records, thread.client_id,
-                                                                        thread.year_start),
-                         post=post)
 
 
 def _config(thread_id: str) -> dict:
@@ -466,11 +458,15 @@ class Chat:
         return ledger_book.post(self.store, self.records, thread.client_id, thread.year_start,
                                 decision_ids=[d.id for d in sorted_since(self.records, thread, since)])
 
-    def _summarised(self, thread: ChatThread, since: Since, post: PostResult) -> ReviewSummary:
-        """The summary, kept as the chat's last."""
-        done = summary(self.store, self.records, thread, since, post)
-        self.records.save_summary(thread.id, done.model_dump(mode="json"))
-        return done
+    def _answered(self, thread: ChatThread, since: Since, question_id: str, post: PostResult) -> AnswerResult:
+        """The question as it stands, with what this chat sorted since then and, when the posting wrote something,
+        the year's posted trial balance and the posting (the posting too when it couldn't write)."""
+        wrote = post.batch_id is not None
+        return AnswerResult(
+            question=self.records.question(question_id), sorted=sorted_since(self.records, thread, since),
+            trial_balance=(ledger_book.posted_trial_balance(self.store, self.records, thread.client_id,
+                                                            thread.year_start) if wrote else None),
+            post=post if wrote or post.problems else None)
 
     # ─── Answers ───────────────────────────────────────────────────────────────
 
@@ -480,11 +476,11 @@ class Chat:
             raise NotFound("This question was not found.")
         return asked
 
-    def answer(self, thread: ChatThread, question_id: str, answer: questions.Answer) -> ReviewSummary:
+    def answer(self, thread: ChatThread, question_id: str, answer: questions.Answer) -> AnswerResult:
         """Applies the person's answer without the model (questions.answer works the questions out and posts),
-        notes it in the chat's memory as "Answered: <question> → <answer>", and returns the summary. It waits for a
-        message running on the chat (ANSWER_WAIT, then StillWorking), as the note mustn't race the run; an answer to
-        a question already resolved changes nothing."""
+        notes it in the chat's memory as "Answered: <question> → <answer>" (a note, which the chat doesn't show), and
+        returns the question with what the answer did. It waits for a message running on the chat (ANSWER_WAIT, then
+        StillWorking), as the note mustn't race the run; an answer to a question already resolved changes nothing."""
         require_active(self.store.get_client(thread.client_id))
         with self.runs.running(thread.id, wait=ANSWER_WAIT):
             asked = self._question(thread, question_id)
@@ -494,14 +490,15 @@ class Chat:
                                             thread_id=thread.id, question_id=question_id, answer=answer)
             if asked.status != "resolved":
                 said = self.records.question(question_id)
-                _say(self.agent, thread.id, f"Answered: {said.text} → {said.answer}")
+                _say(self.agent, thread.id, f"Answered: {said.text} → {said.answer}", note=True)
             self.records.touch_thread(thread.id)
-            return self._summarised(thread, since, answered.post)
+            return self._answered(thread, since, question_id, answered.post)
 
-    def document(self, thread: ChatThread, question_id: str, file: ChatFile) -> ReviewSummary:
+    def document(self, thread: ChatThread, question_id: str, file: ChatFile) -> AnswerResult:
         """Reads the file sent for a question into the client's documents, then records, works the questions out and
         posts as a turn ends. If the question is still asked, its reason says the file didn't match: "Read <name>,
-        but it doesn't match: <payee>, £<total> against <payee>, £<amount>." Returns the summary."""
+        but it doesn't match: <payee>, £<total> against <payee>, £<amount>." Returns the question with what the file
+        did."""
         client = self.store.get_client(thread.client_id)
         require_active(client)
         asked = self._question(thread, question_id)
@@ -520,4 +517,4 @@ class Chat:
                 payment = next((r.tx for r in self.store.rows(client.id) if r.id in still.row_ids[:1]), None)
                 self.records.set_question_why(question_id, _mismatch(file.name, rows, payment))
         self.records.touch_thread(thread.id)
-        return self._summarised(thread, since, post)
+        return self._answered(thread, since, question_id, post)

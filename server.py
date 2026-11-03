@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from ledgersync import accounts, adapter, books, demo, folder, intake, ledger, ledger_book, pipeline, posting
-from ledgersync.agent.chat import Chat, ChatFile, NewThread, ReviewSummary, ThreadDetail, ThreadPatch
+from ledgersync.agent.chat import AnswerResult, Chat, ChatFile, NewThread, ThreadDetail, ThreadPatch
 from ledgersync.blobs import BlobStore, GridFSBlobStore
 from ledgersync.accounts import choosable
 from ledgersync.checks import normalise
@@ -478,13 +478,13 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         return StreamingResponse((event.sse() for event in events), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"})
 
-    @app.post("/api/chat/threads/{thread_id}/questions/{question_id}/answer", response_model=ReviewSummary)
+    @app.post("/api/chat/threads/{thread_id}/questions/{question_id}/answer", response_model=AnswerResult)
     def answer_question(thread_id: str, question_id: str, answer: Answer,
                         x_ledgersync: Optional[str] = Header(None)):
         from_our_pages(x_ledgersync)
         return chat.answer(chat.thread(thread_id), question_id, answer)
 
-    @app.post("/api/chat/threads/{thread_id}/questions/{question_id}/document", response_model=ReviewSummary)
+    @app.post("/api/chat/threads/{thread_id}/questions/{question_id}/document", response_model=AnswerResult)
     def question_document(thread_id: str, question_id: str, file: UploadFile = File(...),
                           x_ledgersync: Optional[str] = Header(None)):
         from_our_pages(x_ledgersync)
