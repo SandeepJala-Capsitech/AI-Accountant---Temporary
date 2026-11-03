@@ -212,6 +212,7 @@ const ISSUE_TITLES: Record<string, string> = {
   statement_gap: "Balance doesn't follow", statement_total: "Statement doesn't add up", mixed_items: 'Mixed items',
   direction_conflict: 'Direction changed', no_payroll: 'No payroll report', wages_from_bank: 'Wages from the bank',
   payroll_owed_to: 'Check the payroll line', sale_without_vat: 'Sale with no VAT', transfer: 'Transfer between accounts',
+  vat_not_booked: 'VAT not booked',
 }
 
 export const issueTitle = (code: string) => ISSUE_TITLES[code] ?? 'Check this'

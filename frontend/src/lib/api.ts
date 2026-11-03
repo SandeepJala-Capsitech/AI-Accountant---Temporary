@@ -60,6 +60,9 @@ export interface Transaction {
                                      // card payment) when it agrees on all but the date (Use)
   amount_found?: string | null       // set by the API: that record's amount, when the two agree on the shop and the day (Use)
   apart_from?: number[]              // rows a person said are not the same as this one, by row id (Not the same)
+  excluded?: boolean                 // a decision left it out of the books
+  superseded_by?: string | null      // the decision that replaced it with other rows
+  decision_ids?: string[]            // the decisions that changed it
 }
 
 export interface AnalyzeResult {
@@ -246,3 +249,9 @@ export function trialBalance(transactions: Transaction[]): Promise<TrialBalanceR
     body: JSON.stringify({ transactions }),
   })
 }
+
+// What the client pages show of the accountant chat, read from its routes (the types are in chat.ts).
+export const clientDecisions = (clientId: number, yearStart: string) =>
+  request<import('./chat.ts').Decision[]>(`/api/clients/${clientId}/decisions?year_start=${yearStart}`)
+export const postedTrialBalance = (clientId: number, yearStart: string) =>
+  request<import('./chat.ts').PostedTrialBalance>(`/api/clients/${clientId}/years/${yearStart}/posted-trial-balance`)

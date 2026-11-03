@@ -1,7 +1,9 @@
 'use client'
 
-import { useMemo, useRef, useState } from 'react'
-import type { Issue } from '@/lib/api'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { clientDecisions, postedTrialBalance, type Issue } from '@/lib/api'
+import { changedFields, type Decision } from '@/lib/chat'
+import { useClientYear } from '@/components/ClientYearContext'
 import type { Ledger, RowChange, SavedRow } from '@/lib/clients'
 import { DOCUMENT_TYPES, transactionCount } from '@/lib/clientRules'
 import { DUPLICATE_WINDOW_DAYS, possibleDuplicates } from '@/lib/duplicates'
@@ -64,6 +66,26 @@ function IssueList({ issues, onShowBoth, onNotSame }: {
   )
 }
 
+// The decisions that touched a row, as the Agent badge's popover shows them: the rule, what it was based on, and
+// what changed.
+function AgentBadge({ decisions }: { decisions: Decision[] }) {
+  return (
+    <details className="small agent-decisions">
+      <summary className="badge badge-accent">Agent</summary>
+      {decisions.map(d => (
+        <div key={d.id}>
+          <strong>{d.rule}</strong>{d.status === 'refused' && ' (refused)'}
+          {d.reason && <div>{d.reason}</div>}
+          {d.evidence.map((e, k) => <div key={k} className="muted">{e.upload_name}: “{e.quote}”</div>)}
+          {changedFields(d).map((c, k) => (
+            <div key={k} className="muted">Row {c.row} {c.field}: {c.before} → {c.after}</div>
+          ))}
+        </div>
+      ))}
+    </details>
+  )
+}
+
 // The client's saved rows: what needs review and why, statuses with Link, Unlink and Include, Edit, Add line,
 // Remove and Revert, and totals. When readOnly (a closed year or an archived client) no control changes a row; Show
 // both and the filters still work.
@@ -75,7 +97,26 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
   onAdd?: (lineOf: SavedRow | null) => void     // a new transaction, or a line of the row's document
   onRemove?: (row: SavedRow) => void
 }) {
+  const { client, year } = useClientYear()
   const rows = ledger.transactions
+  const [decisions, setDecisions] = useState<Map<string, Decision>>(new Map())
+  const [held, setHeld] = useState<Set<number>>(new Set())   // rows waiting in Suspense for a document
+  // The decisions and the posted ledger's held rows are read again whenever the rows are loaded again; a failure
+  // leaves the table as it was.
+  useEffect(() => {
+    let current = true
+    clientDecisions(client.id, year.start)
+      .then(found => { if (current) setDecisions(new Map(found.map(d => [d.id, d]))) }).catch(() => {})
+    postedTrialBalance(client.id, year.start)
+      .then(tb => { if (current) setHeld(new Set(tb.suspense.filter(s => s.needs).map(s => s.row_id))) }).catch(() => {})
+    return () => { current = false }
+  }, [client.id, year.start, ledger])
+  // Why a row was left out: the reason of the decision that did it (the latest of those that touched the row).
+  const whyLeftOut = (row: SavedRow): string | null => {
+    const ids = row.superseded_by ? [row.superseded_by] : [...(row.decision_ids ?? [])].reverse()
+    for (const id of ids) { const d = decisions.get(id); if (d?.reason) return d.reason }
+    return null
+  }
   const [only, setOnly] = useState<string | null>(null)   // an issue code, 'review' for every flagged row, or all
   const [focus, setFocus] = useState<number[] | null>(null)   // rows shown side by side (Show both), or none
   const card = useRef<HTMLElement>(null)
@@ -157,11 +198,18 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
               const origin = `${uploads.get(row.upload_id) ?? ''} · ${DOCUMENT_TYPES[row.document_type ?? 'receipt'] ?? row.document_type}`
               const classes = [kindOf(row) === 'not booked' ? 'row-not-booked' : '',
                                check.cls === 'check-error' ? 'row-flag-error' : check.cls === 'check-warn' ? 'row-flag-warn' : '']
+              const left = !!(row.excluded || row.superseded_by)
+              const touched = (row.decision_ids ?? []).flatMap(id => decisions.get(id) ?? [])
               return (
                 <tr key={row.id} className={classes.filter(Boolean).join(' ') || undefined}>
                   <td className="mono">{row.date ?? '—'}</td>
                   <td>
-                    {row.description}
+                    <span style={left ? { textDecoration: 'line-through' } : undefined}>{row.description}</span>
+                    {!!row.decision_ids?.length && (touched.length ? <AgentBadge decisions={touched} />
+                      : <span className="badge badge-accent">Agent</span>)}
+                    {left && <div className="row-status">{row.superseded_by ? 'Replaced' : 'Left out'}
+                      {whyLeftOut(row) && `: ${whyLeftOut(row)}`}</div>}
+                    {held.has(row.id) && <div className="row-status"><span className="badge badge-warn">Documentation required</span></div>}
                     {row.edited && <span className="badge badge-muted edited" title={originalText(row)}>Edited</span>}
                     <div className="row-origin" title={origin}>{origin}</div>
                     {[...rowStatus(row, id => byId.get(id)), ...[apartStatus(row, id => described.get(id))].filter(s => s !== null)]
