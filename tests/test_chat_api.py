@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.mongodb import MongoDBSaver
 
-from ledgersync import ledger
+from ledgersync import ledger, ledger_book
 from ledgersync.agent import AgentDeps, build_agent
 from ledgersync.agent import chat as chat_module
 from ledgersync.blobs import MemoryBlobStore
@@ -512,3 +512,20 @@ def test_client_routes_list_questions_decisions_and_posted_trial_balance(make, c
     assert decision["rule"] == "R1 Date from the person"
     posted = api.get(f"/api/clients/{client_id}/years/{YEAR}/posted-trial-balance").json()
     assert posted["is_balanced"] and net({"trial_balance": posted}, "7400") == "18.00"
+
+
+def test_posted_trial_balance_reports_unposted_changes(make, mongo_store, mongo_db, client_id):
+    api = make(say("The taxi has no date."), reads=[transactions_json(TAXI)])
+    thread = new_thread(api, client_id)
+    [question] = summary_of(send(api, thread["id"], "Review October.", TAXI_RECEIPT))["questions"]
+    api.post(f"/api/chat/threads/{thread['id']}/questions/{question['id']}/answer",
+             json={"kind": "date", "date": "2026-10-09"})
+    route = f"/api/clients/{client_id}/years/{YEAR}/posted-trial-balance"
+    assert api.get(route).json()["unposted_changes"] == 0   # answering posted the row
+
+    [row_id] = question["row_ids"]
+    mongo_store.patch_row(client_id, row_id, {"excluded": True})   # a person drops the row after it was posted
+    assert api.get(route).json()["unposted_changes"] == 1
+
+    ledger_book.post(mongo_store, AgentRecords(mongo_db), client_id, dt.date.fromisoformat(YEAR))
+    assert api.get(route).json()["unposted_changes"] == 0

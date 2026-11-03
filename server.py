@@ -510,7 +510,9 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
     @app.get("/api/clients/{client_id}/years/{start}/posted-trial-balance", response_model=PostedTrialBalance)
     def posted_trial_balance(client_id: int, start: dt.date):
         store.get_client(client_id)
-        return ledger_book.posted_trial_balance(store, chat.records, client_id, start)
+        tb = ledger_book.posted_trial_balance(store, chat.records, client_id, start)
+        tb.unposted_changes = ledger_book.unposted_changes(store, chat.records, client_id, start)
+        return tb
 
     if settings.demo:   # otherwise there is no such route
         @app.post("/api/demo/reset")

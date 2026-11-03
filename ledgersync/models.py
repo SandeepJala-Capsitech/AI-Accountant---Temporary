@@ -251,8 +251,10 @@ class SuspenseItem(BaseModel):
 class PostedTrialBalance(TrialBalance):
     """The trial balance of the posted ledger: the opening balances plus every entry posted, and the rows posted to
     Suspense. Its journal is the posted entries, each with its row id as its transaction. problems: why the opening
-    or what the Suspense items need couldn't be worked out (rows need fixing)."""
+    or what the Suspense items need couldn't be worked out (rows need fixing). unposted_changes: how many rows
+    would post something on the next posting (0 unless the route or summary fills it in)."""
     suspense: list[SuspenseItem] = Field(default_factory=list)
+    unposted_changes: int = 0
     problems: list[str] = Field(default_factory=list)
 
 
