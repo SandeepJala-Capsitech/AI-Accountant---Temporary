@@ -609,7 +609,9 @@ def test_a_card_payment_for_a_receipt_the_claim_books_warns_that_it_counts_twice
     assert (receipt.claimed_in.ref, claim.recorded_by.ref, line.recorded_by, line.pays) == ("claim", "costco", None, [])
     assert ("booked_twice", "warning") in codes(line) and about(line, "booked_twice") == [0, 1]
     assert next(i.message for i in line.issues if i.code == "booked_twice") == (
-        "Also booked from the expenses sheet's receipt (Costco Wholesale UK Ltd, £58.00, 21 Oct 2026). Keep one.")
+        "Also booked from the expenses sheet's receipt (Costco Wholesale UK Ltd, £58.00, 21 Oct 2026). If this line "
+        "paid it, drop the expenses sheet line: this line then pays the receipt.")
+    assert "Keep one" not in line.issues[-1].message
     assert [code for code, _ in codes(receipt) + codes(claim)].count("booked_twice") == 0
 
 

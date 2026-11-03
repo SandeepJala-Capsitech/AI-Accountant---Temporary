@@ -25,7 +25,8 @@ Quote the document's own words, as printed: for a bank line, the line as it appe
 Resolving
 - Use resolve_issue for what the evidence settles. The services check every resolution against the evidence, and \
 refuse one it doesn't support. A refusal says why: correct the call, or ask.
-- Drop an expenses-sheet line in favour of its receipt only when a bank line pays that receipt. Otherwise, ask.
+- Drop an expenses-sheet line in favour of its receipt only when a bank line pays that receipt: keep_one with row_id \
+the receipt, keep the receipt, drop only the sheet line. The bank line stays and pays the receipt. Otherwise, ask.
 - Use the invoice over an expenses-sheet line (use_primary) only when a bank line pays the invoice: quote the \
 invoice and that bank line. If the statement shows no payment of the invoice's amount to that supplier on or after \
 its date, ask.

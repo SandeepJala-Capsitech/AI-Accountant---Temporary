@@ -2,16 +2,20 @@
 a decision. Rows like Northbridge Consulting's October: a mixed-VAT Costco receipt, the Inkwell invoice, and a staff
 expenses sheet that repeats both."""
 import datetime as dt
+import json
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from helpers import net, row
-from ledgersync import books
+from ledgersync import books, documents, ledger_book
+from ledgersync.blobs import GridFSBlobStore
 from ledgersync.checks import booked
 from ledgersync.errors import InvalidInput
-from ledgersync.models import ClientFields, ClosedYear, Evidence, Issue
+from job_scoring import net_by_account
+from ledgersync.models import ClientFields, ClosedYear, Evidence, Issue, Transaction
 from ledgersync.records import AgentRecords
 from ledgersync.resolutions import (KeepOne, SplitPart, SplitVat, UsePrimary, VatFromDocument, record_automatic,
                                     resolve, set_date)
@@ -226,6 +230,78 @@ def test_keep_one_accepts_the_card_line_that_pays_the_kept_receipt(mongo_store, 
                        evidence=[Evidence(upload_id=nb.upload("costco.txt"), quote="TOTAL  £64.80"),
                                  Evidence(upload_id=statement, quote="07/10/2026 COSTCO WHOLESALE 64.80")])
     assert decision.status == "applied" and saved(mongo_store, nb.id, nb.sheet_costco).excluded
+
+
+# ─── keep_one: the bank line that pays the receipt kept (the duplicate-receipt-spreadsheet case) ───────────────
+
+CASE = Path(__file__).parent.parent / "eval" / "agent_cases" / "duplicate-receipt-spreadsheet"
+
+
+@pytest.fixture
+def staples(mongo_store, mongo_db, records):
+    """The case's files added with the rows their .rows.json give: the Staples receipt, the expenses sheet line for it
+    and the Barclays card line that paid it."""
+    store = mongo_store
+    blobs = GridFSBlobStore(mongo_db)
+    client_id = new_client(store, "Northbridge Consulting Ltd")
+    for name in ("barclays-october.csv", "staff-expenses-october.xlsx", "staples-receipt.txt"):
+        path = CASE / "documents" / name
+        read = json.loads((CASE / "documents" / f"{name}.rows.json").read_text())
+        sha256 = blobs.put(path.read_bytes(), name=name, content_type="application/octet-stream")
+        store.add_upload(client_id, name, read["kind"], [Transaction.model_validate(t) for t in read["transactions"]],
+                         sha256=sha256, bank_account=read["bank_account"], year_start=YEAR)
+    uploads = {u["id"]: u for u in store.uploads(client_id)}
+    by_name = {u["name"]: n for n, u in uploads.items()}
+    by_text = {r.tx.description: r.id for r in store.rows(client_id)}
+    return SimpleNamespace(
+        id=client_id, receipt=by_text["Staples: A4 printer paper and toner"],
+        sheet=by_text["Staples - printer paper and toner"], bank=by_text["STAPLES"],
+        upload=by_name.__getitem__, texts=lambda uid: documents.text_of(uploads[uid], blobs, records))
+
+
+def staples_call(store, records, staples, row_id, drop):
+    keep = KeepOne(action="keep_one", keep_row_id=staples.receipt, drop_row_ids=drop)
+    return resolve(store, records, client_id=staples.id, thread_id="t1", actor=ACTOR, row_id=row_id,
+                   resolution=keep, reason="Checked the documents.", texts=staples.texts,
+                   evidence=[Evidence(upload_id=staples.upload("staples-receipt.txt"), quote="TOTAL 64.80"),
+                             Evidence(upload_id=staples.upload("barclays-october.csv"), quote="13/10/2026,")])
+
+
+def test_keep_one_refuses_to_drop_the_bank_line_that_pays_the_receipt_kept(mongo_store, records, staples):
+    decision = staples_call(mongo_store, records, staples, staples.bank, [staples.bank, staples.sheet])
+    assert decision.status == "refused" and "is its payment, not a duplicate" in decision.reason
+    assert f"Row {staples.bank}, the bank line, pays the receipt kept" in decision.reason
+    assert not saved(mongo_store, staples.id, staples.bank).excluded
+    assert not saved(mongo_store, staples.id, staples.sheet).excluded
+
+
+def test_keep_one_keeps_the_receipt_and_the_bank_line_that_pays_it(mongo_store, records, staples):
+    decision = staples_call(mongo_store, records, staples, staples.receipt, [staples.sheet])
+    assert decision.status == "applied" and decision.row_ids == sorted([staples.receipt, staples.sheet])
+    assert saved(mongo_store, staples.id, staples.sheet).excluded
+    assert not saved(mongo_store, staples.id, staples.bank).excluded
+    line, receipt = shown(mongo_store, staples.id, staples.bank), shown(mongo_store, staples.id, staples.receipt)
+    assert line.recorded_by is not None and line.recorded_by.ref == receipt.document_ref and not booked(line)
+    assert booked(receipt) and [p.ref for p in receipt.paid_by] == [line.document_ref]
+    ledger_book.post(mongo_store, records, staples.id, YEAR)
+    tb = ledger_book.posted_trial_balance(mongo_store, records, staples.id, YEAR)
+    expected = {k: Decimal(v) for k, v in json.loads((CASE / "expected_trial_balance.json").read_text()).items()}
+    assert net_by_account(tb.model_dump()) == expected
+
+
+def test_keep_one_still_drops_a_bank_line_read_twice(mongo_store, records, pages, nb):
+    def inkwell():
+        return row(date=dt.date(2026, 10, 12), description="INKWELL SUPPLIES", counterparty="INKWELL SUPPLIES",
+                   gross=Decimal("30.22"), account_code="7500", document_type="statement")
+
+    first, second = add(mongo_store, nb.id, pages, "barclays-october.csv", "12/10/2026 INKWELL SUPPLIES 30.22",
+                        inkwell(), inkwell(), kind="table")
+    statement = nb.upload("barclays-october.csv")
+    twice = KeepOne(action="keep_one", keep_row_id=first, drop_row_ids=[second])
+    decision = resolve(mongo_store, records, client_id=nb.id, thread_id="t1", actor=ACTOR, row_id=second,
+                       resolution=twice, reason="The statement was read twice.", texts=lambda uid: pages.get(uid, []),
+                       evidence=[Evidence(upload_id=statement, quote="12/10/2026 INKWELL SUPPLIES 30.22")])
+    assert decision.status == "applied" and saved(mongo_store, nb.id, second).excluded
 
 
 def test_use_primary_refuses_a_lower_ranked_primary(mongo_store, records, pages, nb):

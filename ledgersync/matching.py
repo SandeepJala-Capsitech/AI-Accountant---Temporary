@@ -426,8 +426,9 @@ def _pair_receipts(rows: list[Transaction], changes: list[dict], lines: list[int
 def _paid_again(rows: list[Transaction], changes: list[dict], lines: list[int], apart: list[set[int]]) -> None:
     """Each bank line nothing was matched to whose amount, counterparty and date are those of a receipt an expense
     claim line records: the receipt books the purchase, owed to the claimant, and the line books it again. The line
-    warns booked_twice, pointing at the receipt and the claim line; which one is kept is for a person to say. A
-    person's Link or Unlink on the line, or saying they are not the same, keeps them apart."""
+    warns booked_twice, pointing at the receipt and the claim line: if the line paid it, the claim line is the one to
+    drop, and the line then pays the receipt. A person's Link or Unlink on the line, or saying they are not the same,
+    keeps them apart."""
     receipts = _grouped(rows, lambda tx: tx.document_type == "receipt" and tx.claimed_in is not None and booked(tx))
     claim_lines: dict[str, list[int]] = {}
     for n, tx in enumerate(rows):
@@ -442,7 +443,8 @@ def _paid_again(rows: list[Transaction], changes: list[dict], lines: list[int], 
                         and not any(k in apart[n] for k in r.rows)), None)
         if receipt is not None:
             twice = issue("booked_twice", f"Also booked from the expenses sheet's receipt ({receipt.counterparty}, "
-                                          f"{_gbp(receipt.total)}, {long_date(receipt.date)}). Keep one.",
+                                          f"{_gbp(receipt.total)}, {long_date(receipt.date)}). If this line paid it, drop "
+                                          "the expenses sheet line: this line then pays the receipt.",
                           related=receipt.rows + claim_lines.get(receipt.ref, []))
             change["issues"] = change.get("issues", line.issues) + [twice]
 

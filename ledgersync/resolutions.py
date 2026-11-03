@@ -177,7 +177,8 @@ def _usable(row: SavedRow, kept: bool = True) -> None:
 
 def _keep_one(rows: dict[int, SavedRow], row_id: int, r: KeepOne, **_) -> _Change:
     """R2: the rows are one transaction (a duplicate issue links them, or the same amount and counterparty within a
-    few days), and the kept row ranks at least as high as each dropped one. The dropped rows leave the books."""
+    few days), and the kept row ranks at least as high as each dropped one. The dropped rows leave the books, but not
+    the bank line that pays the receipt or invoice kept: that is its payment, not a duplicate."""
     named = [r.keep_row_id, *r.drop_row_ids]
     if not r.drop_row_ids or len(set(named)) < len(named) or row_id not in named:
         raise _Refused(f"Keep one row and drop others, row {row_id} among them.")
@@ -190,6 +191,11 @@ def _keep_one(rows: dict[int, SavedRow], row_id: int, r: KeepOne, **_) -> _Chang
                            "links them, and they differ in amount, counterparty or date.")
         if _rank(drop) > _rank(keep):
             raise _Refused(f"Row {drop.id}, a {_kind(drop)}, ranks above the {_kind(keep)} kept.")
+        if (drop.document_type == "statement" and keep.document_type in ("receipt", "invoice")
+                and drop.id in {line.id for line in _paying_lines(rows, keep)}):
+            raise _Refused(f"Row {drop.id}, the bank line, pays the {_kind(keep)} kept: it is its payment, not a "
+                           f"duplicate. Keep the {_kind(keep)} and drop only the expenses-sheet line, with the "
+                           f"{_kind(keep)} as row_id; the bank line then pays it.")
     return _Change(rule=f"R2 Duplicate: kept the {_kind(keep)}", touched=named,
                    patches={n: {"excluded": True} for n in r.drop_row_ids})
 
