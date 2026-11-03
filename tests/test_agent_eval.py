@@ -235,3 +235,37 @@ def test_without_the_fallback_an_unmatched_name_stays_unmatched(mongo_store, tmp
     client_id = _store_rows(mongo_store, _row("Renamed"))
     names = agent_eval.RowNames(mongo_store, client_id, case)
     assert names.id(name("A")) is None and names.fallbacks == []
+
+
+def test_run_case_saves_the_runs_transcript(mongo_store, records, tmp_path):
+    """The demo on a chat model that says "Done.": the run's ids are in its result, and the transcript holds the
+    thread's messages from the chat's checkpoints, the events of the turn, and each answer route's reply."""
+    from agent_fakes import ScriptedChatModel, say
+    from fakes import FakeModel
+    from fastapi.testclient import TestClient
+    from langgraph.checkpoint.mongodb import MongoDBSaver
+
+    from ledgersync.config import Settings
+    from server import create_app
+
+    rows = agent_eval.PreparedRows()
+    rows.install()
+    try:
+        app = create_app(Settings(warmup=False), model_client=FakeModel([]), store=mongo_store,
+                         chat_model=ScriptedChatModel(then=say("Done.")))
+        saver = MongoDBSaver(mongo_store.client, db_name=f"{mongo_store.db_name}_checkpoints")
+        with TestClient(app, headers={"X-LedgerSync": "1"}) as api:
+            result = agent_eval.run_case(api, mongo_store, records, ROOT / "demo" / "northbridge", rows, "scripted",
+                                         run=2, transcripts=tmp_path / "runs", saver=saver, label="demo")
+    finally:
+        rows.uninstall()
+
+    saved = json.loads((tmp_path / "runs" / "demo-r2.json").read_text())
+    assert result["transcript"] == "demo-r2.json" and result["run"] == 2
+    assert saved["thread_id"] == result["thread_id"] and saved["client_id"] == result["client_id"]
+    assert saved["result"]["case"] == result["case"]
+    humans = [m for m in saved["messages"] if m["type"] == "human"]
+    assert humans and "Review these documents" in humans[0]["content"]
+    assert "Done." in [m["content"] for m in saved["messages"] if m["type"] == "ai"]
+    assert [kind for kind, data in saved["events"]][-1] == "done"
+    assert saved["answers"] and all(a["status"] == 200 for a in saved["answers"] if "status" in a)

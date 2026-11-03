@@ -12,10 +12,14 @@ and a run fails if it has an error event, a failed step, an answer that could no
   .venv/bin/python eval/run_agent_eval.py                                   # every case and the demo, on the real models
   .venv/bin/python eval/run_agent_eval.py --case clean-month --read rows    # one case, files read from their .rows.json
   .venv/bin/python eval/run_agent_eval.py --runs 3 --case demo
+  .venv/bin/python eval/run_agent_eval.py --case demo --transcripts /tmp/runs    # also save each run's transcript
 
 It spends OpenRouter credit (the agent's model, and the vision model unless --read rows) and needs the MongoDB
 cluster; it uses its own database (--db), dropped by nobody. Writes eval/results/<date>-agent.json (every run of
-every case) and prints a table; exits 0 only when every run passed all three scores.
+every case) and prints a table; exits 0 only when every run passed all three scores. With --transcripts DIR it also
+writes DIR/<case>-r<run>.json for each run, right after it: the thread's whole message history as the agent saw it (read
+from the chat's checkpoints), the events of the review turn, what the answer routes were sent and replied, and the
+run's result. A demo reset deletes the demo's checkpoints, so the transcript is taken before the next run starts.
 
 The scoring functions take plain data, so a test can score a case worked with no model."""
 from __future__ import annotations
@@ -241,6 +245,100 @@ class PreparedRows:
 
 # ─── The run ──────────────────────────────────────────────────────────────────────────────────────────────────────
 
+# ─── A run's transcript: what the agent saw and said, for finding why a run went wrong ──────────────────────────────
+
+def _blocks(content) -> tuple[str, list[dict], list]:
+    """Message content as (its text, its reasoning, its other blocks). A list's text blocks are joined as they come;
+    a reasoning, thinking or redacted block is kept as reasoning, labelled with where it was found."""
+    if isinstance(content, str):
+        return content, [], []
+    text, reasoning, other = [], [], []
+    for block in content or []:
+        if isinstance(block, str):
+            text.append(block)
+        elif block.get("type") == "text":
+            text.append(block.get("text", ""))
+        elif block.get("type") in ("reasoning", "thinking", "redacted_thinking"):
+            summary = " ".join(p.get("text", "") for p in block.get("summary") or [] if isinstance(p, dict))
+            said = block.get("reasoning") or block.get("thinking") or block.get("text") or summary
+            reasoning.append({"from": f"content block ({block['type']})", "text": said or json.dumps(block, default=str)})
+        else:
+            other.append(block)
+    return "".join(text), reasoning, other
+
+
+def message_json(message) -> dict:
+    """One message of the agent's history as plain JSON: its type (human, ai, tool, system), its content in full as
+    text, the reasoning it carries (from its content blocks or from additional_kwargs, labelled), and for an AI message
+    its tool calls (name, args, id; those the model garbled under invalid_tool_calls), for a tool message its name,
+    tool_call_id and status."""
+    text, reasoning, other = _blocks(message.content)
+    extra = getattr(message, "additional_kwargs", None) or {}
+    for key in ("reasoning_content", "reasoning"):
+        if extra.get(key):
+            reasoning.append({"from": f"additional_kwargs.{key}", "text": extra[key]})
+    if extra.get("reasoning_details"):
+        reasoning.append({"from": "additional_kwargs.reasoning_details", "details": extra["reasoning_details"]})
+    out = {"type": message.type, "content": text}
+    if getattr(message, "name", None):
+        out["name"] = message.name
+    if reasoning:
+        out["reasoning"] = reasoning
+    if other:
+        out["other_blocks"] = other
+    if message.type == "ai":
+        out["tool_calls"] = [{"name": c["name"], "args": c["args"], "id": c["id"]}
+                             for c in getattr(message, "tool_calls", None) or []]
+        if getattr(message, "invalid_tool_calls", None):
+            out["invalid_tool_calls"] = list(message.invalid_tool_calls)
+        finish = (getattr(message, "response_metadata", None) or {}).get("finish_reason")
+        if finish:
+            out["finish_reason"] = finish
+    if message.type == "tool":
+        out["tool_call_id"] = message.tool_call_id
+        out["status"] = getattr(message, "status", None)
+    return out
+
+
+def thread_messages(saver, thread_id: str) -> list[dict]:
+    """The thread's whole message history, read from the checkpointer the chat keeps it in (the latest checkpoint's
+    "messages"), each as message_json gives it; [] when the thread has no checkpoint or no messages in it."""
+    found = saver.get_tuple({"configurable": {"thread_id": thread_id}})
+    if found is None:
+        return []
+    return [message_json(m) for m in (found.checkpoint.get("channel_values") or {}).get("messages") or []]
+
+
+def _safe_error(exc: Exception) -> str:
+    """An error as a line for the transcript; a database error is named only, as its text can carry the cluster's
+    address."""
+    return type(exc).__name__ if type(exc).__module__.startswith("pymongo") else f"{type(exc).__name__}: {exc}"
+
+
+def write_transcript(directory: Path, name: str, run: int, *, saver, trace: dict, result: Optional[dict],
+                     error: Optional[str] = None) -> Path:
+    """Writes directory/<name>-r<run>.json: the run's messages (from saver, by the thread's id), the events of the
+    review turn as [kind, data], the answers sent and what the routes replied, and the run's result (None when it
+    couldn't finish, with error saying why). A failure to read the messages is recorded, not raised."""
+    messages, messages_error = [], None
+    if saver is not None and trace.get("thread_id"):
+        try:
+            messages = thread_messages(saver, trace["thread_id"])
+        except Exception as exc:
+            messages_error = _safe_error(exc)
+    document = {"case": name, "run": run, "thread_id": trace.get("thread_id"), "client_id": trace.get("client_id"),
+                "messages": messages, "events": trace.get("events", []), "answers": trace.get("answers", []),
+                "result": result}
+    if messages_error:
+        document["messages_error"] = messages_error
+    if error:
+        document["error"] = error
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{name}-r{run}.json"
+    path.write_text(json.dumps(document, indent=2, ensure_ascii=False, default=str) + "\n")
+    return path
+
+
 def events_of(body: str) -> list[tuple[str, dict]]:
     """The server-sent events of a stream, as (type, data)."""
     events = []
@@ -284,29 +382,66 @@ def _posted(api, client_id: int, year_start: dt.date) -> dict:
     return _check(api.get(f"/api/clients/{client_id}/years/{year_start}/posted-trial-balance"))
 
 
-def _apply_answer(api, row_names: RowNames, thread_id: str, case_dir: Path, item: dict) -> Optional[str]:
-    """Answers the question item names, through its route; why it couldn't be, or None."""
+def _apply_answer(api, row_names: RowNames, thread_id: str, case_dir: Path, item: dict,
+                  log: Optional[list] = None) -> Optional[str]:
+    """Answers the question item names, through its route; why it couldn't be, or None. log: where to note what was
+    sent and what came back (or why nothing was sent)."""
+    log = [] if log is None else log
     asked, given = item["question"], item["answer"]
     client_id = row_names.client_id
     row_id = row_names.id(asked["row"])
     if row_id is None:
+        log.append({"question": asked, "not_sent": f"No row is named {asked['row']}."})
         return f"No row is named {asked['row']}."
     question = next((q for q in _check(api.get(f"/api/clients/{client_id}/questions"))
                      if q["kind"] == asked["kind"] and q["row_ids"][:1] == [row_id]), None)
     if question is None:
+        log.append({"question": asked, "not_sent": f"No {asked['kind']} question is open on {asked['row']}."})
         return f"No {asked['kind']} question is open on {asked['row']}."
     base = f"/api/chat/threads/{thread_id}/questions/{question['id']}"
     if given["kind"] == "upload":
-        response = api.post(f"{base}/document", files={"file": _multipart(case_dir / given["file"])})
+        route, sent = f"{base}/document", {"file": given["file"]}
+        response = api.post(route, files={"file": _multipart(case_dir / given["file"])})
     else:
-        response = api.post(f"{base}/answer", json=given)
+        route, sent = f"{base}/answer", given
+        response = api.post(route, json=given)
+    try:
+        body = response.json()
+    except ValueError:
+        body = response.text
+    log.append({"question": asked, "question_id": question["id"], "route": f"POST {route}", "sent": sent,
+                "status": response.status_code, "body": body})
     return None if response.status_code < 400 else f"{response.status_code} {response.text[:300]}"
 
 
-def run_case(api, store, records, case_dir: Path, rows: Optional[PreparedRows], model: str) -> dict:
+def run_case(api, store, records, case_dir: Path, rows: Optional[PreparedRows], model: str, *, run: int = 1,
+             transcripts: Optional[Path] = None, saver=None, label: Optional[str] = None) -> dict:
     """One run of a case: its scores, and what the turn cost (seconds, steps, failed steps, error events, refused
-    decisions)."""
-    case_dir = Path(case_dir)
+    decisions), with the ids of its client and thread. transcripts: a folder to write the run's transcript in, as
+    write_transcript does, before this returns (or raises); saver is the checkpointer the thread's messages are read
+    from, and label what the file is named (the case's name by default)."""
+    trace = {"events": [], "answers": []}
+    try:
+        result = _run_case(api, store, records, Path(case_dir), rows, model, trace)
+    except Exception as exc:
+        if transcripts is not None:
+            write_transcript(transcripts, label or Path(case_dir).name, run, saver=saver, trace=trace, result=None,
+                             error=_safe_error(exc))
+        raise
+    result["run"] = run
+    if transcripts is not None:
+        try:
+            path = write_transcript(transcripts, label or Path(case_dir).name, run, saver=saver, trace=trace,
+                                    result=result)
+            result["transcript"] = path.name
+        except OSError as exc:   # a folder that can't be written doesn't lose the run's scores
+            result["transcript_error"] = f"{type(exc).__name__}: {exc}"
+    return result
+
+
+def _run_case(api, store, records, case_dir: Path, rows: Optional[PreparedRows], model: str, trace: dict) -> dict:
+    """run_case without the transcript: trace gets the run's ids, the events of its review turn and the answers sent
+    as they happen, so a run that fails part way still leaves what it had."""
     expected_decisions = json.loads((case_dir / "expected_decisions.json").read_text())
     expected_questions = json.loads((case_dir / "expected_questions.json").read_text())
     before_tb, after_tb = expected_trial_balances(case_dir)
@@ -316,12 +451,14 @@ def run_case(api, store, records, case_dir: Path, rows: Optional[PreparedRows], 
     client_id = _add_client(api, store, records, case_dir)
     year_start = dt.date.fromisoformat(_check(api.get(f"/api/clients/{client_id}/years"))[0]["start"])
     thread = _check(api.post("/api/chat/threads", json={"client_id": client_id}))
+    trace.update(client_id=client_id, thread_id=thread["id"])
 
     sent = api.post(f"/api/chat/threads/{thread['id']}/messages", data={"text": MESSAGE},
                     files=[("files", _multipart(p)) for p in scripted._documents(case_dir)])
     if sent.status_code != 200:
         raise RuntimeError(f"The message was refused: {sent.status_code} {sent.text[:300]}")
     events = events_of(sent.text)
+    trace["events"] = events
     steps: dict[str, dict] = {}
     for kind, data in events:
         if kind == "step":
@@ -343,7 +480,7 @@ def run_case(api, store, records, case_dir: Path, rows: Optional[PreparedRows], 
     review_tb = net_by_account(review_posted)
 
     unapplied = [problem for item in scripted.answers(case_dir)
-                 if (problem := _apply_answer(api, row_names, thread["id"], case_dir, item))]
+                 if (problem := _apply_answer(api, row_names, thread["id"], case_dir, item, trace["answers"]))]
     seconds = round(time.monotonic() - started, 1)
     names = scripted._names(store, client_id)   # an answer's document adds rows
     asked_after = named_questions(_check(api.get(f"/api/clients/{client_id}/questions")), names, aliases())
@@ -369,6 +506,7 @@ def run_case(api, store, records, case_dir: Path, rows: Optional[PreparedRows], 
                    if final_posted["unposted_changes"] else []))
     return {
         "case": case_dir.name, "model": model, "seconds": seconds,   # the review turn and the answers
+        "client_id": client_id, "thread_id": thread["id"],
         "trial_balance": {"passed": not tb_diff, "differences": tb_diff},
         "decisions": {"passed": not d_diff, "differences": d_diff},
         "questions": {"passed": not q_diff, "differences": q_diff},
@@ -404,13 +542,21 @@ def table(runs: list[dict]) -> str:
     return "\n".join("  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)) for row in rows)
 
 
-def main(argv=None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="The accountant chat on every hand-worked case, scored.")
     parser.add_argument("--case", action="append", help='a case folder name, or "demo"; repeat for several')
     parser.add_argument("--runs", type=int, default=1)
     parser.add_argument("--read", choices=["model", "rows"], default="model",
                         help="rows: files read from their .rows.json, so only the agent is real")
     parser.add_argument("--db", default="ledgersync_agent_eval")
+    parser.add_argument("--transcripts", type=Path, default=None, metavar="DIR",
+                        help="also write DIR/<case>-r<run>.json for each run: the agent's messages, the events, "
+                             "the answers sent and the result")
+    return parser
+
+
+def main(argv=None) -> int:
+    parser = build_parser()
     args = parser.parse_args(argv)
 
     available = {p.name: p for p in sorted(CASES_DIR.iterdir()) if (p / "client.json").exists()}
@@ -421,6 +567,7 @@ def main(argv=None) -> int:
         parser.error(f"unknown case {unknown}; choose from {sorted(available)}")
 
     from fastapi.testclient import TestClient
+    from langgraph.checkpoint.mongodb import MongoDBSaver
     from ledgersync.config import Settings
     from ledgersync.records import AgentRecords
     from ledgersync.store_mongo import MongoStore
@@ -431,6 +578,8 @@ def main(argv=None) -> int:
     store = MongoStore(settings.mongodb_uri, args.db, max_pool=settings.mongodb_max_pool)
     runs = []
     try:
+        # the chat's own checkpoints, read on the store's one client; the thread is gone once the demo resets
+        saver = MongoDBSaver(store.client, db_name=f"{store.db_name}_checkpoints") if args.transcripts else None
         if rows:
             rows.install()
         with TestClient(create_app(settings, store=store), headers={"X-LedgerSync": "1"}) as api:
@@ -438,9 +587,11 @@ def main(argv=None) -> int:
             for name in chosen:
                 for n in range(1, args.runs + 1):
                     try:
-                        result = run_case(api, store, records, available[name], rows, settings.agent_model)
+                        result = run_case(api, store, records, available[name], rows, settings.agent_model, run=n,
+                                          transcripts=args.transcripts, saver=saver, label=name)
                     except Exception as exc:   # a case that can't run is a failed run, not the end of the eval
                         result = {"case": name, "model": settings.agent_model, "seconds": 0,
+                                  "client_id": None, "thread_id": None,
                                   **{s: {"passed": False, "differences": []} for s in
                                      ("trial_balance", "decisions", "questions")},
                                   "problems": [f"the run failed: {type(exc).__name__}: {exc}"], "posted_problems": [],
@@ -458,7 +609,8 @@ def main(argv=None) -> int:
     out = RESULTS_DIR / f"{dt.date.today().isoformat()}-agent.json"
     out.write_text(json.dumps({"date": dt.date.today().isoformat(), "read": args.read, "model": settings.agent_model,
                                "runs": runs}, indent=2, ensure_ascii=False) + "\n")
-    print("\n" + table(runs) + f"\n\nWrote {out.relative_to(ROOT)}")
+    print("\n" + table(runs) + f"\n\nWrote {out.relative_to(ROOT)}"
+          + (f"\nTranscripts in {args.transcripts}" if args.transcripts else ""))
     return 0 if all(passed(r) for r in runs) else 1
 
 
