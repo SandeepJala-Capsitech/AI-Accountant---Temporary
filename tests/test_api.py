@@ -303,3 +303,21 @@ def test_trial_balance_waits_for_a_person_to_choose_a_payment(make_client):
 def test_the_agent_and_request_routes_are_gone(make_client):
     paths = {route.path for route in make_client().app.routes}
     assert not any(p.startswith(("/api/agent-jobs", "/api/requests")) or "agent-jobs" in p for p in paths)
+
+
+def test_a_claim_total_the_upload_does_not_print_is_dropped_from_the_rows(make_client):
+    # The reader added the claim's lines up to make 60.00; the file prints no such figure.
+    claim = dict(ROW, document_type="expense_claim", counterparty="Matt", document_total=60.0)
+    model = FakeModel([transactions_json(dict(claim, amount=42.0, date="2026-10-02"),
+                                         dict(claim, amount=18.0, date="2026-10-03"))])
+    job = run_text_job(make_client(model), text="Date,Item,Amount\n2026-10-02,Pagecraft,42.00\n2026-10-03,Taxi,18.00")
+    rows = job["result"]["transactions"]
+    assert [r["document_total"] for r in rows] == [None, None] and rows[0]["document_ref"] != rows[1]["document_ref"]
+
+
+def test_a_claim_total_the_upload_prints_is_kept_in_the_rows(make_client):
+    claim = dict(ROW, document_type="expense_claim", counterparty="Matt", document_total=60.0)
+    model = FakeModel([transactions_json(dict(claim, amount=42.0, date="2026-10-02"),
+                                         dict(claim, amount=18.0, date="2026-10-03"))])
+    job = run_text_job(make_client(model), text="Pagecraft 42.00\nTaxi 18.00\nTotal 60.00")
+    assert [r["document_total"] for r in job["result"]["transactions"]] == ["60.00", "60.00"]

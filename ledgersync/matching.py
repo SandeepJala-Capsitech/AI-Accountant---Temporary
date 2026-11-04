@@ -191,7 +191,7 @@ def match(rows: list[Transaction], settings: BusinessSettings, read: Optional[li
 
 def match_documents(rows: list[Transaction], settings: BusinessSettings,
                     read: Optional[list[Optional[Decimal]]] = None, apart: Optional[list[set[int]]] = None,
-                    open_items: Sequence[OpenItem] = (), left_out: Optional[dict[str, Decimal]] = None
+                    open_items: Sequence[OpenItem] = (), left_out: Optional[dict[str, dict[str, Decimal]]] = None
                     ) -> tuple[list[Transaction], dict[str, DocumentStatus]]:
     """Which documents each bank line pays and what is still owed on each document, for transactions
     checks.normalise has already prepared. Lines a person linked go first; then lines that pay exactly what
@@ -202,8 +202,8 @@ def match_documents(rows: list[Transaction], settings: BusinessSettings,
     said are not the same as it, which are never paired with it or asked about. open_items: the invoices unpaid when
     the client's first year started, which a bank line pays as it pays an invoice uploaded. Also each document's
     status, by its ref, brought-forward ones ("ob-{id}") among them. A row a decision left out of the books (excluded,
-    or replaced by a split) is matched as if it were not there; left_out, for each document, is what such rows
-    amounted to, so the total printed on the document is not said to be short of them."""
+    or replaced by a split) is matched as if it were not there; left_out, for each document, is what its excluded
+    rows amounted to in each direction, so the total printed on the document is not said to be short of them."""
     read = read or [None] * len(rows)
     apart = apart or [set() for _ in rows]
     if any(tx.excluded or tx.superseded_by for tx in rows):
@@ -259,10 +259,13 @@ def _without_left_out(rows: list[Transaction], settings: BusinessSettings, read:
     keep no outputs of a match. The places that matching's issues name are mapped back to places in all the rows."""
     kept = [n for n, tx in enumerate(rows) if not (tx.excluded or tx.superseded_by)]
     place = {n: k for k, n in enumerate(kept)}
-    left_out: dict[str, Decimal] = {}
+    # Only excluded rows: a split's parts keep the document_ref of the row they replace and add up to it, so the
+    # replaced row's amount is already among the kept ones.
+    left_out: dict[str, dict[str, Decimal]] = {}
     for tx in rows:
-        if tx.excluded or tx.superseded_by:
-            left_out[tx.document_ref] = left_out.get(tx.document_ref, Decimal(0)) + tx.gross
+        if tx.excluded and not tx.superseded_by:
+            by_direction = left_out.setdefault(tx.document_ref, {})
+            by_direction[tx.direction.value] = by_direction.get(tx.direction.value, ZERO) + tx.gross
     matched, statuses = match_documents([rows[n] for n in kept], settings, [read[n] for n in kept],
                                         [{place[m] for m in apart[n] if m in place} for n in kept], open_items,
                                         left_out)
@@ -647,7 +650,7 @@ _KIND_WORDS = {"agent_statement": "agent's statement", "quote": "quote", "pro_fo
 
 
 def _checked_totals(rows: list[Transaction], read: list[Optional[Decimal]],
-                    left_out: dict[str, Decimal]) -> list[Transaction]:
+                    left_out: dict[str, dict[str, Decimal]]) -> list[Transaction]:
     """The rows, each document that doesn't add up to the total printed on it saying so once, with what is missing or
     too much, and pointing at its other rows (Show its lines). It says so on the row that explains it when one does:
     a row a person changed by just that much, or a row of just that much read twice, or the one row of that much;
@@ -668,12 +671,15 @@ def _checked_totals(rows: list[Transaction], read: list[Optional[Decimal]],
             message = f"Items net to {_gbp(net)}; the statement paid over {_gbp(printed)}."
         else:
             printed = abs(printed)
-            if doc.total == printed or doc.total + left_out.get(first.document_ref, ZERO) == printed:
+            # What the document's excluded rows add to its total, signed as the total is: against its direction, less.
+            aside = sum((g if d == doc.direction else -g for d, g in left_out.get(first.document_ref, {}).items()),
+                        ZERO)
+            if doc.total == printed or doc.total + aside == printed:
                 continue
             kind = "claim" if first.document_type == "expense_claim" else (
                 _NUMBERED.get(first.document_type) or _KIND_WORDS.get(first.document_type, "document"))
             word = "line" if first.document_type == "expense_claim" else "row"
-            gap = printed - doc.total
+            gap = printed - doc.total - aside   # what the lines, left out ones included, don't reach
             message = (f"{word.capitalize()}s total {_gbp(doc.total)}; the {kind}'s total is {_gbp(printed)}. "
                        + (f"{_gbp(gap)} missing: add the {word}." if gap > 0
                           else f"{_gbp(-gap)} over: remove a duplicate or fix an amount."))

@@ -868,6 +868,30 @@ def test_a_total_the_kept_and_left_out_lines_do_not_reach_is_still_flagged():
     assert codes(kept[0]) == [("total_mismatch", "warning")]
 
 
+def test_a_line_that_was_split_is_not_counted_twice_as_left_out():
+    # Printed 100.00 but only a 50.00 line was read: 50.00 is missing. Splitting that line into 30.00 + 20.00 keeps
+    # its document_ref and adds up to it; the replaced row must not make up the 50.00 that is missing.
+    original = claim_line("50.00", "2026-10-02", "Pagecraft", document_total="100.00", superseded_by="d1")
+    parts = [claim_line("30.00", "2026-10-02", "Pagecraft", document_total="100.00"),
+             claim_line("20.00", "2026-10-02", "Pagecraft", document_total="100.00")]
+    rows = matched(original, *parts)
+    assert "£50.00 missing" in rows[1].issues[0].message
+
+
+def test_a_line_left_out_the_other_way_is_taken_off_not_added():
+    # Printed 90.00: 80.00 out is kept, a 10.00 refund line (in) is excluded. The net is 70.00, so 20.00 is short.
+    rows = matched(claim_line("80.00", "2026-10-02", "Pagecraft", document_total="90.00"),
+                   row("expense_claim", "in", "10.00", "2026-10-03", "Jenny Hogg", "claim", account="7400",
+                       description="Jenny Hogg - Refund", document_total="90.00", excluded=True))
+    assert [c for c, _ in codes(rows[0])] == ["total_mismatch"]
+
+
+def test_the_gap_a_warning_names_is_net_of_what_was_left_out():
+    kept = matched(claim_line("42.00", "2026-10-02", "Pagecraft", document_total="80.00", excluded=True),
+                   claim_line("18.00", "2026-10-03", "Taxi", document_total="80.00"))[1]
+    assert "£20.00 missing" in kept.issues[0].message and "£62.00" not in kept.issues[0].message
+
+
 def test_lines_short_of_the_total_with_nothing_left_out_still_warn():
     first, _ = matched(claim_line("18.00", "2026-10-03", "Taxi", document_total="70.00"),
                        claim_line("42.00", "2026-10-02", "Pagecraft", document_total="70.00"))
