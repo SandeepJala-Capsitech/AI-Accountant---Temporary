@@ -95,7 +95,8 @@ def test_a_statement_straddling_the_first_year_start_is_not_counted_twice(store,
     books.set_opening(store, acme, OPENING_BANK)
     statement_across_the_first_year_start(store, acme)
     tb = books.trial_balance(store, acme, YEAR_1)
-    assert (net(tb, "1200"), net(tb, "7504")) == (D("950.00"), D("50.00"))
+    # the £50.00 line has no document, so it sits in Suspense rather than on its cost account
+    assert (net(tb, "1200"), net(tb, "7504"), net(tb, "9998")) == (D("950.00"), D("0.00"), D("50.00"))
     march, _ = books.ledger(store, acme, YEAR_1).transactions
     assert [(i.code, i.message) for i in march.issues] == [("before_first_year", (
         "Dated before the first year: already in the opening balances, so not booked. Tick Include to book it."))]
@@ -105,7 +106,8 @@ def test_ticking_include_books_a_row_dated_before_the_first_year(store, acme):
     books.set_opening(store, acme, OPENING_BANK)
     statement_across_the_first_year_start(store, acme, include=True)
     tb = books.trial_balance(store, acme, YEAR_1)
-    assert (net(tb, "1200"), net(tb, "7504")) == (D("850.00"), D("150.00"))
+    # neither line has a document, so both sit in Suspense rather than on their cost account
+    assert (net(tb, "1200"), net(tb, "7504"), net(tb, "9998")) == (D("850.00"), D("0.00"), D("150.00"))
 
 
 def test_a_pre_year_invoice_doesnt_duplicate_its_brought_forward_item(store, acme):
@@ -425,3 +427,33 @@ def test_an_undated_manual_row_is_allowed_in_an_open_year_and_refused_in_a_close
 def test_a_manual_row_for_an_unknown_year_is_not_found(store, acme_two_years):
     with pytest.raises(NotFound, match="That year was not found."):
         ledger.add_manual(store, acme_two_years, ManualUpload(year_start=date(2020, 4, 1), transactions=[row(gross=D("5.00"))]))
+
+
+def test_a_purchase_of_50_or_more_without_its_document_is_held_in_suspense(mongo_store, acme_with_year_one):
+    add_rows(mongo_store, acme_with_year_one, row(date=date(2025, 7, 1), gross=D("240.00"), account_code="7400",
+             document_type="statement", counterparty="Trainline", description="TRAINLINE"), year_start=date(2025, 4, 1))
+    tb = books.trial_balance(mongo_store, acme_with_year_one, date(2025, 4, 1))
+    assert net(tb, "9998") == D("240.00") and net(tb, "7400") == 0
+
+
+def test_a_purchase_under_50_without_a_document_is_a_cost_with_no_vat(mongo_store, acme_with_year_one):
+    add_rows(mongo_store, acme_with_year_one, row(date=date(2025, 7, 1), gross=D("38.50"), vat=D("6.42"),
+             account_code="7300", document_type="statement", description="SHELL"), year_start=date(2025, 4, 1))
+    tb = books.trial_balance(mongo_store, acme_with_year_one, date(2025, 4, 1))
+    assert net(tb, "7300") == D("38.50") and net(tb, "2201") == 0
+
+
+def test_the_rows_trial_balance_equals_the_posted_one(mongo_store, mongo_db, acme_with_year_one):
+    from ledgersync import ledger_book
+    from ledgersync.records import AgentRecords
+    add_rows(mongo_store, acme_with_year_one,
+             row(date=date(2025, 7, 1), gross=D("240.00"), account_code="7400", document_type="statement",
+                 counterparty="Trainline", description="TRAINLINE"),
+             row(date=date(2025, 7, 2), gross=D("38.50"), vat=D("6.42"), account_code="7300",
+                 document_type="statement", description="SHELL"), year_start=date(2025, 4, 1))
+    records = AgentRecords(mongo_db)
+    ledger_book.post(mongo_store, records, acme_with_year_one, date(2025, 4, 1))
+    rows = books.trial_balance(mongo_store, acme_with_year_one, date(2025, 4, 1))
+    posted = ledger_book.posted_trial_balance(mongo_store, records, acme_with_year_one, date(2025, 4, 1))
+    lines = lambda tb: sorted((l.code, l.debit, l.credit) for l in tb.lines)
+    assert lines(rows) and lines(rows) == lines(posted)

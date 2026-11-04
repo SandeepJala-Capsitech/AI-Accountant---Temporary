@@ -34,11 +34,12 @@ def line(day, who, amount, account, balance=None) -> dict:
 
 
 def document(kind, day, who, amount, account, *, total, vat=None, net=None, number=None, direction="out",
-             description=None) -> dict:
+             description=None, vat_number=None) -> dict:
     """A receipt, invoice or claim line; total is the document's printed total."""
     return {"description": description or who, "counterparty": who, "date": day, "amount": amount,
             "direction": direction, "account": account, "vat": vat, "currency": "GBP", "document_type": kind,
-            "document_total": total, "document_vat": vat, "document_net": net, "document_number": number}
+            "document_total": total, "document_vat": vat, "document_net": net, "document_number": number,
+            "supplier_vat_number": vat_number}
 
 
 def payroll(account, amount, owed_to, description) -> dict:
@@ -76,7 +77,8 @@ READINGS = {
             line("2026-09-13", "BRIGHTWELL LTD", 950.00, "4000"), line("2026-09-18", "ROYAL MAIL", -15.60, "7501"),
             line("2026-09-22", "PREMIER INN", -89.00, "7402"), line("2026-09-27", "HMRC VAT", -1210.33, "2202")),
         "cafe-receipt.png": reply(document("receipt", "2026-09-12", "The Daily Grind Cafe", 7.50, "7406",
-                                           total=7.50, vat=1.25, net=6.25)),
+                                           total=7.50, vat=1.25, net=6.25,
+                                           vat_number="318447192")),
         "tesco-receipt.txt": reply(document("receipt", "2026-09-03", "Tesco Express", 12.50, "7406", total=12.50)),
     },
     "ltd-matched-payments": {
@@ -85,7 +87,8 @@ READINGS = {
             line("2026-10-16", "Pemberton & Hale", -216.00, "7601", 4760.00),
             line("2026-10-31", "Bank charges", -6.50, "7901", 4753.50), opening=5000.00, closing=4753.50),
         "harbour-street-receipt.txt": reply(document("receipt", "2026-10-08", "Harbour Street Stationers", 24.00,
-                                                     "7504", total=24.00, vat=4.00, net=20.00)),
+                                                     "7504", total=24.00, vat=4.00, net=20.00,
+                                                     vat_number="412773058")),
         "pemberton-hale-invoice.txt": reply(document("invoice", "2026-10-05", "Pemberton & Hale", 216.00, "7601",
                                                      total=216.00, vat=36.00, net=180.00, number="PH-2026-114")),
     },

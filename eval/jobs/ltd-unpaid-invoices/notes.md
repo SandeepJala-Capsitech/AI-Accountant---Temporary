@@ -108,3 +108,17 @@ Check: the debit nets are 1380.70 + 50.00 + 295.00 + 64.30 + 250.00 + 360.00 = 2
    no VAT invoice is in the set, and a bank line books none.
 6. **The opening balance of £3,200.00 is not booked.** No opening balances are entered, so the trial balance holds the year's transactions only, so
    1200 shows the movement (+1,380.70), not the closing balance (4,580.70).
+
+## Document rules (4 Nov 2026)
+
+From 4 Nov 2026 the site's trial balance applies the document rules (`ledgersync/evidence_rules.py`).
+
+| Account | Old | New | Rule |
+|---|---|---|---|
+| 7100 Rent | 295.00 | 0.00 (left out) | WeWork (row 2): £50 or more with no document, and over £250 so it needs a full VAT invoice: held in 9998. |
+| 7601 Accountancy Fees | 360.00 | 0.00 (left out) | Hartley & Co (row 3): £50 or more with no document (over £250): held in 9998. |
+| 7400 Travel | 64.30 | 0.00 (left out) | Avanti West Coast (row 5): £50 or more with no document: held in 9998. |
+| 9998 Suspense | none | 719.30 | The three rows above, 295.00 + 360.00 + 64.30. |
+
+The Clearway invoice is a document, so it books and reclaims its VAT as before (7504 250.00, 2201 50.00, 2100 -300.00).
+The sale is money in.

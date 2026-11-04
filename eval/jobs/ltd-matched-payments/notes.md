@@ -170,3 +170,10 @@ The year's checks are expected to pass for this case:
 3. **S3 goes to 7901 Bank Charges.** It is a bank account fee, so no VAT.
 4. **The opening balance of 5,000.00 is not booked.** No opening balances are entered, so the trial balance holds the year's transactions only, so 1200
    shows the movement, −246.50.
+
+## Document rules (4 Nov 2026)
+
+From 4 Nov 2026 the site's trial balance applies the document rules (`ledgersync/evidence_rules.py`). No figure moves:
+both purchases have a document. The Harbour Street receipt prints "VAT Reg No 412 7730 58" and its VAT £4.00, so the VAT is
+still reclaimed; the reading in `tests/test_eval_cases.py` now gives that number as `supplier_vat_number`, as a good
+reading of the receipt does (without it a receipt's VAT is kept in the cost). The invoice reclaims its VAT as before.

@@ -16,6 +16,7 @@ from . import years as yr
 from .accounts import BY_CODE, CREDITORS, DEBTORS, AccountType, reserve_for
 from .checks import booked, long_date, normalise
 from .errors import InvalidInput, InvalidTransactions, NotFound
+from .evidence_rules import document_rule, journal_with_rule
 from .export import file_name, workbook
 from .file_dates import check_file_date
 from .ledger import ensure_open, needs_review, require_active, settings_for
@@ -23,8 +24,7 @@ from .matching import DocumentStatus, match_documents
 from .models import (BankCheck, BusinessSettings, Client, ClosedYear, InvoiceSummary, Ledger, OpeningBalances, OpenItem,
                      SavedRow, StatementCheck, Transaction, TrialBalance, Upload, Year, YearSummary)
 from .money import ZERO, to_money
-from .posting import matched_rows
-from .posting import trial_balance as post
+from .posting import matched_rows, summarise
 from .rows import StoredRow, now_iso
 from .statements import check_statement
 from .store_mongo import MongoStore
@@ -115,8 +115,11 @@ class _Books:
         return n
 
     def post(self, settings: BusinessSettings, keep: list[bool], opening: dict[str, Decimal]) -> TrialBalance:
-        return post([row.tx for row in self.stored], settings, self.read, self.apart, keep=keep, opening=opening,
-                    open_items=self.unpaid)
+        """The year's trial balance, its rows booked under the document rules as the posted ledger books them."""
+        posted = matched_rows([row.tx for row in self.stored], settings, self.read, self.apart, keep=keep,
+                              open_items=self.unpaid)
+        return summarise([line for n, tx in posted for line in journal_with_rule(tx, n, document_rule(tx, settings))],
+                         opening)
 
 
 def _books(store: MongoStore, client_id: int, today: Optional[dt.date] = None) -> _Books:

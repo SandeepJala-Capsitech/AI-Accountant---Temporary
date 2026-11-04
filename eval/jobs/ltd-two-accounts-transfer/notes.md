@@ -94,3 +94,15 @@ The expected trial balance sums to zero.
 2. **The interest, 4.20, goes to 4900 Other Income**: "bank interest received", with no VAT because the bank line
    shows none.
 3. **No opening balances are entered**, so the accounts show the year's movements, not the statements' balances.
+
+## Document rules (4 Nov 2026)
+
+From 4 Nov 2026 the site's trial balance applies the document rules (`ledgersync/evidence_rules.py`).
+
+| Account | Old | New | Rule |
+|---|---|---|---|
+| 7502 Telephone and Internet | 54.00 | 0.00 (left out) | Pennine Telecom (6 Oct): a bank line of £50 or more with no document is held in 9998 Suspense. |
+| 9998 Suspense | none | 54.00 | The same line, held. |
+
+The transfer between the two accounts is not a purchase (1200 and 1210 are the client's own bank accounts), the interest
+is money in, and the £7.50 bank charge is under £50: all booked as before.

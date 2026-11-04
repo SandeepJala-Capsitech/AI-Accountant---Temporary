@@ -86,3 +86,15 @@ balance sums to zero.
 1. **I1 goes to 7500 Printing.** Printed brochures are "printing and copying done by others".
 2. **S1 goes to 7200 Electricity** and **S3 to 7901 Bank Charges** (a fee, so no VAT).
 3. **No opening balance is entered**, so 1200 shows the year's movement, −574.40, not the closing balance.
+
+## Document rules (4 Nov 2026)
+
+From 4 Nov 2026 the site's trial balance applies the document rules (`ledgersync/evidence_rules.py`).
+
+| Account | Old | New | Rule |
+|---|---|---|---|
+| 7200 Electricity | 86.40 | 0.00 (left out) | S1, Northern Electric: a bank line of £50 or more with no document is held in 9998 Suspense. |
+| 9998 Suspense | none | 86.40 | The same row, held. |
+
+The invoice (I1) is a document, so it books and reclaims its VAT as before; S2 pays it, so it is not a purchase of its
+own; S3 (£8.00 bank charges) is under £50 and is booked.

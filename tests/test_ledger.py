@@ -252,7 +252,7 @@ def test_a_row_added_by_hand_needs_an_account_the_client_can_use(store, code):
 
 def test_the_trial_balance_comes_from_the_saved_rows(store):
     client = store.create_client(CUBE)
-    store.add_upload(client.id, "a.pdf", "pdf", [row(document_type="receipt", vat="12.00")])
+    store.add_upload(client.id, "a.pdf", "pdf", [row(document_type="receipt", vat="12.00", supplier_vat_number="GB123456789")])
     assert [(l.code, l.debit, l.credit) for l in books.trial_balance(store, client.id, YEAR).lines] == [
         ("1200", Decimal("0.00"), Decimal("72.00")), ("7502", Decimal("60.00"), Decimal("0.00")),
         ("2201", Decimal("12.00"), Decimal("0.00"))]
@@ -333,8 +333,10 @@ def test_a_row_a_person_corrected_is_booked_by_the_trial_balance_as_the_ledger_b
     built = books.ledger(store, client.id, YEAR)
     assert [i.code for i in built.transactions[1].issues] == ["total_mismatch"]
     assert booked_in_the_trial_balance(store, client.id) == booked_in_the_ledger(store, client.id)
-    assert [(l.code, l.debit) for l in books.trial_balance(store, client.id, YEAR).lines if l.type == "expense"] == [
-        ("7402", Decimal("173.75")), ("7502", Decimal("30.22"))]   # the corrected amount, not the one first read
+    tb = books.trial_balance(store, client.id, YEAR)
+    # the corrected amount, not the one first read; the £173.75 hotel line has no document, so it sits in Suspense
+    assert [(l.code, l.debit) for l in tb.lines if l.type == "expense"] == [("7502", Decimal("30.22"))]
+    assert [(l.code, l.debit) for l in tb.lines if l.code == "9998"] == [("9998", Decimal("173.75"))]
 
 
 def test_the_trial_balance_and_the_ledger_match_with_the_same_decisions(store, monkeypatch):

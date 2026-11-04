@@ -89,3 +89,18 @@ Check: the debit nets are 1.25 + 1210.33 + 89.00 + 18.75 + 15.60 + 45.99 + 32.40
 6. **HMRC VAT £1,210.33 goes to 2202 VAT Liability.** It is a VAT return payment, not a cost, and a liability
    account takes no VAT.
 7. No opening balance: the Barclays export prints none, and no opening balances are entered, so the trial balance holds the year's transactions only.
+
+## Document rules (4 Nov 2026)
+
+From 4 Nov 2026 the site's trial balance applies the document rules (`ledgersync/evidence_rules.py`), so the expected figures
+below were reworked by hand from the rows above.
+
+| Account | Old | New | Rule |
+|---|---|---|---|
+| 7402 Hotels | 89.00 | 0.00 (left out) | Premier Inn (row 5): a bank line of £50 or more with no document is held in 9998 Suspense. |
+| 9998 Suspense | none | 89.00 | The same row, held. |
+
+Nothing else moves. The cafe receipt prints "VAT Reg No 318 4471 92" and VAT £1.25, so the VAT is still reclaimed (2201
+stays 1.25; 7406 stays 18.75). The reading in `tests/test_eval_cases.py` now gives that number as `supplier_vat_number`,
+as a good reading of the receipt does: without it a receipt's VAT is kept in the cost. Tesco shows no VAT, so nothing
+changes there. Rows 1, 2 and 4 are bank lines under £50: booked, and a bank line shows no VAT to reclaim anyway.

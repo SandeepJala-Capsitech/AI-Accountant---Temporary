@@ -166,3 +166,22 @@ Check, adding the debit nets in table order: 549.00, then 669.00, 2164.93, 2464.
    - B8 ARGOS laptop → 0030 Office Equipment.
 7. **The opening balance (9,000.00) is not booked.** No opening balances are entered, so the trial balance holds the year's transactions only, so 1200
    shows the movement, +1,495.93.
+
+## Document rules (4 Nov 2026)
+
+From 4 Nov 2026 the site's trial balance applies the document rules (`ledgersync/evidence_rules.py`). The document rules
+cover money out on an expense account or a fixed asset; Drawings (3260) lines are not purchases. Each bank line of £50 or
+more with no document is held in 9998 Suspense; a line under £50 is booked (a bank line shows no VAT, so none is reclaimed).
+
+| Account | Old | New | Rule |
+|---|---|---|---|
+| 0030 Office Equipment | 549.00 | 0.00 (left out) | Argos laptop: £50 or more with no document (over £250): held in 9998. |
+| 0040 Furniture and Fixtures | 120.00 | 0.00 (left out) | Gumtree desk: £50 or more with no document: held in 9998. |
+| 7300 Fuel and Oil | 61.05 | 0.00 (left out) | BP Connect: £50 or more with no document: held in 9998. |
+| 7402 Hotels | 94.00 | 0.00 (left out) | Ibis London: £50 or more with no document: held in 9998. |
+| 7800 Repairs and Renewals | 86.30 | 0.00 (left out) | Travis Perkins: £50 or more with no document: held in 9998. |
+| 8201 Subscriptions and Software | 210.99 | 10.99 | LinkedIn Ads (£200.00) held in 9998; Canva (£10.99) is under £50 and stays. |
+| 9998 Suspense | none | 1110.35 | 549.00 + 120.00 + 61.05 + 94.00 + 86.30 + 200.00. |
+
+Unchanged: 7400 (18.00 NCP + 32.00 taxi), 7406, 7403, 7501, 7502, 7504, 8205 (all lines under £50, or claim lines under
+£50 each) and 3260 (Drawings: Etsy, Selfridges and the penalty charge are not covered by the rules).

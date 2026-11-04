@@ -24,7 +24,8 @@ def store(mongo_store):
 
 def receipt(**changes):
     fields = dict(direction="out", gross="72.00", vat="12.00", account_code="7502", date=dt.date(2026, 9, 1),
-                  description="BT Business, broadband", document_type="receipt", counterparty="BT Business")
+                  description="BT Business, broadband", document_type="receipt", counterparty="BT Business",
+                  supplier_vat_number="GB123456789")
     return Transaction(**{**fields, **changes})
 
 
