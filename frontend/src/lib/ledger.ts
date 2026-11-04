@@ -32,10 +32,15 @@ export const kindOf = (tx: Transaction): RowKind => {
   return type === 'statement' ? 'bank' : 'other'
 }
 
+// A row a decision left out of the books or replaced with a split: the table still lists it, crossed out.
+const leftOut = (tx: Transaction) => !!(tx.excluded || tx.superseded_by)
+
 // A row as the duplicate check sees it, with what matching already linked it to: what it pays or what paid it, the
-// expense claim it is on, and the receipt or invoice that books it. Linked rows are never each other's duplicates.
+// expense claim it is on, and the receipt or invoice that books it. Linked rows are never each other's duplicates,
+// and a row left out is not booked: it is no one's duplicate any more.
 export const paymentRowOf = (tx: Transaction & { upload_id: number; id?: number }): PaymentRow => ({
-  sourceId: tx.upload_id, gross: tx.gross, direction: tx.direction, date: tx.date, kind: kindOf(tx), ref: tx.document_ref,
+  sourceId: tx.upload_id, gross: tx.gross, direction: tx.direction, date: tx.date,
+  kind: leftOut(tx) ? 'not booked' : kindOf(tx), ref: tx.document_ref,
   linked: [...(tx.pays ?? []), ...(tx.paid_by ?? []), tx.claimed_in, tx.recorded_by]
     .filter((s): s is Settlement => !!s).map(s => s.ref),
   id: tx.id, apart: tx.apart_from ?? [], claim: tx.claimed_in?.ref ?? null,
@@ -284,9 +289,10 @@ export interface TotalRow {
 
 // Totals by how rows are booked, in whole pennies so they don't drift: money that moved through the
 // bank, and documents (bills, claims, sales invoices, credit notes) with what is still owed on them. An
-// unpaid bill is not money out, so the two are kept apart; rows not booked are left out. A row with an
-// error (impossible VAT) has no VAT or net, so its group's VAT and net totals are unknown.
-export function totalsOf(txs: Transaction[]): TotalRow[] {
+// unpaid bill is not money out, so the two are kept apart; rows not booked, and rows left out of the books, are
+// left out. A row with an error (impossible VAT) has no VAT or net, so its group's VAT and net totals are unknown.
+export function totalsOf(all: Transaction[]): TotalRow[] {
+  const txs = all.filter(tx => !leftOut(tx))
   const sum = (values: (string | null)[]) => values.some(v => v == null) ? null
     : (values.reduce((pennies, v) => pennies + Math.round(Number(v) * 100), 0) / 100).toFixed(2)
   const moved = (tx: Transaction) => ['bank', 'other'].includes(kindOf(tx))

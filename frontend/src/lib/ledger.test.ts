@@ -274,6 +274,31 @@ test("a receipt already on an expense claim is not a duplicate of the claim's ot
   assert.deepEqual(possibleDuplicates([paymentRowOf(earlier), paymentRowOf(receipt)]), [null, null])
 })
 
+test('a row left out of the books or replaced by a split is not in the totals', () => {
+  // The agent left out the sheet line repeating a £42 receipt, but Paid out (bank) still said £84.00 for 2.
+  const receipt = tx({ document_type: 'receipt', document_ref: 'r', gross: '42.00', vat_posted: '7.00', net: '35.00',
+                       owed: null })
+  const bill = tx()
+  for (const out of [{ excluded: true }, { superseded_by: 'decision' }]) {
+    assert.deepEqual(totalsOf([receipt, { ...receipt, document_ref: 's', ...out }]).map(t => [t.label, t.count, t.gross]),
+                     [['Paid out (bank)', 1, '42.00']])
+    // A copy of a bill left out is not owed a second time.
+    assert.deepEqual(totalsOf([bill, { ...bill, document_ref: 'copy', ...out }]).map(t => [t.count, t.gross, t.stillOwed]),
+                     [[1, '12000.00', '12000.00']])
+  }
+})
+
+test('a row left out of the books or replaced by a split is no longer a possible duplicate', () => {
+  // The agent kept the receipt and left out the sheet line it repeated, but both rows still said Possible duplicate.
+  const receipt = { ...tx({ document_type: 'receipt', document_ref: 'r', gross: '42.00' }), upload_id: 1, id: 1 }
+  const sheet = { ...tx({ document_type: 'receipt', document_ref: 's', gross: '42.00' }), upload_id: 2, id: 2 }
+  assert.deepEqual(possibleDuplicates([paymentRowOf(receipt), paymentRowOf(sheet)]), [null, 0])
+  for (const out of [{ excluded: true }, { superseded_by: 'decision' }]) {
+    assert.deepEqual(possibleDuplicates([paymentRowOf(receipt), paymentRowOf({ ...sheet, ...out })]), [null, null])
+    assert.deepEqual(possibleDuplicates([paymentRowOf({ ...receipt, ...out }), paymentRowOf(sheet)]), [null, null])
+  }
+})
+
 test('the posted ledger is noted only when it is not up to date', () => {
   assert.equal(postedLedgerNote(0), null)
   assert.equal(postedLedgerNote(null), null)
