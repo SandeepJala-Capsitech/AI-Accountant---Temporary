@@ -6,7 +6,7 @@ import datetime as dt
 import hashlib
 import json
 import time
-from typing import Optional
+from typing import Literal, Optional, get_args
 from uuid import uuid4
 
 import pymongo
@@ -38,7 +38,16 @@ def _run(doc: dict) -> ReviewRun:
 
 def _hash(prev_hash: str, decision: Decision) -> str:
     """The SHA-256 of the previous hash and the decision's canonical JSON (sorted keys, no spaces, no hash)."""
-    body = json.dumps(decision.model_dump(mode="json", exclude={"hash"}), sort_keys=True, separators=(",", ":"))
+    # trigger, review_id and resolution joined the decision after hashes were first made: left out while at their
+    # defaults, so earlier decisions (and new chat ones) hash exactly as they did.
+    left_out = {"hash"}
+    if decision.trigger == "chat":
+        left_out.add("trigger")
+    if decision.review_id is None:
+        left_out.add("review_id")
+    if decision.resolution is None:
+        left_out.add("resolution")
+    body = json.dumps(decision.model_dump(mode="json", exclude=left_out), sort_keys=True, separators=(",", ":"))
     return hashlib.sha256((prev_hash + body).encode()).hexdigest()
 
 
@@ -249,9 +258,11 @@ class AgentRecords:
         self.db.review_runs.insert_one({**run.model_dump(mode="json"), "_id": run.id, "seq": time.time_ns()})
         return run
 
-    def finish_review(self, id: str, *, status: str, decision_ids=(), question_ids=(), summary: str = "",
-                      error: Optional[str] = None) -> ReviewRun:
+    def finish_review(self, id: str, *, status: Literal["running", "done", "failed", "limited", "off"], decision_ids=(),
+                      question_ids=(), summary: str = "", error: Optional[str] = None) -> ReviewRun:
         """Ends the run with its outcome and what it decided and asked."""
+        if status not in get_args(ReviewRun.model_fields["status"].annotation):
+            raise ValueError(f"Not a review status: {status!r}")
         changes = {"status": status, "finished_at": now_iso(), "decision_ids": list(decision_ids),
                    "question_ids": list(question_ids), "summary": summary, "error": error}
         doc = self.db.review_runs.find_one_and_update({"_id": id}, {"$set": changes},

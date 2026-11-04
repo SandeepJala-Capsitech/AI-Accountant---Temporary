@@ -55,7 +55,7 @@ def test_decisions_are_hash_chained(records):
     a, _ = records.append_decision(draft(), "a")
     b, _ = records.append_decision(draft(), "b")
     assert (a.prev_hash, b.prev_hash) == ("", a.hash)
-    body = b.model_dump(mode="json", exclude={"hash"})
+    body = b.model_dump(mode="json", exclude={"hash", "trigger", "review_id", "resolution"})
     canonical = json.dumps(body, sort_keys=True, separators=(",", ":"))
     assert b.hash == hashlib.sha256((a.hash + canonical).encode()).hexdigest()
 
@@ -396,3 +396,24 @@ def test_a_client_defaults_to_automatic_ai_review(mongo_store):
     assert mongo_store.get_client(client.id).ai_review == "suggest"
     mongo_store.db.clients.update_one({"id": client.id}, {"$unset": {"ai_review": ""}})
     assert mongo_store.get_client(client.id).ai_review == "automatic"
+
+
+def test_a_legacy_decisions_hash_is_reproduced_and_a_background_decisions_includes_its_new_fields(records):
+    from ledgersync.records import _hash
+    decision, _ = records.append_decision(draft(), "legacy")
+    old_body = decision.model_dump(mode="json", exclude={"hash", "trigger", "review_id", "resolution"})
+    old = hashlib.sha256(("" + json.dumps(old_body, sort_keys=True, separators=(",", ":"))).encode()).hexdigest()
+    assert decision.hash == old
+    stored = records.decisions(1)[0]   # read back through Decision
+    assert _hash(stored.prev_hash, stored) == old
+    bg, _ = records.append_decision(draft(trigger="background", review_id="r1"), "bg")
+    with_fields = bg.model_dump(mode="json", exclude={"hash", "resolution"})
+    assert bg.hash == hashlib.sha256((bg.prev_hash + json.dumps(
+        with_fields, sort_keys=True, separators=(",", ":"))).encode()).hexdigest()
+    assert '"trigger":"background"' in json.dumps(with_fields, sort_keys=True, separators=(",", ":"))
+
+
+def test_finish_review_refuses_a_bad_status(records):
+    run = start(records)
+    with pytest.raises(ValueError):
+        records.finish_review(run.id, status="bogus")
