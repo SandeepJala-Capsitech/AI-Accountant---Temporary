@@ -144,7 +144,7 @@ def test_new_thread_belongs_to_client(make, mongo_store, client_id):
     assert (thread["client_id"], thread["year_start"], thread["title"]) == (client_id, YEAR, "New chat")
     assert [t["id"] for t in api.get(f"/api/chat/threads?client_id={client_id}").json()] == [thread["id"]]
     assert api.get(f"/api/chat/threads?client_id={other}").json() == []
-    assert api.get(f"/api/chat/threads/{thread['id']}").json() == {"thread": thread, "messages": []}
+    assert api.get(f"/api/chat/threads/{thread['id']}").json() == {"thread": thread, "messages": [], "running": False}
 
 
 def test_rename_and_delete_thread(make, mongo_store, client_id):
@@ -742,3 +742,26 @@ def test_posted_trial_balance_reports_unposted_changes(make, mongo_store, mongo_
 
     ledger_book.post(mongo_store, AgentRecords(mongo_db), client_id, dt.date.fromisoformat(YEAR))
     assert api.get(route).json()["unposted_changes"] == 0
+
+
+def test_a_chat_detail_says_whether_a_turn_is_running(make, client_id):
+    started, release = threading.Event(), threading.Event()
+
+    def slow(messages):
+        started.set()
+        release.wait(30)
+        return say("Done.")
+
+    api = make(slow)
+    thread = new_thread(api, client_id)
+    assert api.get(f"/api/chat/threads/{thread['id']}").json()["running"] is False   # a fresh chat
+    first = threading.Thread(target=send, args=(api, thread["id"], "Review October."))
+    first.start()
+    try:
+        assert started.wait(30)
+        while_running = api.get(f"/api/chat/threads/{thread['id']}").json()["running"]
+    finally:
+        release.set()
+        first.join(30)
+    assert while_running is True
+    assert api.get(f"/api/chat/threads/{thread['id']}").json()["running"] is False

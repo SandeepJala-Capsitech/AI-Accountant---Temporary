@@ -117,11 +117,18 @@ export interface ChatMessage {
   result: TurnResult | null
 }
 
-// A thread as GET /api/chat/threads/{id} returns it: its messages so far, each with the result its turn ended with.
+// A thread as GET /api/chat/threads/{id} returns it: its messages so far, each with the result its turn ended with,
+// and whether a turn is still running on it.
 export interface ThreadDetail {
   thread: ChatThread
   messages: ChatMessage[]
+  running: boolean
 }
+
+export const POLL_MS = 3000
+
+// Whether a loaded chat is worth loading again: a turn runs on the server that this page did not send itself.
+export const shouldPoll = (detail: Pick<ThreadDetail, 'running'>, ownTurnRunning: boolean) => detail.running && !ownTurnRunning
 
 export type StepState = 'running' | 'done' | 'failed'
 

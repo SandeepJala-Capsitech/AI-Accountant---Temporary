@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { ApiError } from './api.ts'
 import {
   answerQuestion, attentionHref, changedFields, effectLine, fileStatus, formatMoney, groupThreads, hasResult, looksLikeStatement, parseEvents,
-  questionControl, questionState, readStatus, ruleBadge, retryFiles, shownAccounts, streamMessage, suspenseLabel, uploadForQuestion,
+  questionControl, questionState, shouldPoll, readStatus, ruleBadge, retryFiles, shownAccounts, streamMessage, suspenseLabel, uploadForQuestion,
   withQuestion,
   type AnswerResult, type ChatEvent, type ChatThread, type Decision, type PostResult, type PostedTrialBalance, type Question,
 } from './chat.ts'
@@ -258,4 +258,10 @@ test('hasResult and readStatus', () => {
 
 test('the Overview link starts a chat that asks what needs attention', () => {
   assert.equal(attentionHref(7), '/chat?client=7&ask=What%20needs%20my%20attention%3F')
+})
+
+test('a chat is polled only while a turn runs that this page did not send', () => {
+  assert.equal(shouldPoll({ running: true }, false), true)
+  assert.equal(shouldPoll({ running: true }, true), false)
+  assert.equal(shouldPoll({ running: false }, false), false)
 })

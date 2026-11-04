@@ -9,7 +9,7 @@ import ReplyResult from '@/components/chat/ReplyResult'
 import RunSteps from '@/components/chat/RunSteps'
 import { ApiError } from '@/lib/api'
 import {
-  ATTENTION, effectLine, fileStatus, getThread, hasResult, readStatus, retryFiles, stopRun, streamMessage, withQuestion,
+  ATTENTION, POLL_MS, effectLine, fileStatus, getThread, hasResult, readStatus, retryFiles, shouldPoll, stopRun, streamMessage, withQuestion,
   type AnswerResult, type ChatError, type ChatEvent, type ChatMessage, type Step, type ThreadDetail, type TurnResult,
 } from '@/lib/chat'
 import { getYears } from '@/lib/clients'
@@ -48,15 +48,19 @@ export default function ThreadPage() {
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
   const running = turns.some(t => t.running)
+  const ownRunning = useRef(false)               // read by a load, which may outlive the render that made it
+  ownRunning.current = running
   const [effects, setEffects] = useState<Record<string, string>>({})   // each answered question's effect, on every card for it
   const abort = useRef<AbortController | null>(null)
   const nextTurn = useRef(1)
   const loads = useRef(0)                        // a load that a newer one or an unmount has replaced must not apply
   const asked = useRef(false)                    // the link's question is handled once, even when effects run twice
+  const poll = useRef<ReturnType<typeof setTimeout> | null>(null)   // the next load while a turn this page did not send runs
   const end = useRef<HTMLDivElement>(null)
 
   const load = useCallback(async () => {
     const mine = ++loads.current
+    if (poll.current) clearTimeout(poll.current)
     try {
       const next = await getThread(threadId)
       if (mine !== loads.current) return
@@ -65,6 +69,7 @@ export default function ThreadPage() {
       setTurns([])
       setMissing(false)
       setError('')
+      if (shouldPoll(next, ownRunning.current)) poll.current = setTimeout(() => { load() }, POLL_MS)
       getYears(next.thread.client_id).then(years => setYearLabel(years.find(y => y.start === next.thread.year_start)?.label ?? ''),
                               () => undefined)
     } catch (e) {
@@ -76,7 +81,7 @@ export default function ThreadPage() {
 
   useEffect(() => {
     load()
-    return () => { loads.current++; abort.current?.abort() }
+    return () => { loads.current++; if (poll.current) clearTimeout(poll.current); abort.current?.abort() }
   }, [load])
 
   useEffect(() => { end.current?.scrollIntoView?.({ block: 'end' }) }, [turns.length])
@@ -85,7 +90,7 @@ export default function ThreadPage() {
     setTurns(prev => prev.map(t => (t.id === id ? { ...t, ...patch(t) } : t)))
 
   const send = async (text: string, files: File[], bankAccounts: string[]) => {
-    if (running) return
+    if (running || detail?.running) return
     const id = nextTurn.current++
     setTurns(prev => [...prev, { id, text, files, bankAccounts, steps: [], status: 'Working on it…', reply: '', result: null, error: null, running: true }])
     setNotice('')
@@ -164,6 +169,8 @@ export default function ThreadPage() {
 
   const thread = detail.thread
   const client = clients?.find(c => c.id === thread.client_id)
+  const waiting = detail.running && !running     // a turn works on the chat that this page did not send
+  const busy = running || waiting
   const fresh = !history.length && !turns.length
   const last = turns[turns.length - 1]
   const onAnswered = (a: AnswerResult) => {
@@ -202,7 +209,7 @@ export default function ThreadPage() {
             )}
             {hasResult(m.result) && (
               <ReplyResult result={m.result} threadId={threadId} onAnswered={onAnswered} onSay={text => send(text, [], [])}
-                             effects={effects} busy={running} />
+                             effects={effects} busy={busy} />
             )}
           </div>
         ))}
@@ -229,12 +236,17 @@ export default function ThreadPage() {
               {t.reply && <p className="narrative">{t.reply}</p>}
               {hasResult(t.result) && (
                 <ReplyResult result={t.result} threadId={threadId} onAnswered={onAnswered} onSay={text => send(text, [], [])}
-                             effects={effects} busy={running} />
+                             effects={effects} busy={busy} />
               )}
               {t.error && t === last && <RunError error={t.error} onRetry={() => retry(t)} onContinue={() => send('Continue', [], [])} />}
             </div>
           </div>
         ))}
+        {waiting && (
+          <div className="bubble-agent">
+            <RunSteps steps={[]} status="Still working on your message…" running />
+          </div>
+        )}
         {notice && <div className="notice notice-info">{notice}</div>}
 
         <div ref={end} />
@@ -247,7 +259,7 @@ export default function ThreadPage() {
           ))}
         </div>
       )}
-      <Composer text={draft} onText={setDraft} bankAccounts={client?.bank_accounts ?? []} running={running}
+      <Composer text={draft} onText={setDraft} bankAccounts={client?.bank_accounts ?? []} running={busy}
                 onSend={send} onStop={stop} />
     </div>
   )

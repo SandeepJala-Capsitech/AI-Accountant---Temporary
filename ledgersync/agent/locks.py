@@ -70,6 +70,11 @@ class ThreadRuns:
             self._stopping.add(thread_id)
             return True
 
+    def is_running(self, thread_id: str) -> bool:
+        """Whether the chat has a run now."""
+        with self._changed:
+            return thread_id in self._running
+
     def is_cancelled(self, thread_id: str) -> bool:
         with self._changed:
             return thread_id in self._stopping

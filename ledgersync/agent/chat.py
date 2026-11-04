@@ -105,9 +105,11 @@ class ChatMessage(BaseModel):
 
 
 class ThreadDetail(BaseModel):
-    """A thread with its messages so far."""
+    """A thread with its messages so far, and whether a turn is still running on it (its reply and result are not in
+    the messages until it ends)."""
     thread: ChatThread
     messages: list[ChatMessage]
+    running: bool = False
 
 
 class NewThread(BaseModel):
@@ -344,7 +346,7 @@ class Chat:
     def detail(self, thread: ChatThread) -> ThreadDetail:
         """The chat's messages from its memory, with each turn's files on the person's message and its result on the
         reply. A result's questions are read as they are now (an answer, or a document sent in another chat, may have
-        settled one since). A chat saved before turns were kept shows its messages alone, and so does a reply whose turn
+        settled one since). `running` says a turn is working on the chat now. A chat saved before turns were kept shows its messages alone, and so does a reply whose turn
         record cannot be read."""
         turns: dict[str, TurnRecord] = {}   # read first: a turn is kept only after its messages are in the memory
         for kept in self.records.turns(thread.id):
@@ -356,8 +358,9 @@ class Chat:
             current = (self.records.question(q.id) for q in turn.result.questions)
             turn.result.questions = [q for q in current if q is not None]
             turns[turn.message_id] = turn
+        running = self.runs.is_running(thread.id)   # read before the messages: a turn ending between leaves them complete
         state = self.agent.get_state(_config(thread.id))
-        return ThreadDetail(thread=thread, messages=_messages(state.values.get("messages", []), turns))
+        return ThreadDetail(thread=thread, messages=_messages(state.values.get("messages", []), turns), running=running)
 
     def delete(self, thread: ChatThread) -> None:
         """Removes the chat and its memory; StillWorking while a message runs on it."""
