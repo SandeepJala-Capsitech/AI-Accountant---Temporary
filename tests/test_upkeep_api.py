@@ -65,7 +65,7 @@ def finish(client, job_id, timeout=10):
     raise AssertionError("job did not finish in time")
 
 
-def test_a_receipt_uploaded_outside_the_chat_clears_its_question(api):
+def test_a_receipt_uploaded_outside_the_chat_clears_its_question(api, mongo_store):
     client = api()
     cid = add(client)
     manual(client, cid, SCREWFIX_LINE)
@@ -74,8 +74,12 @@ def test_a_receipt_uploaded_outside_the_chat_clears_its_question(api):
     posted = client.get(f"/api/clients/{cid}/years/{YEAR}/posted-trial-balance").json()
     assert [s["gross"] for s in posted["suspense"]] == ["86.40"] and posted["unposted_changes"] == 0
 
-    manual(client, cid, SCREWFIX_RECEIPT)
+    receipt = manual(client, cid, SCREWFIX_RECEIPT)
     assert client.get(f"/api/clients/{cid}/questions").json() == []
+    [resolved] = AgentRecords(mongo_store.db).questions(cid, None, statuses=("resolved",))
+    upload_of_receipt = next(t["upload_id"] for t in receipt["transactions"] if t["document_type"] == "receipt")
+    name = next(u["name"] for u in receipt["uploads"] if u["id"] == upload_of_receipt)
+    assert resolved.answer == f"Matched to {name}"
     posted = client.get(f"/api/clients/{cid}/years/{YEAR}/posted-trial-balance").json()
     assert posted["suspense"] == [] and posted["unposted_changes"] == 0
     tb = client.get(f"/api/clients/{cid}/years/{YEAR}/trial-balance").json()

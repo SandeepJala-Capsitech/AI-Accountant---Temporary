@@ -94,32 +94,47 @@ def rule_questions(store: MongoStore, client_id: int, year_start: dt.date) -> li
     return list(_wanted(store, client_id, year_start)[0].values())
 
 
-def _settled_by(built: Ledger, q: Question) -> Optional[str]:
-    """For a resolved document question, "Matched to <file>" when its row now pays a document, the file that
-    document is in; otherwise None."""
-    if q.kind not in _ASKS:
+def _settled_by(store: MongoStore, client_id: int, q: Question) -> Optional[str]:
+    """For a resolved document question, "Matched to <file>" when its row is now settled by a document, the file that
+    document is in; otherwise None. A bank line pays a document (pays) or is recorded by it (recorded_by, as a card
+    payment is by its receipt). The document is looked up among all the client's rows: a card receipt can sit in
+    another year than its line."""
+    if q.kind not in _ASKS or not q.row_ids:
         return None
-    tx = next((t for t in built.transactions if t.id == q.row_ids[0]), None)
-    if tx is None or not tx.pays:
+    rows = books.all_rows(store, client_id)
+    tx = next((t for t in rows if t.id == q.row_ids[0]), None)
+    if tx is None:
         return None
-    paid = next((t for t in built.transactions if t.document_ref == tx.pays[0].ref), None)
-    name = next((u.name for u in built.uploads if paid is not None and u.id == paid.upload_id), None)
+    ref = tx.pays[0].ref if tx.pays else tx.recorded_by.ref if tx.recorded_by else None
+    paid = next((t for t in rows if ref and t.document_ref == ref), None)
+    name = next((u["name"] for u in store.uploads(client_id) if paid is not None and u["id"] == paid.upload_id), None)
     return f"Matched to {name}" if name else None
+
+
+def _same(stored: Question, draft: QuestionDraft) -> bool:
+    """Whether the stored question already says what the draft says."""
+    return (stored.kind, stored.text, stored.why, stored.row_ids, stored.year_start) == (
+        draft.kind, draft.text, draft.why, draft.row_ids, draft.year_start)
 
 
 def refresh(store: MongoStore, records: AgentRecords, client_id: int, year_start: dt.date) -> list[Question]:
     """Works the year's rule questions out from the books and keeps them: each is asked once under its key (asked
     again, it keeps its status and answer, so one waiting stays waiting), one that was resolved and is needed again
-    is reopened, and one the books no longer need is resolved with no answer. The agent's questions are left alone. Returns the
-    year's open and waiting questions, oldest first."""
-    wanted, built = _wanted(store, client_id, year_start)
+    is reopened, and one the books no longer need is resolved with no answer. The agent's questions are left alone.
+    The year's questions are read once and only those that are new or have changed are written, so settling after
+    every change costs a read when nothing moved. Returns the year's open and waiting questions, oldest first."""
+    wanted, _ = _wanted(store, client_id, year_start)
+    stored = {_key(q.kind, q.row_ids[0]): q for q in records.questions(
+        client_id, year_start, statuses=("open", "waiting", "resolved")) if q.source == "rules" and q.row_ids}
     for key, draft in wanted.items():
-        asked = records.upsert_question(draft, key)
+        asked = stored.get(key)
+        if asked is None or not _same(asked, draft):
+            asked = records.upsert_question(draft, key)
         if asked.status == "resolved":
             records.set_question(asked.id, "open")
-    for q in records.questions(client_id, year_start):
-        if q.source == "rules" and q.row_ids and _key(q.kind, q.row_ids[0]) not in wanted:
-            records.set_question(q.id, "resolved", _settled_by(built, q))
+    for key, q in stored.items():
+        if key not in wanted and q.status != "resolved":
+            records.set_question(q.id, "resolved", _settled_by(store, client_id, q))
     return records.questions(client_id, year_start)
 
 

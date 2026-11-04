@@ -46,7 +46,12 @@ def _stored(amount: Decimal) -> Decimal128:
     return Decimal128(str(amount.quantize(PENNY)))
 
 
+_INDEXED: set[str] = set()   # the databases whose indexes this process has made: each is made once, not on every post
+
+
 def _ensure_indexes(db: Database) -> None:
+    if db.name in _INDEXED:
+        return
     db.ledger_entries.create_index([("client_id", pymongo.ASCENDING), ("year_start", pymongo.ASCENDING)])
     db.ledger_entries.create_index([("batch_id", pymongo.ASCENDING)])
     db.posting_batches.create_index([("client_id", pymongo.ASCENDING), ("year_start", pymongo.ASCENDING),
@@ -55,6 +60,7 @@ def _ensure_indexes(db: Database) -> None:
     # same ledger, the second to write is refused, so a line is never reversed twice.
     db.posting_batches.create_index([("client_id", pymongo.ASCENDING), ("year_start", pymongo.ASCENDING),
                                      ("after", pymongo.ASCENDING)], unique=True)
+    _INDEXED.add(db.name)
 
 
 def _ruled(store: MongoStore, client_id: int, year_start: dt.date) -> tuple[BusinessSettings, Ruled]:
@@ -204,10 +210,12 @@ def post(store: MongoStore, records: AgentRecords, client_id: int, year_start: d
          decision_ids: Sequence[str] = ()) -> PostResult:
     """Posts the year's changes since the last posting as one batch, recording the decisions behind it. Nothing is
     written when there is nothing to post, when another posting worked out from the same ledger was written first,
-    or (with the problems) when the batch fails its checks, rows need fixing, or the latest batch's entries are
-    still being written. entries_added counts the new lines, reversals_added the reversals."""
+    or (with the problems) when the batch fails its checks, rows need fixing, the year is closed, or the latest
+    batch's entries are still being written. entries_added counts the new lines, reversals_added the reversals."""
     db = records.db
     _ensure_indexes(db)
+    if any(c.start == year_start for c in store.get_client(client_id).closed_years):
+        return _nothing(["That year is closed."])   # closed is closed: nothing is posted to it
     try:
         settings, ruled = _ruled(store, client_id, year_start)
     except InvalidTransactions as exc:

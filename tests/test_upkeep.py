@@ -116,3 +116,34 @@ def test_settle_runs_inside_the_clients_lock(store, records, acme_with_year_one,
     upkeep.after_change(store, records, Spy(), change(acme_with_year_one), today=TODAY)
     c = acme_with_year_one
     assert seen == [(c, "enter"), "settle", (c, "exit")] * 2   # a year at a time (this one and the next)
+
+
+def test_settling_again_with_nothing_new_writes_no_question(store, records, locks, acme, monkeypatch):
+    add_rows(store, acme, travel_line(), year_start=YEAR_1)
+    upkeep.after_change(store, records, locks, change(acme), today=TODAY)
+    writes = []
+    for name in ("upsert_question", "set_question"):
+        original = getattr(records, name)
+        monkeypatch.setattr(records, name, lambda *a, _o=original, _n=name, **k: writes.append(_n) or _o(*a, **k))
+
+    upkeep.after_change(store, records, locks, change(acme), today=TODAY)
+
+    assert writes == []
+    assert [q.kind for q in records.questions(acme, YEAR_1)] == ["receipt_or_invoice"]
+
+
+def test_a_year_closed_while_waiting_for_the_lock_is_not_settled(store, records, locks, acme_with_year_one, monkeypatch):
+    upkeep.after_change(store, records, locks, change(acme_with_year_one), today=TODAY)
+    books.close(store, acme_with_year_one, YEAR_1)
+    seen = []
+    monkeypatch.setattr(upkeep, "_open_years", lambda *a, **k: [YEAR_1])   # a list taken before the close
+    monkeypatch.setattr(upkeep, "settle", lambda *a, **k: seen.append(a))
+    assert upkeep.after_change(store, records, locks, change(acme_with_year_one), today=TODAY) == {}
+    assert seen == []
+
+
+def test_posting_to_a_closed_year_writes_nothing(store, records, acme_with_year_one):
+    books.close(store, acme_with_year_one, YEAR_1)
+    result = ledger_book.post(store, records, acme_with_year_one, YEAR_1)
+    assert result.batch_id is None and result.problems == ["That year is closed."]
+    assert batches(records, acme_with_year_one, YEAR_1) == 0
