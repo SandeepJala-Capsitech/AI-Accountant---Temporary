@@ -50,12 +50,15 @@ export default function ThreadPage() {
   const running = turns.some(t => t.running)
   const abort = useRef<AbortController | null>(null)
   const nextTurn = useRef(1)
+  const loads = useRef(0)                        // a load that a newer one or an unmount has replaced must not apply
   const asked = useRef(false)                    // the link's question is handled once, even when effects run twice
   const end = useRef<HTMLDivElement>(null)
 
   const load = useCallback(async () => {
+    const mine = ++loads.current
     try {
       const next = await getThread(threadId)
+      if (mine !== loads.current) return
       setDetail(next)
       setHistory(next.messages)
       setTurns([])
@@ -64,6 +67,7 @@ export default function ThreadPage() {
       getYears(next.thread.client_id).then(years => setYearLabel(years.find(y => y.start === next.thread.year_start)?.label ?? ''),
                               () => undefined)
     } catch (e) {
+      if (mine !== loads.current) return
       if (e instanceof ApiError && e.code === 'http_404') setMissing(true)
       else setError(message(e))
     }
@@ -71,7 +75,7 @@ export default function ThreadPage() {
 
   useEffect(() => {
     load()
-    return () => abort.current?.abort()
+    return () => { loads.current++; abort.current?.abort() }
   }, [load])
 
   useEffect(() => { end.current?.scrollIntoView?.({ block: 'end' }) }, [turns.length])
