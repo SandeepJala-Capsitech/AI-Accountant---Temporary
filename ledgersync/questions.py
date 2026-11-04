@@ -17,7 +17,7 @@ from .checks import booked, long_date
 from .errors import InvalidInput, NotFound
 from .evidence_rules import document_rule
 from .ledger import settings_for
-from .models import PostResult, Question, QuestionDraft, Transaction
+from .models import Ledger, PostResult, Question, QuestionDraft, Transaction
 from .money import ZERO
 from .records import AgentRecords
 from .resolutions import set_date
@@ -63,7 +63,8 @@ def _key(kind: str, row_id: int) -> str:
     return f"{'date' if kind == 'date' else 'doc'}:{row_id}"
 
 
-def _wanted(store: MongoStore, client_id: int, year_start: dt.date) -> dict[str, QuestionDraft]:
+def _wanted(store: MongoStore, client_id: int,
+            year_start: dt.date) -> tuple[dict[str, QuestionDraft], Ledger]:
     """The questions the year's books ask now, by key. A row with no date asks for one (a date in its file name is
     only ever offered on the row, never taken: matching dates a row from its bank line, so a row still undated has
     none). A booked row the document rules hold asks for the document it needs."""
@@ -85,12 +86,25 @@ def _wanted(store: MongoStore, client_id: int, year_start: dt.date) -> dict[str,
             want(tx, rule.needs, _ASKS[rule.needs],
                  f"{_gbp(tx.gross)} to {tx.counterparty or tx.description}{when}. {_OVER[rule.needs]}, so I need it. "
                  "Held in Suspense as Documentation required until then.")
-    return wanted
+    return wanted, built
 
 
 def rule_questions(store: MongoStore, client_id: int, year_start: dt.date) -> list[QuestionDraft]:
     """The questions the year's books ask the person now, so the agent doesn't ask them again."""
-    return list(_wanted(store, client_id, year_start).values())
+    return list(_wanted(store, client_id, year_start)[0].values())
+
+
+def _settled_by(built: Ledger, q: Question) -> Optional[str]:
+    """For a resolved document question, "Matched to <file>" when its row now pays a document, the file that
+    document is in; otherwise None."""
+    if q.kind not in _ASKS:
+        return None
+    tx = next((t for t in built.transactions if t.id == q.row_ids[0]), None)
+    if tx is None or not tx.pays:
+        return None
+    paid = next((t for t in built.transactions if t.document_ref == tx.pays[0].ref), None)
+    name = next((u.name for u in built.uploads if paid is not None and u.id == paid.upload_id), None)
+    return f"Matched to {name}" if name else None
 
 
 def refresh(store: MongoStore, records: AgentRecords, client_id: int, year_start: dt.date) -> list[Question]:
@@ -98,14 +112,14 @@ def refresh(store: MongoStore, records: AgentRecords, client_id: int, year_start
     again, it keeps its status and answer, so one waiting stays waiting), one that was resolved and is needed again
     is reopened, and one the books no longer need is resolved with no answer. The agent's questions are left alone. Returns the
     year's open and waiting questions, oldest first."""
-    wanted = _wanted(store, client_id, year_start)
+    wanted, built = _wanted(store, client_id, year_start)
     for key, draft in wanted.items():
         asked = records.upsert_question(draft, key)
         if asked.status == "resolved":
             records.set_question(asked.id, "open")
     for q in records.questions(client_id, year_start):
         if q.source == "rules" and q.row_ids and _key(q.kind, q.row_ids[0]) not in wanted:
-            records.set_question(q.id, "resolved", None)
+            records.set_question(q.id, "resolved", _settled_by(built, q))
     return records.questions(client_id, year_start)
 
 

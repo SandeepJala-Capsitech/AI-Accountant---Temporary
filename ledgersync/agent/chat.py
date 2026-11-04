@@ -27,7 +27,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.constants import START
 from pydantic import BaseModel, StringConstraints, ValidationError
 
-from ledgersync import books, ledger_book, questions
+from ledgersync import books, ledger_book, questions, upkeep
 from ledgersync.blobs import BlobStore
 from ledgersync.config import Settings
 from ledgersync.errors import InvalidInput, LedgerSyncError, ModelUnavailable, NotFound, YearClosed
@@ -36,7 +36,6 @@ from ledgersync.ledger import require_active
 from ledgersync.models import (ChatThread, Client, Decision, PostedTrialBalance, PostResult, Question,
                                Transaction)
 from ledgersync.records import AgentRecords
-from ledgersync.resolutions import record_automatic
 from ledgersync.rows import now_iso
 from ledgersync.store_mongo import MongoStore
 
@@ -462,11 +461,8 @@ class Chat:
     def _write(self, thread: ChatThread, since: Since) -> PostResult:
         """With the client's lock held: records the rows matching dated from the bank, works the questions out and
         posts the year, with the decisions this chat made since then behind the posting."""
-        record_automatic(self.store, self.records, client_id=thread.client_id, year_start=thread.year_start,
-                         thread_id=thread.id)
-        questions.refresh(self.store, self.records, thread.client_id, thread.year_start)
-        return ledger_book.post(self.store, self.records, thread.client_id, thread.year_start,
-                                decision_ids=[d.id for d in sorted_since(self.records, thread, since)])
+        return upkeep.settle(self.store, self.records, thread.client_id, thread.year_start, thread_id=thread.id,
+                             decision_ids=[d.id for d in sorted_since(self.records, thread, since)])
 
     def _answered(self, thread: ChatThread, since: Since, question_id: str, post: PostResult) -> AnswerResult:
         """The question as it stands, with what this chat sorted since then and, when the posting wrote something,

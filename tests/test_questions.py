@@ -229,7 +229,7 @@ def test_uploaded_invoice_resolves_held_payment(store, records, acme):
     assert net(tb, "9998") == 0 and tb.suspense == []
 
 
-def test_a_question_resolved_by_the_books_loses_its_answer(store, records, acme):
+def test_a_question_resolved_by_the_books_takes_the_file_that_settled_it_as_its_answer(store, records, acme):
     add_rows(store, acme, travel_line(), year_start=YEAR_1)
     [q] = refresh(store, records, acme)
     answer(store, records, acme, q, NoDocumentAnswer(kind="no_document"))
@@ -237,7 +237,7 @@ def test_a_question_resolved_by_the_books_loses_its_answer(store, records, acme)
     add_rows(store, acme, trainline_invoice(), year_start=YEAR_1)
     assert refresh(store, records, acme) == []
     done = records.question(q.id)
-    assert (done.status, done.answer) == ("resolved", None) and done.resolved_at
+    assert (done.status, done.answer) == ("resolved", "Matched to rows.csv") and done.resolved_at   # not "I don't have it"
 
 
 def test_invoice_that_does_not_fit_stays_open(store, records, acme):
