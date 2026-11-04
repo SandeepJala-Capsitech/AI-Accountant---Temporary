@@ -104,7 +104,9 @@ def test_a_total_put_out_by_a_persons_change_is_said_on_the_line_they_changed(st
     store.add_upload(client.id, "Matt.xlsx", "table", lines)
     hotel, ee = books.ledger(store, client.id, YEAR).transactions
     hotel, ee = ledger.change_row(store, client.id, ee.id, RowPatch(gross=Decimal("30.22"))).transactions
-    assert ([i.code for i in hotel.issues], [i.code for i in ee.issues], ee.issues[0].related) == (
+    # (the claim's lines have no receipts, so they also say they are held; that is not what this is about)
+    totals = lambda r: [i for i in r.issues if i.code != "needs_document"]
+    assert ([i.code for i in totals(hotel)], [i.code for i in totals(ee)], totals(ee)[0].related) == (
         [], ["total_mismatch"], [hotel.id])
 
 
@@ -209,7 +211,9 @@ def test_fixing_a_misread_amount_clears_the_statement_gap(store):
                                                    row(**line, gross="30.00", balance="900.00", document_ref="l2")])
     second = store.rows(client.id)[1].id
     built = ledger.change_row(store, client.id, second, RowPatch(gross="80.00"))
-    assert (built.uploads[0].statement.status, built.transactions[1].issues) == ("ok", [])
+    # (an £80 bank line with no document is held, which the row says; the statement gap is what clears)
+    assert (built.uploads[0].statement.status, [i.code for i in built.transactions[1].issues]) == (
+        "ok", ["needs_document"])
 
 
 def test_an_archived_clients_rows_cannot_change(store):

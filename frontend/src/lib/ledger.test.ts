@@ -259,7 +259,7 @@ test('issues are named, and the review summary counts each kind once per row', (
   assert.deepEqual([issueHeading('total_mismatch'), issueHeading('amount_conflict')],
                    ["Total doesn't add up.", 'Which amount?'])
   for (const code of ['vat_worked_out', 'not_vat_invoice', 'date_conflict', 'file_date', 'date_from_claim',
-                      'date_from_bank', 'booked_twice', 'amount_conflict', 'no_payroll', 'wages_from_bank', 'payroll_owed_to', 'vat_not_booked']) assert.notEqual(issueTitle(code), 'Check this', code)
+                      'date_from_bank', 'booked_twice', 'amount_conflict', 'no_payroll', 'wages_from_bank', 'payroll_owed_to', 'vat_not_booked', 'needs_document']) assert.notEqual(issueTitle(code), 'Check this', code)
   assert.deepEqual(reviewSummary([[missing, missing], [missing], [note], []]), [
     { code: 'total_mismatch', title: "Total doesn't add up", severity: 'warning', rows: 2 },
   ])

@@ -159,7 +159,8 @@ def test_a_line_added_by_hand_joins_its_document_and_clears_its_total_warning(ap
     [first] = manual(client, cid, claim)["transactions"]
     assert "total_mismatch" in [i["code"] for i in first["issues"]]
     rows = manual(client, cid, {**claim, "date": "2026-09-24", "gross": "54.00", "document_total": None})["transactions"]
-    assert [[i["code"] for i in r["issues"]] for r in rows] == [[], []] and {r["owed"] for r in rows} == {"90.00"}
+    # (the claim's lines have no receipts, so they say they are held; that is not what this is about)
+    assert [[i["code"] for i in r["issues"] if i["code"] != "needs_document"] for r in rows] == [[], []] and {r["owed"] for r in rows} == {"90.00"}
 
 
 def test_an_archived_client_takes_no_new_rows(api):

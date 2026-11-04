@@ -457,3 +457,20 @@ def test_the_rows_trial_balance_equals_the_posted_one(mongo_store, mongo_db, acm
     posted = ledger_book.posted_trial_balance(mongo_store, records, acme_with_year_one, date(2025, 4, 1))
     lines = lambda tb: sorted((l.code, l.debit, l.credit) for l in tb.lines)
     assert lines(rows) and lines(rows) == lines(posted)
+
+
+def test_a_held_purchase_says_what_it_needs(mongo_store, acme_with_year_one):
+    add_rows(mongo_store, acme_with_year_one,
+             row(date=date(2025, 7, 1), gross=D("240.00"), account_code="7400", document_type="statement",
+                 counterparty="Trainline", description="TRAINLINE"),
+             row(date=date(2025, 7, 2), gross=D("300.00"), account_code="7400", document_type="statement",
+                 counterparty="Trainline", description="TRAINLINE"),
+             row(date=date(2025, 7, 3), gross=D("38.50"), vat=D("6.42"), account_code="7300",
+                 document_type="statement", description="SHELL"), year_start=date(2025, 4, 1))
+    rows = books.ledger(mongo_store, acme_with_year_one, date(2025, 4, 1)).transactions
+    said = {r.gross: [i.message for i in r.issues if i.code == "needs_document"] for r in rows}
+    assert said[D("240.00")] == ["Held in Suspense: needs its receipt or invoice."]
+    assert said[D("300.00")] == ["Held in Suspense: needs a full VAT invoice."]
+    assert said[D("38.50")] == []
+    assert all(i.severity == "warning" for r in rows for i in r.issues if i.code == "needs_document")
+    assert books.summary(mongo_store, acme_with_year_one, date(2025, 4, 1)).to_review == 2

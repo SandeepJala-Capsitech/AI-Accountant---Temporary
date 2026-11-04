@@ -214,7 +214,8 @@ def test_list_issues_by_family(mongo_store, deps, staples):
     names = {r.id: (r.tx.document_type, r.tx.description) for r in mongo_store.rows(staples)}
     duplicate, documents = (json.loads(answered(model, n)[0].content) for n in (1, 2))
     assert [names[r["row_id"]][0] for r in duplicate["rows"]] == ["statement"]
-    assert duplicate["rows"][0]["issues"][-1]["code"] == "booked_twice"
+    # (the bank line is also held for its document, which the row now says last)
+    assert [i["code"] for i in duplicate["rows"][0]["issues"] if i["code"] != "needs_document"][-1] == "booked_twice"
     # The bank line is held for its receipt; the sheet line is booked from the receipt, so it isn't held.
     assert [(names[r["row_id"]][0], r["held"]["needs"]) for r in documents["rows"]] == [
         ("statement", "receipt_or_invoice")]

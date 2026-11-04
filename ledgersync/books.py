@@ -14,7 +14,7 @@ from typing import Optional
 
 from . import years as yr
 from .accounts import BY_CODE, CREDITORS, DEBTORS, AccountType, reserve_for
-from .checks import booked, long_date, normalise
+from .checks import booked, issue, long_date, normalise
 from .errors import InvalidInput, InvalidTransactions, NotFound
 from .evidence_rules import document_rule, journal_with_rule
 from .export import file_name, workbook
@@ -138,6 +138,10 @@ def years_of(store: MongoStore, client_id: int, today: dt.date) -> list[Year]:
     """The client's years: the first through the latest that holds a row, or holds today, whichever is later."""
     return _books(store, client_id, today).years
 
+# What a held row says it needs, by DocumentRule.needs.
+HELD = {"receipt_or_invoice": "Held in Suspense: needs its receipt or invoice.",
+        "vat_invoice": "Held in Suspense: needs a full VAT invoice."}
+
 
 def _matched(b: _Books, settings: BusinessSettings) -> tuple[list[Transaction], dict[str, DocumentStatus]]:
     """All the client's rows matched together with the invoices brought forward, in the order of b.stored, and what
@@ -164,6 +168,12 @@ def _saved_rows(b: _Books, n: Optional[int]) -> tuple[list[SavedRow], dict[int, 
         checked = check_file_date(checked, names.get(upload_id, ""))
         for k, tx in zip(ks, checked):
             ready[k] = tx
+    for k, tx in enumerate(ready):
+        if booked(tx):
+            rule = document_rule(tx, settings)
+            if rule.action == "hold":
+                ready[k] = tx.model_copy(update={"issues": [*tx.issues, issue("needs_document", HELD[rule.needs],
+                                                                              "warning")]})
     # The rows each issue is about, from their place in the rows matched to their row ids.
     rows = [SavedRow(**{**tx.model_dump(), "issues": [
                          {**i.model_dump(), "related": [b.stored[p].id for p in i.related]} for i in tx.issues]},
