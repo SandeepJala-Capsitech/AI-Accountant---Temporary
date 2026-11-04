@@ -301,6 +301,9 @@ class ClosedYear(BaseModel):
     end: dt.date
     closed_at: str
     closing: dict[str, Decimal]
+    # "document_rules" once the year was closed with the document rules applied; None for a year closed before
+    # them, which is still worked out without them (closed is closed).
+    rules: Optional[str] = None
 
 
 class Client(ClientFields):
@@ -550,7 +553,7 @@ class Decision(DecisionDraft):
 
 ChangeKind = Literal["upload_read", "upload_removed", "upload_bank_changed", "row_edited", "row_added",
                      "row_removed", "row_linked", "row_included", "rows_apart", "row_reverted", "client_changed",
-                     "opening_balances_changed", "question_answered", "decision", "year_reopened"]
+                     "opening_balances_changed", "question_answered", "decision", "year_reopened", "year_closed"]
 
 
 class ChangeDraft(BaseModel):

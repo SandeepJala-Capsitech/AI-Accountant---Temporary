@@ -474,3 +474,53 @@ def test_a_held_purchase_says_what_it_needs(mongo_store, acme_with_year_one):
     assert said[D("38.50")] == []
     assert all(i.severity == "warning" for r in rows for i in r.issues if i.code == "needs_document")
     assert books.summary(mongo_store, acme_with_year_one, date(2025, 4, 1)).to_review == 2
+
+
+# ─── Closed is closed: a year closed before the document rules stays as it closed ──────────────────────────────
+
+def close_without_the_rules(store, client_id: int, start: date) -> None:
+    """Closes the year as it was closed before the document rules: its figures worked out without them, no stamp."""
+    from ledgersync.models import ClosedYear
+    from ledgersync.rows import now_iso
+    b = books._books(store, client_id)
+    n = b.index(start)
+    tb = b.post(b.settings_in(n), keep=[p == n for p in b.placed], opening=books._opening(b, n), rules=False)
+    store.close_year(client_id, ClosedYear(start=b.years[n].start, end=b.years[n].end, closed_at=now_iso(),
+                                           closing=books._balances(tb)))
+
+
+def a_legacy_year_with_a_statement_line(mongo_store, acme_with_year_one) -> int:
+    add_rows(mongo_store, acme_with_year_one, row(date=date(2025, 7, 1), gross=D("240.00"), account_code="7400",
+             document_type="statement", counterparty="Trainline", description="TRAINLINE"), year_start=YEAR_1)
+    close_without_the_rules(mongo_store, acme_with_year_one, YEAR_1)
+    return acme_with_year_one
+
+
+def test_a_year_closed_before_the_rules_keeps_its_figures_and_holds_nothing(mongo_store, acme_with_year_one):
+    client_id = a_legacy_year_with_a_statement_line(mongo_store, acme_with_year_one)
+
+    tb = books.trial_balance(mongo_store, client_id, YEAR_1)
+    built = books.ledger(mongo_store, client_id, YEAR_1)
+
+    assert (net(tb, "7400"), net(tb, "9998")) == (D("240.00"), D("0.00"))
+    assert built.year.changed_since_closed is False
+    assert not [i for r in built.transactions for i in r.issues if i.code == "needs_document"]
+    assert books.summary(mongo_store, client_id, YEAR_1).year.changed_since_closed is False
+    assert books.export(mongo_store, client_id, YEAR_1, date(2026, 1, 1))[0]
+
+
+def test_reopening_a_year_closed_before_the_rules_applies_them(mongo_store, acme_with_year_one):
+    client_id = a_legacy_year_with_a_statement_line(mongo_store, acme_with_year_one)
+
+    books.reopen(mongo_store, client_id, YEAR_1)
+
+    tb = books.trial_balance(mongo_store, client_id, YEAR_1)
+    assert (net(tb, "7400"), net(tb, "9998")) == (D("0.00"), D("240.00"))
+    built = books.ledger(mongo_store, client_id, YEAR_1)
+    assert [i for r in built.transactions for i in r.issues if i.code == "needs_document"]
+
+
+def test_a_year_closed_now_is_stamped_with_the_rules(mongo_store, acme_with_year_one):
+    client = books.close(mongo_store, acme_with_year_one, YEAR_1)
+
+    assert client.closed_years[0].rules == "document_rules"

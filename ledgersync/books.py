@@ -24,11 +24,13 @@ from .matching import DocumentStatus, match_documents
 from .models import (BankCheck, BusinessSettings, Client, ClosedYear, InvoiceSummary, Ledger, OpeningBalances, OpenItem,
                      SavedRow, StatementCheck, Transaction, TrialBalance, Upload, Year, YearSummary)
 from .money import ZERO, to_money
-from .posting import matched_rows, summarise
+from .posting import journal_for, matched_rows, summarise
 from .rows import StoredRow, now_iso
 from .statements import check_statement
 from .store_mongo import MongoStore
 
+# What books.close stamps a year with when it closes it under the document rules (ClosedYear.rules).
+DOCUMENT_RULES = "document_rules"
 _PROFIT_AND_LOSS = (AccountType.INCOME.value, AccountType.EXPENSE.value)
 
 
@@ -114,12 +116,21 @@ class _Books:
             raise NotFound("That year was not found.")
         return n
 
-    def post(self, settings: BusinessSettings, keep: list[bool], opening: dict[str, Decimal]) -> TrialBalance:
-        """The year's trial balance, its rows booked under the document rules as the posted ledger books them."""
+    def rules_apply(self, n: int) -> bool:
+        """Whether year n is worked out under the document rules: every open year and every year closed with them.
+        A year closed before them stays as it closed (closed is closed)."""
+        start = self.years[n].start
+        closed = next((c for c in self.client.closed_years if c.start == start), None)
+        return closed is None or closed.rules == DOCUMENT_RULES
+
+    def post(self, settings: BusinessSettings, keep: list[bool], opening: dict[str, Decimal], *,
+             rules: bool = True) -> TrialBalance:
+        """The year's trial balance, its rows booked under the document rules as the posted ledger books them (with
+        rules False, as a year closed before them is: every row books as posting.journal_for has it)."""
         posted = matched_rows([row.tx for row in self.stored], settings, self.read, self.apart, keep=keep,
                               open_items=self.unpaid)
-        return summarise([line for n, tx in posted for line in journal_with_rule(tx, n, document_rule(tx, settings))],
-                         opening)
+        return summarise([line for n, tx in posted for line in (
+            journal_with_rule(tx, n, document_rule(tx, settings)) if rules else journal_for(tx, n))], opening)
 
 
 def _books(store: MongoStore, client_id: int, today: Optional[dt.date] = None) -> _Books:
@@ -169,7 +180,7 @@ def _saved_rows(b: _Books, n: Optional[int]) -> tuple[list[SavedRow], dict[int, 
         for k, tx in zip(ks, checked):
             ready[k] = tx
     for k, tx in enumerate(ready):
-        if booked(tx):
+        if booked(tx) and b.rules_apply(b.placed[k]):   # a year closed before the rules holds nothing
             rule = document_rule(tx, settings)
             if rule.action == "hold":
                 ready[k] = tx.model_copy(update={"issues": [*tx.issues, issue("needs_document", HELD[rule.needs],
@@ -279,7 +290,8 @@ def trial_balance(store: MongoStore, client_id: int, year_start: dt.date) -> Tri
 
 
 def _trial_balance(b: _Books, n: int) -> TrialBalance:
-    return b.post(b.settings_in(n), keep=[p == n for p in b.placed], opening=_opening(b, n))
+    return b.post(b.settings_in(n), keep=[p == n for p in b.placed], opening=_opening(b, n),
+                  rules=b.rules_apply(n))
 
 
 def booked_rows(store: MongoStore, client_id: int, year_start: dt.date) -> list[tuple[int, Transaction]]:
@@ -488,7 +500,8 @@ def close(store: MongoStore, client_id: int, year_start: dt.date) -> Client:
     if tb is None or not tb.is_balanced:
         raise InvalidInput("The trial balance must balance before the year is closed.")
     return store.close_year(client_id, ClosedYear(start=year.start, end=year.end, closed_at=now_iso(),
-                                                  closing=_balances(tb)))
+                                                  closing=_balances(tb),
+                                                  rules=DOCUMENT_RULES))
 
 
 def reopen(store: MongoStore, client_id: int, year_start: dt.date) -> Client:

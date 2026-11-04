@@ -646,3 +646,23 @@ def test_an_event_is_sent_as_sse():
     event = ChatEvent("step", {"id": "call_1", "text": "Opened costco-receipt-21-10.txt", "state": "done"})
     assert event.sse() == ('event: step\ndata: {"id": "call_1", "text": "Opened costco-receipt-21-10.txt", '
                            '"state": "done"}\n\n')
+
+
+def test_a_held_row_is_a_documents_issue_and_never_saved_with_the_row():
+    from ledgersync.agent.tools import family_of
+    from ledgersync.checks import is_derived, issue
+    assert family_of("needs_document") == "documents"
+    assert is_derived(issue("needs_document", "Held in Suspense: needs its receipt or invoice."))
+
+
+@pytest.mark.mongo
+def test_a_held_row_is_in_the_documents_family_only(mongo_store, deps, acme):
+    from ledgersync import books
+    from ledgersync.agent.tools import _to_look_at
+    add_rows(mongo_store, acme, row(date=dt.date(2026, 10, 1), gross=Decimal("300.00"), vat=Decimal("0.00"),
+                                    account_code="7504", document_type="statement"), year_start=YEAR)
+
+    [(held_row, held, families)] = _to_look_at(books.ledger(mongo_store, acme, YEAR))
+
+    assert held is not None and [i.code for i in held_row.issues if i.code == "needs_document"]
+    assert families == {"documents"}

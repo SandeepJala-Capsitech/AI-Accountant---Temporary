@@ -23,7 +23,7 @@ STATEMENT_ISSUES = {"statement_gap", "statement_total", "file_date"}
 _DERIVED = {"unknown_account", "same_account", "non_gbp_currency", "vat_not_applicable", "vat_estimated",
             "vat_arithmetic", "vat_rate_mismatch", "date_missing", "date_out_of_period", "unusual_direction",
             "not_booked", "vat_blocked", "director_loan", "wages_from_bank",
-            "payroll_owed_to", "before_first_year", "vat_not_booked"} | MATCHING_ISSUES | STATEMENT_ISSUES
+            "payroll_owed_to", "before_first_year", "vat_not_booked", "needs_document"} | MATCHING_ISSUES | STATEMENT_ISSUES
 
 
 def issue(code: str, message: str, severity: str = "warning", related: Sequence[int] = ()) -> Issue:
