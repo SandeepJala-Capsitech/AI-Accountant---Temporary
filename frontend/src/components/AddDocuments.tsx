@@ -158,7 +158,7 @@ export default function AddDocuments({ clientId, yearStart, bankAccounts, folder
         contra_account_code: null, currency: 'GBP', source: 'manual', method: 'user', evidence: null,
         document_type: 'receipt',
         issues: suggested
-          ? suggested.issues.filter(i => i.code === 'account_not_recognised')
+          ? suggested.issues.filter(i => i.code === 'account_not_recognised' || i.code === 'account_unclear')
           : [{ code: 'account_not_recognised', severity: 'warning', message: 'No account suggested; posted to Suspense.' }],
       }
       await addManualRows(clientId, [row], yearStart)
