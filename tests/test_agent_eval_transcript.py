@@ -246,8 +246,10 @@ def test_the_real_fetch_gives_none_for_a_failure_and_without_a_key():
 
     seen = []
     settings = Settings(openrouter_api_key="sk-secret")
-    client = _generation_client([httpx.Response(404), httpx.Response(404)], seen)
-    assert agent_eval.generation_fetcher(settings, client=client, sleep=lambda s: None)("gen-1") is None
+    naps = []
+    client = _generation_client([httpx.Response(404)] * 4, seen)
+    assert agent_eval.generation_fetcher(settings, client=client, sleep=naps.append)("gen-1") is None
+    assert naps == [2, 5, 10]   # retried while the record may still be appearing, then given up
     client = _generation_client([httpx.Response(500)], seen)
     assert agent_eval.generation_fetcher(settings, client=client, sleep=lambda s: None)("gen-1") is None
     assert agent_eval.generation_fetcher(Settings(), client=client)("gen-1") is None   # no key: no call

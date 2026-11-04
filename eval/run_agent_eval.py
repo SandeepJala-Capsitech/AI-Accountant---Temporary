@@ -343,8 +343,8 @@ def thread_messages(saver, thread_id: str) -> list[dict]:
 
 def generation_fetcher(settings=None, *, client=None, sleep=time.sleep):
     """A fetch(generation_id) for lookup_hosts: OpenRouter's GET <base url>/generation?id=<id> as its JSON, or None
-    when there is no key, the call fails or the record isn't there. The record can take a moment to appear, so a 404
-    is tried once more after 2 s. The key goes in the Authorization header only, and is never printed."""
+    when there is no key, the call fails or the record isn't there. The record can take a few seconds to appear (the
+    run's last answer is looked up just after it), so a 404 is tried again after 2, 5 and 10 s. The key goes in the Authorization header only, and is never printed."""
     if settings is None:
         from ledgersync.config import Settings
         settings = Settings.from_env()
@@ -356,10 +356,10 @@ def generation_fetcher(settings=None, *, client=None, sleep=time.sleep):
         http = client or httpx.Client(timeout=10)
         url = f"{settings.openrouter_base_url}/generation"
         headers = {"Authorization": f"Bearer {settings.openrouter_api_key}"}
-        for attempt in range(2):
+        for wait in (2, 5, 10, None):
             response = http.get(url, params={"id": generation_id}, headers=headers)
-            if response.status_code == 404 and attempt == 0:
-                sleep(2)
+            if response.status_code == 404 and wait is not None:
+                sleep(wait)
                 continue
             return response.json() if response.status_code == 200 else None
         return None
