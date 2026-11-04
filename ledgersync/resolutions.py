@@ -392,11 +392,6 @@ def _suggested_values(b, change: _Change) -> tuple[dict, dict]:
     return before, after
 
 
-def _persons(row: SavedRow) -> bool:
-    """A person changed the row: edited it, linked it or marked it apart from others."""
-    return row.edited or row.link is not None or bool(row.apart_from)
-
-
 def key_of(client_id: int, row_id: int, resolution) -> str:
     """The idempotency key of a resolution asked about a row: its client, the rows it names and its arguments."""
     return _key(f"{client_id}|{_named(row_id, resolution)}|{resolution.model_dump_json()}")
@@ -447,8 +442,9 @@ def resolve(store: MongoStore, records: AgentRecords, *, client_id: int, thread_
         if records.is_rejected(client_id, key):
             raise _Refused("A person undid this change.")
         if trigger == "background":
+            theirs = records.person_rows(client_id)
             for n in named:
-                if n in rows and _persons(rows[n]):
+                if n in rows and n in theirs:
                     raise _Refused(f"A person changed row {n}; a background review leaves it to them.")
         if b.client.archived:
             raise _Refused(f"{b.client.name} is archived.")

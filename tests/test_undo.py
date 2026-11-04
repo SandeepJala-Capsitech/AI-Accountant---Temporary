@@ -7,7 +7,7 @@ import pytest
 from ledgersync import ledger, ledger_book, undo
 from ledgersync.agent.locks import ClientLocks
 from ledgersync.errors import InvalidInput
-from ledgersync.models import RowPatch
+from ledgersync.models import ChangeDraft, RowPatch
 from test_resolutions import (ACTOR, YEAR, call, costco_split, keep_receipt, nb, pages, records,  # noqa: F401
                               saved)
 
@@ -65,6 +65,7 @@ def test_only_a_suggestion_can_be_applied(mongo_store, records, locks, pages, nb
 
 def test_a_background_resolution_on_a_row_a_person_changed_is_refused(mongo_store, records, pages, nb):
     ledger.change_row(mongo_store, nb.id, nb.sheet_costco, RowPatch(description="Costco stationery"))
+    person_changed(records, nb, nb.sheet_costco, "row_edited")
     refused = call(mongo_store, records, pages, nb, nb.sheet_costco, keep_receipt(nb), QUOTE, trigger="background")
     assert refused.status == "refused"
     assert refused.reason == f"A person changed row {nb.sheet_costco}; a background review leaves it to them."
@@ -121,3 +122,32 @@ def test_undo_refuses_a_decision_that_is_not_an_applied_one_of_the_client(mongo_
     for bad in (s.id, "nope"):
         with pytest.raises(InvalidInput):
             undo.undo_decision(mongo_store, records, locks, client_id=nb.id, decision_id=bad)
+
+
+def person_changed(records, nb, row_id, kind):
+    records.add_change(ChangeDraft(client_id=nb.id, actor="user", kind=kind, row_ids=[row_id], summary="x"))
+
+
+def test_a_row_the_ai_patched_is_not_a_persons(mongo_store, records, pages, nb):
+    from ledgersync.resolutions import VatFromDocument
+    first = call(mongo_store, records, pages, nb, nb.sheet_costco, keep_receipt(nb), QUOTE, trigger="background")
+    assert first.status == "applied"
+    assert saved(mongo_store, nb.id, nb.sheet_costco).excluded
+    vat = VatFromDocument(action="set_vat_from_document", vat=Decimal("5.04"))
+    patched = call(mongo_store, records, pages, nb, nb.invoice, vat, "VAT 5.04", upload=nb.upload("inkwell-invoice.pdf"),
+                   trigger="background")
+    assert patched.status == "applied", patched.reason   # edits the invoice's VAT: an editable field
+    assert saved(mongo_store, nb.id, nb.invoice).decision_ids == [patched.id]
+    split_after = call(mongo_store, records, pages, nb, nb.invoice, VatFromDocument(
+        action="set_vat_from_document", vat=Decimal("5.03")), "VAT 5.04", upload=nb.upload("inkwell-invoice.pdf"),
+        trigger="background")
+    assert "A person changed" not in split_after.reason
+    again = call(mongo_store, records, pages, nb, nb.sheet_costco, keep_receipt(nb), QUOTE, trigger="background")
+    assert again.status == "applied"   # its own earlier change (same key) is returned, never a refusal
+
+
+@pytest.mark.parametrize("kind", ["row_edited", "row_added", "row_linked", "rows_apart"])
+def test_a_row_with_a_person_change_on_record_is_refused_to_the_background(mongo_store, records, pages, nb, kind):
+    person_changed(records, nb, nb.sheet_costco, kind)
+    refused = call(mongo_store, records, pages, nb, nb.sheet_costco, keep_receipt(nb), QUOTE, trigger="background")
+    assert refused.status == "refused" and refused.reason.startswith(f"A person changed row {nb.sheet_costco};")

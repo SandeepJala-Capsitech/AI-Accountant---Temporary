@@ -140,6 +140,13 @@ class AgentRecords:
         # a change keeps its own seq and summary, which _model would set apart
         return [Change.model_validate({k: v for k, v in doc.items() if k != "_id"}) for doc in reversed(docs)]
 
+    def person_rows(self, client_id: int) -> set[int]:
+        """The rows a person changed: those named by one of their edits, links, inclusions, not-the-sames, reverts or
+        hand entries in the record of changes."""
+        kinds = ["row_edited", "row_linked", "row_included", "rows_apart", "row_reverted", "row_added"]
+        return {n for c in self.db.changes.find({"client_id": client_id, "actor": "user", "kind": {"$in": kinds}},
+                                                {"row_ids": 1}) for n in c.get("row_ids", [])}
+
     def applied_suggestions(self, client_id: int) -> dict[str, str]:
         """The client's suggestions that were applied: the suggestion's decision id, and the applied decision's id."""
         return {c["after"]["decision_id"]: c["after"]["applied_as"]
