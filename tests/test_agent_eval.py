@@ -273,3 +273,42 @@ def test_run_case_saves_the_runs_transcript(mongo_store, records, tmp_path):
     assert {r["description"] for r in saved["rows_after_review"]} <= {r["description"] for r in saved["rows_final"]}
     assert len(saved["rows_final"]) > len(saved["rows_after_review"])   # the Brightline invoice's row
     assert saved["questions_after_review"] and isinstance(saved["decisions"], list)
+
+
+R5_ROW = {"file": "inv.pdf", "description": "Fibre"}
+R5_EXPECTED = {"resolutions": [{"action": "set_vat_from_document", "rule": "R5", "row": R5_ROW,
+                                "arguments": {"vat": "12.00"}}], "automatic": [], "from_answers": []}
+
+
+def _r5(decisions, vat, **kw):
+    rows_read = {805: {"vat": vat}} if kw.get("read", True) else None
+    return agent_eval.score_decisions(R5_EXPECTED, decisions, lambda name: 805, rows_read=rows_read)
+
+
+def test_an_r5_the_reader_already_booked_counts_as_in_the_reading_not_missing():
+    assert _r5([], "12.00") == [{"already_in_reading": {"rule": "R5", "row": R5_ROW}}]
+
+
+@pytest.mark.parametrize("vat", [None, "10.00"])
+def test_an_r5_is_missing_when_the_reading_has_no_or_another_vat(vat):
+    assert _r5([], vat) == [{"missing": {"rule": "R5", "row": R5_ROW}}]
+
+
+def test_an_r5_is_missing_without_a_reading_to_check():
+    assert _r5([], "12.00", read=False) == [{"missing": {"rule": "R5", "row": R5_ROW}}]
+
+
+def test_an_applied_r5_is_matched_whatever_the_reading_says():
+    applied = {"status": "applied", "rule": "R5", "row_ids": [805]}
+    assert _r5([applied], "12.00") == []
+
+
+def test_a_refused_r5_on_the_row_leaves_it_missing():
+    refused = {"status": "refused", "rule": "R5", "row_ids": [805]}
+    assert _r5([refused], "12.00") == [{"missing": {"rule": "R5", "row": R5_ROW}}]
+
+
+def test_an_r5_on_another_row_is_unexpected_and_the_expected_one_stays_in_the_reading():
+    other = {"status": "applied", "rule": "R5", "row_ids": [900]}
+    assert _r5([other], "12.00") == [{"already_in_reading": {"rule": "R5", "row": R5_ROW}},
+                                     {"unexpected": {"row_ids": [900], "rule": "R5"}}]

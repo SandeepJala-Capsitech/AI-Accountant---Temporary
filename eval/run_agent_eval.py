@@ -100,12 +100,24 @@ def exact_ids(names: dict[int, dict]):
     return find
 
 
-def score_decisions(expected: dict, decisions: list[dict], row_id) -> list[dict]:
+def _same_vat(read, wanted) -> bool:
+    """Whether the VAT the reader booked is exactly the one wanted (both as amounts); False when either is absent."""
+    try:
+        return read is not None and Decimal(str(read)) == Decimal(str(wanted))
+    except ArithmeticError:
+        return False
+
+
+def score_decisions(expected: dict, decisions: list[dict], row_id, rows_read: Optional[dict[int, dict]] = None) -> list[dict]:
     """Each expected decision (resolutions, automatic, from_answers) against the applied decisions the year's route
     gives: the same rule on exactly the same set of rows (its row and its keep, drop, primary or other), in any order
     (a split also names the rows it adds).
     An applied decision satisfies at most one expected one. row_id: finds a named row's id (RowNames.id, or
-    exact_ids), None when the year has no such row, which leaves the expected decision missing."""
+    exact_ids), None when the year has no such row, which leaves the expected decision missing.
+    rows_read: row id -> {"vat": ...} as the reader left the rows. An expected R5 (set_vat_from_document) that no
+    decision, applied or refused, names the row for, and whose VAT the reader already booked exactly, is
+    {"already_in_reading": {rule, row}}, not missing: there was nothing to take from the document. An applied one is
+    matched as always."""
     left = [d for d in decisions if d["status"] == "applied"]
     differences = []
     for part in ("resolutions", "automatic", "from_answers"):
@@ -116,7 +128,12 @@ def score_decisions(expected: dict, decisions: list[dict], row_id) -> list[dict]
                 (d for d in left if d["rule"] == e["rule"] and set(ids) <= set(d["row_ids"])
                  and len(set(d["row_ids"])) == len(set(ids)) + parts), None)
             if found is None:
-                differences.append({"missing": {"rule": e["rule"], "row": e["row"]}})
+                named = {"rule": e["rule"], "row": e["row"]}
+                in_reading = (e.get("action") == "set_vat_from_document" and rows_read is not None
+                              and None not in ids and ids[0] in rows_read
+                              and not any(d["rule"] == e["rule"] and ids[0] in d["row_ids"] for d in decisions)
+                              and _same_vat(rows_read[ids[0]].get("vat"), e["arguments"]["vat"]))
+                differences.append({"already_in_reading": named} if in_reading else {"missing": named})
             else:
                 left.remove(found)
     return differences + [{"unexpected": {"row_ids": d["row_ids"], "rule": d["rule"]}} for d in left]
@@ -517,7 +534,10 @@ def _run_case(api, store, records, case_dir: Path, rows: Optional[PreparedRows],
     if "after_answers" in expected_questions:
         q_diff += [{"stage": "after answers", **d}
                    for d in score_questions(expected_questions["after_answers"], asked_after)]
-    d_diff = score_decisions(expected_decisions, decisions, row_names.id)
+    rows_read = {r["id"]: {"vat": r.get("vat")} for r in trace["rows_after_review"]}
+    d_all = score_decisions(expected_decisions, decisions, row_names.id, rows_read)
+    d_diff = [d for d in d_all if "already_in_reading" not in d]   # an R5 the reader already did is not a failure
+    d_read = [d["already_in_reading"] for d in d_all if "already_in_reading" in d]
     failed = [s["text"] for s in steps.values() if s["state"] == "failed"]
     errors = [data for kind, data in events if kind == "error"]
     problems = ([f"error event: {e.get('code')}: {e.get('message')}" for e in errors]
@@ -528,7 +548,7 @@ def _run_case(api, store, records, case_dir: Path, rows: Optional[PreparedRows],
         "case": case_dir.name, "model": model, "seconds": seconds,   # the review turn and the answers
         "client_id": client_id, "thread_id": thread["id"],
         "trial_balance": {"passed": not tb_diff, "differences": tb_diff},
-        "decisions": {"passed": not d_diff, "differences": d_diff},
+        "decisions": {"passed": not d_diff, "differences": d_diff, "already_in_reading": d_read},
         "questions": {"passed": not q_diff, "differences": q_diff},
         "problems": problems,   # a run with any of these fails, however its scores come out
         "row_fallbacks": row_names.fallbacks,   # rows found by file and amount: the model named them differently
