@@ -126,6 +126,15 @@ def test_answer_date_dates_row_and_resolves(store, records, acme):
     assert net(ledger_book.posted_trial_balance(store, records, acme, YEAR_1), "7400") == D("12.00")
 
 
+def test_an_applied_answer_records_a_change_and_a_repeat_does_not(store, records, acme):
+    add_rows(store, acme, undated_taxi(), year_start=YEAR_1)
+    [q] = refresh(store, records, acme)
+    for _ in range(2):
+        answer(store, records, acme, q, DateAnswer(kind="date", date=date(2025, 8, 14)))
+    [change] = [c for c in records.changes(acme) if c.kind == "question_answered"]
+    assert (change.actor, change.row_ids, change.summary) == ("user", q.row_ids, f"Answered: {q.text}")
+
+
 def test_answer_twice_is_one_decision(store, records, acme):
     add_rows(store, acme, undated_taxi(), year_start=YEAR_1)
     [q] = refresh(store, records, acme)

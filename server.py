@@ -15,18 +15,20 @@ from fastapi import FastAPI, File, Form, Header, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from ledgersync import accounts, adapter, books, demo, folder, intake, ledger, ledger_book, pipeline, posting
+from ledgersync import (accounts, adapter, books, demo, folder, intake, ledger, ledger_book, pipeline, posting,
+                        upkeep)
 from ledgersync.agent.chat import AnswerResult, Chat, ChatFile, NewThread, ThreadDetail, ThreadPatch
 from ledgersync.blobs import BlobStore, GridFSBlobStore
 from ledgersync.accounts import choosable
-from ledgersync.checks import normalise
+from ledgersync.checks import long_date, normalise
 from ledgersync.config import Settings
 from ledgersync.errors import InvalidInput, LedgerSyncError, NotFound, RefusedRequest, StorageError, UnreadableFile
 from ledgersync.extractor import TransactionExtractor
 from ledgersync.model_client import ModelClient
 from ledgersync.jobs import JobStore
 from ledgersync.matching import match
-from ledgersync.models import (AnalysisResult, BankCheck, BusinessSettings, BusinessType, ChatThread, Client,
+from ledgersync.models import (AnalysisResult, BankCheck, BusinessSettings, BusinessType, ChangeDraft, ChatThread,
+                               Client,
                                ClientFields, ClientPatch, ClientSummary, Decision, FolderImport, InvoiceSummary, Ledger,
                                LedgerRequest, ManualUpload, OpeningBalances, PostedTrialBalance, Question, RowPatch,
                                TransactionList, TrialBalance, UploadPatch, Year, YearSummary)
@@ -101,10 +103,27 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
             "demo": settings.demo,   # LEDGERSYNC_DEMO=1: POST /api/demo/reset puts the demo client back
         }
 
+    def changed(client_id: int, kind: str, summary: str, *, actor: str = "user", year_start: Optional[dt.date] = None,
+                row_ids=(), upload_id: Optional[int] = None, before: Optional[dict] = None,
+                after: Optional[dict] = None, settle: bool = True) -> None:
+        """Records a change to the client's books once it has been made, then settles them: the rows matching dated,
+        the questions and the posting are brought up to date at once. Never raises after the change is recorded.
+        With settle False the change is only recorded: a chat turn settles the books itself once its files are read."""
+        draft = ChangeDraft(client_id=client_id, year_start=year_start, actor=actor, kind=kind, row_ids=list(row_ids),
+                            upload_id=upload_id, before=before or {}, after=after or {}, summary=summary)
+        if settle:
+            upkeep.after_change(store, chat.records, chat.locks, draft)
+        else:
+            chat.records.add_change(draft)
+
+    def rows_word(n: int) -> str:
+        return f"{n} {'row' if n == 1 else 'rows'}"
+
     # ─── Step 2 — Analyze (background job) ─────────────────────────────────────
 
     def run_analysis(item, ctx, client: Optional[Client] = None, name: str = "Pasted text", sha256: str = "",
-                     bank_account: Optional[str] = None, year_start: Optional[dt.date] = None) -> dict:
+                     bank_account: Optional[str] = None, year_start: Optional[dt.date] = None,
+                     actor: str = "user", settle: bool = True) -> dict:
         """Reads one input. For a client: the model is told its name, kind of business and its other bank accounts,
         the rows are booked with its settings, and they are saved to it as an upload when any were found (not after
         a cancel), added to the year starting year_start; none is saved when any falls in a closed year. A
@@ -146,13 +165,16 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
                                                    model=extraction.model or "", warnings=extraction.warnings,
                                                    bank_account=own if statement else None,
                                                    year_start=year_start)
+            changed(client.id, "upload_read", f"{name} read: {rows_word(len(transactions))}", actor=actor,
+                    year_start=year_start, upload_id=result["upload_id"], settle=settle)
         return result
 
     reading: Counter = Counter()   # (client id, sha256) of each file a job is reading for a client, once per job
     reading_lock = threading.Lock()
 
     def submit_analysis(item, client: Optional[Client], name: str, sha256: str, content_type: str, data: bytes,
-                        year_start: Optional[dt.date], bank_account: Optional[str], *, once: bool = False):
+                        year_start: Optional[dt.date], bank_account: Optional[str], *, once: bool = False,
+                        actor: str = "user", settle: bool = True):
         """Keeps the original file (when it has a sha256) and queues the analysis of an input already checked. With
         once, a file a job is already reading for the client is not queued again: returns None."""
         key = (client.id, sha256) if client is not None and sha256 else None
@@ -171,7 +193,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
 
         def work(ctx):
             return run_analysis(item, ctx, client, name, sha256, bank_account,
-                                year_start if client is not None else None)
+                                year_start if client is not None else None, actor, settle)
 
         try:
             if sha256:
@@ -266,7 +288,12 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
 
     @app.patch("/api/clients/{client_id}", response_model=Client)
     def change_client(client_id: int, patch: ClientPatch):
-        return ledger.change_client(store, client_id, patch)
+        sent = [f for f in ClientPatch.model_fields if f in patch.model_fields_set]
+        before = store.get_client(client_id).model_dump(mode="json", include=set(sent))
+        client = ledger.change_client(store, client_id, patch)
+        changed(client_id, "client_changed", f"Client details changed: {', '.join(sent)}", before=before,
+                after=patch.model_dump(mode="json", include=set(sent)))
+        return client
 
     # ─── A client's years ────────────────────────────────────────────────────────
 
@@ -307,7 +334,11 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
 
     @app.post("/api/clients/{client_id}/years/{start}/reopen", response_model=Client)
     def reopen_year(client_id: int, start: dt.date):
-        return books.reopen(store, client_id, start)
+        client = books.reopen(store, client_id, start)
+        end = next((y.end for y in books.years_of(store, client_id, dt.date.today()) if y.start == start), None)
+        changed(client_id, "year_reopened", f"Year to {long_date(end)} reopened" if end else "Year reopened",
+                year_start=start)
+        return client
 
     @app.post("/api/clients/{client_id}/import-folder", status_code=202)
     def import_folder(client_id: int, body: FolderImport, x_ledgersync: Optional[str] = Header(None)):
@@ -342,7 +373,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
                 continue
             content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
             job = submit_analysis(item, client, name, sha256, content_type, data, body.year_start,
-                                  body.bank_account or None, once=True)
+                                  body.bank_account or None, once=True, actor="import")
             if job is None:   # another import, or an upload, is reading it now
                 skipped.append(name)
                 continue
@@ -357,27 +388,53 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
     @app.put("/api/clients/{client_id}/opening-balances", response_model=OpeningBalances)
     def set_opening_balances(client_id: int, opening: OpeningBalances):
         books.set_opening(store, client_id, opening)
+        changed(client_id, "opening_balances_changed", "Opening balances changed")
         return store.opening(client_id)
 
     @app.patch("/api/clients/{client_id}/rows/{row_id}", response_model=Ledger)
     def change_row(client_id: int, row_id: int, patch: RowPatch):
-        return ledger.change_row(store, client_id, row_id, patch)
+        sent = [f for f in RowPatch.model_fields if f in patch.model_fields_set and (f != "revert" or patch.revert)]
+        values = set(sent) - {"revert"}
+        stored = next((r for r in store.rows(client_id) if r.id == row_id), None)
+        before = stored.tx.model_dump(mode="json", include=values) if stored else {}
+        result = ledger.change_row(store, client_id, row_id, patch)
+        kind = ("row_reverted" if patch.revert else "row_linked" if "link" in sent else
+                "row_included" if "include" in sent else "rows_apart" if "apart_from" in sent else "row_edited")
+        changed(client_id, kind, f"Row {row_id} changed: {', '.join(sent)}", row_ids=[row_id], before=before,
+                after=patch.model_dump(mode="json", include=values))
+        return result
 
     @app.delete("/api/clients/{client_id}/rows/{row_id}", response_model=Ledger)
     def remove_row(client_id: int, row_id: int):
-        return ledger.remove_row(store, client_id, row_id)
+        stored = next((r for r in store.rows(client_id) if r.id == row_id), None)
+        before = ({"description": stored.tx.description, "gross": str(stored.tx.gross),
+                   "account_code": stored.tx.account_code} if stored else {})
+        result = ledger.remove_row(store, client_id, row_id)
+        changed(client_id, "row_removed", f"Row {row_id} removed", row_ids=[row_id], before=before)
+        return result
 
     @app.post("/api/clients/{client_id}/uploads", response_model=Ledger, status_code=201)
     def add_manual_rows(client_id: int, upload: ManualUpload):
-        return ledger.add_manual(store, client_id, upload)
+        result = ledger.add_manual(store, client_id, upload)
+        n = len(upload.transactions)
+        changed(client_id, "row_added", f"{rows_word(n)} added by hand")
+        return result
 
     @app.patch("/api/clients/{client_id}/uploads/{upload_id}", response_model=Ledger)
     def change_upload(client_id: int, upload_id: int, patch: UploadPatch):
-        return ledger.set_upload_bank(store, client_id, upload_id, patch.bank_account)
+        found = next((u for u in store.uploads(client_id) if u["id"] == upload_id), None)
+        result = ledger.set_upload_bank(store, client_id, upload_id, patch.bank_account)
+        changed(client_id, "upload_bank_changed", f"{found['name'] if found else 'Upload'} moved to {patch.bank_account}",
+                upload_id=upload_id, before={"bank_account": found.get("bank_account") if found else None},
+                after={"bank_account": patch.bank_account})
+        return result
 
     @app.delete("/api/clients/{client_id}/uploads/{upload_id}", response_model=Ledger)
     def remove_upload(client_id: int, upload_id: int):
-        return ledger.remove_upload(store, client_id, upload_id)
+        found = next((u for u in store.uploads(client_id) if u["id"] == upload_id), None)
+        result = ledger.remove_upload(store, client_id, upload_id)
+        changed(client_id, "upload_removed", f"{found['name'] if found else 'Upload'} removed", upload_id=upload_id)
+        return result
 
     @app.get("/api/clients/{client_id}/uploads/{upload_id}/file")
     def download_original(client_id: int, upload_id: int):
@@ -418,7 +475,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         model_client.ensure_available()
         bank = file.bank_account or ledger.settings_for(client).bank_account
         return submit_analysis(item, client, file.name, hashlib.sha256(data).hexdigest(), file.content_type, data,
-                               year_start, bank)
+                               year_start, bank, settle=False)   # the chat's turn settles once its files are read
 
     chat = Chat(settings, store, blobs, read=read_chat_file, vision=model_client, model=chat_model)
 

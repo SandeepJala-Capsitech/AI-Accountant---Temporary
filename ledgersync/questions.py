@@ -17,7 +17,7 @@ from .checks import booked, long_date
 from .errors import InvalidInput, NotFound
 from .evidence_rules import document_rule
 from .ledger import settings_for
-from .models import Ledger, PostResult, Question, QuestionDraft, Transaction
+from .models import ChangeDraft, Ledger, PostResult, Question, QuestionDraft, Transaction
 from .money import ZERO
 from .records import AgentRecords
 from .resolutions import set_date
@@ -165,6 +165,9 @@ def answer(store: MongoStore, records: AgentRecords, *, client_id: int, thread_i
         records.set_question(q.id, "waiting", "I don't have it")
     else:
         records.set_question(q.id, "waiting", "Not sure")
+    records.add_change(ChangeDraft(client_id=client_id, year_start=q.year_start, actor="user",
+                                   kind="question_answered", row_ids=list(q.row_ids),
+                                   summary=f"Answered: {q.text}"))
     posts = []
     for year in years:
         refresh(store, records, client_id, year)
