@@ -10,7 +10,7 @@ from pymongo.errors import DuplicateKeyError
 
 from ledgersync.checks import booked
 from ledgersync.errors import ChangedMeanwhile, NotFound
-from ledgersync.models import ClientFields, DecisionDraft, Evidence, QuestionDraft, Transaction
+from ledgersync.models import ChangeDraft, ClientFields, DecisionDraft, Evidence, QuestionDraft, Transaction
 from ledgersync.records import AgentRecords
 from ledgersync.store_mongo import MongoStore
 from tests.test_store_mongo import CUBE, Interleaved
@@ -251,3 +251,43 @@ def test_add_split_that_keeps_losing_the_race_gives_up_and_changes_nothing(mongo
     with pytest.raises(ChangedMeanwhile):
         mongo_store.add_split(client.id, row_id, [lunch()], "d1")
     assert all(r.tx.superseded_by is None for r in other.rows(client.id))
+
+
+# ─── The record of changes ─────────────────────────────────────────────────────
+
+def change_draft(**changes) -> ChangeDraft:
+    fields = dict(client_id=1, year_start=YEAR, actor="user", kind="row_edited", row_ids=[25],
+                  before={"account": 8201}, after={"account": 2250}, summary="Row 25 changed: account 8201 → 2250")
+    return ChangeDraft(**{**fields, **changes})
+
+
+def test_changes_are_kept_in_order_and_filtered_by_year(records):
+    first = records.add_change(change_draft(summary="a"))
+    records.add_change(change_draft(year_start=dt.date(2026, 4, 1), summary="b"))
+    third = records.add_change(change_draft(year_start=None, kind="client_changed", summary="c"))
+    assert first.id and first.seq and first.created_at
+    assert [c.summary for c in records.changes(1)] == ["a", "b", "c"]
+    assert [c.id for c in records.changes(1, year_start=YEAR)] == [first.id, third.id]
+    assert records.changes(2) == []
+    assert [c.summary for c in records.changes(1, limit=2)] == ["b", "c"]
+
+
+def test_changes_since_a_time_are_the_later_ones(records):
+    records.add_change(change_draft(summary="a"))
+    records.add_change(change_draft(summary="b"))
+    records.db.changes.update_one({"summary": "a"}, {"$set": {"created_at": "2020-01-01T00:00:00+00:00"}})
+    records.db.changes.update_one({"summary": "b"}, {"$set": {"created_at": "2030-01-01T00:00:00+00:00"}})
+    assert [c.summary for c in records.changes(1, since="2025-01-01T00:00:00+00:00")] == ["b"]
+
+
+def test_a_new_decision_adds_one_change_and_a_retried_one_none(records):
+    decision, new = records.append_decision(draft(), "k1")
+    assert new
+    again, new_again = records.append_decision(draft(), "k1")
+    assert not new_again
+    found = records.changes(1)
+    assert len(found) == 1
+    c = found[0]
+    assert c.kind == "decision" and c.actor == decision.actor and c.row_ids == decision.row_ids
+    assert c.after == {"decision_id": decision.id}
+    assert c.summary == f"{decision.rule}: {decision.status}"

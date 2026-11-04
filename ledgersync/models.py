@@ -548,6 +548,31 @@ class Decision(DecisionDraft):
     hash: str
 
 
+ChangeKind = Literal["upload_read", "upload_removed", "upload_bank_changed", "row_edited", "row_added",
+                     "row_removed", "row_linked", "row_included", "rows_apart", "row_reverted", "client_changed",
+                     "opening_balances_changed", "question_answered", "decision", "year_reopened"]
+
+
+class ChangeDraft(BaseModel):
+    """One change to a client's books, as its maker states it. AgentRecords.add_change adds the rest."""
+    client_id: int
+    year_start: Optional[dt.date] = None       # None: the whole client, or a year the caller doesn't know
+    actor: str                                 # "user", "import", "rules" or "agent:<model>"
+    kind: ChangeKind
+    row_ids: list[int] = Field(default_factory=list)
+    upload_id: Optional[int] = None
+    before: dict = Field(default_factory=dict)
+    after: dict = Field(default_factory=dict)
+    summary: str                               # one line, plain English: "Row 25 changed: account 8201 → 2250"
+
+
+class Change(ChangeDraft):
+    """A change as the record keeps it."""
+    id: str
+    seq: int                                   # time.time_ns() when added; orders changes
+    created_at: str                            # rows.now_iso()
+
+
 class QuestionDraft(BaseModel):
     """A question for the person, as the rules or the agent state it; a new question is open."""
     client_id: int

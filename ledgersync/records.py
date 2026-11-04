@@ -15,7 +15,7 @@ from pymongo.database import Database
 from pymongo.errors import DuplicateKeyError, OperationFailure
 
 from .errors import NotFound
-from .models import ChatThread, Decision, DecisionDraft, Question, QuestionDraft
+from .models import Change, ChangeDraft, ChatThread, Decision, DecisionDraft, Question, QuestionDraft
 from .rows import now_iso
 
 # What a document keeps besides its model: the idempotency key or question key it is found by, `seq`, the time in
@@ -49,6 +49,7 @@ class AgentRecords:
                                   unique=True)
         db.questions.create_index([("client_id", pymongo.ASCENDING), ("key", pymongo.ASCENDING)], unique=True)
         db.chat_threads.create_index([("client_id", pymongo.ASCENDING), ("updated_at", pymongo.ASCENDING)])
+        db.changes.create_index([("client_id", pymongo.ASCENDING), ("seq", pymongo.ASCENDING)])
 
     # ─── Decisions ─────────────────────────────────────────────────────────────
 
@@ -75,6 +76,9 @@ class AgentRecords:
             if stored is None:   # not the key: the id is taken
                 raise
             return stored, False
+        self.add_change(ChangeDraft(
+            client_id=decision.client_id, year_start=decision.year_start, actor=decision.actor, kind="decision",
+            row_ids=decision.row_ids, after={"decision_id": decision.id}, summary=f"{decision.rule}: {decision.status}"))
         return decision, True
 
     def decision_by_key(self, client_id: int, idempotency_key: str) -> Optional[Decision]:
@@ -91,6 +95,27 @@ class AgentRecords:
         if since:
             query["created_at"] = {"$gte": since}
         return [_model(Decision, doc) for doc in self.db.decisions.find(query).sort("seq", pymongo.ASCENDING)]
+
+    # ─── Changes ───────────────────────────────────────────────────────────────
+
+    def add_change(self, c: ChangeDraft) -> Change:
+        """Adds the change to the client's record of changes, which is only ever added to."""
+        change = Change(**c.model_dump(), id=uuid4().hex, seq=time.time_ns(), created_at=now_iso())
+        self.db.changes.insert_one({**change.model_dump(mode="json"), "_id": change.id})
+        return change
+
+    def changes(self, client_id: int, *, year_start: Optional[dt.date] = None, since: Optional[str] = None,
+                limit: int = 200) -> list[Change]:
+        """The client's latest `limit` changes, oldest first; of one year and those with no year, and made after
+        `since` (an ISO time), if given."""
+        query: dict = {"client_id": client_id}
+        if year_start:
+            query["year_start"] = {"$in": [year_start.isoformat(), None]}
+        if since:
+            query["created_at"] = {"$gt": since}
+        docs = list(self.db.changes.find(query).sort("seq", pymongo.DESCENDING).limit(limit))
+        # a change keeps its own seq and summary, which _model would set apart
+        return [Change.model_validate({k: v for k, v in doc.items() if k != "_id"}) for doc in reversed(docs)]
 
     # ─── Questions ─────────────────────────────────────────────────────────────
 
