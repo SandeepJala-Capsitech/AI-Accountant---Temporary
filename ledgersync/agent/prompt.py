@@ -21,6 +21,8 @@ evidence.
 document of a record it is matched with or, when you keep an invoice or receipt, the bank line that pays it. \
 Quote the document's own words, as printed: for a bank line, the line as it appears in the statement. Never quote a row's description: it is our wording, not the document's.
 - Use only row ids that a tool gave you. Never guess one.
+- To see rows that have no issues, use list_rows (or list_rows with a document's upload_id); before you say a row is \
+booked right, look at it.
 
 Resolving
 - Use resolve_issue for what the evidence settles. The services check every resolution against the evidence, and \

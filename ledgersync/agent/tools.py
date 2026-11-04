@@ -216,6 +216,30 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
         return _out(result)
 
     @tool
+    def list_rows(runtime: ToolRuntime[ChatContext],
+                  upload_id: Annotated[Optional[int], Field(description="Only the rows read from this document "
+                                                                        "(an id from list_documents).")] = None,
+                  after_row_id: Annotated[int, Field(ge=0, description="List rows after this row id, to page "
+                                                                       "through them.")] = 0,
+                  limit: Annotated[int, Field(ge=1, le=50, description="The most rows to list.")] = 20) -> dict:
+        """The year's rows by row id, with or without issues: each as list_issues shows it, plus whether it is
+        booked. upload_id: only the rows read from that document (ids from list_documents). Rows a decision took out
+        of the books or replaced are left out. Page with after_row_id."""
+        ctx = runtime.context
+        _step(runtime, "Listing the rows…")
+        built = books.ledger(store, ctx.client_id, ctx.year_start)
+        settings = settings_for(built.client)
+        rows = [row for row in sorted(built.transactions, key=lambda r: r.id)
+                if row.id > after_row_id and not row.excluded and not row.superseded_by
+                and (upload_id is None or row.upload_id == upload_id)]
+        names = {u.id: u.name for u in built.uploads}
+        page = rows[:limit]
+        result = _kept({"rows": [{**_brief(row, names, _held(row, settings)), "booked": booked(row)} for row in page],
+                        "next_after_row_id": page[-1].id if len(rows) > limit else None})
+        _step(runtime, f"Listed {_count(len(page), 'row')}", "done")
+        return _out(result)
+
+    @tool
     def get_row(row_id: Annotated[int, Field(description="The row's id.")],
                 runtime: ToolRuntime[ChatContext]) -> dict:
         """One row in full: what was read, what is booked, its issues, the records it is matched with (paid_by,
@@ -248,7 +272,7 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
     @tool
     def list_documents(runtime: ToolRuntime[ChatContext]) -> dict:
         """The year's documents: each upload's id, file name, kind, how many rows were read from it, and for a bank
-        statement whether its lines agree with the balances it prints."""
+        statement whether its lines agree with the balances it prints. list_rows with an upload_id gives its rows."""
         ctx = runtime.context
         _step(runtime, "Listing the documents…")
         uploads = books.ledger(store, ctx.client_id, ctx.year_start).uploads
@@ -393,9 +417,11 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
             "lines": [{"code": l.code, "name": l.name, "debit": l.debit, "credit": l.credit} for l in tb.lines],
             "total_debits": tb.total_debits, "total_credits": tb.total_credits, "is_balanced": tb.is_balanced,
             "entries_posted": len(tb.journal),
-            "suspense": [_kept(s.model_dump()) for s in tb.suspense], "problems": tb.problems})
+            "suspense": [_kept(s.model_dump()) for s in tb.suspense], "problems": tb.problems,
+            "note": None if tb.journal else "Nothing is posted yet for this year: the system posts at the end of the "
+                                            "turn. This isn't a sign the year has no rows; list_rows shows them."})
         _step(runtime, "Checked the posted trial balance", "done")
         return _out(result)
 
-    return [get_overview, list_issues, get_row, list_documents, read_document, resolve_issue, ask_user,
+    return [get_overview, list_issues, list_rows, get_row, list_documents, read_document, resolve_issue, ask_user,
             list_questions, list_decisions, get_trial_balance]

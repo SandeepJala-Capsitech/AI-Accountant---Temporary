@@ -18,6 +18,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 import run_scripted_resolutions as scripted
 from helpers import add_rows, row
+from ledgersync import ledger_book
 from ledgersync.agent import AgentDeps, ChatContext, ChatEvent, build_agent, stream_turn
 from ledgersync.agent.llm import chat_model
 from ledgersync.agent.prompt import SYSTEM_PROMPT
@@ -219,6 +220,97 @@ def test_list_issues_by_family(mongo_store, deps, staples):
         ("statement", "receipt_or_invoice")]
 
 
+def rows_of_the_year(mongo_store, deps, client_id: int, upload_id=None, **args) -> dict:
+    """What list_rows answers when called on the client's first year."""
+    model = ScriptedChatModel(replies=[call("list_rows", **({"upload_id": upload_id} if upload_id else {}), **args),
+                                       say("Listed.")])
+    agent = build_agent(SETTINGS, deps, model=model, checkpointer=InMemorySaver())
+    list(stream_turn(agent, context(client_id), "Show the rows."))
+    [result] = answered(model, 1)
+    return json.loads(result.content)
+
+
+def three_clean_rows(mongo_store, acme) -> tuple[int, int]:
+    """Two clean receipts in one upload and one in another; the ids of the two uploads."""
+    first = add_rows(mongo_store, acme,
+                     row(date=dt.date(2026, 10, 1), gross=Decimal("12.00"), vat=Decimal("2.00"), account_code="7504"),
+                     row(date=dt.date(2026, 10, 2), gross=Decimal("24.00"), vat=Decimal("4.00"), account_code="7504"),
+                     year_start=YEAR)
+    second = add_rows(mongo_store, acme,
+                      row(date=dt.date(2026, 10, 3), gross=Decimal("36.00"), vat=Decimal("6.00"), account_code="7504"),
+                      year_start=YEAR)
+    return first, second
+
+
+@pytest.mark.mongo
+def test_list_rows_lists_rows_that_have_no_issues(mongo_store, deps, acme):
+    three_clean_rows(mongo_store, acme)
+
+    listed = rows_of_the_year(mongo_store, deps, acme)
+
+    assert [r["gross"] for r in listed["rows"]] == ["12.00", "24.00", "36.00"]
+    assert all(r["kind"] == "receipt" and r["booked"] is True and "issues" not in r for r in listed["rows"])
+    assert listed["rows"][0]["vat"] == "2.00" and "next_after_row_id" not in listed
+    ids = [r["row_id"] for r in listed["rows"]]
+    assert ids == sorted(ids)
+    model = ScriptedChatModel(replies=[call("get_row", row_id=ids[1]), say("Looked.")])
+    agent = build_agent(SETTINGS, deps, model=model, checkpointer=InMemorySaver())
+    list(stream_turn(agent, context(acme), "Look."))
+    [result] = answered(model, 1)
+    assert result.status != "error" and json.loads(result.content)["row_id"] == ids[1]
+
+
+@pytest.mark.mongo
+def test_list_rows_by_document_lists_only_its_rows(mongo_store, deps, acme):
+    first, second = three_clean_rows(mongo_store, acme)
+
+    listed = rows_of_the_year(mongo_store, deps, acme, upload_id=second)
+
+    assert [(r["upload_id"], r["gross"]) for r in listed["rows"]] == [(second, "36.00")]
+    assert len(rows_of_the_year(mongo_store, deps, acme, upload_id=first)["rows"]) == 2
+
+
+@pytest.mark.mongo
+def test_list_rows_leaves_out_excluded_and_replaced_rows(mongo_store, deps, acme):
+    three_clean_rows(mongo_store, acme)
+    first, second, third = (r.id for r in sorted(mongo_store.rows(acme), key=lambda r: r.id))
+    mongo_store.patch_row(acme, first, {"excluded": True})
+    mongo_store.patch_row(acme, second, {"superseded_by": "d1"})
+
+    listed = rows_of_the_year(mongo_store, deps, acme)
+
+    assert [r["row_id"] for r in listed["rows"]] == [third]
+
+
+@pytest.mark.mongo
+def test_list_rows_pages(mongo_store, deps, acme):
+    three_clean_rows(mongo_store, acme)
+
+    page = rows_of_the_year(mongo_store, deps, acme, limit=1)
+    after = rows_of_the_year(mongo_store, deps, acme, limit=2, after_row_id=page["next_after_row_id"])
+
+    assert len(page["rows"]) == 1 and page["next_after_row_id"] == page["rows"][0]["row_id"]
+    assert [r["gross"] for r in after["rows"]] == ["24.00", "36.00"] and "next_after_row_id" not in after
+
+
+@pytest.mark.mongo
+def test_an_empty_trial_balance_says_nothing_is_posted_yet(mongo_store, deps, acme):
+    three_clean_rows(mongo_store, acme)
+
+    def trial_balance() -> dict:
+        model = ScriptedChatModel(replies=[call("get_trial_balance"), say("Looked.")])
+        agent = build_agent(SETTINGS, deps, model=model, checkpointer=InMemorySaver())
+        list(stream_turn(agent, context(acme), "Is it posted?"))
+        return json.loads(answered(model, 1)[0].content)
+
+    before = trial_balance()
+    assert "list_rows" in before["note"] and "Nothing is posted yet" in before["note"]
+
+    ledger_book.post(mongo_store, deps.records, acme, YEAR)
+    after = trial_balance()
+    assert "note" not in after and after["entries_posted"] > 0
+
+
 @pytest.mark.mongo
 def test_a_bank_line_its_receipt_records_is_not_listed_as_needing_a_look(mongo_store, deps, acme):
     add_rows(mongo_store, acme,
@@ -288,7 +380,7 @@ def test_ask_user_asks_about_a_row_the_books_do_not_ask_about(mongo_store, deps,
 
 
 def test_the_prompt_names_the_rules_the_live_runs_broke():
-    for rule in ("Never quote a row's description", "Use only row ids that a tool gave you",
+    for rule in ("Never quote a row's description", "Use only row ids that a tool gave you", "list_rows",
                  "the books ask the person about those automatically", "from the accounts get_overview lists",
                  "Use the invoice over an expenses-sheet line (use_primary) only when a bank line pays the invoice: "
                  "quote the invoice and that bank line. If the statement shows no payment of the invoice's amount to "
@@ -330,7 +422,7 @@ def test_no_tool_can_set_a_date():
         return found
 
     tools = make_tools(AgentDeps(store=None, records=None, blobs=None), actor="agent:test")
-    assert {t.name for t in tools} == {"get_overview", "list_issues", "get_row", "list_documents", "read_document",
+    assert {t.name for t in tools} == {"get_overview", "list_issues", "list_rows", "get_row", "list_documents", "read_document",
                                        "resolve_issue", "ask_user", "list_questions", "list_decisions",
                                        "get_trial_balance"}
     for tool in tools:
