@@ -346,9 +346,12 @@ class Chat:
     def detail(self, thread: ChatThread) -> ThreadDetail:
         """The chat's messages from its memory, with each turn's files on the person's message and its result on the
         reply. A result's questions are read as they are now (an answer, or a document sent in another chat, may have
-        settled one since). `running` says a turn is working on the chat now. A chat saved before turns were kept shows its messages alone, and so does a reply whose turn
-        record cannot be read."""
-        turns: dict[str, TurnRecord] = {}   # read first: a turn is kept only after its messages are in the memory
+        settled one since). `running` says a turn is working on the chat now. A chat saved before turns were kept
+        shows its messages alone, and so does a reply whose turn record cannot be read."""
+        # Read first: a turn that ends after this is caught by the page's next load, and one that ended before it has
+        # its record kept already.
+        running = self.runs.is_running(thread.id)
+        turns: dict[str, TurnRecord] = {}   # read before the memory: a turn is kept only after its messages are in it
         for kept in self.records.turns(thread.id):
             try:
                 turn = TurnRecord.model_validate(kept)
@@ -358,7 +361,6 @@ class Chat:
             current = (self.records.question(q.id) for q in turn.result.questions)
             turn.result.questions = [q for q in current if q is not None]
             turns[turn.message_id] = turn
-        running = self.runs.is_running(thread.id)   # read before the messages: a turn ending between leaves them complete
         state = self.agent.get_state(_config(thread.id))
         return ThreadDetail(thread=thread, messages=_messages(state.values.get("messages", []), turns), running=running)
 
