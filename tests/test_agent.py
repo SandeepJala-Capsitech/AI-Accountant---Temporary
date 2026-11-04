@@ -382,9 +382,8 @@ def test_ask_user_asks_about_a_row_the_books_do_not_ask_about(mongo_store, deps,
 def test_the_prompt_names_the_rules_the_live_runs_broke():
     for rule in ("Never quote a row's description", "Use only row ids that a tool gave you", "list_rows",
                  "the books ask the person about those automatically", "from the accounts get_overview lists",
-                 "Use the invoice over an expenses-sheet line (use_primary) only when a bank line pays the invoice: "
-                 "quote the invoice and that bank line. If the statement shows no payment of the invoice's amount to "
-                 "that supplier on or after its date, ask."):
+                 "Use the invoice over an expenses-sheet line (use_primary): the service checks that a bank line pays it, "
+                 "and says to ask when none does."):
         assert rule in " ".join(SYSTEM_PROMPT.split())
 
 

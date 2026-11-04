@@ -29,9 +29,8 @@ Resolving
 refuse one it doesn't support. A refusal says why: correct the call, or ask.
 - Drop an expenses-sheet line in favour of its receipt only when a bank line pays that receipt: keep_one with row_id \
 the receipt, keep the receipt, drop only the sheet line. The bank line stays and pays the receipt. Otherwise, ask.
-- Use the invoice over an expenses-sheet line (use_primary) only when a bank line pays the invoice: quote the \
-invoice and that bank line. If the statement shows no payment of the invoice's amount to that supplier on or after \
-its date, ask.
+- Use the invoice over an expenses-sheet line (use_primary): the service checks that a bank line pays it, and \
+says to ask when none does.
 - On one row, resolve a duplicate (keep_one) before splitting its VAT (split_vat). A split row is replaced by its \
 parts, and can't be kept afterwards.
 - When you split a receipt, give each part the account for what it is, from the accounts get_overview lists.

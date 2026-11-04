@@ -154,25 +154,47 @@ def test_keep_one_refuses_rows_that_are_not_the_same_transaction(mongo_store, re
 
 # ─── use_primary (R4) ──────────────────────────────────────────────────────────
 
-def test_use_primary_invoice_beats_sheet(mongo_store, records, pages, nb):
+def paid_by_bank(nb, store, pages) -> int:
+    """The bank line paying the Inkwell invoice in full (£30.22, two days after it); its upload id."""
+    _, statement = bank_line(nb, store, pages, "30.22", dt.date(2026, 10, 12))
+    return statement
+
+
+def use_invoice_over_sheet(store, records, pages, nb, *statement_quotes):
     primary = UsePrimary(action="use_primary", primary_row_id=nb.invoice, other_row_id=nb.sheet_inkwell)
-    decision = call(mongo_store, records, pages, nb, nb.sheet_inkwell, primary, "Total £30.22",
-                    upload=nb.upload("inkwell-invoice.pdf"))
+    return resolve(store, records, client_id=nb.id, thread_id="t1", actor=ACTOR, row_id=nb.sheet_inkwell,
+                   resolution=primary, reason="Checked the documents.", texts=lambda uid: pages.get(uid, []),
+                   evidence=[Evidence(upload_id=nb.upload("inkwell-invoice.pdf"), quote="Total £30.22"),
+                             *(Evidence(upload_id=nb.upload("barclays-october.csv"), quote=q)
+                               for q in statement_quotes)])
+
+
+def test_use_primary_invoice_beats_sheet(mongo_store, records, pages, nb):
+    paid_by_bank(nb, mongo_store, pages)
+    decision = use_invoice_over_sheet(mongo_store, records, pages, nb, "12/10/2026 INKWELL SUPPLIES 30.22")
     assert decision.status == "applied" and decision.rule.startswith("R4")
     assert decision.after == {str(nb.sheet_inkwell): {"excluded": True}}
     assert booked(shown(mongo_store, nb.id, nb.invoice))
     assert not booked(shown(mongo_store, nb.id, nb.sheet_inkwell))
     tb = books.trial_balance(mongo_store, nb.id, YEAR)
-    assert net(tb, "7500") == Decimal("25.18") and net(tb, "2100") == Decimal("-30.22")   # £30.22 booked
+    assert net(tb, "2100") == Decimal("-30.22")   # the invoice's £30.22 owed, not the sheet's £27.50
+
+
+def test_use_primary_refuses_the_invoice_over_a_sheet_line_when_no_bank_line_pays_it(mongo_store, records, pages, nb):
+    decision = call(mongo_store, records, pages, nb, nb.sheet_inkwell,
+                    UsePrimary(action="use_primary", primary_row_id=nb.invoice, other_row_id=nb.sheet_inkwell),
+                    "Total £30.22", upload=nb.upload("inkwell-invoice.pdf"))
+    assert decision.status == "refused" and "No bank line pays the invoice's £30.22" in decision.reason
+    assert "ask the person which amount is right" in decision.reason
+    assert not saved(mongo_store, nb.id, nb.sheet_inkwell).excluded
 
 
 def test_use_primary_links_a_bank_line_to_the_invoice(mongo_store, records, pages, nb):
     """With the sheet's line out of the books (it held the invoice back), a bank line that disagrees with the invoice
     pays it."""
-    sheet = UsePrimary(action="use_primary", primary_row_id=nb.invoice, other_row_id=nb.sheet_inkwell)
-    call(mongo_store, records, pages, nb, nb.sheet_inkwell, sheet, "Total £30.22",
-         upload=nb.upload("inkwell-invoice.pdf"))
-    [line] = add(mongo_store, nb.id, pages, "barclays-october.csv", "12/10/2026 INKWELL PRINT 30.00",
+    paid_by_bank(nb, mongo_store, pages)
+    use_invoice_over_sheet(mongo_store, records, pages, nb, "12/10/2026 INKWELL SUPPLIES 30.22")
+    [line] = add(mongo_store, nb.id, pages, "barclays-other.csv", "12/10/2026 INKWELL PRINT 30.00",
                  row(date=dt.date(2026, 10, 12), description="INKWELL PRINT", counterparty="INKWELL PRINT",
                      gross=Decimal("30.00"), account_code="7500", document_type="statement"), kind="table")
     primary = UsePrimary(action="use_primary", primary_row_id=nb.invoice, other_row_id=line)

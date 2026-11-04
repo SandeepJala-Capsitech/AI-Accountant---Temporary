@@ -208,7 +208,7 @@ def _keep_one(rows: dict[int, SavedRow], row_id: int, r: KeepOne, **_) -> _Chang
 def _use_primary(rows: dict[int, SavedRow], row_id: int, r: UsePrimary, **_) -> _Change:
     """R4: the rows conflict (an issue links them, or the same counterparty within a few days) and the primary ranks
     higher. The other leaves the books; a bank line instead pays the primary, unless the primary is a receipt, which
-    books the payment itself."""
+    books the payment itself. A receipt or invoice replaces an expenses-sheet line only when a bank line pays it."""
     if r.primary_row_id == r.other_row_id or row_id not in (r.primary_row_id, r.other_row_id):
         raise _Refused(f"Name two different rows, row {row_id} one of them.")
     primary, other = rows[r.primary_row_id], rows[r.other_row_id]
@@ -222,6 +222,11 @@ def _use_primary(rows: dict[int, SavedRow], row_id: int, r: UsePrimary, **_) -> 
     if other.document_type == "statement" and primary.document_type == "payroll":
         # Leaving the bank line out would remove real cash and leave the wages owed; it pays the report as it is.
         raise _Refused("A bank line paying wages stays in the books: the payroll report doesn't replace it.")
+    if (primary.document_type in ("invoice", "receipt") and other.document_type == "expense_claim"
+            and not _paying_lines(rows, primary)):
+        # Nothing shows the company paid the document's amount, so the sheet's may be what the claimant paid.
+        raise _Refused(f"No bank line pays the {_kind(primary)}'s £{primary.gross}, so the sheet line may be what the "
+                       "claimant paid: ask the person which amount is right.")
     links = other.document_type == "statement" and primary.document_type not in _UNPAYABLE
     patch = {"link": [primary.document_ref]} if links else {"excluded": True}
     return _Change(rule=f"R4 Conflict: used the {_kind(primary)}", touched=[primary.id, other.id],
