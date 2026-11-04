@@ -60,19 +60,45 @@ def _documents(rows: list[dict]) -> dict:
     return documents
 
 
+def _vat_of(part: dict) -> Decimal:
+    return abs(to_money(part.get("vat")) or 0)
+
+
+def _vat_is_mixed(parts: list[dict]) -> bool:
+    """Whether the VAT of one receipt's parts is not divided by account, so the parts can't be told apart by it: a
+    part with VAT beside a part with none (the VAT is on only some of the items), or VAT at different rates on
+    different accounts. VAT at one rate on each part is per item and divides."""
+    bearing = [part for part in parts if _vat_of(part)]
+    if not bearing:
+        return False
+    if len(bearing) < len(parts):
+        return True
+    lead = bearing[0]
+    rate = _vat_of(lead) / abs(to_money(lead.get("amount")))
+    return (len({part.get("account") for part in bearing}) > 1
+            and any(abs(_vat_of(part) - abs(to_money(part.get("amount"))) * rate) > Decimal("0.02")
+                    for part in bearing[1:]))
+
+
 def _keep_unsplittable_whole(rows: list[dict]) -> list[dict]:
-    """A receipt or invoice split by account whose rows do not carry the VAT printed on it is put back
-    together as one row: one VAT total cannot be divided without guessing, so the document stays whole
-    (its total and VAT as printed, on the biggest row's account) and is flagged as mixed items."""
+    """A receipt or invoice split by account whose VAT can't be divided between the parts is put back together as
+    one row, flagged as mixed items, for the agent to split by the evidence. That is when the parts do not carry the
+    VAT printed on it (one VAT total can't be divided without guessing), and when its items are at different VAT
+    rates (zero-rated food beside standard-rated goods), whatever the model made of the VAT: it must not divide one
+    rate's VAT between accounts. The row has the document's total and VAT as printed, on the account of its biggest
+    part with VAT, else its biggest part."""
     merged: dict = {}
     for (total, *_), parts in _documents(rows).items():
-        if _document_type(parts[0]) == "agent_statement":   # each item carries its own VAT
+        kind = _document_type(parts[0])
+        if kind == "agent_statement" or len(parts) < 2:   # each item of a statement carries its own VAT
             continue
         printed_vat = to_money(parts[0].get("document_vat"))
-        carried = sum(abs(to_money(part.get("vat")) or 0) for part in parts)
-        if len(parts) > 1 and printed_vat and carried != abs(printed_vat):
-            biggest = max(parts, key=lambda part: abs(to_money(part.get("amount"))))
-            merged[id(parts[0])] = dict(biggest, amount=float(total), vat=float(abs(printed_vat)), mixed_items=True)
+        carried = sum(_vat_of(part) for part in parts)
+        if (printed_vat and carried != abs(printed_vat)) or (kind != "expense_claim" and _vat_is_mixed(parts)):
+            bearing = [part for part in parts if _vat_of(part)] or parts
+            biggest = max(bearing, key=lambda part: abs(to_money(part.get("amount"))))
+            vat = abs(printed_vat) if printed_vat else carried
+            merged[id(parts[0])] = dict(biggest, amount=float(total), vat=float(vat), mixed_items=True)
             merged.update({id(part): None for part in parts[1:]})
     return [kept for kept in (merged.get(id(row), row) for row in rows) if kept is not None]
 

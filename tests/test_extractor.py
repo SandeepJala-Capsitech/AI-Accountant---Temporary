@@ -132,6 +132,11 @@ def test_a_receipt_gives_one_transaction_per_account():
     system = client.calls[0]["messages"][0]["content"]
     assert "one transaction per account, not per item" in system
     assert "a single VAT total that cannot be divided" in system and "set mixed_items to true" in system
+    assert "(it is shown per item or per rate" not in system
+    assert "different VAT rates and the VAT is printed only as one total or per rate" in system
+    assert "Never divide one rate's VAT between accounts" in system
+    assert "items at different VAT rates, or of different accounts, with one VAT total" in json.dumps(
+        AccountingTransaction.model_json_schema())
     assert "give that printed total as document_total" in system
     assert "and its printed VAT total as document_vat" in system
 

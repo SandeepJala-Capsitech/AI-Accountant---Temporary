@@ -73,13 +73,62 @@ def test_a_split_that_loses_the_printed_vat_is_put_back_together():
     assert ("mixed_items", "warning") in issues_of(t) and "total_mismatch" not in [c for c, _ in issues_of(t)]
 
 
-def test_a_split_that_carries_the_printed_vat_stays_split():
-    # Sainsbury's: groceries 3.75 (VAT 0.00) and cleaning supplies 4.20 (VAT 0.70); the VAT summary says 0.70.
+def test_a_split_by_rate_that_carries_the_printed_vat_is_put_back_together():
+    # Sainsbury's: groceries 3.75 (VAT 0.00) and cleaning supplies 4.20 (VAT 0.70). The VAT summary divides by
+    # rate, not by account, so the receipt stays one row (mixed_items) for the agent to split.
     doc = {"document_total": 7.95, "document_vat": 0.70}
     rows = [dict(ROW, **doc, amount=3.75, vat=0.0, account="8205 Refreshments"),
             dict(ROW, **doc, amount=4.20, vat=0.70, account="7801 Cleaning")]
+    [t] = adapt(*rows)
+    assert (t.gross, t.vat, t.account_code) == (Decimal("7.95"), Decimal("0.70"), "7801")
+    assert ("mixed_items", "warning") in issues_of(t)
+
+
+def test_a_receipt_with_two_rates_split_across_accounts_is_one_row_on_the_biggest_vat_part():
+    # Bulkbuy: the model divided one rate's VAT across two accounts (3.20 and 4.40, printed nowhere).
+    doc = {"document_total": 64.0, "document_vat": 7.60, "date": "2026-10-05"}
+    rows = [dict(ROW, **doc, amount=19.20, vat=3.20, account="7801 Cleaning"),
+            dict(ROW, **doc, amount=26.40, vat=4.40, account="7504 Office Stationery"),
+            dict(ROW, **doc, amount=18.40, vat=0.0, account="8205 Refreshments")]
+    [t] = checked(*rows)
+    assert (t.gross, t.vat, t.account_code) == (Decimal("64.00"), Decimal("7.60"), "7504")
+    [mixed] = [i for i in t.issues if i.code == "mixed_items"]
+    assert "VAT £7.60 is on £45.60; £18.40 has none" in mixed.message
+    assert "total_mismatch" not in [c for c, _ in issues_of(t)]
+
+
+def test_a_receipt_with_a_vat_part_and_a_part_without_is_one_row_even_with_no_document_vat():
+    # The reader does not always give document_vat; the parts themselves show VAT on one and none on the other.
+    doc = {"document_total": 58.0, "document_vat": None, "date": "2026-10-21"}
+    rows = [dict(ROW, **doc, description="Costco", amount=36.0, vat=6.0, account="7504 Office Stationery"),
+            dict(ROW, **doc, description="Costco", amount=22.0, vat=0.0, account="8205 Refreshments")]
+    [t] = adapt(*rows)
+    assert (t.gross, t.vat, t.account_code) == (Decimal("58.00"), Decimal("6.00"), "7504")
+    assert ("mixed_items", "warning") in issues_of(t)
+
+
+def test_a_receipt_with_vat_on_two_accounts_at_different_rates_is_one_row():
+    doc = {"document_total": 40.0, "document_vat": None, "date": "2026-10-21"}
+    rows = [dict(ROW, **doc, amount=24.0, vat=4.0, account="7504 Office Stationery"),
+            dict(ROW, **doc, amount=16.0, vat=0.76, account="8205 Refreshments")]
+    [t] = adapt(*rows)
+    assert (t.gross, t.vat, t.account_code) == (Decimal("40.00"), Decimal("4.76"), "7504")
+
+
+def test_a_split_with_per_item_vat_at_one_rate_stays_split():
+    # VAT shown per item (20% on each) and adding up to the printed VAT: nothing is guessed, so it stays split.
+    doc = {"document_total": 60.0, "document_vat": 10.0, "date": "2026-10-21"}
+    rows = [dict(ROW, **doc, amount=24.0, vat=4.0, account="7504 Office Stationery"),
+            dict(ROW, **doc, amount=36.0, vat=6.0, account="7801 Cleaning")]
     assert [(t.gross, t.vat, t.account_code) for t in adapt(*rows)] == [
-        (Decimal("3.75"), Decimal("0.00"), "8205"), (Decimal("4.20"), Decimal("0.70"), "7801")]
+        (Decimal("24.00"), Decimal("4.00"), "7504"), (Decimal("36.00"), Decimal("6.00"), "7801")]
+
+
+def test_the_lines_of_an_expense_claim_keep_their_own_vat():
+    doc = {"document_total": 150.0, "document_type": "expense_claim", "counterparty": "Jenny"}
+    rows = [dict(ROW, **doc, amount=120.0, vat=20.0, account="7406 Subsistence", date="2026-10-01"),
+            dict(ROW, **doc, amount=30.0, vat=0.0, account="7400 Travel", date="2026-10-02")]
+    assert len(adapt(*rows)) == 2
 
 
 def test_a_split_of_a_document_without_vat_stays_split():
