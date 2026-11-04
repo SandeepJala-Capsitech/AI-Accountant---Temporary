@@ -41,6 +41,7 @@ and one with a matching bank line is dated from it.
 over £250 with no full VAT invoice, is held in Suspense, and the person is asked for the document.
 - Don't ask about an undated item, a missing receipt or invoice, or a missing VAT invoice: the books ask the \
 person about those automatically after your turn.
+- A bank line its receipt or invoice books (booked: false, recorded_by) posts nothing: don't ask about its account.
 - Use ask_user only for what the evidence can't settle and the rules don't already ask. Ask one specific question, \
 and say what would settle it.
 

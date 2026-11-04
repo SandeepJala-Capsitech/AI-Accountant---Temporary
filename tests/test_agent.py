@@ -23,6 +23,7 @@ from ledgersync.agent.llm import chat_model
 from ledgersync.agent.prompt import SYSTEM_PROMPT
 from ledgersync.agent.tools import make_tools
 from ledgersync.blobs import GridFSBlobStore
+from ledgersync.checks import issue
 from ledgersync.config import Settings
 from ledgersync.errors import ModelUnavailable
 from ledgersync.model_client import ModelClient
@@ -216,6 +217,24 @@ def test_list_issues_by_family(mongo_store, deps, staples):
     # The bank line is held for its receipt; the sheet line is booked from the receipt, so it isn't held.
     assert [(names[r["row_id"]][0], r["held"]["needs"]) for r in documents["rows"]] == [
         ("statement", "receipt_or_invoice")]
+
+
+@pytest.mark.mongo
+def test_a_bank_line_its_receipt_records_is_not_listed_as_needing_a_look(mongo_store, deps, acme):
+    add_rows(mongo_store, acme,
+             row(date=dt.date(2026, 10, 19), gross=Decimal("64.00"), account_code="7504", counterparty="Costco",
+                 document_ref="r", document_total=Decimal("64.00")),
+             row(date=dt.date(2026, 10, 19), gross=Decimal("64.00"), account_code="9998", counterparty="COSTCO",
+                 document_ref="card", document_type="statement",
+                 issues=[issue("account_not_recognised", "Account unclear: put in Suspense. Choose one.")]),
+             year_start=dt.date(2026, 4, 1))
+    model = ScriptedChatModel(replies=[call("list_issues"), call("get_overview"), say("Looked.")])
+    agent = build_agent(SETTINGS, deps, model=model, checkpointer=InMemorySaver())
+
+    list(stream_turn(agent, context(acme), "What needs a look?"))
+
+    listed, overview = (json.loads(answered(model, n)[0].content) for n in (1, 2))
+    assert listed.get("rows", []) == [] and overview["need_a_look"] == {}
 
 
 @pytest.mark.mongo

@@ -465,6 +465,8 @@ def _record(rows: list[Transaction], changes: list[dict], n: int, receipt: _Docu
     The receipt is paid from the line's account or card, which may not be the default bank."""
     line = rows[n]
     changes[n]["recorded_by"] = receipt.settlement(receipt.total)
+    if not line.include:   # it posts nothing, so its account has no effect on the books: nothing to ask
+        changes[n]["issues"] = [i for i in changes[n].get("issues", line.issues) if i.code != "account_not_recognised"]
     for r in receipt.rows:
         changes[r]["paid_by"] = [Settlement(ref=line.document_ref or f"row-{n}", amount=line.gross,
                                             date=line.date, description=line.description, kind=line.document_type)]

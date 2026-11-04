@@ -85,7 +85,7 @@ from decimal import Decimal
 
 from helpers import SETTINGS as HELPER_SETTINGS, match_one, net, normalise_and_match, only_issue
 from helpers import row as helper_row
-from ledgersync.checks import booked, normalise
+from ledgersync.checks import booked, issue, normalise
 from ledgersync.matching import match
 from ledgersync.models import BusinessSettings, Direction, Transaction
 from ledgersync.posting import trial_balance
@@ -1044,3 +1044,36 @@ def test_issues_point_at_the_right_rows_when_a_row_before_them_is_left_out():
     ready = normalise_and_match([gone, out, into], TWO_BANKS)
     assert about(ready[2], "transfer") == [1]
     assert ready[0] == normalise(gone, TWO_BANKS)
+
+
+def unclear_card_line(**kw):
+    """A card line read onto Suspense, as the reader does for a shop it can't place, that warns the account is unclear."""
+    return bank("64.00", "2026-10-19", "COSTCO", ref="card", account="9998",
+                issues=[issue("account_not_recognised", "Account unclear: put in Suspense. Choose one.")], **kw)
+
+
+def test_a_bank_line_its_receipt_records_no_longer_asks_for_an_account():
+    # It posts nothing, so its account has no effect on the books: there is nothing to ask.
+    receipt = row("receipt", "out", "64.00", "2026-10-19", "Costco", "r", account="7504", document_total="64.00")
+    ready_receipt, line = matched(receipt, unclear_card_line())
+    assert (line.recorded_by.ref, booked(line)) == ("r", False)
+    assert "account_not_recognised" not in [i.code for i in line.issues]
+
+
+def test_a_ticked_bank_line_its_receipt_records_keeps_asking_for_an_account():
+    receipt = row("receipt", "out", "64.00", "2026-10-19", "Costco", "r", account="7504", document_total="64.00")
+    _, line = matched(receipt, unclear_card_line(include=True))
+    assert line.recorded_by.ref == "r" and "account_not_recognised" in [i.code for i in line.issues]
+
+
+def test_a_bank_line_with_no_receipt_keeps_asking_for_an_account():
+    [line] = matched(unclear_card_line())
+    assert line.recorded_by is None and "account_not_recognised" in [i.code for i in line.issues]
+
+
+def test_a_bank_line_its_receipt_records_keeps_its_other_issues():
+    receipt = row("receipt", "out", "64.00", "2026-10-19", "Costco", "r", account="7504", document_total="64.00")
+    line = bank("64.00", "2026-10-19", "COSTCO", ref="card", account="9998",
+                issues=[issue("account_not_recognised", "Account unclear."), issue("read_note", "Read from a blurred photo.")])
+    _, ready = matched(receipt, line)
+    assert [i.code for i in ready.issues] == ["read_note"]
