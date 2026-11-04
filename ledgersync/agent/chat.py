@@ -408,21 +408,23 @@ class Chat:
         called: set[str] = set()   # the tools the agent calls
         read: list[FileRead] = []
         self.records.touch_thread(thread.id, title=_title(text) if thread.title == NEW_CHAT else None)
-        if files:
-            yield ChatEvent("status", {"text": f"Reading {_count(len(files), 'file')}…"})
-            yield from self._read_all(client, thread.year_start, files, read)
-        yield ChatEvent("status", {"text": "Working on it…"})
-        agent = self.agent
-        if self.unavailable:   # the message is kept, so the chat shows it
-            _say(agent, thread.id, text, message_id=message_id)
-            yield _error("model_unavailable", self.unavailable)
-        else:
-            _close_open_calls(agent, thread.id)
-            yield from stream_turn(agent, ChatContext(client.id, thread.id, thread.year_start), text,
-                                   message_id=message_id, called=called)
-        yield ChatEvent("status", {"text": "Posting the books…"})
-        with self.locks.hold(client.id):
-            post = self._write(thread, since)
+        try:
+            if files:
+                yield ChatEvent("status", {"text": f"Reading {_count(len(files), 'file')}…"})
+                yield from self._read_all(client, thread.year_start, files, read)
+            yield ChatEvent("status", {"text": "Working on it…"})
+            agent = self.agent
+            if self.unavailable:   # the message is kept, so the chat shows it
+                _say(agent, thread.id, text, message_id=message_id)
+                yield _error("model_unavailable", self.unavailable)
+            else:
+                _close_open_calls(agent, thread.id)
+                yield from stream_turn(agent, ChatContext(client.id, thread.id, thread.year_start), text,
+                                       message_id=message_id, called=called)
+            yield ChatEvent("status", {"text": "Posting the books…"})
+        finally:   # the files read in this turn are settled even if the stream raised or the caller stopped
+            with self.locks.hold(client.id):
+                post = self._write(thread, since)
         open_now = self.records.questions(thread.client_id, thread.year_start)
         raised = open_now if "list_questions" in called else [q for q in open_now if q.id not in before]
         wrote = post.batch_id is not None
@@ -460,9 +462,14 @@ class Chat:
 
     def _write(self, thread: ChatThread, since: Since) -> PostResult:
         """With the client's lock held: records the rows matching dated from the bank, works the questions out and
-        posts the year, with the decisions this chat made since then behind the posting."""
-        return upkeep.settle(self.store, self.records, thread.client_id, thread.year_start, thread_id=thread.id,
-                             decision_ids=[d.id for d in sorted_since(self.records, thread, since)])
+        posts the year, with the decisions this chat made since then behind the posting; then settles the client's other
+        open years, which the files read may have put rows in."""
+        try:
+            return upkeep.settle(self.store, self.records, thread.client_id, thread.year_start, thread_id=thread.id,
+                                 decision_ids=[d.id for d in sorted_since(self.records, thread, since)])
+        finally:   # a file read in the chat can hold rows of any open year: they are settled too
+            upkeep.settle_open_years(self.store, self.records, thread.client_id, except_year=thread.year_start,
+                                     thread_id=thread.id)
 
     def _answered(self, thread: ChatThread, since: Since, question_id: str, post: PostResult) -> AnswerResult:
         """The question as it stands, with what this chat sorted since then and, when the posting wrote something,

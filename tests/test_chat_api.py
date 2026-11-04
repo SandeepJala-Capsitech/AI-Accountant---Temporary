@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.mongodb import MongoDBSaver
 
-from ledgersync import ledger, ledger_book
+from ledgersync import books, ledger, ledger_book
 from ledgersync.agent import AgentDeps, build_agent
 from ledgersync.agent import chat as chat_module
 from ledgersync.blobs import MemoryBlobStore
@@ -765,3 +765,31 @@ def test_a_chat_detail_says_whether_a_turn_is_running(make, client_id):
         first.join(30)
     assert while_running is True
     assert api.get(f"/api/chat/threads/{thread['id']}").json()["running"] is False
+
+
+def test_a_chat_file_with_rows_in_two_years_leaves_both_posted(make, mongo_store, client_id):
+    later = {**PAYMENT, "description": "BRIGHTLINE PRINT", "date": "2027-05-04"}
+    api = make(say("Read both months."), reads=[transactions_json(PAYMENT, later)])
+    thread = new_thread(api, client_id)
+
+    send(api, thread["id"], "Review the statement.", STATEMENT)
+
+    records = AgentRecords(mongo_store.db)
+    years = [y.start for y in books.years_of(mongo_store, client_id, dt.date(2027, 6, 1))]
+    assert len(years) == 2
+    assert [ledger_book.unposted_changes(mongo_store, records, client_id, y) for y in years] == [0, 0]
+
+
+def test_files_read_in_a_turn_are_settled_even_if_the_stream_raises(make, mongo_store, client_id, monkeypatch):
+    api = make(say("Read it."), reads=[transactions_json(PAYMENT)])
+    thread = new_thread(api, client_id)
+
+    def boom(*a, **k):
+        raise RuntimeError("the stream broke")
+    monkeypatch.setattr(chat_module, "stream_turn", boom)
+    api.post(f"/api/chat/threads/{thread['id']}/messages", data={"text": "Review."},
+             files=[("files", (STATEMENT[0], STATEMENT[1].encode(), "text/plain"))])   # the turn runs in a worker
+
+    records = AgentRecords(mongo_store.db)
+    assert ledger_book.unposted_changes(mongo_store, records, client_id, dt.date(2026, 4, 1)) == 0
+    assert ledger_book.posted_trial_balance(mongo_store, records, client_id, dt.date(2026, 4, 1)).suspense
