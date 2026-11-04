@@ -431,14 +431,27 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
     def list_changes(runtime: ToolRuntime[ChatContext], since: Optional[str] = None) -> dict:
         """What has changed on the client's year, oldest first: who changed it (the person, an import, the rules or
         the agent), what kind of change, the rows and file it touched, the values before and after, and a one-line
-        summary. since: an ISO time; leave it out for the latest 50. Use it to say what has changed since the last
+        summary. since: an ISO date and time (a trailing Z or an offset is fine); leave it out for the latest 50. With
+        since, at most 200 come back and "more" says there were more. Use it to say what has changed since the last
         review."""
         ctx = runtime.context
         _step(runtime, "Checking what has changed…")
-        made = records.changes(ctx.client_id, year_start=ctx.year_start, since=since, **({} if since else {"limit": 50}))
+        when = None
+        if since:
+            try:
+                parsed = dt.datetime.fromisoformat(since.strip().replace("Z", "+00:00").replace("z", "+00:00"))
+            except ValueError:
+                _step(runtime, "Couldn't read the time", "done")
+                return {"error": "since must be an ISO date and time, for example 2026-11-04T10:00:00"}
+            when = parsed.astimezone(dt.timezone.utc) if parsed.tzinfo else parsed.replace(tzinfo=dt.timezone.utc)
+            when = when.isoformat(timespec="seconds")   # as the changes' times are kept
+        limit = 200 if since else 50
+        made = records.changes(ctx.client_id, year_start=ctx.year_start, since=when, limit=limit)
         result = {"changes": [_kept({
             "changed_at": c.created_at, "by": c.actor, "kind": c.kind, "summary": c.summary, "row_ids": c.row_ids,
             "upload_id": c.upload_id, "before": c.before, "after": c.after}) for c in made]}
+        if since and len(made) >= limit:
+            result["more"] = True
         _step(runtime, f"Read {_count(len(made), 'change')}" if made else "Nothing has changed", "done")
         return _out(result)
 

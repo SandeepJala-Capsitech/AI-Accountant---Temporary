@@ -111,10 +111,14 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         With settle False the change is only recorded: a chat turn settles the books itself once its files are read."""
         draft = ChangeDraft(client_id=client_id, year_start=year_start, actor=actor, kind=kind, row_ids=list(row_ids),
                             upload_id=upload_id, before=before or {}, after=after or {}, summary=summary)
-        if settle:
-            upkeep.after_change(store, chat.records, chat.locks, draft)
-        else:
-            chat.records.add_change(draft)
+        try:   # the change is already saved: recording or settling it must never fail the request or the read job
+            if settle:
+                upkeep.after_change(store, chat.records, chat.locks, draft)
+            else:
+                chat.records.add_change(draft)
+        except Exception:
+            logging.getLogger("ledgersync.upkeep").exception("Couldn't record or settle a change to client %s: %s",
+                                                             client_id, summary)
 
     def rows_word(n: int) -> str:
         return f"{n} {'row' if n == 1 else 'rows'}"
@@ -330,7 +334,10 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
 
     @app.post("/api/clients/{client_id}/years/{start}/close", response_model=Client)
     def close_year(client_id: int, start: dt.date):
-        return books.close(store, client_id, start)
+        client = books.close(store, client_id, start)
+        closed = next(c for c in client.closed_years if c.start == start)
+        changed(client_id, "year_closed", f"Year to {long_date(closed.end)} closed", year_start=start)
+        return client
 
     @app.post("/api/clients/{client_id}/years/{start}/reopen", response_model=Client)
     def reopen_year(client_id: int, start: dt.date):
@@ -401,7 +408,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         kind = ("row_reverted" if patch.revert else "row_linked" if "link" in sent else
                 "row_included" if "include" in sent else "rows_apart" if "apart_from" in sent else "row_edited")
         changed(client_id, kind, f"Row {row_id} changed: {', '.join(sent)}", row_ids=[row_id], before=before,
-                after=patch.model_dump(mode="json", include=values))
+                after=patch.model_dump(mode="json", include=values), year_start=result.year.start)
         return result
 
     @app.delete("/api/clients/{client_id}/rows/{row_id}", response_model=Ledger)
@@ -410,14 +417,17 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         before = ({"description": stored.tx.description, "gross": str(stored.tx.gross),
                    "account_code": stored.tx.account_code} if stored else {})
         result = ledger.remove_row(store, client_id, row_id)
-        changed(client_id, "row_removed", f"Row {row_id} removed", row_ids=[row_id], before=before)
+        changed(client_id, "row_removed", f"Row {row_id} removed", row_ids=[row_id], before=before,
+                year_start=result.year.start)
         return result
 
     @app.post("/api/clients/{client_id}/uploads", response_model=Ledger, status_code=201)
     def add_manual_rows(client_id: int, upload: ManualUpload):
         result = ledger.add_manual(store, client_id, upload)
         n = len(upload.transactions)
-        changed(client_id, "row_added", f"{rows_word(n)} added by hand")
+        added = max((u.id for u in result.uploads), default=None)   # the upload just added is the newest
+        changed(client_id, "row_added", f"{rows_word(n)} added by hand", year_start=result.year.start,
+                upload_id=added, row_ids=[r.id for r in result.transactions if r.upload_id == added])
         return result
 
     @app.patch("/api/clients/{client_id}/uploads/{upload_id}", response_model=Ledger)
@@ -426,14 +436,15 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         result = ledger.set_upload_bank(store, client_id, upload_id, patch.bank_account)
         changed(client_id, "upload_bank_changed", f"{found['name'] if found else 'Upload'} moved to {patch.bank_account}",
                 upload_id=upload_id, before={"bank_account": found.get("bank_account") if found else None},
-                after={"bank_account": patch.bank_account})
+                after={"bank_account": patch.bank_account}, year_start=result.year.start)
         return result
 
     @app.delete("/api/clients/{client_id}/uploads/{upload_id}", response_model=Ledger)
     def remove_upload(client_id: int, upload_id: int):
         found = next((u for u in store.uploads(client_id) if u["id"] == upload_id), None)
         result = ledger.remove_upload(store, client_id, upload_id)
-        changed(client_id, "upload_removed", f"{found['name'] if found else 'Upload'} removed", upload_id=upload_id)
+        changed(client_id, "upload_removed", f"{found['name'] if found else 'Upload'} removed", upload_id=upload_id,
+                year_start=result.year.start)
         return result
 
     @app.get("/api/clients/{client_id}/uploads/{upload_id}/file")
@@ -571,8 +582,18 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
     @app.get("/api/clients/{client_id}/years/{start}/posted-trial-balance", response_model=PostedTrialBalance)
     def posted_trial_balance(client_id: int, start: dt.date):
         store.get_client(client_id)
+        unposted = ledger_book.unposted_changes(store, chat.records, client_id, start)
+        if unposted and not year_of(client_id, start).closed:
+            # Rows saved without the upkeep (before it existed) leave an open year behind: bring it up to date, as
+            # a change would. Nothing changed, so none is recorded; it is idempotent.
+            try:
+                with chat.locks.hold(client_id):
+                    upkeep.settle(store, chat.records, client_id, start)
+            except Exception:
+                logging.getLogger("ledgersync.upkeep").exception("Couldn't settle client %s, year %s", client_id, start)
+            unposted = ledger_book.unposted_changes(store, chat.records, client_id, start)
         tb = ledger_book.posted_trial_balance(store, chat.records, client_id, start)
-        tb.unposted_changes = ledger_book.unposted_changes(store, chat.records, client_id, start)
+        tb.unposted_changes = unposted
         return tb
 
     if settings.demo:   # otherwise there is no such route

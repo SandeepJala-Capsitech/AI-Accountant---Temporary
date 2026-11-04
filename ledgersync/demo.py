@@ -13,7 +13,7 @@ from typing import Optional
 
 from pymongo.database import Database
 
-from . import books, ledger
+from . import books, ledger, upkeep
 from .config import Settings
 from .models import Client, ClientFields, ClientPatch, OpeningBalances, Transaction
 from .records import AgentRecords
@@ -23,7 +23,7 @@ from .years import year_bounds
 DEMO_DIR = Path(__file__).resolve().parent.parent / "demo" / "northbridge"
 # What the chat keeps for a client beside its rows. decisions, ledger_entries and posting_batches are append-only;
 # the demo reset is the one thing that deletes from them.
-_KEPT_FOR_CLIENT = ("decisions", "questions", "chat_threads", "ledger_entries", "posting_batches")
+_KEPT_FOR_CLIENT = ("decisions", "questions", "chat_threads", "ledger_entries", "posting_batches", "changes")
 
 
 def _read(name: str):
@@ -54,8 +54,8 @@ def _clear(store: MongoStore, records: AgentRecords, db: Database, client: Clien
 def reset(store: MongoStore, records: AgentRecords, db: Database) -> int:
     """Puts the demo client back as the demo starts, and returns its id: found by name (or added the first time)
     so its id and links stay the same, emptied (see _clear), given client.json's fields and opening_balances.json,
-    and loaded with existing/*.json as uploads already read, added to its first year. Those have no original file,
-    so no text. db: the database the chat's LangGraph checkpoints are kept in. Run twice, it leaves the same rows."""
+    and loaded with existing/*.json as uploads already read, added to its first year, then settled as a change
+    would settle it (the rules' questions asked, the books posted). Those have no original file, so no text. db: the database the chat's LangGraph checkpoints are kept in. Run twice, it leaves the same rows."""
     fields = ClientFields.model_validate(_read("client.json"))
     found = _find(store, fields.name)
     if found is None:
@@ -70,6 +70,7 @@ def reset(store: MongoStore, records: AgentRecords, db: Database) -> int:
         store.add_upload(client.id, upload["name"], upload["kind"],
                          [Transaction.model_validate(t) for t in upload["transactions"]],
                          bank_account=upload["bank_account"], year_start=year_start)
+    upkeep.settle_open_years(store, records, client.id)   # the demo starts up to date: questions asked, books posted
     return client.id
 
 

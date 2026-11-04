@@ -738,10 +738,10 @@ def test_posted_trial_balance_reports_unposted_changes(make, mongo_store, mongo_
 
     [row_id] = question["row_ids"]
     mongo_store.patch_row(client_id, row_id, {"excluded": True})   # a person drops the row after it was posted
-    assert api.get(route).json()["unposted_changes"] == 1
-
-    ledger_book.post(mongo_store, AgentRecords(mongo_db), client_id, dt.date.fromisoformat(YEAR))
-    assert api.get(route).json()["unposted_changes"] == 0
+    records, start = AgentRecords(mongo_db), dt.date.fromisoformat(YEAR)
+    assert ledger_book.unposted_changes(mongo_store, records, client_id, start) == 1   # the posted ledger is behind
+    assert api.get(route).json()["unposted_changes"] == 0   # reading an open year brings it up to date
+    assert ledger_book.unposted_changes(mongo_store, records, client_id, start) == 0
 
 
 def test_a_chat_detail_says_whether_a_turn_is_running(make, client_id):

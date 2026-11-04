@@ -61,6 +61,8 @@ export default function OverviewSection() {
     ['Folder', client.folder || '—'],
   ]
 
+  const ledgerNote = postedLedgerNote(unposted)
+
   return (
     <>
       <section className="card section">
@@ -93,7 +95,7 @@ export default function OverviewSection() {
         {needYou > 0 && (
           <p><Link href={attentionHref(client.id)} className="link-btn">{needYou} {needYou === 1 ? 'thing needs' : 'things need'} you</Link></p>
         )}
-        {postedLedgerNote(unposted) && <p className="muted small">{postedLedgerNote(unposted)}</p>}
+        {ledgerNote && <p className="muted small">{ledgerNote}</p>}
         {summary && (
           <dl className="details">
             <div>

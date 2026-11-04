@@ -3,6 +3,7 @@ services with no model: eval/run_scripted_resolutions.py applies each case's dec
 trial balance, the questions and the decisions are compared with what its notes.md worked out by hand. Also the
 demo reset, which the Northbridge run starts from."""
 import datetime as dt
+from decimal import Decimal
 import json
 from pathlib import Path
 
@@ -11,6 +12,7 @@ import pytest
 import run_scripted_resolutions as scripted
 from job_scoring import compare
 from ledgersync import demo, ledger_book
+from ledgersync.models import ChangeDraft, Transaction
 from ledgersync.records import AgentRecords
 
 pytestmark = pytest.mark.mongo
@@ -80,8 +82,10 @@ def test_demo_reset_twice_leaves_the_same_rows(mongo_store, records, checkpoints
     assert demo.reset(mongo_store, records, checkpoints) == first
     assert _state(mongo_store, records, first) == before and not mongo_store.get_client(first).archived
     assert len(before[0]) == 3 and len(before[1]) == 8 and before[4:] == ([], [])
+    # the demo starts settled: the rules' questions asked (September asks none) and the books posted, nothing waiting
     assert records.questions(first, YEAR, ("open", "waiting", "resolved")) == []
-    assert ledger_book.posted_trial_balance(mongo_store, records, first, YEAR).journal == []
+    assert ledger_book.unposted_changes(mongo_store, records, first, YEAR) == 0
+    assert records.changes(first) == []
     assert checkpoints.checkpoints.count_documents({}) == 0
 
 
@@ -93,3 +97,20 @@ def test_demo_reset_command(monkeypatch, capsys, mongo_store, mongo_db):
     [client] = mongo_store.list_clients()
     assert capsys.readouterr().out == f"Northbridge Consulting Ltd is reset (client {client.id}).\n"
     assert client.name == "Northbridge Consulting Ltd" and len(mongo_store.rows(client.id)) == 8
+
+
+def test_a_reset_demo_has_nothing_unposted_and_its_rule_questions_asked(mongo_store, records, checkpoints):
+    from ledgersync import questions
+    client_id = demo.reset(mongo_store, records, checkpoints)
+    mongo_store.add_upload(client_id, "extra.csv", "csv", [Transaction(
+        date=dt.date(2026, 9, 20), description="TRAINLINE", direction="out", gross=Decimal("240.00"),
+        account_code="7400", currency="GBP", document_type="statement", counterparty="Trainline")],
+        bank_account="1200", year_start=YEAR)
+    records.add_change(ChangeDraft(client_id=client_id, actor="user", kind="upload_read", summary="x"))
+
+    demo.reset(mongo_store, records, checkpoints)
+
+    assert ledger_book.unposted_changes(mongo_store, records, client_id, YEAR) == 0
+    assert {q.row_ids[0] for q in records.questions(client_id, YEAR)} == {
+        d.row_ids[0] for d in questions.rule_questions(mongo_store, client_id, YEAR)}
+    assert [c.kind for c in records.changes(client_id)] == []

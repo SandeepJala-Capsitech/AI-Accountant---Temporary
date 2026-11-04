@@ -1,4 +1,5 @@
 """Every change a person makes from the pages is recorded and settles the client's books at once."""
+import datetime as dt
 import json
 import time
 
@@ -6,9 +7,10 @@ import pytest
 from fakes import ROW, FakeModel, transactions_json
 from fastapi.testclient import TestClient
 
-from ledgersync import upkeep
+from ledgersync import ledger_book, upkeep
 from ledgersync.blobs import MemoryBlobStore
 from ledgersync.config import Settings
+from ledgersync.models import Transaction
 from ledgersync.records import AgentRecords
 from server import create_app
 
@@ -223,3 +225,53 @@ def test_a_row_edit_succeeds_when_upkeep_fails(api, monkeypatch):
     assert resp.status_code == 200, resp.text
     saved = client.get(f"/api/clients/{cid}/years/{YEAR}/ledger").json()["transactions"]
     assert [t["description"] for t in saved if t["id"] == row] == ["BT broadband"]
+
+
+def test_manual_rows_and_row_changes_record_their_year_upload_and_rows(api, mongo_db):
+    client = api()
+    cid = add(client)
+    ledger = manual(client, cid, BILL)
+    last = _last(mongo_db, cid)
+    row = ledger["transactions"][0]["id"]
+    assert (str(last.year_start), last.upload_id, last.row_ids) == (YEAR, ledger["uploads"][-1]["id"], [row])
+
+    assert _row_edit(client, cid, row).status_code == 200
+    assert str(_last(mongo_db, cid).year_start) == YEAR
+    assert client.delete(f"/api/clients/{cid}/rows/{row}").status_code == 200
+    assert str(_last(mongo_db, cid).year_start) == YEAR
+
+
+def test_closing_a_year_records_it(api, mongo_db):
+    client = api()
+    cid = add(client)
+    assert client.post(f"/api/clients/{cid}/years/{YEAR}/close").status_code == 200
+    last = _last(mongo_db, cid)
+    assert (last.kind, last.summary, str(last.year_start)) == ("year_closed", "Year to 31 Mar 2027 closed", YEAR)
+
+
+def test_a_change_succeeds_when_recording_it_fails(api, monkeypatch, caplog):
+    client = api()
+    cid = add(client)
+    row = _setup_row(client, cid)
+
+    def broken(self, change):
+        raise RuntimeError("the record is down")
+
+    monkeypatch.setattr(AgentRecords, "add_change", broken)
+    with caplog.at_level("ERROR", logger="ledgersync.upkeep"):
+        resp = client.patch(f"/api/clients/{cid}/rows/{row}", json={"description": "BT broadband"})
+    assert resp.status_code == 200, resp.text
+    assert any(r.name == "ledgersync.upkeep" and r.exc_info for r in caplog.records)
+
+
+def test_a_client_whose_rows_were_saved_without_the_upkeep_reads_nothing_unposted(api, mongo_store):
+    client = api()
+    cid = add(client)
+    mongo_store.add_upload(cid, "old.csv", "csv", [Transaction(**BILL | {"gross": "72.00", "direction": "out"})],
+                           year_start=dt.date.fromisoformat(YEAR))
+    assert ledger_book.unposted_changes(mongo_store, AgentRecords(mongo_store.db), cid,
+                                        dt.date.fromisoformat(YEAR)) > 0
+
+    posted = client.get(f"/api/clients/{cid}/years/{YEAR}/posted-trial-balance").json()
+
+    assert posted["unposted_changes"] == 0 and posted["lines"]

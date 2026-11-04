@@ -331,3 +331,15 @@ def test_ask_creates_an_agent_question_that_refresh_leaves_alone(store, records,
     [still] = answer(store, records, acme, asked, NotSureAnswer(kind="not_sure"))
     assert (still.id, still.status) == (asked.id, "waiting")
     assert [q.id for q in refresh(store, records, acme)] == [asked.id]
+
+
+def test_an_answer_change_records_the_answer_and_a_repeated_one_records_nothing(store, records, acme):
+    add_rows(store, acme, travel_line(), undated_taxi(), year_start=YEAR_1)
+    by_kind = {q.kind: q for q in refresh(store, records, acme)}
+    answer(store, records, acme, by_kind["date"], DateAnswer(kind="date", date=date(2025, 8, 14)))
+    for _ in range(2):
+        answer(store, records, acme, by_kind["receipt_or_invoice"], NoDocumentAnswer(kind="no_document"))
+
+    made = [c for c in records.changes(acme) if c.kind == "question_answered"]
+
+    assert [c.after for c in made] == [{"answer": "14 Aug 2025"}, {"answer": "I don't have it"}]

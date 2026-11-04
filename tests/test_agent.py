@@ -666,3 +666,37 @@ def test_a_held_row_is_in_the_documents_family_only(mongo_store, deps, acme):
 
     assert held is not None and [i.code for i in held_row.issues if i.code == "needs_document"]
     assert families == {"documents"}
+
+
+@pytest.mark.mongo
+def test_list_changes_since_accepts_z_and_offsets_and_says_when_it_cannot_read_it(mongo_store, deps, staples):
+    from ledgersync.models import ChangeDraft
+    change = deps.records.add_change(ChangeDraft(client_id=staples, year_start=YEAR, actor="user", kind="row_edited",
+                                                 row_ids=[1], summary="Row 1 changed"))
+    mongo_store.db.changes.update_one({"_id": change.id}, {"$set": {"created_at": "2030-01-01T12:00:00+00:00"}})
+    model = ScriptedChatModel(replies=[call("list_changes", since="2030-01-01T11:00:00Z"),
+                                       call("list_changes", since="2030-01-01T13:30:00+02:00"),   # 11:30 UTC
+                                       call("list_changes", since="last Tuesday"), say("Listed.")])
+    agent = build_agent(SETTINGS, deps, model=model, checkpointer=InMemorySaver())
+
+    list(stream_turn(agent, context(staples), "What has changed?"))
+
+    z, offset, bad = (json.loads(answered(model, n)[0].content) for n in (1, 2, 3))
+    assert [c["summary"] for c in z["changes"]] == ["Row 1 changed"] and "more" not in z
+    assert [c["summary"] for c in offset["changes"]] == ["Row 1 changed"]
+    assert bad == {"error": "since must be an ISO date and time, for example 2026-11-04T10:00:00"}
+
+
+@pytest.mark.mongo
+def test_list_changes_since_says_when_there_are_more_than_it_returns(mongo_store, deps, staples):
+    from ledgersync.models import ChangeDraft
+    for n in range(201):
+        deps.records.add_change(ChangeDraft(client_id=staples, year_start=YEAR, actor="user", kind="row_edited",
+                                            row_ids=[1], summary=f"Change {n}"))
+    model = ScriptedChatModel(replies=[call("list_changes", since="2000-01-01T00:00:00"), say("Listed.")])
+    agent = build_agent(SETTINGS, deps, model=model, checkpointer=InMemorySaver())
+
+    list(stream_turn(agent, context(staples), "What has changed?"))
+
+    page = json.loads(answered(model, 1)[0].content)
+    assert len(page["changes"]) == 200 and page["more"] is True

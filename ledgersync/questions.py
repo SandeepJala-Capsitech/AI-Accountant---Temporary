@@ -162,7 +162,7 @@ def answer(store: MongoStore, records: AgentRecords, *, client_id: int, thread_i
         raise NotFound("This question was not found.")
     if q.status == "resolved":
         return Answered(records.questions(client_id, q.year_start), _not_posted())
-    years, decision_ids = [q.year_start], []
+    years, decision_ids, said = [q.year_start], [], ""
     if isinstance(answer, DateAnswer):
         if q.kind != "date" or not q.row_ids:
             raise InvalidInput("This question isn't asking for a date.")
@@ -170,19 +170,23 @@ def answer(store: MongoStore, records: AgentRecords, *, client_id: int, thread_i
                             date=answer.date, question_id=q.id)
         if decision.status != "applied":
             raise InvalidInput(decision.reason)
-        records.set_question(q.id, "resolved", long_date(answer.date))
+        said = long_date(answer.date)
+        records.set_question(q.id, "resolved", said)
         decision_ids = [decision.id]
         if decision.year_start not in years:   # the date moved the row to another year
             years.append(decision.year_start)
     elif isinstance(answer, NoDocumentAnswer):
         if q.kind not in _ASKS:
             raise InvalidInput("This question isn't asking for a document.")
-        records.set_question(q.id, "waiting", "I don't have it")
+        said = "I don't have it"
+        records.set_question(q.id, "waiting", said)
     else:
-        records.set_question(q.id, "waiting", "Not sure")
-    records.add_change(ChangeDraft(client_id=client_id, year_start=q.year_start, actor="user",
-                                   kind="question_answered", row_ids=list(q.row_ids),
-                                   summary=f"Answered: {q.text}"))
+        said = "Not sure"
+        records.set_question(q.id, "waiting", said)
+    if not (q.status == "waiting" and q.answer == said):   # the same answer again changes nothing to record
+        records.add_change(ChangeDraft(client_id=client_id, year_start=q.year_start, actor="user",
+                                       kind="question_answered", row_ids=list(q.row_ids), after={"answer": said},
+                                       summary=f"Answered: {q.text}"))
     posts = []
     for year in years:
         refresh(store, records, client_id, year)
