@@ -485,7 +485,6 @@ textarea.input.composer-text { min-height: 36px; max-height: 200px; padding: 8px
 .question-why { font-size: 13px; color: var(--warn); margin-top: 3px; }
 .question-state { font-size: 13px; font-weight: 600; margin-top: 3px; }
 .question-effect { font-size: 13px; color: var(--muted); margin-top: 6px; }
-.question-answer { font-size: 12.5px; color: var(--muted); margin-top: 6px; }
 .question-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin-top: 10px; }
 .question-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; flex: 1 1 auto; min-width: 0; }
 .question-row .btn-small { margin-left: 0; }

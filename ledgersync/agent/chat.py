@@ -25,7 +25,7 @@ from uuid import uuid4
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.constants import START
-from pydantic import BaseModel, StringConstraints
+from pydantic import BaseModel, StringConstraints, ValidationError
 
 from ledgersync import books, ledger_book, questions
 from ledgersync.blobs import BlobStore
@@ -344,10 +344,15 @@ class Chat:
     def detail(self, thread: ChatThread) -> ThreadDetail:
         """The chat's messages from its memory, with each turn's files on the person's message and its result on the
         reply. A result's questions are read as they are now (an answer, or a document sent in another chat, may have
-        settled one since). A chat saved before turns were kept shows its messages alone."""
+        settled one since). A chat saved before turns were kept shows its messages alone, and so does a reply whose turn
+        record cannot be read."""
         turns: dict[str, TurnRecord] = {}   # read first: a turn is kept only after its messages are in the memory
         for kept in self.records.turns(thread.id):
-            turn = TurnRecord.model_validate(kept)
+            try:
+                turn = TurnRecord.model_validate(kept)
+            except ValidationError:
+                logger.warning("A turn record of chat %s could not be read and was skipped", thread.id)
+                continue
             current = (self.records.question(q.id) for q in turn.result.questions)
             turn.result.questions = [q for q in current if q is not None]
             turns[turn.message_id] = turn

@@ -9,7 +9,7 @@ import ReplyResult from '@/components/chat/ReplyResult'
 import RunSteps from '@/components/chat/RunSteps'
 import { ApiError } from '@/lib/api'
 import {
-  ATTENTION, fileStatus, getThread, hasResult, readStatus, retryFiles, stopRun, streamMessage, withQuestion,
+  ATTENTION, effectLine, fileStatus, getThread, hasResult, readStatus, retryFiles, stopRun, streamMessage, withQuestion,
   type AnswerResult, type ChatError, type ChatEvent, type ChatMessage, type Step, type ThreadDetail, type TurnResult,
 } from '@/lib/chat'
 import { getYears } from '@/lib/clients'
@@ -48,6 +48,7 @@ export default function ThreadPage() {
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
   const running = turns.some(t => t.running)
+  const [effects, setEffects] = useState<Record<string, string>>({})   // each answered question's effect, on every card for it
   const abort = useRef<AbortController | null>(null)
   const nextTurn = useRef(1)
   const loads = useRef(0)                        // a load that a newer one or an unmount has replaced must not apply
@@ -166,6 +167,8 @@ export default function ThreadPage() {
   const fresh = !history.length && !turns.length
   const last = turns[turns.length - 1]
   const onAnswered = (a: AnswerResult) => {
+    const line = effectLine(a)
+    setEffects(e => ({ ...e, [a.question.id]: line ?? '' }))
     setHistory(h => withQuestion(h, a.question))
     setTurns(ts => withQuestion(ts, a.question))
   }
@@ -198,7 +201,8 @@ export default function ThreadPage() {
               </ul>
             )}
             {hasResult(m.result) && (
-              <ReplyResult result={m.result} threadId={threadId} onAnswered={onAnswered} onSay={text => send(text, [], [])} />
+              <ReplyResult result={m.result} threadId={threadId} onAnswered={onAnswered} onSay={text => send(text, [], [])}
+                             effects={effects} busy={running} />
             )}
           </div>
         ))}
@@ -224,7 +228,8 @@ export default function ThreadPage() {
               <RunSteps steps={t.steps} status={t.status} running={t.running} />
               {t.reply && <p className="narrative">{t.reply}</p>}
               {hasResult(t.result) && (
-                <ReplyResult result={t.result} threadId={threadId} onAnswered={onAnswered} onSay={text => send(text, [], [])} />
+                <ReplyResult result={t.result} threadId={threadId} onAnswered={onAnswered} onSay={text => send(text, [], [])}
+                             effects={effects} busy={running} />
               )}
               {t.error && t === last && <RunError error={t.error} onRetry={() => retry(t)} onContinue={() => send('Continue', [], [])} />}
             </div>

@@ -341,6 +341,21 @@ def test_a_chat_from_before_this_change_shows_its_messages_without_cards(make, m
         ("user", "Hello", [], None), ("assistant", "Hi.", [], None)]
 
 
+def test_a_turn_record_that_cannot_be_read_does_not_stop_the_chat_loading(make, mongo_store, client_id):
+    api = make(say("One payment needs its invoice."), say("You're welcome."), reads=[transactions_json(PAYMENT)])
+    thread = new_thread(api, client_id)
+    send(api, thread["id"], "Review October.", STATEMENT)
+    send(api, thread["id"], "Thanks.")
+    mongo_store.db.chat_threads.update_one({"_id": thread["id"]}, {"$set": {"turns.0.result": {"sorted": 1}}})
+
+    response = api.get(f"/api/chat/threads/{thread['id']}")
+
+    assert response.status_code == 200
+    messages = response.json()["messages"]
+    assert [m["text"] for m in messages] == ["Review October.", "One payment needs its invoice.", "Thanks.", "You're welcome."]
+    assert messages[1]["result"] is None and messages[0]["files"] == []
+
+
 def test_a_note_for_the_agent_is_kept_in_its_memory_but_not_shown(make, mongo_store, client_id):
     api = make(say("Hi."))
     thread = new_thread(api, client_id)
