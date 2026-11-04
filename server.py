@@ -120,11 +120,14 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
             reader = TransactionExtractor(model_client, business_name=client.name, business_type=client.business_type,
                                           bank_codes=ledger.bank_choices(client, own or rules.bank_account))
         extraction = pipeline.analyze(item, reader, ctx)
+        # What the file prints, when it has a text layer; an image or a scanned PDF has none to check a total against.
+        printed = item.text if item.data is None else pipeline.pdf_text(item.data) if item.kind == "pdf" else None
         # A line coded to the statement's own account goes to Suspense; one coded to another is a transfer.
         reading = rules.model_copy(update={"bank_account": own or rules.bank_account})
         transactions = adapter.to_transactions([row.model_dump() for row in extraction.data], source=item.kind,
                                                settings=reading, opening_balance=extraction.opening_balance,
-                                               closing_balance=extraction.closing_balance, agent=extraction.agent)
+                                               closing_balance=extraction.closing_balance, agent=extraction.agent,
+                                               text=printed)
         statement = any(tx.document_type == "statement" for tx in transactions)
         if client is not None and statement and own is None:
             raise InvalidInput("Choose which bank account this statement is for.")

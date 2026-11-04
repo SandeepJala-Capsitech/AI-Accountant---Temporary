@@ -240,3 +240,52 @@ def test_the_suppliers_vat_number_is_kept_without_spaces_in_upper_case():
     assert t.supplier_vat_number == "GB123456789"
     [t] = adapt(ROW)
     assert t.supplier_vat_number is None
+
+
+SHEET = [dict(ROW, description=d, amount=a, direction="out", document_type="expense_claim", counterparty="Matt",
+              document_total=60.0, date=dt.date(2026, 10, n).isoformat())
+         for n, d, a in ((2, "Pagecraft", 42.0), (3, "Taxi", 18.0))]
+
+
+def test_a_claim_total_the_sheet_does_not_print_is_dropped():
+    # The reader added the lines up to make 60.00; the sheet prints no such figure.
+    rows = to_transactions(SHEET, source="table", settings=BusinessSettings(),
+                           text="Date,Item,Amount\n2026-10-02,Pagecraft,42.00\n2026-10-03,Taxi,18.00")
+    assert [t.document_total for t in rows] == [None, None]
+    assert len({t.document_ref for t in rows}) == 2
+
+
+def test_a_claim_total_the_sheet_prints_is_kept():
+    rows = to_transactions(SHEET, source="table", settings=BusinessSettings(),
+                           text="Pagecraft,42.00\nTaxi,18.00\nTotal 60.00")
+    assert [t.document_total for t in rows] == [Decimal("60.00")] * 2
+    assert len({t.document_ref for t in rows}) == 1
+
+
+@pytest.mark.parametrize("printed", ["Total 60", "Total £60.00", "Total: 60.00.", "(60.00)", "60.00"])
+def test_a_printed_total_is_found_however_it_is_written(printed):
+    rows = to_transactions(SHEET, source="table", settings=BusinessSettings(), text=f"Pagecraft 42.00\n{printed}")
+    assert rows[0].document_total == Decimal("60.00")
+
+
+def test_a_printed_total_with_thousands_is_found():
+    rows = to_transactions([dict(r, document_total=1234.5) for r in SHEET], source="table",
+                           settings=BusinessSettings(), text="Total £1,234.50")
+    assert rows[0].document_total == Decimal("1234.50")
+
+
+@pytest.mark.parametrize("text", ["Total 1160.00", "Total 160.00", "Total 60.005", "Total 600", "Total 6.00"])
+def test_a_total_inside_a_longer_number_is_not_printed(text):
+    rows = to_transactions(SHEET, source="table", settings=BusinessSettings(), text=text)
+    assert rows[0].document_total is None
+
+
+def test_a_total_read_from_an_image_is_not_checked_against_text():
+    rows = to_transactions(SHEET, source="image", settings=BusinessSettings())
+    assert rows[0].document_total == Decimal("60.00")
+
+
+def test_only_a_claims_total_is_checked_against_the_text():
+    rows = to_transactions([dict(ROW, document_total=72.0)], source="pdf", settings=BusinessSettings(),
+                           text="no figure here")
+    assert rows[0].document_total == Decimal("72.00")

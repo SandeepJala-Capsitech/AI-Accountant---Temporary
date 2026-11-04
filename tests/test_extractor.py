@@ -151,7 +151,7 @@ def test_an_expense_claim_gives_one_transaction_per_expense_line():
     system = client.calls[0]["messages"][0]["content"]
     assert "An expense claim or expense report lists separate expenses" in system
     assert "one transaction per expense line" in system and "Never add expense lines together" in system
-    assert "the claim's grand total as document_total" in system and "document_vat is null" in system
+    assert "the grand total printed on the claim as document_total" in system and "document_vat is null" in system
 
 
 def test_rows_carry_the_document_totals_and_the_mixed_items_flag():
@@ -269,3 +269,10 @@ def test_owed_to_comes_with_a_payroll_row_and_is_null_otherwise():
 
 def test_the_schema_asks_for_the_suppliers_vat_number():
     assert "supplier_vat_number" in AccountingTransaction.model_json_schema()["properties"]
+
+
+def test_a_claim_total_is_only_what_the_claim_prints():
+    client = FakeModel([transactions_json(ROW)])
+    TransactionExtractor(client, business_name="Jo Bloggs", business_type="sole_trader").extract_accounting_data("x")
+    system = client.calls[0]["messages"][0]["content"]
+    assert "null when the claim prints no total" in system and "Never add the lines up to make one" in system

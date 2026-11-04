@@ -4,6 +4,7 @@ money out, whatever the model said."""
 from __future__ import annotations
 
 import datetime as dt
+import re
 import uuid
 from decimal import Decimal
 from typing import Optional
@@ -88,11 +89,32 @@ def _vat_number(row: dict) -> Optional[str]:
     return "".join(str(row.get("supplier_vat_number") or "").split()).upper() or None
 
 
+_NUMBER = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?")
+
+
+def _numbers_in(text: str) -> set[Decimal]:
+    """Every whole number in the text, as written with or without a pound sign or thousands commas: "£1,234.50" is
+    1234.50. A figure inside a longer one ("60.00" in "1160.00" or "60.005") is not a number of its own."""
+    return {Decimal(found.replace(",", "")) for found in _NUMBER.findall(text)}
+
+
+def _only_printed_totals(rows: list[dict], text: str) -> list[dict]:
+    """A claim's document_total that its text never prints is the model's own sum of the lines, not evidence: it
+    becomes None, so the lines are not grouped and matched by it."""
+    printed = _numbers_in(text)
+    return [dict(row, document_total=None) if _document_type(row) == "expense_claim"
+            and to_money(row.get("document_total")) is not None and abs(to_money(row.get("document_total"))) not in printed
+            else row for row in rows]
+
+
 def to_transactions(rows: list[dict], source: str, settings: BusinessSettings, opening_balance=None,
-                    closing_balance=None, agent=None) -> list[Transaction]:
+                    closing_balance=None, agent=None, text: Optional[str] = None) -> list[Transaction]:
     """The model's rows as ledger rows; a bank statement's opening and closing balances, and an agent's statement's
-    agent, which the model gives once, go on each of its rows."""
+    agent, which the model gives once, go on each of its rows. text is what the file prints, when it has a text layer
+    (a spreadsheet, csv or text, a PDF with text): a claim's total it does not print is dropped. None for an image."""
     result = []
+    if text is not None:
+        rows = _only_printed_totals(rows, text)
     rows = [dict(row, agent=agent) if _document_type(row) == "agent_statement" else row
             for row in _keep_unsplittable_whole(rows)]
     refs = {key: uuid.uuid4().hex[:12] for key in _documents(rows)}   # one reference per document

@@ -191,7 +191,8 @@ def match(rows: list[Transaction], settings: BusinessSettings, read: Optional[li
 
 def match_documents(rows: list[Transaction], settings: BusinessSettings,
                     read: Optional[list[Optional[Decimal]]] = None, apart: Optional[list[set[int]]] = None,
-                    open_items: Sequence[OpenItem] = ()) -> tuple[list[Transaction], dict[str, DocumentStatus]]:
+                    open_items: Sequence[OpenItem] = (), left_out: Optional[dict[str, Decimal]] = None
+                    ) -> tuple[list[Transaction], dict[str, DocumentStatus]]:
     """Which documents each bank line pays and what is still owed on each document, for transactions
     checks.normalise has already prepared. Lines a person linked go first; then lines that pay exactly what
     one document owes, whatever their date, so a bigger payment to the same person is never taken as an
@@ -201,12 +202,14 @@ def match_documents(rows: list[Transaction], settings: BusinessSettings,
     said are not the same as it, which are never paired with it or asked about. open_items: the invoices unpaid when
     the client's first year started, which a bank line pays as it pays an invoice uploaded. Also each document's
     status, by its ref, brought-forward ones ("ob-{id}") among them. A row a decision left out of the books (excluded,
-    or replaced by a split) is matched as if it were not there."""
+    or replaced by a split) is matched as if it were not there; left_out, for each document, is what such rows
+    amounted to, so the total printed on the document is not said to be short of them."""
     read = read or [None] * len(rows)
     apart = apart or [set() for _ in rows]
     if any(tx.excluded or tx.superseded_by for tx in rows):
         return _without_left_out(rows, settings, read, apart, open_items)
-    rows = _checked_totals(_with_claims(_without_copies([_cleared(tx) for tx in rows]), settings, apart), read)
+    rows = _checked_totals(_with_claims(_without_copies([_cleared(tx) for tx in rows]), settings, apart), read,
+                           left_out or {})
     documents = {**_brought_forward(open_items), **_documents(rows)}
     changes: list[dict] = [{} for _ in rows]
     # Both sides of a transfer between the client's own accounts are the transfer's, never a payment of a document.
@@ -256,8 +259,13 @@ def _without_left_out(rows: list[Transaction], settings: BusinessSettings, read:
     keep no outputs of a match. The places that matching's issues name are mapped back to places in all the rows."""
     kept = [n for n, tx in enumerate(rows) if not (tx.excluded or tx.superseded_by)]
     place = {n: k for k, n in enumerate(kept)}
+    left_out: dict[str, Decimal] = {}
+    for tx in rows:
+        if tx.excluded or tx.superseded_by:
+            left_out[tx.document_ref] = left_out.get(tx.document_ref, Decimal(0)) + tx.gross
     matched, statuses = match_documents([rows[n] for n in kept], settings, [read[n] for n in kept],
-                                        [{place[m] for m in apart[n] if m in place} for n in kept], open_items)
+                                        [{place[m] for m in apart[n] if m in place} for n in kept], open_items,
+                                        left_out)
     result = [_cleared(tx) for tx in rows]
     for n, tx in zip(kept, matched):
         result[n] = tx.model_copy(update={"issues": [
@@ -638,12 +646,14 @@ _KIND_WORDS = {"agent_statement": "agent's statement", "quote": "quote", "pro_fo
                "supplier_statement": "supplier's statement"}
 
 
-def _checked_totals(rows: list[Transaction], read: list[Optional[Decimal]]) -> list[Transaction]:
+def _checked_totals(rows: list[Transaction], read: list[Optional[Decimal]],
+                    left_out: dict[str, Decimal]) -> list[Transaction]:
     """The rows, each document that doesn't add up to the total printed on it saying so once, with what is missing or
     too much, and pointing at its other rows (Show its lines). It says so on the row that explains it when one does:
     a row a person changed by just that much, or a row of just that much read twice, or the one row of that much;
     otherwise on the first row. Worked out afresh every time, so the warning goes once a line the reading missed is
-    added, or a row read twice is removed."""
+    added, or a row read twice is removed. left_out is, for each document, the total of its rows a decision left out of
+    the books: a document that adds up with them is not short of anything, only a decision has set them aside."""
     marked = list(rows)
     for doc in _grouped(rows, lambda tx: tx.document_type != "statement").values():
         printed = next((rows[n].document_total for n in doc.rows if rows[n].document_total is not None), None)
@@ -658,7 +668,7 @@ def _checked_totals(rows: list[Transaction], read: list[Optional[Decimal]]) -> l
             message = f"Items net to {_gbp(net)}; the statement paid over {_gbp(printed)}."
         else:
             printed = abs(printed)
-            if doc.total == printed:
+            if doc.total == printed or doc.total + left_out.get(first.document_ref, ZERO) == printed:
                 continue
             kind = "claim" if first.document_type == "expense_claim" else (
                 _NUMBERED.get(first.document_type) or _KIND_WORDS.get(first.document_type, "document"))

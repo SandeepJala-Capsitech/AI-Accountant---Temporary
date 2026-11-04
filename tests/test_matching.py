@@ -844,6 +844,36 @@ def test_a_line_read_twice_is_named_by_the_total():
     assert "twice" in twice.issues[0].message
 
 
+def test_a_line_a_decision_left_out_is_not_missing_from_the_claim():
+    # The 42.00 line was excluded in favour of its invoice; the claim's 60.00 total is still the sheet's, and the kept
+    # 18.00 line must not be told that 42.00 is missing.
+    kept, = [t for t in matched(claim_line("42.00", "2026-10-02", "Pagecraft", document_total="60.00", excluded=True),
+                                claim_line("18.00", "2026-10-03", "Taxi", document_total="60.00"))
+             if not t.excluded]
+    assert codes(kept) == []
+
+
+def test_a_claim_read_twice_is_still_named_by_the_total_and_clears_once_the_copy_is_left_out():
+    lines = [claim_line(gross, date, "Southgate", document_total="90.00") for gross, date in (
+        ("36.00", "2026-09-09"), ("54.00", "2026-09-24"), ("54.00", "2026-09-24"))]
+    assert "Repeats another line" in matched(*lines)[2].issues[0].message
+    after = matched(lines[0], lines[1], lines[2].model_copy(update={"excluded": True}))
+    assert [codes(t) for t in after] == [[], [], []]
+
+
+def test_a_total_the_kept_and_left_out_lines_do_not_reach_is_still_flagged():
+    kept = [t for t in matched(claim_line("42.00", "2026-10-02", "Pagecraft", document_total="80.00", excluded=True),
+                               claim_line("18.00", "2026-10-03", "Taxi", document_total="80.00"))
+            if not t.excluded]
+    assert codes(kept[0]) == [("total_mismatch", "warning")]
+
+
+def test_lines_short_of_the_total_with_nothing_left_out_still_warn():
+    first, _ = matched(claim_line("18.00", "2026-10-03", "Taxi", document_total="70.00"),
+                       claim_line("42.00", "2026-10-02", "Pagecraft", document_total="70.00"))
+    assert [c for c, _ in codes(first)] == ["total_mismatch"]
+
+
 def test_a_line_whose_amount_is_the_surplus_is_asked_about():
     first, odd = matched(claim_line("36.00", "2026-09-09", "Southgate", document_total="36.00"),
                          claim_line("12.00", "2026-09-14", "M6toll", document_total="36.00"))
