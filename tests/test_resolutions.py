@@ -361,6 +361,27 @@ def test_split_vat_supersedes_original(mongo_store, records, pages, nb):
                                                 "gross": "52.80", "vat": "8.80", "vat_treatment": "standard"}
 
 
+def test_split_vat_applies_to_a_receipt_the_reader_kept_whole(mongo_store, records, pages, nb):
+    # Bulkbuy as the reader gives it: three rows the adapter puts back together as one 64.00 / 7.60 row.
+    from ledgersync.adapter import to_transactions
+    from ledgersync.models import BusinessSettings
+    text = "BULKBUY\nPens 19.20 A\nBin bags 26.40 A\nWater 18.40 Z\nTOTAL 64.00\nVAT 7.60"
+    doc = {"document_total": 64.0, "document_vat": 7.6, "date": "2026-10-05", "direction": "out", "currency": "GBP",
+           "description": "Bulkbuy"}
+    [whole] = to_transactions(
+        [dict(doc, amount=19.2, vat=3.2, account="7801 Cleaning"),
+         dict(doc, amount=26.4, vat=4.4, account="7504 Office Stationery"),
+         dict(doc, amount=18.4, vat=0.0, account="8205 Refreshments")], "document", BusinessSettings())
+    [row_id] = add(mongo_store, nb.id, pages, "bulkbuy.txt", text, whole)
+    split = SplitVat(action="split_vat", parts=[
+        SplitPart(description="Pens and bin bags", account_code="7504", gross=Decimal("45.60"), rate="standard"),
+        SplitPart(description="Water", account_code="8205", gross=Decimal("18.40"), rate="zero")])
+    decision = call(mongo_store, records, pages, nb, row_id, split, "TOTAL 64.00", "VAT 7.60",
+                    upload=nb.upload("bulkbuy.txt"))
+    assert decision.status == "applied" and decision.rule.startswith("R3")
+    assert saved(mongo_store, nb.id, row_id).superseded_by == decision.id
+
+
 # ─── set_vat_from_document (R5) ────────────────────────────────────────────────
 
 @pytest.fixture

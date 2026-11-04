@@ -97,6 +97,38 @@ def test_a_receipt_with_two_rates_split_across_accounts_is_one_row_on_the_bigges
     assert "total_mismatch" not in [c for c, _ in issues_of(t)]
 
 
+@pytest.mark.parametrize("small_first", [True, False])
+def test_each_lines_own_rate_decides_whatever_the_order_of_the_lines(small_first):
+    # 0.59 of VAT on 3.54 is a rounded 20% (3.54/6 = 0.59, but the line was priced 0.10 on 0.59: a penny of
+    # rounding); 200.00 on 1200.00 is 20%. One rate throughout, with VAT per item: it stays split either way.
+    doc = {"document_total": 1200.59, "document_vat": 200.10, "date": "2026-10-21"}
+    lines = [dict(ROW, **doc, amount=0.59, vat=0.10, account="7504 Office Stationery"),
+             dict(ROW, **doc, amount=1200.0, vat=200.0, account="7801 Cleaning")]
+    if not small_first:
+        lines.reverse()
+    assert sorted((t.gross, t.vat, t.account_code) for t in adapt(*lines)) == [
+        (Decimal("0.59"), Decimal("0.10"), "7504"), (Decimal("1200.00"), Decimal("200.00"), "7801")]
+
+
+@pytest.mark.parametrize("standard_first", [True, False])
+def test_lines_at_the_standard_and_the_reduced_rate_are_one_row_whatever_the_order(standard_first):
+    doc = {"document_total": 126.0, "document_vat": None, "date": "2026-10-21"}
+    lines = [dict(ROW, **doc, amount=120.0, vat=20.0, account="7504 Office Stationery"),
+             dict(ROW, **doc, amount=6.0, vat=0.29, account="8205 Refreshments")]   # 0.29 is 5% of a 6.00 gross
+    if not standard_first:
+        lines.reverse()
+    [t] = adapt(*lines)
+    assert (t.gross, t.vat, t.account_code) == (Decimal("126.00"), Decimal("20.29"), "7504")
+
+
+def test_parts_that_do_not_add_up_to_the_printed_total_are_not_collapsed():
+    # Two separate 5.00 receipts from one shop on one day, one with VAT and one without.
+    doc = {"document_total": 5.0, "document_vat": None, "date": "2026-10-21"}
+    rows = [dict(ROW, **doc, amount=5.0, vat=0.83, account="7504 Office Stationery"),
+            dict(ROW, **doc, amount=5.0, vat=0.0, account="8205 Refreshments")]
+    assert [t.gross for t in adapt(*rows)] == [Decimal("5.00"), Decimal("5.00")]
+
+
 def test_a_receipt_with_a_vat_part_and_a_part_without_is_one_row_even_with_no_document_vat():
     # The reader does not always give document_vat; the parts themselves show VAT on one and none on the other.
     doc = {"document_total": 58.0, "document_vat": None, "date": "2026-10-21"}

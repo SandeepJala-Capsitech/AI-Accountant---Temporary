@@ -12,7 +12,7 @@ from typing import Optional
 from .accounts import BY_CODE, SUSPENSE
 from .checks import OWED_TO, issue, normalise
 from .models import DOCUMENT_TYPES, BusinessSettings, Direction, Transaction
-from .money import to_money
+from .money import VatTreatment, to_money, vat_in_gross
 
 
 def parse_date(text) -> Optional[dt.date]:
@@ -64,20 +64,28 @@ def _vat_of(part: dict) -> Decimal:
     return abs(to_money(part.get("vat")) or 0)
 
 
+_RATES = (VatTreatment.STANDARD, VatTreatment.REDUCED)
+_ROUNDING = Decimal("0.02")   # invoices round VAT line by line
+
+
+def _rates_of(part: dict) -> set[VatTreatment]:
+    """The UK rates a part's own VAT fits within a penny or two of rounding: none for a part whose VAT fits no rate."""
+    amount = abs(to_money(part.get("amount")))
+    return {rate for rate in _RATES if abs(_vat_of(part) - vat_in_gross(amount, rate)) <= _ROUNDING}
+
+
 def _vat_is_mixed(parts: list[dict]) -> bool:
     """Whether the VAT of one receipt's parts is not divided by account, so the parts can't be told apart by it: a
-    part with VAT beside a part with none (the VAT is on only some of the items), or VAT at different rates on
-    different accounts. VAT at one rate on each part is per item and divides."""
+    part with VAT beside a part with none (the VAT is on only some of the items), or parts whose own VAT fits no
+    one rate between them (20% on one, 5% on another). Each part is judged by its own rate, so the order of the
+    lines makes no difference. VAT at one rate on each part is per item and divides."""
     bearing = [part for part in parts if _vat_of(part)]
     if not bearing:
         return False
     if len(bearing) < len(parts):
         return True
-    lead = bearing[0]
-    rate = _vat_of(lead) / abs(to_money(lead.get("amount")))
-    return (len({part.get("account") for part in bearing}) > 1
-            and any(abs(_vat_of(part) - abs(to_money(part.get("amount"))) * rate) > Decimal("0.02")
-                    for part in bearing[1:]))
+    fitted = [rates for rates in map(_rates_of, bearing) if rates]   # a part that fits no rate says nothing
+    return bool(fitted) and not set.intersection(*fitted)
 
 
 def _keep_unsplittable_whole(rows: list[dict]) -> list[dict]:
@@ -94,7 +102,9 @@ def _keep_unsplittable_whole(rows: list[dict]) -> list[dict]:
             continue
         printed_vat = to_money(parts[0].get("document_vat"))
         carried = sum(_vat_of(part) for part in parts)
-        if (printed_vat and carried != abs(printed_vat)) or (kind != "expense_claim" and _vat_is_mixed(parts)):
+        adds_up = sum(abs(to_money(part.get("amount"))) for part in parts) == total   # else they are separate receipts
+        if adds_up and ((printed_vat and carried != abs(printed_vat))
+                        or (kind != "expense_claim" and _vat_is_mixed(parts))):
             bearing = [part for part in parts if _vat_of(part)] or parts
             biggest = max(bearing, key=lambda part: abs(to_money(part.get("amount"))))
             vat = abs(printed_vat) if printed_vat else carried
@@ -151,7 +161,7 @@ def to_transactions(rows: list[dict], source: str, settings: BusinessSettings, o
         issues = []
         key = _document_key(row)
         if row.get("mixed_items"):
-            issues.append(issue("mixed_items", "Items of different kinds with one VAT total: kept as one row."))
+            issues.append(issue("mixed_items", "Items at different VAT rates or of different kinds, with one VAT total: kept as one row."))
         said_in = row.get("direction") == "in"
         if said_in and amount < 0:
             issues.append(issue("direction_conflict",
