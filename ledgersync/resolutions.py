@@ -20,7 +20,7 @@ from .accounts import BY_CODE, AccountType, choosable
 from .checks import long_date
 from .errors import InvalidInput, LedgerSyncError, NotFound
 from .ledger import bank_choices, ensure_open, require_active
-from .matching import CARD_DAYS, names_match
+from .matching import CARD_DAYS, names_match, same_payee
 from .models import Decision, DecisionDraft, Evidence, SavedRow, Transaction
 from .money import PENNY, ZERO, VatTreatment, vat_in_gross
 from .records import AgentRecords
@@ -148,19 +148,27 @@ def _uploads_of(rows: dict[int, SavedRow], row: SavedRow, partners=_PARTNERS) ->
 
 
 def _paying_lines(rows: dict[int, SavedRow], doc: SavedRow) -> list[SavedRow]:
-    """The bank lines that would pay the document, by matching's rules: a statement row still in the books, paying
-    nothing and not set aside by a person, the same way, for exactly the document's total, dated on or after it
-    (within a few days when it is a receipt), and to the same payee."""
+    """The bank lines matching would pair with the document as its payment: a statement row still in the books,
+    paying nothing and not set aside by a person, the same way, for exactly the document's total, dated on or after
+    it, and to the same payee by matching's own rule for the kind of document. A receipt takes a card line within a
+    few days whose name shares a word with the shop's (names_match, as the first pass of matching does); anything
+    else needs the line's counterparty to be surely the document's (same_payee), as matching does before it pays
+    automatically. Stricter than matching only where that errs towards asking."""
     total = doc.document_total or doc.gross
     if doc.date is None:
         return []
+    receipt = doc.document_type == "receipt"
     found = []
     for line in rows.values():
         if (line.document_type != "statement" or line.excluded or line.superseded_by or line.link is not None
                 or line.pays or line.direction != doc.direction or line.gross != total or line.date is None
-                or line.date < doc.date or (doc.document_type == "receipt" and line.date - doc.date > CARD_DAYS)):
+                or line.date < doc.date or (receipt and line.date - doc.date > CARD_DAYS)):
             continue
-        if names_match(line.counterparty or line.description, doc.counterparty):
+        if receipt:
+            same = names_match(line.counterparty or line.description, doc.counterparty)
+        else:
+            same = bool(line.counterparty) and same_payee(line.counterparty, doc.counterparty)
+        if same:
             found.append(line)
     return found
 
@@ -225,8 +233,8 @@ def _use_primary(rows: dict[int, SavedRow], row_id: int, r: UsePrimary, **_) -> 
     if (primary.document_type in ("invoice", "receipt") and other.document_type == "expense_claim"
             and not _paying_lines(rows, primary)):
         # Nothing shows the company paid the document's amount, so the sheet's may be what the claimant paid.
-        raise _Refused(f"No bank line pays the {_kind(primary)}'s £{primary.gross}, so the sheet line may be what the "
-                       "claimant paid: ask the person which amount is right.")
+        raise _Refused(f"No bank line pays the {_kind(primary)}'s £{primary.document_total or primary.gross}, so the "
+                       "sheet line may be what the claimant paid: ask the person which amount is right.")
     links = other.document_type == "statement" and primary.document_type not in _UNPAYABLE
     patch = {"link": [primary.document_ref]} if links else {"excluded": True}
     return _Change(rule=f"R4 Conflict: used the {_kind(primary)}", touched=[primary.id, other.id],

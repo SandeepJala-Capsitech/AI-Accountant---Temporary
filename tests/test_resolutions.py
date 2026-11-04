@@ -171,13 +171,13 @@ def use_invoice_over_sheet(store, records, pages, nb, *statement_quotes):
 
 def test_use_primary_invoice_beats_sheet(mongo_store, records, pages, nb):
     paid_by_bank(nb, mongo_store, pages)
-    decision = use_invoice_over_sheet(mongo_store, records, pages, nb, "12/10/2026 INKWELL SUPPLIES 30.22")
+    decision = use_invoice_over_sheet(mongo_store, records, pages, nb, "12/10/2026 INKWELL PRINT 30.22")
     assert decision.status == "applied" and decision.rule.startswith("R4")
     assert decision.after == {str(nb.sheet_inkwell): {"excluded": True}}
     assert booked(shown(mongo_store, nb.id, nb.invoice))
     assert not booked(shown(mongo_store, nb.id, nb.sheet_inkwell))
     tb = books.trial_balance(mongo_store, nb.id, YEAR)
-    assert net(tb, "2100") == Decimal("-30.22")   # the invoice's £30.22 owed, not the sheet's £27.50
+    assert net(tb, "7500") == Decimal("25.18") and net(tb, "2100") == Decimal("0")   # the invoice, paid by the line
 
 
 def test_use_primary_refuses_the_invoice_over_a_sheet_line_when_no_bank_line_pays_it(mongo_store, records, pages, nb):
@@ -192,9 +192,8 @@ def test_use_primary_refuses_the_invoice_over_a_sheet_line_when_no_bank_line_pay
 def test_use_primary_links_a_bank_line_to_the_invoice(mongo_store, records, pages, nb):
     """With the sheet's line out of the books (it held the invoice back), a bank line that disagrees with the invoice
     pays it."""
-    paid_by_bank(nb, mongo_store, pages)
-    use_invoice_over_sheet(mongo_store, records, pages, nb, "12/10/2026 INKWELL SUPPLIES 30.22")
-    [line] = add(mongo_store, nb.id, pages, "barclays-other.csv", "12/10/2026 INKWELL PRINT 30.00",
+    mongo_store.patch_row(nb.id, nb.sheet_inkwell, {"excluded": True})
+    [line] = add(mongo_store, nb.id, pages, "barclays-october.csv", "12/10/2026 INKWELL PRINT 30.00",
                  row(date=dt.date(2026, 10, 12), description="INKWELL PRINT", counterparty="INKWELL PRINT",
                      gross=Decimal("30.00"), account_code="7500", document_type="statement"), kind="table")
     primary = UsePrimary(action="use_primary", primary_row_id=nb.invoice, other_row_id=line)
@@ -207,7 +206,7 @@ def test_use_primary_links_a_bank_line_to_the_invoice(mongo_store, records, page
     assert [p.ref for p in shown(mongo_store, nb.id, line).pays] == [ref]
 
 
-def bank_line(nb, store, pages, gross: str, date: dt.date, who: str = "INKWELL SUPPLIES") -> tuple[int, int]:
+def bank_line(nb, store, pages, gross: str, date: dt.date, who: str = "INKWELL PRINT") -> tuple[int, int]:
     """A barclays statement of one card/bank line out; its row id and upload id."""
     [line] = add(store, nb.id, pages, "barclays-october.csv", f"{date:%d/%m/%Y} {who} {gross}",
                  row(date=date, description=who, counterparty=who, gross=Decimal(gross), account_code="7500",
@@ -221,9 +220,9 @@ def test_use_primary_accepts_the_bank_line_that_pays_the_held_invoice(mongo_stor
     decision = resolve(mongo_store, records, client_id=nb.id, thread_id="t1", actor=ACTOR, row_id=nb.sheet_inkwell,
                        resolution=primary, reason="Checked the documents.", texts=lambda uid: pages.get(uid, []),
                        evidence=[Evidence(upload_id=nb.upload("inkwell-invoice.pdf"), quote="Total £30.22"),
-                                 Evidence(upload_id=statement, quote="12/10/2026 INKWELL SUPPLIES 30.22")])
+                                 Evidence(upload_id=statement, quote="12/10/2026 INKWELL PRINT 30.22")])
     assert decision.status == "applied"
-    assert "12/10/2026 INKWELL SUPPLIES 30.22" in [e.quote for e in decision.evidence]
+    assert "12/10/2026 INKWELL PRINT 30.22" in [e.quote for e in decision.evidence]
     assert saved(mongo_store, nb.id, nb.sheet_inkwell).excluded
 
 
@@ -242,6 +241,38 @@ def test_use_primary_refuses_a_bank_line_that_does_not_pay_the_invoice(mongo_sto
     assert "This is only about which documents can be quoted" in decision.reason
     assert "inkwell-invoice.pdf" in decision.reason and "staff-expenses-october.xlsx" in decision.reason
     assert not saved(mongo_store, nb.id, nb.sheet_inkwell).excluded
+
+
+def test_use_primary_refuses_a_bank_line_matching_would_only_suggest(mongo_store, records, pages, nb):
+    """INKWELL SUPPLIES shares a word with Inkwell Print Ltd, but matching doesn't pay an invoice for that."""
+    bank_line(nb, mongo_store, pages, "30.22", dt.date(2026, 10, 12), "INKWELL SUPPLIES")
+    decision = use_invoice_over_sheet(mongo_store, records, pages, nb)
+    assert decision.status == "refused" and "No bank line pays the invoice's £30.22" in decision.reason
+    assert not saved(mongo_store, nb.id, nb.sheet_inkwell).excluded
+
+
+def test_use_primary_names_the_document_total_it_looked_for(mongo_store, records, pages, nb):
+    mongo_store.patch_row(nb.id, nb.invoice, {"document_total": "40.00"})
+    decision = use_invoice_over_sheet(mongo_store, records, pages, nb)
+    assert decision.status == "refused" and "No bank line pays the invoice's £40.00" in decision.reason
+
+
+def use_receipt_over_sheet(store, records, pages, nb, *statement_quotes):
+    primary = UsePrimary(action="use_primary", primary_row_id=nb.receipt, other_row_id=nb.sheet_costco)
+    return resolve(store, records, client_id=nb.id, thread_id="t1", actor=ACTOR, row_id=nb.sheet_costco,
+                   resolution=primary, reason="Checked the documents.", texts=lambda uid: pages.get(uid, []),
+                   evidence=[Evidence(upload_id=nb.upload("costco.txt"), quote="TOTAL  £64.80"),
+                             *(Evidence(upload_id=nb.upload("barclays-october.csv"), quote=q)
+                               for q in statement_quotes)])
+
+
+def test_use_primary_receipt_over_a_sheet_line_needs_the_card_line(mongo_store, records, pages, nb):
+    refused = use_receipt_over_sheet(mongo_store, records, pages, nb)
+    assert refused.status == "refused" and "No bank line pays the receipt's £64.80" in refused.reason
+    assert not saved(mongo_store, nb.id, nb.sheet_costco).excluded
+    bank_line(nb, mongo_store, pages, "64.80", dt.date(2026, 10, 7), "COSTCO WHOLESALE")
+    applied = use_receipt_over_sheet(mongo_store, records, pages, nb, "07/10/2026 COSTCO WHOLESALE 64.80")
+    assert applied.status == "applied" and saved(mongo_store, nb.id, nb.sheet_costco).excluded
 
 
 def test_keep_one_accepts_the_card_line_that_pays_the_kept_receipt(mongo_store, records, pages, nb):
