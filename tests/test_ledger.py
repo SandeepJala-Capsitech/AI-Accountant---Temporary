@@ -136,6 +136,15 @@ def test_summaries_count_rows_and_what_needs_review(store):
     assert (summary.id, summary.rows, summary.to_review) == (client.id, 2, 1)
 
 
+@pytest.mark.parametrize("left_out", [{"excluded": True}, {"superseded_by": "d1"}])
+def test_a_row_left_out_of_the_books_needs_no_review(store, left_out):
+    # A duplicate a decision dropped kept its error, and the clients page and the Overview still counted it.
+    client = store.create_client(CUBE)
+    store.add_upload(client.id, "a.pdf", "pdf", [row(), row(account_code="9999", document_ref="x")])
+    store.patch_row(client.id, store.rows(client.id)[1].id, left_out)
+    assert (ledger.summaries(store)[0].to_review, books.summary(store, client.id, YEAR).to_review) == (0, 0)
+
+
 def test_the_clients_page_works_a_client_out_again_only_after_its_work_changes(store, monkeypatch):
     # Final review #5: every visit to the clients page rebuilt every client's whole ledger.
     cube = store.create_client(CUBE)

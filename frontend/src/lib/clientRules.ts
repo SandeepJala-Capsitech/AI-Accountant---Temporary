@@ -2,7 +2,7 @@
 import type { Transaction } from './api'
 import type { AccountChoice, BankAccount, BankAccountKind, BusinessType, ClientFields, ClientSummary, EditableField, FolderImportResult, RowChange, SavedRow, StatementCheck,
               Upload } from './clients'
-import { money, totalsOf } from './ledger.ts'
+import { money, needsReview, totalsOf } from './ledger.ts'
 
 export const BUSINESS_TYPES: Record<BusinessType, string> = {
   limited_company: 'Limited company', sole_trader: 'Sole trader', partnership: 'Partnership', llp: 'LLP',
@@ -73,7 +73,7 @@ export function figuresOf(rows: SavedRow[]) {
   const owed = (key: string) => totals.find(t => t.key === key)?.stillOwed ?? '0.00'
   return {
     rows: rows.length,
-    toReview: rows.filter(row => row.issues.some(i => i.severity === 'error' || i.severity === 'warning')).length,
+    toReview: rows.filter(row => needsReview(row)).length,
     toPay: owed('documents-out'),
     toReceive: owed('documents-in'),
   }

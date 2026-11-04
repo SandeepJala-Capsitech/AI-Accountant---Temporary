@@ -33,7 +33,12 @@ export const kindOf = (tx: Transaction): RowKind => {
 }
 
 // A row a decision left out of the books or replaced with a split: the table still lists it, crossed out.
-const leftOut = (tx: Transaction) => !!(tx.excluded || tx.superseded_by)
+export const leftOut = (tx: Transaction) => !!(tx.excluded || tx.superseded_by)
+
+// Whether a row needs a person: it has a warning or an error (its own, or those the page adds, such as a possible
+// duplicate), and it is in the books. What is wrong with a row left out no longer matters; the agent skips it too.
+export const needsReview = (tx: Transaction, issues: Issue[] = tx.issues) =>
+  !leftOut(tx) && issues.some(i => i.severity !== 'info')
 
 // A row as the duplicate check sees it, with what matching already linked it to: what it pays or what paid it, the
 // expense claim it is on, and the receipt or invoice that books it. Linked rows are never each other's duplicates,

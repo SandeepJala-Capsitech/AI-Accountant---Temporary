@@ -63,6 +63,12 @@ test('the figures count the rows to review and what is still owed each way', () 
   assert.deepEqual(figuresOf([row(), sale]), { rows: 2, toReview: 1, toPay: '12000.00', toReceive: '500.00' })
 })
 
+test('the figures do not count a row left out of the books as one to review', () => {
+  const warned = { issues: [{ code: 'x', severity: 'warning' as const, message: 'm' }] }
+  const rows = [row(warned), row({ ...warned, id: 2, excluded: true }), row({ ...warned, id: 3, superseded_by: 'd1' })]
+  assert.equal(figuresOf(rows).toReview, 1)
+})
+
 test('a picked file that repeats a saved upload is found by its fingerprint', () => {
   const uploads = [{ id: 7, name: 'BT-0905.pdf', sha256: 'abc' } as Upload]
   assert.equal(sameFileAs('abc', uploads)?.name, 'BT-0905.pdf')

@@ -5,18 +5,18 @@ from __future__ import annotations
 import datetime as dt
 import io
 import re
-from typing import Union
+from typing import Optional, Union
 
 from openpyxl import Workbook
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.styles import Font
 
-from .models import Direction, Ledger, TrialBalance
+from .models import Direction, Ledger, Transaction, TrialBalance
 
 MONEY = '"£"#,##0.00'
 DATE = "dd/mm/yyyy"
 COLUMNS = ("Date", "Description", "Counterparty", "Document type", "In/Out", "Amount", "VAT", "Net", "Account",
-           "Account name", "Other side", "Still owed", "Issues", "Upload", "Edited")
+           "Account name", "Other side", "Still owed", "Issues", "Upload", "Edited", "Left out")
 _TYPE_NAMES = {"receipt": "Receipt", "invoice": "Invoice", "expense_claim": "Expense claim",
                "statement": "Bank statement", "quote": "Quote", "pro_forma": "Pro forma",
                "purchase_order": "Purchase order", "remittance_advice": "Remittance advice",
@@ -89,10 +89,16 @@ def _transactions(sheet, ledger: Ledger) -> None:
         _append(sheet, [tx.date, tx.description, tx.counterparty, _TYPE_NAMES.get(tx.document_type, tx.document_type),
                       "In" if tx.direction == Direction.IN else "Out", tx.gross, tx.vat_posted, tx.net, code, name,
                       tx.contra_account_code, tx.owed, "; ".join(i.message for i in tx.issues) or None,
-                      uploads.get(tx.upload_id), "Yes" if tx.edited else None])
+                      uploads.get(tx.upload_id), "Yes" if tx.edited else None, _left_out(tx)])
     for row in sheet.iter_rows(min_row=3):
         row[0].number_format = DATE
         for cell in (*row[5:8], row[11]):
             cell.number_format = MONEY
     sheet.freeze_panes = "A3"
-    _widths(sheet, (12, 36, 22, 16, 8, 12, 10, 12, 9, 26, 10, 12, 50, 24, 8))
+    _widths(sheet, (12, 36, 22, 16, 8, 12, 10, 12, 9, 26, 10, 12, 50, 24, 8, 20))
+
+
+def _left_out(tx: Transaction) -> Optional[str]:
+    """Why a row the sheet lists is not in the books: a decision left it out, or replaced it with the rows of a split
+    (which the sheet lists too). None for a row in the books, so adding up the rest adds up the books."""
+    return "Replaced by a split" if tx.superseded_by else "Left out" if tx.excluded else None

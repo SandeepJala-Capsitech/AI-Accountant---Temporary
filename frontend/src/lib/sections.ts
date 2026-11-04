@@ -1,7 +1,8 @@
 // What the Bank and Invoices sections say and show, kept apart from the screens so node --test can run them.
 import type { TrialBalanceResult } from './api'
 import type { AccountChoice, BankCheck, Client, InvoiceSummary, Ledger, OpeningBalances, SavedRow, Year } from './clients'
-import { longDate, money } from './ledger.ts'
+import { transactionCount } from './clientRules.ts'
+import { leftOut, longDate, money } from './ledger.ts'
 
 // 30 Sep 2025; "No date" when there is none.
 export const fullDate = (iso: string | null | undefined): string => (iso ? longDate(iso) : 'No date')
@@ -33,6 +34,13 @@ export function linesFor(ledger: Ledger, code: string): SavedRow[] {
   return ledger.transactions
     .filter(row => row.document_type === 'statement' && ((row.bank_account ?? fallback) === code || row.account_code === code))
     .sort((a, b) => (a.date ?? '9999').localeCompare(b.date ?? '9999'))
+}
+
+// What the Bank section says of an account's lines: how many are in the books, and how many of those it lists were
+// left out of them (listed crossed out, as the Transactions table does), so the count adds up to the books.
+export function linesCount(lines: SavedRow[], account: string): string {
+  const left = lines.filter(leftOut).length
+  return `${transactionCount(lines.length - left)} on ${account}${left ? `, ${left} left out` : ''}`
 }
 
 export function splitInvoices(list: InvoiceSummary[]): { sales: InvoiceSummary[]; purchases: InvoiceSummary[] } {

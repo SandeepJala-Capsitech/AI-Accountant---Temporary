@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import type { BankCheck, Client, InvoiceSummary, Ledger, OpeningBalances, SavedRow, Year } from './clients.ts'
 import type { TrialBalanceResult } from './api.ts'
 import {
-  bankCheckNotice, bankCheckText, closeQuestion, defaultBank, fullDate, linesFor, openingAccounts, openingErrors, splitInvoices, trialRows,
+  bankCheckNotice, bankCheckText, closeQuestion, defaultBank, fullDate, linesCount, linesFor, openingAccounts, openingErrors, splitInvoices, trialRows,
 } from './sections.ts'
 
 const check = (change: Partial<BankCheck> = {}): BankCheck => ({
@@ -73,6 +73,15 @@ test('an account shows its statement lines and the transfers into it from anothe
   const ledger = ledgerOf(c, [own, unset, other, transferIn, receipt])
   assert.deepEqual(linesFor(ledger, '1200').map(r => r.description), ['own', 'default account', 'transfer to current'])
   assert.deepEqual(linesFor(ledger, '1211').map(r => r.description), ['savings line', 'transfer to current'])
+})
+
+test("an account's count is of the lines in the books, and says how many it lists left out", () => {
+  // The Bank page counted a bank line a decision left out, so its lines did not add up to the books.
+  const kept = [row({}), row({ id: 2 })]
+  assert.equal(linesCount(kept, 'Current'), '2 transactions on Current')
+  assert.equal(linesCount([...kept, row({ id: 3, excluded: true }), row({ id: 4, superseded_by: 'd1' })], 'Current'),
+               '2 transactions on Current, 2 left out')
+  assert.equal(linesCount([row({ excluded: true })], 'Current'), '0 transactions on Current, 1 left out')
 })
 
 const year = (end: string): Year => ({ start: '2025-04-01', end, label: `Year to ${end}`, closed: false })

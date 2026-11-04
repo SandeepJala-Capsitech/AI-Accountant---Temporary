@@ -47,10 +47,10 @@ def test_the_workbook_has_the_trial_balance_and_the_transactions(store):
     assert (tb["C3"].number_format, tb.freeze_panes) == (MONEY, "A3")
     assert [c.value for c in txs[2]] == ["Date", "Description", "Counterparty", "Document type", "In/Out", "Amount",
                                          "VAT", "Net", "Account", "Account name", "Other side", "Still owed",
-                                         "Issues", "Upload", "Edited"]
+                                         "Issues", "Upload", "Edited", "Left out"]
     assert [c.value for c in txs[3]] == [dt.datetime(2026, 9, 1), "BT Business, broadband", "BT Business", "Receipt",
                                          "Out", 72, 12, 60, "7502", "Telephone and Internet", "1200", None, None,
-                                         "BT-0905.pdf", None]
+                                         "BT-0905.pdf", None, None]
     assert (txs["A3"].number_format, txs["F3"].number_format, txs.freeze_panes) == ("dd/mm/yyyy", MONEY, "A3")
 
 
@@ -68,6 +68,17 @@ def test_an_edited_row_says_so(store):
     ledger.change_row(store, client.id, store.rows(client.id)[0].id, RowPatch(account_code="7504"))
     _, txs, _ = sheets(store, client.id)
     assert (txs["I3"].value, txs["O3"].value) == ("7504", "Yes")
+
+
+def test_a_row_left_out_of_the_books_says_so(store):
+    # The sheet listed a dropped duplicate like any other row, so adding up the amounts counted it twice.
+    client = store.create_client(CUBE)
+    store.add_upload(client.id, "a.pdf", "pdf", [receipt(), receipt(), receipt()])
+    first, second, third = (r.id for r in store.rows(client.id))
+    store.patch_row(client.id, second, {"excluded": True})
+    store.patch_row(client.id, third, {"superseded_by": "d1"})
+    _, txs, _ = sheets(store, client.id)
+    assert [txs[f"P{n}"].value for n in (2, 3, 4, 5)] == ["Left out", None, "Left out", "Replaced by a split"]
 
 
 def test_the_file_name_drops_characters_file_names_cannot_hold():

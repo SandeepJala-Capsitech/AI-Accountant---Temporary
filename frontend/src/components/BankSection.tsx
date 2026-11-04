@@ -4,9 +4,8 @@ import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import { useClientYear } from '@/components/ClientYearContext'
 import { getBankChecks, type BankCheck } from '@/lib/clients'
-import { transactionCount } from '@/lib/clientRules'
-import { accountName, money } from '@/lib/ledger'
-import { bankCheckNotice, bankCheckText, defaultBank, fullDate, linesFor } from '@/lib/sections'
+import { accountName, leftOut, money } from '@/lib/ledger'
+import { bankCheckNotice, bankCheckText, defaultBank, fullDate, linesCount, linesFor } from '@/lib/sections'
 import { sectionHref } from '@/lib/years'
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
@@ -49,7 +48,7 @@ export default function BankSection() {
       <section className="card section table-card">
         <div className="section-head">
           <h2>Bank</h2>
-          <span className="muted small">{transactionCount(lines.length)} on {account.name}</span>
+          <span className="muted small">{linesCount(lines, account.name)}</span>
           <Link href={sectionHref(client.id, year.start, 'transactions')} className="link-btn">Edit in Transactions</Link>
         </div>
         <div className="tabs" role="tablist">
@@ -86,11 +85,14 @@ export default function BankSection() {
                 const fromHere = (row.bank_account ?? fallback) === account.code
                 // A line on another account's statement that is coded here is the other end of a transfer.
                 const incoming = (row.direction === 'in') === fromHere
+                // A line a decision left out of the books is listed crossed out, as the Transactions table lists it.
+                const left = leftOut(row)
                 return (
-                  <tr key={row.id}>
+                  <tr key={row.id} className={left ? 'row-not-booked' : undefined}>
                     <td className="mono">{fullDate(row.date)}</td>
                     <td>
-                      {row.description}
+                      <span style={left ? { textDecoration: 'line-through' } : undefined}>{row.description}</span>
+                      {left && <div className="row-status">{row.superseded_by ? 'Replaced' : 'Left out'}</div>}
                       {!fromHere && <div className="row-origin">Transfer from {nameOf(row.bank_account)}</div>}
                     </td>
                     <td className="num">{incoming ? money(row.gross) : ''}</td>

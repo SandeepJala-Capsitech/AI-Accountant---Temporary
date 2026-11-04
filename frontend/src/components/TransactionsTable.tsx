@@ -7,14 +7,16 @@ import { useClientYear } from '@/components/ClientYearContext'
 import type { Ledger, RowChange, SavedRow } from '@/lib/clients'
 import { DOCUMENT_TYPES, transactionCount } from '@/lib/clientRules'
 import { DUPLICATE_WINDOW_DAYS, possibleDuplicates } from '@/lib/duplicates'
-import { aboutAnotherRow, accountName, apartChange, apartStatus, canBeApart, checkHover, issueHeading, kindOf, money, paymentRowOf, reviewSummary,
-         rowStatus, showLabel, takesLines, totalsOf } from '@/lib/ledger'
+import { aboutAnotherRow, accountName, apartChange, apartStatus, canBeApart, checkHover, issueHeading, kindOf, leftOut, money, needsReview,
+         paymentRowOf, reviewSummary, rowStatus, showLabel, takesLines, totalsOf } from '@/lib/ledger'
 
 const SEVERITY_ORDER = { error: 0, warning: 1, info: 2 } as const
 const MARKS = { error: '✖', warning: '⚠', info: 'ℹ' } as const
 
-// The worst issue on a row, as the Check column shows it.
-function checkOf(issues: Issue[]) {
+// The worst issue on a row, as the Check column shows it. A row left out of the books needs no review, whatever its
+// issues say: they stay listed under its description, unmarked.
+function checkOf(issues: Issue[], left: boolean) {
+  if (left) return { mark: '—', cls: 'check-info', title: 'Left out of the books: nothing to review' }
   if (!issues.length) return { mark: '✓', cls: 'check-ok', title: 'No issues' }
   const worst = issues.some(i => i.severity === 'error') ? 'error' : issues.some(i => i.severity === 'warning') ? 'warning' : 'info'
   const cls = { error: 'check-error', warning: 'check-warn', info: 'check-info' }[worst]
@@ -134,12 +136,13 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
       }]
     })
   }, [rows, uploads])
-  const review = useMemo(() => reviewSummary(issuesOf), [issuesOf])
-  const flagged = issuesOf.filter(issues => issues.some(i => i.severity !== 'info')).length
+  // Rows left out of the books are listed, crossed out, but are never counted or filtered as rows to review.
+  const review = useMemo(() => reviewSummary(issuesOf.filter((_, i) => !leftOut(rows[i]))), [rows, issuesOf])
+  const flagged = rows.filter((row, i) => needsReview(row, issuesOf[i])).length
   const totals = useMemo(() => totalsOf(rows), [rows])
   const all = rows.map((row, i) => ({ row, issues: issuesOf[i] }))
-  const shown = all.filter(({ issues }) =>
-    only === null || (only === 'review' ? issues.some(i => i.severity !== 'info') : issues.some(i => i.code === only)))
+  const shown = all.filter(({ row, issues }) =>
+    only === null || (only === 'review' ? needsReview(row, issues) : !leftOut(row) && issues.some(i => i.code === only)))
   const filter = only !== null && !shown.length ? null : only   // a filter whose rows are all fixed shows everything
   const together = focus ? all.filter(({ row }) => focus.includes(row.id)) : []
   const listed = together.length ? together : filter === null ? all : shown
@@ -194,11 +197,11 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
           </thead>
           <tbody>
             {listed.map(({ row, issues }) => {
-              const check = checkOf(issues)
+              const left = leftOut(row)
+              const check = checkOf(issues, left)
               const origin = `${uploads.get(row.upload_id) ?? ''} · ${DOCUMENT_TYPES[row.document_type ?? 'receipt'] ?? row.document_type}`
-              const classes = [kindOf(row) === 'not booked' ? 'row-not-booked' : '',
+              const classes = [left || kindOf(row) === 'not booked' ? 'row-not-booked' : '',
                                check.cls === 'check-error' ? 'row-flag-error' : check.cls === 'check-warn' ? 'row-flag-warn' : '']
-              const left = !!(row.excluded || row.superseded_by)
               const touched = (row.decision_ids ?? []).flatMap(id => decisions.get(id) ?? [])
               return (
                 <tr key={row.id} className={classes.filter(Boolean).join(' ') || undefined}>

@@ -182,6 +182,10 @@ def change_client(store: MongoStore, client_id: int, patch: ClientPatch) -> Clie
 
 
 def needs_review(row: Transaction) -> bool:
+    """A row with a warning or an error, unless a decision left it out of the books or replaced it with a split: what
+    is wrong with it no longer matters, as the agent does not look at it either."""
+    if row.excluded or row.superseded_by:
+        return False
     return any(found.severity in ("error", "warning") for found in row.issues)
 
 

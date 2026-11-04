@@ -3,8 +3,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Transaction } from './api.ts'
 import { possibleDuplicates } from './duplicates.ts'
-import { aboutAnotherRow, accountName, apartChange, apartStatus, canBeApart, checkHover, issueHeading, issueTitle, kindOf, paymentRowOf, postedLedgerNote, reviewSummary,
-         rowStatus, showLabel, takesLines, totalsOf } from './ledger.ts'
+import { aboutAnotherRow, accountName, apartChange, apartStatus, canBeApart, checkHover, issueHeading, issueTitle, kindOf, needsReview, paymentRowOf, postedLedgerNote,
+         reviewSummary, rowStatus, showLabel, takesLines, totalsOf } from './ledger.ts'
 
 // A transaction as the API returns it (an unpaid rent bill), with what a test needs changed.
 const tx = (change: Partial<Transaction> = {}): Transaction => ({
@@ -304,4 +304,15 @@ test('the posted ledger is noted only when it is not up to date', () => {
   assert.equal(postedLedgerNote(null), null)
   assert.equal(postedLedgerNote(1), 'Not up to date: 1 change not posted. See Trial balance.')
   assert.equal(postedLedgerNote(2), 'Not up to date: 2 changes not posted. See Trial balance.')
+})
+
+test('a row left out of the books or replaced by a split needs no review, whatever is wrong with it', () => {
+  // A duplicate a decision dropped kept its error, and the table still counted it as one to review.
+  const wrong = { issues: [{ code: 'unknown_account', severity: 'error' as const, message: "This account isn't in the chart." }] }
+  assert.deepEqual([tx(wrong), tx({ ...wrong, excluded: true }), tx({ ...wrong, superseded_by: 'decision' })].map(t => needsReview(t)),
+                   [true, false, false])
+  // The issues the page adds itself, such as a possible duplicate, count as the row's own do; a note never does.
+  const duplicate = [{ code: 'possible_duplicate', severity: 'warning' as const, message: 'Same amount' }]
+  assert.deepEqual([needsReview(tx(), duplicate), needsReview(tx({ excluded: true }), duplicate)], [true, false])
+  assert.equal(needsReview(tx({ issues: [{ code: 'unusual_direction', severity: 'info', message: 'A refund?' }] })), false)
 })
