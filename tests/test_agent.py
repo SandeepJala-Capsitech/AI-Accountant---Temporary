@@ -379,6 +379,68 @@ def test_ask_user_asks_about_a_row_the_books_do_not_ask_about(mongo_store, deps,
     assert result["status"] == "open" and [q.row_ids for q in mine] == [[bus]]
 
 
+def the_tool(name: str):
+    return next(t for t in make_tools(AgentDeps(store=None, records=None, blobs=None), actor="agent:test")
+                if t.name == name)
+
+
+def ask_user_args(question: str, why: str) -> dict:
+    return {"row_ids": [1], "question": question, "why": why}
+
+
+def test_ask_user_takes_the_longer_questions_the_model_writes():
+    schema = the_tool("ask_user").tool_call_schema
+    schema.model_validate(ask_user_args("q" * 290, "w" * 390))
+    schema.model_validate(ask_user_args("q" * 300, "w" * 400))
+    for question, why in (("q" * 301, "why"), ("q", "w" * 401)):
+        with pytest.raises(ValueError):
+            schema.model_validate(ask_user_args(question, why))
+
+
+def test_resolve_issue_takes_a_reason_of_up_to_600_characters():
+    schema = the_tool("resolve_issue").tool_call_schema
+    args = {"row_id": 1, "resolution": {"action": "keep_one", "keep_row_id": 1, "drop_row_ids": [2]},
+            "evidence": [{"upload_id": 5, "quote": "q"}]}
+    schema.model_validate({**args, "reason": "r" * 600})
+    with pytest.raises(ValueError):
+        schema.model_validate({**args, "reason": "r" * 601})
+
+
+def evidence_of(value):
+    args = {"row_id": 1, "resolution": {"action": "keep_one", "keep_row_id": 1, "drop_row_ids": [2]}, "reason": "Same purchase.",
+            "evidence": value}
+    return the_tool("resolve_issue").tool_call_schema.model_validate(args).evidence
+
+
+def test_resolve_issue_takes_evidence_sent_as_a_json_string():
+    from ledgersync.models import Evidence
+    want = [Evidence(upload_id=516, quote="of which VAT @ 20%")]
+    assert evidence_of('[{"upload_id": 516, "quote": "of which VAT @ 20%"}]') == want
+    # The one slip live runs made: a stray quote after the upload id.
+    assert evidence_of('[{"upload_id": 516", "quote": "of which VAT @ 20%"}]') == want
+    assert evidence_of(want) == want                                  # a list passes unchanged
+    assert evidence_of([{"upload_id": 516, "quote": "of which VAT @ 20%"}]) == want
+
+
+@pytest.mark.parametrize("broken", [
+    '[{"upload_id": 516, "quote": "of which VAT @ 20%"',            # cut off
+    '[{"upload_id": "516", "quote": "x"}, {"upload_id": 7", "quote": x}]',   # a second slip the repair doesn't cover
+    '[{"upload_id": 516, "quote": "an "odd" quote"}]',              # a stray quote elsewhere is not repaired
+    "not json",
+])
+def test_resolve_issue_still_refuses_evidence_broken_any_other_way(broken):
+    with pytest.raises(ValueError):
+        evidence_of(broken)
+
+
+def test_resolve_issue_still_tells_the_model_evidence_is_a_list():
+    schema = the_tool("resolve_issue").tool_call_schema.model_json_schema()
+    evidence = schema["properties"]["evidence"]
+    assert evidence["type"] == "array" and "anyOf" not in evidence and "oneOf" not in evidence
+    item = schema["$defs"][evidence["items"]["$ref"].rsplit("/", 1)[-1]]
+    assert item["properties"].keys() >= {"upload_id", "quote"}
+
+
 def test_the_prompt_names_the_rules_the_live_runs_broke():
     for rule in ("Never quote a row's description", "Use only row ids that a tool gave you", "list_rows",
                  "the books ask the person about those automatically", "from the accounts get_overview lists",
@@ -463,6 +525,7 @@ def test_chat_model_sends_openrouter_the_agreed_settings():
     assert model.invoke("Hi").content == "Hello."
     assert model.request_timeout == 60_000 and model.max_retries == 2   # milliseconds, as ChatOpenRouter takes them
     [body] = sent
+    assert body["max_tokens"] == 8192   # a degenerate generation is cut off, not left to run
     assert body["model"] == "qwen/qwen3.8-27b" and body["reasoning"] == {"effort": "medium"}
     # The reader's hosts, a full-precision one first and never a 4-bit one (tests/test_model_client.py), and none that
     # keeps the data.

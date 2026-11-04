@@ -7,13 +7,15 @@ doing as a step of the turn, under its tool call's id, which run.stream_turn pas
 from __future__ import annotations
 
 import datetime as dt
+import json
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Callable, Literal, Optional
 
 from langchain.tools import ToolRuntime, tool
 from langchain_core.tools import BaseTool
-from pydantic import Field
+from pydantic import BeforeValidator, Field
 from pydantic_core import to_jsonable_python
 
 from ledgersync import books, documents, ledger_book, questions
@@ -50,6 +52,26 @@ FAMILIES: dict[str, Family] = {
     # The reader found no account for a purchase and parked it in Suspense: a question about the account.
     "account_unclear": "other",
 }
+
+# The one slip live runs made in evidence sent as a JSON string: a stray quote after the integer upload id.
+_STRAY_QUOTE = re.compile(r'("upload_id"\s*:\s*\d+)"')
+
+
+def _evidence_from_json(value: Any) -> Any:
+    """The model sometimes sends the evidence list as a JSON string. Parses it; if that fails, mends only the stray
+    quote after an upload id (`"upload_id": 516"`) and parses once more. Anything else is left for validation to
+    refuse, as is a value that isn't a string."""
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except ValueError:
+        pass
+    try:
+        return json.loads(_STRAY_QUOTE.sub(r"\1", value))
+    except ValueError:
+        return value
+
 
 # The matches that tie a row to another record of the same purchase (claimed_in names a whole expenses sheet).
 _MATCHES = ("paid_by", "pays", "recorded_by", "copy_of")
@@ -306,13 +328,13 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
     @tool
     def resolve_issue(row_id: Annotated[int, Field(description="The row the resolution is about.")],
                       resolution: Resolution,
-                      evidence: Annotated[list[Evidence], Field(
+                      evidence: Annotated[list[Evidence], BeforeValidator(_evidence_from_json), Field(
                           min_length=1, max_length=3,
                           description="One to three quotes, each exactly as printed in the document with this upload "
                                       "id: the row's own, that of a record it is matched with, or the bank line "
                                       "that pays the invoice or receipt being kept. upload_name is "
                                       "filled in for you.")],
-                      reason: Annotated[str, Field(min_length=1, max_length=400,
+                      reason: Annotated[str, Field(min_length=1, max_length=600,
                                                    description="Why, in a sentence or two the person will read.")],
                       runtime: ToolRuntime[ChatContext]) -> dict:
         """Resolves an issue on a row, when the evidence settles it. keep_one: the same purchase recorded more than
@@ -337,9 +359,9 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
 
     @tool
     def ask_user(row_ids: Annotated[list[int], Field(description="The rows the question is about.")],
-                 question: Annotated[str, Field(min_length=1, max_length=200,
+                 question: Annotated[str, Field(min_length=1, max_length=300,
                                                 description="One specific question, in a plain sentence.")],
-                 why: Annotated[str, Field(min_length=1, max_length=300,
+                 why: Annotated[str, Field(min_length=1, max_length=400,
                                            description="Why it matters, and what would settle it.")],
                  runtime: ToolRuntime[ChatContext]) -> dict:
         """Asks the person a question the evidence can't settle and the rules don't already ask. It is shown as a
