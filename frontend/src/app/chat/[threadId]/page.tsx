@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { useParams, useRouter, useSearchParams } from 'next/navigation'
+import { useParams, useSearchParams } from 'next/navigation'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useChatShell } from '@/components/chat/ChatContext'
 import Composer from '@/components/chat/Composer'
@@ -38,7 +38,6 @@ interface Turn {
 export default function ThreadPage() {
   const { threadId } = useParams<{ threadId: string }>()
   const { clients, reloadThreads } = useChatShell()
-  const router = useRouter()
   const ask = useSearchParams().get('ask')
   const [detail, setDetail] = useState<ThreadDetail | null>(null)
   const [history, setHistory] = useState<ChatMessage[]>([])
@@ -119,12 +118,13 @@ export default function ThreadPage() {
   }
 
   // A link (the Overview's) may carry a question to ask in a new chat. Only a suggested prompt is ever sent, and only
-  // into an empty chat; the address then loses it, so a reload does not ask again.
+  // into an empty chat; the address then loses it, so a reload does not ask again. The address is changed with the history
+  // API, not router.replace: a Next navigation remounts the page, which would abort the turn just started.
   useEffect(() => {
     if (ask === null || !detail || asked.current) return
     asked.current = true
     if (SUGGESTIONS.includes(ask) && !history.length && !turns.length) send(ask, [], [])
-    router.replace(`/chat/${threadId}`)
+    window.history.replaceState(null, '', `/chat/${threadId}`)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ask, detail])
 
