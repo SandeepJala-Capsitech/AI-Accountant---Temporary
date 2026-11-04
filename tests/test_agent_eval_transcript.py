@@ -38,8 +38,14 @@ def test_an_ai_message_keeps_the_provider_and_model_that_answered():
     metadata = {"finish_reason": "stop", "provider": "DeepInfra", "model_name": "qwen/qwen3.8-27b",
                 "model_provider": "openrouter", "id": "gen-1"}   # model_provider is LangChain's, not the host
     out = agent_eval.message_json(AIMessage(content="Done.", response_metadata=metadata))
-    assert out["served_by"] == {"provider": "DeepInfra", "model_name": "qwen/qwen3.8-27b"}
+    assert out["served_by"] == {"provider": "DeepInfra", "model_name": "qwen/qwen3.8-27b", "generation_id": "gen-1"}
     assert out["finish_reason"] == "stop"
+
+
+def test_served_by_keeps_the_generation_id_so_the_host_can_be_looked_up():
+    metadata = {"id": "gen-1", "model_name": "qwen/qwen3.8-27b", "finish_reason": "stop"}
+    out = agent_eval.message_json(AIMessage(content="x", response_metadata=metadata))
+    assert out["served_by"] == {"model_name": "qwen/qwen3.8-27b", "generation_id": "gen-1"}
 
 
 def test_served_by_holds_what_the_metadata_has_and_is_left_out_when_it_has_nothing():
@@ -121,7 +127,7 @@ def test_write_transcript_saves_messages_events_answers_and_the_result(tmp_path)
     assert saved["thread_id"] == "t-1" and saved["client_id"] == 4 and saved["run"] == 2
     assert [m["type"] for m in saved["messages"]] == ["human", "ai"]
     assert saved["events"][1] == ["token", {"text": "Hi"}] and len(saved["events"]) == 3
-    assert saved["answers"] == trace["answers"] and saved["result"] == {"case": "x"}
+    assert saved["answers"] == trace["answers"] and saved["result"] == {"case": "x", "hosts": []}
     assert "error" not in saved and "messages_error" not in saved
 
 
@@ -139,3 +145,109 @@ def test_no_transcripts_by_default():
     parser = agent_eval.build_parser()
     assert parser.parse_args([]).transcripts is None
     assert str(parser.parse_args(["--transcripts", "runs"]).transcripts) == "runs"
+
+
+# ─── The host that served each answer: found from the generation id, in the eval runner only ──────────────────────
+
+def _served(generation_id=None, **more):
+    meta = {"model_name": "qwen/qwen3.8-27b", "finish_reason": "stop", **more}
+    if generation_id:
+        meta["id"] = generation_id
+    return AIMessage(content="x", response_metadata=meta)
+
+
+def test_lookup_hosts_gives_the_provider_and_timing_of_each_distinct_id():
+    asked = []
+
+    def fetch(generation_id):
+        asked.append(generation_id)
+        return {"data": {"provider_name": "DeepInfra", "latency": 900, "generation_time": 4200}}
+
+    found = agent_eval.lookup_hosts(["gen-1", "gen-1", "gen-2"], fetch)
+    assert asked == ["gen-1", "gen-2"]
+    assert found["gen-1"] == {"provider": "DeepInfra", "latency_ms": 900, "generation_time_ms": 4200}
+    assert set(found) == {"gen-1", "gen-2"}
+
+
+def test_lookup_hosts_accepts_a_provider_field_and_skips_what_it_cant_use():
+    answers = {"gen-1": {"data": {"provider": "Novita"}}, "gen-2": None, "gen-3": {"data": {}}, "gen-4": {}}
+
+    def fetch(generation_id):
+        if generation_id == "gen-5":
+            raise TimeoutError("slow")
+        return answers[generation_id]
+
+    found = agent_eval.lookup_hosts(["gen-1", "gen-2", "gen-3", "gen-4", "gen-5"], fetch)
+    assert found == {"gen-1": {"provider": "Novita"}}
+
+
+def test_the_host_is_filled_into_each_ai_message_and_the_transcript_lists_the_hosts():
+    messages = [agent_eval.message_json(m) for m in (HumanMessage("Hi"), _served("gen-1"), _served("gen-2"))]
+    hosts = agent_eval.fill_hosts(messages, lambda i: {"data": {"provider_name": "DeepInfra", "latency": 900}})
+    assert hosts == ["DeepInfra"]
+    assert messages[1]["served_by"] == {"model_name": "qwen/qwen3.8-27b", "generation_id": "gen-1",
+                                        "provider": "DeepInfra", "latency_ms": 900}
+    assert "served_by" not in messages[0]
+
+
+def test_a_message_with_no_generation_id_is_left_as_it_is_and_a_failed_lookup_fills_nothing():
+    messages = [agent_eval.message_json(_served())]
+    before = json.dumps(messages)
+    assert agent_eval.fill_hosts(messages, lambda i: pytest.fail("nothing to look up")) == []
+    assert json.dumps(messages) == before
+
+    messages = [agent_eval.message_json(_served("gen-1"))]
+
+    def broken(generation_id):
+        raise RuntimeError("down")
+
+    assert agent_eval.fill_hosts(messages, broken) == []
+    assert "provider" not in messages[0]["served_by"]
+
+
+def test_write_transcript_records_the_hosts_in_the_file_and_the_result(tmp_path):
+    saver = Saver([HumanMessage("Hi"), _served("gen-1"), _served("gen-2", provider="DeepInfra")])
+    result = {"case": "x"}
+    path = agent_eval.write_transcript(tmp_path, "demo", 1, saver=saver, trace={"thread_id": "t-1"}, result=result,
+                                       fetch=lambda i: {"data": {"provider_name": "Novita"}})
+    saved = json.loads(path.read_text())
+    assert saved["hosts"] == ["DeepInfra", "Novita"] and saved["result"]["hosts"] == ["DeepInfra", "Novita"]
+    ai = [m for m in saved["messages"] if m["type"] == "ai"]
+    assert ai[0]["served_by"]["provider"] == "Novita" and ai[1]["served_by"]["provider"] == "DeepInfra"
+
+
+def _generation_client(replies, seen):
+    import httpx
+
+    def handler(request):
+        seen.append(request)
+        return replies.pop(0)
+
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def test_the_real_fetch_asks_the_generation_route_with_the_key_in_a_header_only():
+    import httpx
+    from ledgersync.config import Settings
+
+    seen, naps = [], []
+    client = _generation_client([httpx.Response(404), httpx.Response(200, json={"data": {"provider_name": "X"}})], seen)
+    settings = Settings(openrouter_api_key="sk-secret", openrouter_base_url="https://or.example/api/v1")
+    fetch = agent_eval.generation_fetcher(settings, client=client, sleep=naps.append)
+    assert fetch("gen-1") == {"data": {"provider_name": "X"}}
+    assert naps == [2] and len(seen) == 2   # one retry after a 404
+    assert str(seen[0].url) == "https://or.example/api/v1/generation?id=gen-1"
+    assert seen[0].headers["authorization"] == "Bearer sk-secret" and "sk-secret" not in str(seen[0].url)
+
+
+def test_the_real_fetch_gives_none_for_a_failure_and_without_a_key():
+    import httpx
+    from ledgersync.config import Settings
+
+    seen = []
+    settings = Settings(openrouter_api_key="sk-secret")
+    client = _generation_client([httpx.Response(404), httpx.Response(404)], seen)
+    assert agent_eval.generation_fetcher(settings, client=client, sleep=lambda s: None)("gen-1") is None
+    client = _generation_client([httpx.Response(500)], seen)
+    assert agent_eval.generation_fetcher(settings, client=client, sleep=lambda s: None)("gen-1") is None
+    assert agent_eval.generation_fetcher(Settings(), client=client)("gen-1") is None   # no key: no call

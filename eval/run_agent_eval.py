@@ -289,8 +289,8 @@ def message_json(message) -> dict:
     """One message of the agent's history as plain JSON: its type (human, ai, tool, system), its content in full as
     text, the reasoning it carries (from its content blocks or from additional_kwargs, labelled), and for an AI message
     its tool calls (name, args, id; those the model garbled under invalid_tool_calls), its finish_reason and
-    served_by (the provider and model_name its response_metadata names, whichever it has; left out when it has
-    neither), for a tool message its name, tool_call_id and status."""
+    served_by (the provider and model_name its response_metadata names, and its OpenRouter generation id as
+    generation_id, whichever it has; left out when it has none), for a tool message its name, tool_call_id and status."""
     text, reasoning, other = _blocks(message.content)
     extra = getattr(message, "additional_kwargs", None) or {}
     for key in ("reasoning_content", "reasoning"):
@@ -314,6 +314,8 @@ def message_json(message) -> dict:
         if meta.get("finish_reason"):
             out["finish_reason"] = meta["finish_reason"]
         served_by = {key: meta[key] for key in ("provider", "model_name") if meta.get(key)}
+        if meta.get("id"):
+            served_by["generation_id"] = meta["id"]
         if served_by:
             out["served_by"] = served_by
     if message.type == "tool":
@@ -337,6 +339,69 @@ def thread_messages(saver, thread_id: str) -> list[dict]:
     return [message_json(m) for m in (found.checkpoint.get("channel_values") or {}).get("messages") or []]
 
 
+# ─── The host behind each answer: OpenRouter doesn't send it with the stream, so it is looked up by generation id ───
+
+def generation_fetcher(settings=None, *, client=None, sleep=time.sleep):
+    """A fetch(generation_id) for lookup_hosts: OpenRouter's GET <base url>/generation?id=<id> as its JSON, or None
+    when there is no key, the call fails or the record isn't there. The record can take a moment to appear, so a 404
+    is tried once more after 2 s. The key goes in the Authorization header only, and is never printed."""
+    if settings is None:
+        from ledgersync.config import Settings
+        settings = Settings.from_env()
+
+    def fetch(generation_id: str) -> Optional[dict]:
+        if not settings.openrouter_api_key:
+            return None
+        import httpx
+        http = client or httpx.Client(timeout=10)
+        url = f"{settings.openrouter_base_url}/generation"
+        headers = {"Authorization": f"Bearer {settings.openrouter_api_key}"}
+        for attempt in range(2):
+            response = http.get(url, params={"id": generation_id}, headers=headers)
+            if response.status_code == 404 and attempt == 0:
+                sleep(2)
+                continue
+            return response.json() if response.status_code == 200 else None
+        return None
+
+    return fetch
+
+
+def lookup_hosts(ids, fetch) -> dict:
+    """For each distinct generation id, what fetch(id) says served it: {id: {"provider", and "latency_ms" and
+    "generation_time_ms" when the record has them}}. An id whose lookup fails, or whose record names no provider, is
+    left out; this never raises."""
+    found = {}
+    for generation_id in dict.fromkeys(ids):
+        try:
+            body = fetch(generation_id)
+            data = body.get("data") if isinstance(body, dict) else None
+            data = data if isinstance(data, dict) else {}
+            provider = data.get("provider_name") or data.get("provider")
+        except Exception as exc:
+            print(f"host lookup for {generation_id} failed: {type(exc).__name__}", file=sys.stderr)
+            continue
+        if not provider:
+            continue
+        found[generation_id] = {"provider": provider}
+        for field, key in (("latency", "latency_ms"), ("generation_time", "generation_time_ms")):
+            if isinstance(data.get(field), (int, float)):
+                found[generation_id][key] = data[field]
+    return found
+
+
+def fill_hosts(messages: list[dict], fetch) -> list[str]:
+    """Fills the host (and timing) found by lookup_hosts into the served_by of each AI message in messages (as
+    message_json gives them) that has a generation_id, in place; a message with a provider already keeps it. Gives the
+    sorted distinct providers of all the messages."""
+    served = [m["served_by"] for m in messages if m.get("type") == "ai" and m.get("served_by")]
+    found = lookup_hosts([s["generation_id"] for s in served if s.get("generation_id")], fetch)
+    for s in served:
+        for key, value in found.get(s.get("generation_id"), {}).items():
+            s.setdefault(key, value)
+    return sorted({s["provider"] for s in served if s.get("provider")})
+
+
 def _safe_error(exc: Exception) -> str:
     """An error as a line for the transcript; a database error is named only, as its text can carry the cluster's
     address."""
@@ -344,18 +409,23 @@ def _safe_error(exc: Exception) -> str:
 
 
 def write_transcript(directory: Path, name: str, run: int, *, saver, trace: dict, result: Optional[dict],
-                     error: Optional[str] = None) -> Path:
+                     error: Optional[str] = None, fetch=None) -> Path:
     """Writes directory/<name>-r<run>.json: the run's messages (from saver, by the thread's id), the events of the
     review turn as [kind, data], the answers sent and what the routes replied, and the run's result (None when it
-    couldn't finish, with error saying why). A failure to read the messages is recorded, not raised."""
+    couldn't finish, with error saying why). A failure to read the messages is recorded, not raised. Each AI message
+    gets the host that served it (see fill_hosts; fetch is the lookup, OpenRouter's by default), and the distinct
+    hosts are the transcript's "hosts" and added to result."""
     messages, messages_error = [], None
     if saver is not None and trace.get("thread_id"):
         try:
             messages = thread_messages(saver, trace["thread_id"])
         except Exception as exc:
             messages_error = _safe_error(exc)
+    hosts = fill_hosts(messages, fetch or generation_fetcher())
+    if result is not None:
+        result["hosts"] = hosts
     document = {"case": name, "run": run, "thread_id": trace.get("thread_id"), "client_id": trace.get("client_id"),
-                "messages": messages, "events": trace.get("events", []), "answers": trace.get("answers", []),
+                "hosts": hosts, "messages": messages, "events": trace.get("events", []), "answers": trace.get("answers", []),
                 "rows_after_review": trace.get("rows_after_review", []),
                 "questions_after_review": trace.get("questions_after_review", []),
                 "rows_final": trace.get("rows_final", []), "decisions": trace.get("decisions", []),
