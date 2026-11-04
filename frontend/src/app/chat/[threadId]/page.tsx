@@ -5,13 +5,12 @@ import { useParams } from 'next/navigation'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useChatShell } from '@/components/chat/ChatContext'
 import Composer from '@/components/chat/Composer'
-import QuestionCard from '@/components/chat/QuestionCard'
-import ReviewSummary from '@/components/chat/ReviewSummary'
+import ReplyResult from '@/components/chat/ReplyResult'
 import RunSteps from '@/components/chat/RunSteps'
 import { ApiError } from '@/lib/api'
 import {
-  clientQuestions, fileStatus, getThread, retryFiles, stopRun, streamMessage,
-  type ChatError, type ChatEvent, type ChatMessage, type Question, type ReviewSummary as Summary, type Step, type ThreadDetail,
+  fileStatus, getThread, hasResult, readStatus, retryFiles, stopRun, streamMessage, withQuestion,
+  type AnswerResult, type ChatError, type ChatEvent, type ChatMessage, type Step, type ThreadDetail, type TurnResult,
 } from '@/lib/chat'
 import { getYears } from '@/lib/clients'
 import { sectionHref } from '@/lib/years'
@@ -29,20 +28,19 @@ interface Turn {
   steps: Step[]
   status: string
   reply: string
+  result: TurnResult | null
   error: ChatError | null
   running: boolean
 }
 
-// A chat about one client's year: the messages so far, the turn running now with its steps and streamed text, the
-// summary the last turn ended with, and the message box. Answering a question replaces the summary in place.
+// A chat about one client's year: the messages so far, the turn running now with its steps and streamed text, each
+// reply with the cards its own turn raised, and the message box. Answering a card updates it in place.
 export default function ThreadPage() {
   const { threadId } = useParams<{ threadId: string }>()
   const { clients, reloadThreads } = useChatShell()
   const [detail, setDetail] = useState<ThreadDetail | null>(null)
   const [history, setHistory] = useState<ChatMessage[]>([])
   const [turns, setTurns] = useState<Turn[]>([])
-  const [summary, setSummary] = useState<Summary | null>(null)
-  const [earlier, setEarlier] = useState<Question[]>([])
   const [yearLabel, setYearLabel] = useState('')
   const [draft, setDraft] = useState('')
   const [missing, setMissing] = useState(false)
@@ -59,14 +57,10 @@ export default function ThreadPage() {
       setDetail(next)
       setHistory(next.messages)
       setTurns([])
-      setSummary(next.summary)
       setMissing(false)
       setError('')
-      const clientId = next.thread.client_id
-      getYears(clientId).then(years => setYearLabel(years.find(y => y.start === next.thread.year_start)?.label ?? ''),
+      getYears(next.thread.client_id).then(years => setYearLabel(years.find(y => y.start === next.thread.year_start)?.label ?? ''),
                               () => undefined)
-      // A chat with nothing in it yet opens with what the client still owes us from earlier chats.
-      if (!next.messages.length && !next.summary) clientQuestions(clientId).then(setEarlier, () => setEarlier([]))
     } catch (e) {
       if (e instanceof ApiError && e.code === 'http_404') setMissing(true)
       else setError(message(e))
@@ -86,7 +80,7 @@ export default function ThreadPage() {
   const send = async (text: string, files: File[], bankAccounts: string[]) => {
     if (running) return
     const id = nextTurn.current++
-    setTurns(prev => [...prev, { id, text, files, bankAccounts, steps: [], status: 'Working on it…', reply: '', error: null, running: true }])
+    setTurns(prev => [...prev, { id, text, files, bankAccounts, steps: [], status: 'Working on it…', reply: '', result: null, error: null, running: true }])
     setNotice('')
     const controller = new AbortController()
     abort.current = controller
@@ -100,7 +94,7 @@ export default function ThreadPage() {
             : [...t.steps, event.data],
         })); break
         case 'token': change(id, t => ({ reply: t.reply + event.data.text })); break
-        case 'summary': setSummary(event.data); setEarlier([]); break
+        case 'result': change(id, () => ({ result: event.data })); break
         case 'error': finished = true; change(id, () => ({ error: event.data })); break
         case 'done': finished = true; break
       }
@@ -154,6 +148,10 @@ export default function ThreadPage() {
   const client = clients?.find(c => c.id === thread.client_id)
   const fresh = !history.length && !turns.length
   const last = turns[turns.length - 1]
+  const onAnswered = (a: AnswerResult) => {
+    setHistory(h => withQuestion(h, a.question))
+    setTurns(ts => withQuestion(ts, a.question))
+  }
   return (
     <div className="chat-thread">
       <div className="chat-head">
@@ -167,7 +165,25 @@ export default function ThreadPage() {
 
       <div className="transcript">
         {history.map((m, i) => (
-          <div key={i} className={m.role === 'user' ? 'bubble-user' : 'bubble-agent'}>{m.text}</div>
+          <div key={i} className={m.role === 'user' ? 'bubble-user' : 'bubble-agent'}>
+            {m.text}
+            {m.files.length > 0 && (
+              <ul className="file-chips sent">
+                {m.files.map((f, j) => {
+                  const status = readStatus(f)
+                  return (
+                    <li key={j} className={`file-chip file-${status.state}`} title={status.label}>
+                      <span className="file-chip-name">{f.name}</span>
+                      <span className="file-chip-status">{status.label}</span>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+            {hasResult(m.result) && (
+              <ReplyResult result={m.result} threadId={threadId} onAnswered={onAnswered} onSay={text => send(text, [], [])} />
+            )}
+          </div>
         ))}
         {turns.map(t => (
           <div key={t.id} className="turn">
@@ -190,26 +206,15 @@ export default function ThreadPage() {
             <div className="bubble-agent">
               <RunSteps steps={t.steps} status={t.status} running={t.running} />
               {t.reply && <p className="narrative">{t.reply}</p>}
+              {hasResult(t.result) && (
+                <ReplyResult result={t.result} threadId={threadId} onAnswered={onAnswered} onSay={text => send(text, [], [])} />
+              )}
               {t.error && t === last && <RunError error={t.error} onRetry={() => retry(t)} onContinue={() => send('Continue', [], [])} />}
             </div>
           </div>
         ))}
         {notice && <div className="notice notice-info">{notice}</div>}
 
-        {!running && summary && (
-          <ReviewSummary summary={summary} threadId={threadId} onSummary={setSummary} onSay={text => send(text, [], [])} />
-        )}
-        {!running && !summary && earlier.length > 0 && (
-          <section className="review-needs" aria-label="Needs you">
-            <h3>{earlier.length} {earlier.length === 1 ? 'thing still needs' : 'things still need'} you from earlier</h3>
-            <ul className="questions">
-              {earlier.map((q, i) => (
-                <QuestionCard key={q.id} question={q} number={i + 1} threadId={threadId} onSummary={setSummary}
-                              onSay={text => send(text, [], [])} />
-              ))}
-            </ul>
-          </section>
-        )}
         <div ref={end} />
       </div>
 

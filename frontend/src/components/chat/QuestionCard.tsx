@@ -1,31 +1,35 @@
 'use client'
 
 import { useRef, useState } from 'react'
-import { answerQuestion, questionControl, uploadForQuestion, type Answer, type Question, type ReviewSummary } from '@/lib/chat'
+import { answerQuestion, effectLine, questionControl, questionState, uploadForQuestion, type Answer, type AnswerResult, type Question } from '@/lib/chat'
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
 // One question, in amber: what is asked, why it matters, and its answer control. A date or a document goes to the
-// question's own route, which returns the new summary; a question in words is answered as a chat message.
-export default function QuestionCard({ question, number, threadId, onSummary, onSay }: {
+// question's own route, which returns that question with its effect; a question in words is answered as a chat message.
+export default function QuestionCard({ question, number, threadId, onAnswered, onSay }: {
   question: Question
   number: number
   threadId: string
-  onSummary: (summary: ReviewSummary) => void
+  onAnswered: (a: AnswerResult) => void
   onSay: (text: string) => void      // sends a chat message on this thread
 }) {
   const [date, setDate] = useState('')
   const [words, setWords] = useState('')
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
+  const [effect, setEffect] = useState<string | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const control = questionControl(question)
+  const state = questionState(question)
 
-  const run = async (what: string, call: () => Promise<ReviewSummary>) => {
+  const run = async (what: string, call: () => Promise<AnswerResult>) => {
     setBusy(what)
     setError('')
     try {
-      onSummary(await call())
+      const result = await call()
+      setEffect(effectLine(result))
+      onAnswered(result)
     } catch (e) {
       setError(message(e))
     } finally {
@@ -46,10 +50,8 @@ export default function QuestionCard({ question, number, threadId, onSummary, on
     <li className={question.status === 'waiting' ? 'question question-waiting' : 'question'}>
       <p className="question-text"><strong>{number}. {question.text}</strong></p>
       <p className="question-why">{question.why}</p>
-      {question.status === 'waiting' && question.answer && (
-        <p className="question-answer">You said: {question.answer}. Still waiting.</p>
-      )}
-      <div className="question-controls">
+      {state && <p className="question-state">{state}</p>}
+      {question.status !== 'resolved' && <div className="question-controls">
         {control === 'date' && (
           <form className="question-row" onSubmit={e => { e.preventDefault(); if (date) answer({ kind: 'date', date }, 'Saving…') }}>
             <input className="input question-date" type="date" value={date} onChange={e => setDate(e.target.value)}
@@ -76,7 +78,8 @@ export default function QuestionCard({ question, number, threadId, onSummary, on
           </form>
         )}
         {busy && <span className="progress question-busy"><span className="spinner" /> {busy}</span>}
-      </div>
+      </div>}
+      {effect && <p className="question-effect">{effect}</p>}
       {error && <p className="field-error">{error}</p>}
     </li>
   )
