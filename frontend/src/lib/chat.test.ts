@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { ApiError } from './api.ts'
 import {
-  answerQuestion, changedFields, effectLine, fileStatus, formatMoney, groupThreads, hasResult, looksLikeStatement, parseEvents,
+  answerQuestion, attentionHref, changedFields, effectLine, fileStatus, formatMoney, groupThreads, hasResult, looksLikeStatement, parseEvents,
   questionControl, questionState, readStatus, ruleBadge, retryFiles, shownAccounts, streamMessage, suspenseLabel, uploadForQuestion,
   withQuestion,
   type AnswerResult, type ChatEvent, type ChatThread, type Decision, type PostResult, type PostedTrialBalance, type Question,
@@ -254,4 +254,8 @@ test('hasResult and readStatus', () => {
   assert.equal(hasResult({ sorted: [decision('R1')], questions: [], trial_balance: null, post: null }), true)
   assert.deepEqual(readStatus({ name: 'a.csv', state: 'done', rows: 9, reason: null }), { state: 'done', label: 'Read (9 rows)' })
   assert.deepEqual(readStatus({ name: 'b.png', state: 'failed', rows: null, reason: 'Unreadable.' }), { state: 'failed', label: 'Failed: Unreadable.' })
+})
+
+test('the Overview link starts a chat that asks what needs attention', () => {
+  assert.equal(attentionHref(7), '/chat?client=7&ask=What%20needs%20my%20attention%3F')
 })

@@ -4,6 +4,10 @@
 import { ApiError, errorFrom, request, type TrialBalanceLine, type TrialBalanceResult } from './api.ts'
 import { longDate } from './ledger.ts'
 
+// What the Overview's "N things need you" link asks in a new chat, so the open items show as cards in the reply.
+export const ATTENTION = 'What needs my attention?'
+export const attentionHref = (clientId: number) => `/chat?client=${clientId}&ask=${encodeURIComponent(ATTENTION)}`
+
 // Money is a string everywhere below, like the rest of the API.
 export interface ChatThread {
   id: string

@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { useParams } from 'next/navigation'
+import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useChatShell } from '@/components/chat/ChatContext'
 import Composer from '@/components/chat/Composer'
@@ -9,7 +9,7 @@ import ReplyResult from '@/components/chat/ReplyResult'
 import RunSteps from '@/components/chat/RunSteps'
 import { ApiError } from '@/lib/api'
 import {
-  fileStatus, getThread, hasResult, readStatus, retryFiles, stopRun, streamMessage, withQuestion,
+  ATTENTION, fileStatus, getThread, hasResult, readStatus, retryFiles, stopRun, streamMessage, withQuestion,
   type AnswerResult, type ChatError, type ChatEvent, type ChatMessage, type Step, type ThreadDetail, type TurnResult,
 } from '@/lib/chat'
 import { getYears } from '@/lib/clients'
@@ -17,7 +17,7 @@ import { sectionHref } from '@/lib/years'
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
-const SUGGESTIONS = ["Review the documents I'm adding", 'What needs my attention?', 'Show the trial balance']
+const SUGGESTIONS = ["Review the documents I'm adding", ATTENTION, 'Show the trial balance']
 
 // One message sent from this page and what came back for it.
 interface Turn {
@@ -38,6 +38,8 @@ interface Turn {
 export default function ThreadPage() {
   const { threadId } = useParams<{ threadId: string }>()
   const { clients, reloadThreads } = useChatShell()
+  const router = useRouter()
+  const ask = useSearchParams().get('ask')
   const [detail, setDetail] = useState<ThreadDetail | null>(null)
   const [history, setHistory] = useState<ChatMessage[]>([])
   const [turns, setTurns] = useState<Turn[]>([])
@@ -49,6 +51,7 @@ export default function ThreadPage() {
   const running = turns.some(t => t.running)
   const abort = useRef<AbortController | null>(null)
   const nextTurn = useRef(1)
+  const asked = useRef(false)                    // the link's question is handled once, even when effects run twice
   const end = useRef<HTMLDivElement>(null)
 
   const load = useCallback(async () => {
@@ -114,6 +117,16 @@ export default function ThreadPage() {
       reloadThreads()
     }
   }
+
+  // A link (the Overview's) may carry a question to ask in a new chat. Only a suggested prompt is ever sent, and only
+  // into an empty chat; the address then loses it, so a reload does not ask again.
+  useEffect(() => {
+    if (ask === null || !detail || asked.current) return
+    asked.current = true
+    if (SUGGESTIONS.includes(ask) && !history.length && !turns.length) send(ask, [], [])
+    router.replace(`/chat/${threadId}`)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ask, detail])
 
   // The stream broke off before the turn ended: what the server has is the truth, so the thread is loaded again.
   const lostConnection = async () => {

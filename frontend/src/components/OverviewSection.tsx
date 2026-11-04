@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import ClientDialog from '@/components/ClientDialog'
 import { useClientYear } from '@/components/ClientYearContext'
-import { clientQuestions, listThreads } from '@/lib/chat'
+import { attentionHref, clientQuestions } from '@/lib/chat'
 import { postedTrialBalance } from '@/lib/api'
 import { changeClient, getSummary, type ClientFields, type YearSummary } from '@/lib/clients'
 import { BUSINESS_TYPES, transactionCount } from '@/lib/clientRules'
@@ -22,14 +22,12 @@ export default function OverviewSection() {
   const [error, setError] = useState('')
   const [editing, setEditing] = useState(false)
   const [needYou, setNeedYou] = useState(0)             // open and waiting questions, from every chat on the client
-  const [chatHref, setChatHref] = useState('/chat')      // the client's latest chat, or the chat page
   const [unposted, setUnposted] = useState<number | null>(null)   // changes not in the posted ledger; null until known
 
   // What the accountant chat has to say about the client; a failure just leaves these out.
   useEffect(() => {
     let current = true
     clientQuestions(client.id).then(qs => { if (current) setNeedYou(qs.filter(q => q.status !== 'resolved').length) }).catch(() => {})
-    listThreads(client.id).then(ts => { if (current) setChatHref(ts.length ? `/chat/${ts[0].id}` : '/chat') }).catch(() => {})
     postedTrialBalance(client.id, year.start)
       .then(tb => { if (current) setUnposted(tb.unposted_changes ?? 0) }).catch(() => { if (current) setUnposted(null) })
     return () => { current = false }
@@ -93,7 +91,7 @@ export default function OverviewSection() {
         {error && <div className="notice notice-error">{error}</div>}
         {!summary && !error && <p className="muted">Loading the summary…</p>}
         {needYou > 0 && (
-          <p><Link href={chatHref} className="link-btn">{needYou} {needYou === 1 ? 'thing needs' : 'things need'} you</Link></p>
+          <p><Link href={attentionHref(client.id)} className="link-btn">{needYou} {needYou === 1 ? 'thing needs' : 'things need'} you</Link></p>
         )}
         {unposted !== null && <p className="muted small">Posted ledger: {unposted === 0 ? 'up to date' : `${unposted} ${unposted === 1 ? 'change' : 'changes'} not posted`}</p>}
         {summary && (
