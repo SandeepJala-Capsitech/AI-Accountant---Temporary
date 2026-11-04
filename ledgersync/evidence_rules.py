@@ -44,12 +44,21 @@ def _pays_its_document(tx: Transaction) -> bool:
             or not any(i.code in ("part_payment", "overpayment") for i in tx.issues))
 
 
+def _parked_purchase(tx: Transaction) -> bool:
+    """Whether the reader itself parked a line with no document behind it in Suspense because it found no account
+    (account_unclear): a purchase whose account is unclear is still a purchase. A line in Suspense for any other
+    reason (an unknown code, the bank's own) may be a transfer, so it stays exempt."""
+    return (tx.account_code == SUSPENSE and tx.document_type in ("statement", "expense_claim")
+            and any(i.code == "account_unclear" for i in tx.issues))
+
+
 def _covered(tx: Transaction) -> bool:
-    """Whether the rules apply: money out on an expense account or a fixed asset, not one of the client's own
-    bank accounts, and not a payment of its document (_pays_its_document)."""
+    """Whether the rules apply: money out on an expense account or a fixed asset (or a purchase the reader parked
+    in Suspense, _parked_purchase), not one of the client's own bank accounts, and not a payment of its document
+    (_pays_its_document)."""
     account = BY_CODE.get(tx.account_code)
     return (tx.direction == Direction.OUT and account is not None
-            and (account.type == AccountType.EXPENSE or _fixed_asset(account))
+            and (account.type == AccountType.EXPENSE or _fixed_asset(account) or _parked_purchase(tx))
             and tx.account_code not in ALL_BANK_CODES and not _pays_its_document(tx))
 
 

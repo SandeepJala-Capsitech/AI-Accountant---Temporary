@@ -7,6 +7,7 @@ import pytest
 from helpers import SETTINGS, normalise_and_match, row
 from ledgersync.evidence_rules import (NO_DOCUMENT_LIMIT, SIMPLIFIED_LIMIT, DocumentRule, document_rule,
                                        journal_with_rule)
+from ledgersync.checks import issue
 from ledgersync.models import Transaction
 
 
@@ -161,3 +162,41 @@ def test_every_journal_balances():
     for tx in rows:
         lines = journal_with_rule(tx, 0, document_rule(tx, SETTINGS))
         assert sum(l.debit for l in lines) == sum(l.credit for l in lines)
+
+
+def parked(gross: str, code: str = "account_unclear", direction: str = "out", document_type: str = "statement"):
+    """A line the reader parked in Suspense, with the issue it raised."""
+    return ready(document_type=document_type, gross=D(gross), account_code="9998", direction=direction,
+                 issues=[issue(code, "Account unclear: put in Suspense. Choose one.")])
+
+
+@pytest.mark.parametrize("gross,expected", [
+    ("49.99", ("book", False, None)),
+    ("50.00", ("hold", False, "receipt_or_invoice")),
+    ("300.00", ("hold", False, "vat_invoice")),
+])
+def test_a_purchase_parked_in_suspense_as_unclear_falls_under_the_document_rule(gross, expected):
+    assert verdict(document_rule(parked(gross), SETTINGS)) == expected
+
+
+def test_an_unclear_expense_claim_line_is_held_too():
+    assert verdict(document_rule(parked("84.20", document_type="expense_claim"), SETTINGS)) == (
+        "hold", False, "receipt_or_invoice")
+
+
+def test_money_in_parked_as_unclear_books():
+    assert document_rule(parked("500.00", direction="in"), SETTINGS).action == "book"
+
+
+def test_a_line_in_suspense_with_the_fallback_issue_stays_exempt():
+    assert document_rule(parked("500.00", code="account_not_recognised"), SETTINGS).action == "book"
+
+
+def test_a_receipt_in_suspense_is_not_held_by_the_unclear_issue():
+    assert document_rule(parked("500.00", document_type="receipt"), SETTINGS).action == "book"
+
+
+def test_a_held_unclear_line_posts_to_suspense_and_the_bank():
+    tx = parked("50.00")
+    lines = journal_with_rule(tx, 0, document_rule(tx, SETTINGS))
+    assert [(l.code, l.debit, l.credit) for l in lines] == [("9998", D("50.00"), 0), ("1200", 0, D("50.00"))]

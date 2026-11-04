@@ -1077,3 +1077,11 @@ def test_a_bank_line_its_receipt_records_keeps_its_other_issues():
                 issues=[issue("account_not_recognised", "Account unclear."), issue("read_note", "Read from a blurred photo.")])
     _, ready = matched(receipt, line)
     assert [i.code for i in ready.issues] == ["read_note"]
+
+
+def test_a_bank_line_its_receipt_records_drops_the_unclear_account_issue_too():
+    receipt = row("receipt", "out", "64.00", "2026-10-19", "Costco", "r", account="7504", document_total="64.00")
+    line = bank("64.00", "2026-10-19", "COSTCO", ref="card", account="9998",
+                issues=[issue("account_unclear", "Account unclear: put in Suspense. Choose one.")])
+    _, ready = matched(receipt, line)
+    assert ready.recorded_by.ref == "r" and "account_unclear" not in [i.code for i in ready.issues]

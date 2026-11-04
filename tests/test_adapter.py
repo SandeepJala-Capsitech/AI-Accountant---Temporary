@@ -119,9 +119,16 @@ def test_accounts_that_cannot_be_posted_to_go_to_suspense(account):
     assert not [i for i in t.issues if i.severity == "error"]
 
 
-def test_a_suspense_choice_is_flagged_for_review():
+def test_a_suspense_choice_is_flagged_as_an_account_that_is_unclear():
     [t] = adapt({**ROW, "account": "9998 Suspense"})
-    assert t.account_code == "9998" and ("account_not_recognised", "warning") in issues_of(t)
+    assert t.account_code == "9998" and ("account_unclear", "warning") in issues_of(t)
+    assert "account_not_recognised" not in [code for code, _ in issues_of(t)]
+
+
+def test_the_banks_own_code_on_a_statement_line_is_not_recognised_rather_than_unclear():
+    [t] = adapt({**ROW, "account": "1200", "document_type": "statement"})
+    assert ("account_not_recognised", "warning") in issues_of(t)
+    assert "account_unclear" not in [code for code, _ in issues_of(t)]
 
 
 def test_zero_or_unreadable_amounts_are_skipped():

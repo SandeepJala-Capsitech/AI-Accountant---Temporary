@@ -47,6 +47,8 @@ FAMILIES: dict[str, Family] = {
     "vat_not_booked": "missing_vat", "not_vat_invoice": "missing_vat",
     # A document that isn't a transaction, or that is missing.
     "not_booked": "documents", "open_document": "documents", "no_payroll": "documents",
+    # The reader found no account for a purchase and parked it in Suspense: a question about the account.
+    "account_unclear": "other",
 }
 
 # The matches that tie a row to another record of the same purchase (claimed_in names a whole expenses sheet).

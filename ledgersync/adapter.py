@@ -135,8 +135,8 @@ def to_transactions(rows: list[dict], source: str, settings: BusinessSettings, o
             issues.append(issue("account_not_recognised", f"'{row.get('account')}' isn't an account: put in "
                                                           "Suspense. Choose one."))
             code = SUSPENSE
-        elif code == SUSPENSE:
-            issues.append(issue("account_not_recognised",
+        elif code == SUSPENSE:   # the model itself found no account: a purchase, which still needs its document
+            issues.append(issue("account_unclear",
                                 "Account unclear: put in Suspense. Choose one."))
         vat, net = to_money(row.get("vat")), to_money(row.get("document_net"))
         kind = _document_type(row)

@@ -206,7 +206,7 @@ const ISSUE_TITLES: Record<string, string> = {
   vat_estimated: 'VAT estimated', vat_not_applicable: 'VAT ignored', vat_blocked: "VAT can't be reclaimed",
   date_conflict: 'Which date?', file_date: 'Date to check', date_from_claim: 'Date from the claim',
   date_from_bank: 'Date from the bank', booked_twice: 'Booked twice', amount_conflict: 'Which amount?',
-  account_not_recognised: 'Account to check', unknown_account: 'Unknown account', same_account: 'Same account twice',
+  account_not_recognised: 'Account to check', account_unclear: 'Account to check', unknown_account: 'Unknown account', same_account: 'Same account twice',
   non_gbp_currency: 'Not in pounds', date_missing: 'No date', date_out_of_period: 'Outside the period',
   unusual_direction: 'Unusual direction', director_loan: 'Owner account', not_booked: 'Not booked', before_first_year: 'Before the first year',
   statement_gap: "Balance doesn't follow", statement_total: "Statement doesn't add up", mixed_items: 'Mixed items',

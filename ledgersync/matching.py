@@ -466,7 +466,7 @@ def _record(rows: list[Transaction], changes: list[dict], n: int, receipt: _Docu
     line = rows[n]
     changes[n]["recorded_by"] = receipt.settlement(receipt.total)
     if not line.include:   # it posts nothing, so its account has no effect on the books: nothing to ask
-        changes[n]["issues"] = [i for i in changes[n].get("issues", line.issues) if i.code != "account_not_recognised"]
+        changes[n]["issues"] = [i for i in changes[n].get("issues", line.issues) if i.code not in ("account_not_recognised", "account_unclear")]
     for r in receipt.rows:
         changes[r]["paid_by"] = [Settlement(ref=line.document_ref or f"row-{n}", amount=line.gross,
                                             date=line.date, description=line.description, kind=line.document_type)]
