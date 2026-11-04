@@ -96,12 +96,12 @@ def nb(mongo_store, pages):
                            sheet_inkwell=sheet_inkwell, upload=lambda name: upload_named(store, client_id, name))
 
 
-def call(store, records, pages, nb, row_id, resolution, *quotes, upload=None, reason="Checked the documents."):
+def call(store, records, pages, nb, row_id, resolution, *quotes, upload=None, reason="Checked the documents.", **kw):
     """resolve() as the agent's tool calls it, citing quotes from one upload (the receipt's by default)."""
     upload_id = upload or nb.upload("costco.txt")
     return resolve(store, records, client_id=nb.id, thread_id="t1", actor=ACTOR, row_id=row_id,
                    resolution=resolution, evidence=[Evidence(upload_id=upload_id, quote=q) for q in quotes],
-                   reason=reason, texts=lambda uid: pages.get(uid, []))
+                   reason=reason, texts=lambda uid: pages.get(uid, []), **kw)
 
 
 def saved(store, client_id: int, row_id: int):

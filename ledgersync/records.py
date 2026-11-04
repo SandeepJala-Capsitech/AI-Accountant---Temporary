@@ -104,6 +104,11 @@ class AgentRecords:
         doc = self.db.decisions.find_one({"client_id": client_id, "idempotency_key": idempotency_key})
         return _model(Decision, doc) if doc else None
 
+    def decision_key(self, client_id: int, decision_id: str) -> Optional[str]:
+        """The idempotency key the client's decision was stored under (a decision's own model leaves it out)."""
+        doc = self.db.decisions.find_one({"client_id": client_id, "_id": decision_id}, {"idempotency_key": 1})
+        return doc["idempotency_key"] if doc else None
+
     def decisions(self, client_id: int, year_start: Optional[dt.date] = None,
                   since: Optional[str] = None) -> list[Decision]:
         """The client's decisions, oldest first; of one year, and made at or after `since` (an ISO time), if given."""
@@ -134,6 +139,12 @@ class AgentRecords:
         docs = list(self.db.changes.find(query).sort("seq", pymongo.DESCENDING).limit(limit))
         # a change keeps its own seq and summary, which _model would set apart
         return [Change.model_validate({k: v for k, v in doc.items() if k != "_id"}) for doc in reversed(docs)]
+
+    def applied_suggestions(self, client_id: int) -> dict[str, str]:
+        """The client's suggestions that were applied: the suggestion's decision id, and the applied decision's id."""
+        return {c["after"]["decision_id"]: c["after"]["applied_as"]
+                for c in self.db.changes.find({"client_id": client_id, "kind": "decision_applied"})
+                if c.get("after", {}).get("applied_as")}
 
     # ─── Questions ─────────────────────────────────────────────────────────────
 
