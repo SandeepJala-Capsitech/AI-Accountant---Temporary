@@ -427,6 +427,21 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
         return _out(result)
 
     @tool
+    def list_changes(runtime: ToolRuntime[ChatContext], since: Optional[str] = None) -> dict:
+        """What has changed on the client's year, oldest first: who changed it (the person, an import, the rules or
+        the agent), what kind of change, the rows and file it touched, the values before and after, and a one-line
+        summary. since: an ISO time; leave it out for the latest 50. Use it to say what has changed since the last
+        review."""
+        ctx = runtime.context
+        _step(runtime, "Checking what has changed…")
+        made = records.changes(ctx.client_id, year_start=ctx.year_start, since=since, **({} if since else {"limit": 50}))
+        result = {"changes": [_kept({
+            "changed_at": c.created_at, "by": c.actor, "kind": c.kind, "summary": c.summary, "row_ids": c.row_ids,
+            "upload_id": c.upload_id, "before": c.before, "after": c.after}) for c in made]}
+        _step(runtime, f"Read {_count(len(made), 'change')}" if made else "Nothing has changed", "done")
+        return _out(result)
+
+    @tool
     def get_trial_balance(runtime: ToolRuntime[ChatContext]) -> dict:
         """The trial balance of what is posted for the client's year (the opening balances and every entry posted so
         far): each account's debit and credit, the totals, whether it balances, the rows held in Suspense and what
@@ -446,4 +461,4 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
         return _out(result)
 
     return [get_overview, list_issues, list_rows, get_row, list_documents, read_document, resolve_issue, ask_user,
-            list_questions, list_decisions, get_trial_balance]
+            list_questions, list_decisions, list_changes, get_trial_balance]

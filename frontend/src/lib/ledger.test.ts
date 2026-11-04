@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Transaction } from './api.ts'
 import { possibleDuplicates } from './duplicates.ts'
-import { aboutAnotherRow, accountName, apartChange, apartStatus, canBeApart, checkHover, issueHeading, issueTitle, kindOf, paymentRowOf, reviewSummary,
+import { aboutAnotherRow, accountName, apartChange, apartStatus, canBeApart, checkHover, issueHeading, issueTitle, kindOf, paymentRowOf, postedLedgerNote, reviewSummary,
          rowStatus, showLabel, takesLines, totalsOf } from './ledger.ts'
 
 // A transaction as the API returns it (an unpaid rent bill), with what a test needs changed.
@@ -272,4 +272,11 @@ test("a receipt already on an expense claim is not a duplicate of the claim's ot
                             claimed_in: { ref: 'claim', amount: '17.99', date: '2026-09-11', description: 'claim' } }),
                     upload_id: 2 }
   assert.deepEqual(possibleDuplicates([paymentRowOf(earlier), paymentRowOf(receipt)]), [null, null])
+})
+
+test('the posted ledger is noted only when it is not up to date', () => {
+  assert.equal(postedLedgerNote(0), null)
+  assert.equal(postedLedgerNote(null), null)
+  assert.equal(postedLedgerNote(1), 'Not up to date: 1 change not posted. See Trial balance.')
+  assert.equal(postedLedgerNote(2), 'Not up to date: 2 changes not posted. See Trial balance.')
 })

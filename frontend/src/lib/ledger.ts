@@ -312,3 +312,9 @@ export function totalsOf(txs: Transaction[]): TotalRow[] {
     return [total]
   })
 }
+
+/** The note for the Overview when the posted ledger is behind the changes; null when it is up to date or not yet known. */
+export function postedLedgerNote(unposted: number | null): string | null {
+  if (!unposted) return null
+  return `Not up to date: ${unposted} ${unposted === 1 ? 'change' : 'changes'} not posted. See Trial balance.`
+}

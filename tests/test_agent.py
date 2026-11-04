@@ -204,6 +204,29 @@ def test_a_step_names_the_document_opened(mongo_store, deps, staples):
 
 
 @pytest.mark.mongo
+def test_list_changes_returns_the_years_changes_since_a_time(mongo_store, deps, staples):
+    from ledgersync.models import ChangeDraft
+    first, second = (deps.records.add_change(ChangeDraft(client_id=staples, year_start=YEAR, actor="user", kind="row_edited",
+                                                         row_ids=[n], summary=f"Row {n} changed")) for n in (1, 2))
+    for change, when in ((first, "2030-01-01T10:00:00+00:00"), (second, "2030-01-01T12:00:00+00:00")):
+        mongo_store.db.changes.update_one({"_id": change.id}, {"$set": {"created_at": when}})
+    model = ScriptedChatModel(replies=[call("list_changes", since="2030-01-01T11:00:00+00:00"), say("Listed.")])
+    agent = build_agent(SETTINGS, deps, model=model, checkpointer=InMemorySaver())
+
+    events = list(stream_turn(agent, context(staples), "What has changed?"))
+
+    [result] = answered(model, 1)
+    [change] = json.loads(result.content)["changes"]
+    assert (change["by"], change["kind"], change["summary"], change["row_ids"]) == ("user", "row_edited", "Row 2 changed", [2])
+    assert change["changed_at"] == "2030-01-01T12:00:00+00:00"
+    assert [e.data["text"] for e in events if e.type == "step"] == ["Checking what has changed…", "Read 1 change"]
+
+
+def test_the_prompt_says_to_read_the_changes_first():
+    assert "list_changes" in SYSTEM_PROMPT
+
+
+@pytest.mark.mongo
 def test_list_issues_by_family(mongo_store, deps, staples):
     model = ScriptedChatModel(replies=[call("list_issues", family="duplicate"), call("list_issues", family="documents"),
                                        say("Listed.")])
@@ -492,7 +515,7 @@ def test_no_tool_can_set_a_date():
     tools = make_tools(AgentDeps(store=None, records=None, blobs=None), actor="agent:test")
     assert {t.name for t in tools} == {"get_overview", "list_issues", "list_rows", "get_row", "list_documents", "read_document",
                                        "resolve_issue", "ask_user", "list_questions", "list_decisions",
-                                       "get_trial_balance"}
+                                       "list_changes", "get_trial_balance"}
     for tool in tools:
         for name, field in properties(tool.tool_call_schema.model_json_schema()):
             assert "date" not in name and field.get("format") not in ("date", "date-time"), (tool.name, name)

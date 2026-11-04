@@ -8,7 +8,7 @@ import { attentionHref, clientQuestions } from '@/lib/chat'
 import { postedTrialBalance } from '@/lib/api'
 import { changeClient, getSummary, type ClientFields, type YearSummary } from '@/lib/clients'
 import { BUSINESS_TYPES, transactionCount } from '@/lib/clientRules'
-import { money } from '@/lib/ledger'
+import { money, postedLedgerNote } from '@/lib/ledger'
 import { bankCheckText, fullDate } from '@/lib/sections'
 import { sectionHref } from '@/lib/years'
 
@@ -93,7 +93,7 @@ export default function OverviewSection() {
         {needYou > 0 && (
           <p><Link href={attentionHref(client.id)} className="link-btn">{needYou} {needYou === 1 ? 'thing needs' : 'things need'} you</Link></p>
         )}
-        {unposted !== null && <p className="muted small">Posted ledger: {unposted === 0 ? 'up to date' : `${unposted} ${unposted === 1 ? 'change' : 'changes'} not posted`}</p>}
+        {postedLedgerNote(unposted) && <p className="muted small">{postedLedgerNote(unposted)}</p>}
         {summary && (
           <dl className="details">
             <div>

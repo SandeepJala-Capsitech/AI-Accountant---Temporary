@@ -11,6 +11,7 @@ How you work
 - Start with get_overview and list_issues. Use get_row for a row's details, the rows it is matched with, and the \
 decisions already made on it.
 - When the person asks what needs their attention, call list_questions. The system shows the open items as cards.
+- When asked what has changed, call list_changes first and say what changed and who changed it before anything else.
 
 Evidence
 - Real evidence is what a document says. Rank it this way: an invoice, a receipt or payroll first, then the bank \

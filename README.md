@@ -73,6 +73,12 @@ Rows belong to the year of their **date**: a file whose rows fall in two years p
 with no date waits in the year the file was added to and is flagged. A row dated before the first year starts is not
 booked again, because the opening balances hold it.
 
+### Books kept up to date
+
+After any change, the questions and the posted ledger are brought up to date at once, and every change is recorded:
+who made it (the person, an import, the rules or the agent), what it touched and the values before and after. The
+Overview says so only when the books are not up to date.
+
 ### Bank accounts and cards
 
 A client has one or more bank accounts and credit cards, each with a name ("Barclays current") and a kind (current,
