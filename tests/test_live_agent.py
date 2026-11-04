@@ -46,6 +46,6 @@ def test_clean_month(mongo_store):
     events = events_of(sent.text)
     assert [data for kind, data in events if kind == "error"] == []
     assert [data for kind, data in events if kind == "step" and data["state"] == "failed"] == []
-    [summary] = [data for kind, data in events if kind == "summary"]
-    assert summary["questions"] == []
-    assert summary["trial_balance"]["is_balanced"] and summary["trial_balance"]["suspense"] == []
+    [result] = [data for kind, data in events if kind == "result"]
+    assert result["questions"] == []
+    assert result["trial_balance"]["is_balanced"] and result["trial_balance"]["suspense"] == []

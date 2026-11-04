@@ -75,7 +75,8 @@ that net to nothing are left out.
 - `before_answers` lists the questions open or waiting after the review turn (`questions.refresh` after the
   decisions).
 - `after_answers` lists them after the answers in `notes.md` are applied. It includes `waiting` ones, with their
-  `answer`, because `ReviewSummary.questions` lists both.
+  `answer`, because the client's questions route (`GET /api/clients/{id}/questions`, which the runner reads) lists
+  both.
 - A held row's question has `kind` equal to the rule's `needs` (`receipt_or_invoice` or `vat_invoice`).
 
 ## `notes.md`

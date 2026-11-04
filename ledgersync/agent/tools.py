@@ -365,7 +365,7 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
                                            description="Why it matters, and what would settle it.")],
                  runtime: ToolRuntime[ChatContext]) -> dict:
         """Asks the person a question the evidence can't settle and the rules don't already ask. It is shown as a
-        card with the summary, and stays open on the client until it is answered. Asked again with the same rows
+        card in this reply, and stays open on the client until it is answered. Asked again with the same rows
         and words, it is the same question."""
         ctx = runtime.context
         _step(runtime, "Writing a question…")

@@ -1,12 +1,12 @@
 """One turn of the chat: the person's message goes to the agent, and what it does comes back as events, as the chat
 page reads them (frontend/src/lib/chat.ts): a step for each tool it runs, its reply a token at a time, and an error if
-the model fails or the run hits its limits. The API (chat.py) adds the status, the summary and done around them."""
+the model fails or the run hits its limits. The API (chat.py) adds the status, the result and done around them."""
 from __future__ import annotations
 
 import json
 import logging
 from dataclasses import dataclass
-from typing import Iterator, Literal
+from typing import Iterator, Literal, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.errors import GraphRecursionError
@@ -30,9 +30,9 @@ _STOP = f"{StopWhenCancelled.__name__}.before_model"
 @dataclass(frozen=True)
 class ChatEvent:
     """One server-sent event of a chat turn, as the chat page reads it: status {text}, step {id, text, state, file?,
-    rows?, reason?} (sent again under its id as it changes), token {text}, summary (a ReviewSummary), error {code,
+    rows?, reason?} (sent again under its id as it changes), token {text}, result (a TurnResult), error {code,
     message, steps?} or done {}. data is plain JSON already: money and dates as strings."""
-    type: Literal["status", "step", "token", "summary", "error", "done"]
+    type: Literal["status", "step", "token", "result", "error", "done"]
     data: dict
 
     def sse(self) -> str:
@@ -63,7 +63,8 @@ def _failure(exc: Exception) -> ChatEvent:
     return _error("agent_failed", "Something went wrong while I was working, so I stopped. The server log says what.")
 
 
-def stream_turn(agent, ctx: ChatContext, text: str) -> Iterator[ChatEvent]:
+def stream_turn(agent, ctx: ChatContext, text: str, *, message_id: Optional[str] = None,
+                called: Optional[set[str]] = None) -> Iterator[ChatEvent]:
     """Runs the agent on the person's message in the chat's thread (its earlier messages come from the checkpoints),
     for the context's client and year, and yields what it does:
     - a step for each tool it runs, as the tool says it (running, then done or failed); a tool call it couldn't run
@@ -72,14 +73,15 @@ def stream_turn(agent, ctx: ChatContext, text: str) -> Iterator[ChatEvent]:
     - at the end, an error if the run stopped early: loop_limit at the model or tool call limit (or the recursion
       limit), with how many steps it took; model_unavailable when the model still failed after its retries; or the
       code of any other error.
-    A chat asked to stop ends before its next model call, saying so."""
+    A chat asked to stop ends before its next model call, saying so. The message is kept in the thread under
+    message_id (an id of its own when None), and the name of each tool the run calls is added to `called`, if given."""
     config = {"configurable": {"thread_id": ctx.thread_id}, "recursion_limit": RECURSION_LIMIT}
     steps: dict[str, dict] = {}
     limited = False
     replied, last = False, None   # whether any reply was sent, and the id of the message it came from
     try:
-        for mode, chunk in agent.stream({"messages": [HumanMessage(content=text)]}, config, context=ctx,
-                                        stream_mode=["messages", "updates", "custom"]):
+        for mode, chunk in agent.stream({"messages": [HumanMessage(content=text, id=message_id)]}, config,
+                                        context=ctx, stream_mode=["messages", "updates", "custom"]):
             if mode == "custom" and isinstance(chunk, dict) and "step" in chunk:
                 steps[chunk["step"]["id"]] = chunk["step"]
                 yield ChatEvent("step", chunk["step"])
@@ -95,6 +97,8 @@ def stream_turn(agent, ctx: ChatContext, text: str) -> Iterator[ChatEvent]:
                     messages = update.get("messages", []) if isinstance(update, dict) else []
                     if node == "tools":
                         for result in messages:
+                            if called is not None and isinstance(result, ToolMessage) and result.name:
+                                called.add(result.name)
                             step = steps.get(getattr(result, "tool_call_id", None))
                             if isinstance(result, ToolMessage) and step and step["state"] == "running":
                                 steps[step["id"]] = _finished(step, result)

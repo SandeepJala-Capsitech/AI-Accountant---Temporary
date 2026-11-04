@@ -3,9 +3,10 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { ApiError } from './api.ts'
 import {
-  answerQuestion, changedFields, fileStatus, formatMoney, groupThreads, looksLikeStatement, parseEvents, questionControl, ruleBadge,
-  retryFiles, shownAccounts, streamMessage, suspenseLabel, uploadForQuestion,
-  type ChatEvent, type ChatThread, type Decision, type PostedTrialBalance, type Question,
+  answerQuestion, attentionHref, changedFields, effectLine, fileStatus, formatMoney, groupThreads, hasResult, looksLikeStatement, parseEvents,
+  questionControl, questionState, readStatus, ruleBadge, retryFiles, shownAccounts, streamMessage, suspenseLabel, uploadForQuestion,
+  withQuestion,
+  type AnswerResult, type ChatEvent, type ChatThread, type Decision, type PostResult, type PostedTrialBalance, type Question,
 } from './chat.ts'
 
 const thread = (id: string, updated_at: string): ChatThread => ({
@@ -24,7 +25,8 @@ const decision = (rule: string): Decision => ({
   created_at: '2026-11-02T10:00:00+00:00', prev_hash: '', hash: 'h',
 })
 
-const summaryJson = '{"sorted":[],"questions":[],"trial_balance":{"lines":[]},"post":{"batch_id":null}}'
+const resultJson = '{"sorted":[],"questions":[],"trial_balance":null,"post":null}'
+const answerJson = JSON.stringify({ question: question('date'), sorted: [], trial_balance: null, post: null })
 
 test('an event split across two chunks arrives once, whole', () => {
   const first = parseEvents('event: step\ndata: {"id":"f1","text":"Read', '')
@@ -39,8 +41,8 @@ test('an event split across two chunks arrives once, whole', () => {
 
 test('events separated by CRLF, with comments and several data lines, parse', () => {
   const { events, carry } = parseEvents(
-    ': keep-alive\r\n\r\nevent: summary\r\ndata: ' + summaryJson + '\r\n\r\nevent: done\r\ndata: {}\r\n\r\nevent: tok', '')
-  assert.deepEqual(events.map(e => e.type), ['summary', 'done'])
+    ': keep-alive\r\n\r\nevent: result\r\ndata: ' + resultJson + '\r\n\r\nevent: done\r\ndata: {}\r\n\r\nevent: tok', '')
+  assert.deepEqual(events.map(e => e.type), ['result', 'done'])
   assert.equal(carry, 'event: tok')
   const joined = parseEvents('event: token\ndata: {"text":\ndata: "two lines"}\n\n', '')
   assert.deepEqual(joined.events, [{ type: 'token', data: { text: 'two lines' } }])
@@ -154,25 +156,25 @@ test('a second message while the first runs is refused with the reason', async (
     (e: unknown) => e instanceof ApiError && e.code === 'http_409' && e.message === 'Still working on the last message.')
 })
 
-test('an answer is posted as JSON with the header and returns the new summary', async () => {
+test('an answer is posted as JSON with the header and returns that question and its effect', async () => {
   let sent: { url: string; init?: RequestInit } | undefined
   globalThis.fetch = (async (url: string, init?: RequestInit) => {
     sent = { url, init }
-    return new Response(summaryJson, { status: 200, headers: { 'Content-Type': 'application/json' } })
+    return new Response(answerJson, { status: 200, headers: { 'Content-Type': 'application/json' } })
   }) as typeof fetch
-  const summary = await answerQuestion('t1', 'q1', { kind: 'date', date: '2026-10-03' })
+  const answered = await answerQuestion('t1', 'q1', { kind: 'date', date: '2026-10-03' })
   assert.equal(sent?.url, '/api/chat/threads/t1/questions/q1/answer')
   assert.equal(sent?.init?.method, 'POST')
   assert.equal(new Headers(sent?.init?.headers).get('X-LedgerSync'), '1')
   assert.deepEqual(JSON.parse(String(sent?.init?.body)), { kind: 'date', date: '2026-10-03' })
-  assert.deepEqual(summary.sorted, [])
+  assert.equal(answered.question.id, 'q1')
 })
 
 test('a document for a question is uploaded as its file', async () => {
   let sent: { url: string; init?: RequestInit } | undefined
   globalThis.fetch = (async (url: string, init?: RequestInit) => {
     sent = { url, init }
-    return new Response(summaryJson, { status: 200, headers: { 'Content-Type': 'application/json' } })
+    return new Response(answerJson, { status: 200, headers: { 'Content-Type': 'application/json' } })
   }) as typeof fetch
   await uploadForQuestion('t1', 'q2', new File(['%PDF'], 'invoice.pdf'))
   assert.equal(sent?.url, '/api/chat/threads/t1/questions/q2/document')
@@ -216,4 +218,44 @@ test('a retry sends again only the files that were not read', () => {
   ]
   assert.deepEqual(retryFiles(files, ['1200', '', ''], steps).files.map(f => f.name), ['c.pdf', 'e.png'])
   assert.deepEqual(retryFiles(files, ['1200', '1201', ''], steps).bankAccounts, ['1201', ''])
+})
+
+test('withQuestion updates every card for the question', () => {
+  const card = question('date'), answered = { ...card, status: 'resolved' as const, answer: '9 Oct 2026' }
+  const result = { sorted: [], questions: [card], trial_balance: null, post: null }
+  const items = [{ result }, { result: null }, { result: { ...result } }]
+  const next = withQuestion(items, answered)
+  assert.deepEqual([next[0].result?.questions[0].status, next[1].result, next[2].result?.questions[0].answer],
+                   ['resolved', null, '9 Oct 2026'])
+})
+
+test('a question says where it stands', () => {
+  assert.equal(questionState(question('date')), null)
+  assert.equal(questionState({ ...question('date'), status: 'resolved', answer: '9 Oct 2026' }), 'Answered: 9 Oct 2026')
+  assert.equal(questionState({ ...question('receipt_or_invoice'), status: 'resolved', answer: null }), 'Resolved')
+  assert.equal(questionState({ ...question('receipt_or_invoice'), status: 'waiting', answer: "I don't have it" }),
+               'Waiting for the receipt or invoice')
+  assert.equal(questionState({ ...question('vat_invoice'), status: 'waiting', answer: "I don't have it" }),
+               'Waiting for the VAT invoice')
+  assert.equal(questionState({ ...question('date'), status: 'waiting', answer: 'Not sure' }), 'Waiting: not sure of the date yet')
+})
+
+test("an answer's effect is one line", () => {
+  const tb = (n: number) => ({ is_balanced: true, suspense: Array(n).fill({}) }) as unknown as PostedTrialBalance
+  const a = (over: Partial<AnswerResult>): AnswerResult => ({ question: question('date'), sorted: [], trial_balance: null, post: null, ...over })
+  assert.equal(effectLine(a({})), null)
+  assert.equal(effectLine(a({ trial_balance: tb(0) })), 'Posted · balanced · nothing in Suspense')
+  assert.equal(effectLine(a({ trial_balance: tb(1) })), 'Posted · balanced · 1 item in Suspense')
+  assert.equal(effectLine(a({ post: { problems: ['Row 3 has no date.'] } as PostResult })), 'Nothing was posted: Row 3 has no date.')
+})
+
+test('hasResult and readStatus', () => {
+  assert.equal(hasResult({ sorted: [], questions: [], trial_balance: null, post: null }), false)
+  assert.equal(hasResult({ sorted: [decision('R1')], questions: [], trial_balance: null, post: null }), true)
+  assert.deepEqual(readStatus({ name: 'a.csv', state: 'done', rows: 9, reason: null }), { state: 'done', label: 'Read (9 rows)' })
+  assert.deepEqual(readStatus({ name: 'b.png', state: 'failed', rows: null, reason: 'Unreadable.' }), { state: 'failed', label: 'Failed: Unreadable.' })
+})
+
+test('the Overview link starts a chat that asks what needs attention', () => {
+  assert.equal(attentionHref(7), '/chat?client=7&ask=What%20needs%20my%20attention%3F')
 })

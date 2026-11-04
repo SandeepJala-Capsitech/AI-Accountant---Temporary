@@ -1,7 +1,7 @@
 """The accountant chat's agent (design of 2026-11-02): LangChain's create_agent loop with the tools that read the books
 and resolve what the evidence settles, a prompt that makes it the client's accountant, and limits on how long a run
 goes. It only investigates and picks actions: the services check and make every change, and the server posts, asks
-the rules' questions and builds the summary after each turn."""
+the rules' questions and builds the turn's result after each turn."""
 from __future__ import annotations
 
 from langchain.agents import create_agent

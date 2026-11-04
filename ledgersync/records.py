@@ -19,8 +19,11 @@ from .models import ChatThread, Decision, DecisionDraft, Question, QuestionDraft
 from .rows import now_iso
 
 # What a document keeps besides its model: the idempotency key or question key it is found by, `seq`, the time in
-# nanoseconds it was added, which orders records that were added in the same second, and a thread's last summary.
-_KEPT_APART = ("_id", "idempotency_key", "key", "seq", "summary")
+# nanoseconds it was added, which orders records that were added in the same second, a thread's turns, and the last
+# summary an older thread kept in their place.
+_KEPT_APART = ("_id", "idempotency_key", "key", "seq", "turns", "summary")
+# Leaves a thread's turns out of a read: they hold every result the chat gave, so only turns() reads them.
+_WITHOUT_TURNS = {"turns": 0}
 
 
 def _model(cls, doc: dict):
@@ -150,30 +153,32 @@ class AgentRecords:
     def threads(self, client_id: Optional[int] = None) -> list[ChatThread]:
         """The threads, of one client if given, the most recently used first."""
         query = {} if client_id is None else {"client_id": client_id}
-        return [_model(ChatThread, doc) for doc in self.db.chat_threads.find(query).sort(
+        return [_model(ChatThread, doc) for doc in self.db.chat_threads.find(query, _WITHOUT_TURNS).sort(
             [("updated_at", pymongo.DESCENDING), ("_id", pymongo.ASCENDING)])]
 
     def thread(self, id: str) -> Optional[ChatThread]:
-        doc = self.db.chat_threads.find_one({"_id": id})
+        doc = self.db.chat_threads.find_one({"_id": id}, _WITHOUT_TURNS)
         return _model(ChatThread, doc) if doc else None
 
     def touch_thread(self, id: str, title: Optional[str] = None) -> ChatThread:
         """Marks the thread as used now, and retitles it if given a title."""
         changes = {"updated_at": now_iso(), **({"title": title} if title is not None else {})}
-        doc = self.db.chat_threads.find_one_and_update({"_id": id}, {"$set": changes},
+        doc = self.db.chat_threads.find_one_and_update({"_id": id}, {"$set": changes}, projection=_WITHOUT_TURNS,
                                                        return_document=ReturnDocument.AFTER)
         if not doc:
             raise NotFound("This chat was not found.")
         return _model(ChatThread, doc)
 
-    def save_summary(self, id: str, summary: dict) -> None:
-        """Keeps the summary (as JSON) the thread's last turn or answer ended with."""
-        self.db.chat_threads.update_one({"_id": id}, {"$set": {"summary": summary}})
+    def add_turn(self, thread_id: str, turn: dict) -> None:
+        """Keeps the turn (as JSON) after the thread's earlier ones: the id of the person's message, the files it
+        carried and the result its turn ended with."""
+        self.db.chat_threads.update_one({"_id": thread_id}, {"$push": {"turns": turn}})
 
-    def summary(self, id: str) -> Optional[dict]:
-        """The summary the thread's last turn or answer ended with, as JSON; None before its first."""
-        doc = self.db.chat_threads.find_one({"_id": id}, {"summary": 1})
-        return doc.get("summary") if doc else None
+    def turns(self, thread_id: str) -> list[dict]:
+        """The thread's turns as JSON, oldest first; none before its first (or for a chat saved before turns were
+        kept)."""
+        doc = self.db.chat_threads.find_one({"_id": thread_id}, {"turns": 1})
+        return list(doc.get("turns") or []) if doc else []
 
     def delete_thread(self, id: str) -> None:
         """Removes the thread's record; what else was kept for it is removed by whoever kept it."""

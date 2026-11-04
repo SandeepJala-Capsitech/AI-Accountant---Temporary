@@ -449,6 +449,12 @@ def test_the_prompt_names_the_rules_the_live_runs_broke():
         assert rule in " ".join(SYSTEM_PROMPT.split())
 
 
+def test_the_prompt_answers_what_was_asked():
+    assert "earlier chats" not in SYSTEM_PROMPT
+    assert "When the person asks what needs their attention, call list_questions." in SYSTEM_PROMPT
+    assert "adds a card for each thing this turn sorted, raised or posted" in SYSTEM_PROMPT
+
+
 def test_tools_use_context_client_not_args():
     for tool in make_tools(AgentDeps(store=None, records=None, blobs=None), actor="agent:test"):
         schema = json.dumps(tool.tool_call_schema.model_json_schema())

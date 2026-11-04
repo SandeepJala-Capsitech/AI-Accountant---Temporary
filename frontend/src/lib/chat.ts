@@ -1,8 +1,12 @@
-// The accountant chat (design of 2026-11-02): its threads, the review summary a turn ends with, the questions it
+// The accountant chat (design of 2026-11-02): its threads, the result a turn ends with, the questions it
 // asks and the posted trial balance, and the calls that send a message (streamed back as SSE) and answer a question.
 // Paths go through the Next rewrite, like every other call in api.ts. The pure functions are tested in chat.test.ts.
 import { ApiError, errorFrom, request, type TrialBalanceLine, type TrialBalanceResult } from './api.ts'
 import { longDate } from './ledger.ts'
+
+// What the Overview's "N things need you" link asks in a new chat, so the open items show as cards in the reply.
+export const ATTENTION = 'What needs my attention?'
+export const attentionHref = (clientId: number) => `/chat?client=${clientId}&ask=${encodeURIComponent(ATTENTION)}`
 
 // Money is a string everywhere below, like the rest of the API.
 export interface ChatThread {
@@ -82,24 +86,41 @@ export interface PostResult {
   problems: string[]         // why nothing was written, when the batch failed its checks
 }
 
-// What a review turn (or an answer) ends with: what it sorted, what still needs the person, and the books posted.
-export interface ReviewSummary {
+// How a file the person added was read: shown as its chip, and kept with the message.
+export interface FileRead {
+  name: string
+  state: 'done' | 'failed'
+  rows: number | null
+  reason: string | null
+}
+
+// What one turn did: what it sorted, the questions it raised or listed, and the books if it posted or showed them.
+export interface TurnResult {
   sorted: Decision[]
   questions: Question[]
-  trial_balance: PostedTrialBalance
-  post: PostResult
+  trial_balance: PostedTrialBalance | null
+  post: PostResult | null
+}
+
+// What answering a question did: that question as it now stands, and the effect on the books.
+export interface AnswerResult {
+  question: Question
+  sorted: Decision[]
+  trial_balance: PostedTrialBalance | null
+  post: PostResult | null
 }
 
 export interface ChatMessage {
   role: 'user' | 'assistant'
   text: string
+  files: FileRead[]
+  result: TurnResult | null
 }
 
-// A thread as GET /api/chat/threads/{id} returns it: its messages so far and the summary its last turn ended with.
+// A thread as GET /api/chat/threads/{id} returns it: its messages so far, each with the result its turn ended with.
 export interface ThreadDetail {
   thread: ChatThread
   messages: ChatMessage[]
-  summary: ReviewSummary | null
 }
 
 export type StepState = 'running' | 'done' | 'failed'
@@ -121,13 +142,13 @@ export type ChatEvent =
   | { type: 'status'; data: { text: string } }
   | { type: 'step'; data: Step }
   | { type: 'token'; data: { text: string } }
-  | { type: 'summary'; data: ReviewSummary }
+  | { type: 'result'; data: TurnResult }
   | { type: 'error'; data: ChatError }
   | { type: 'done'; data: Record<string, never> }
 
 export type Answer = { kind: 'date'; date: string } | { kind: 'no_document' } | { kind: 'not_sure' }
 
-const EVENT_TYPES = new Set<string>(['status', 'step', 'token', 'summary', 'error', 'done'])
+const EVENT_TYPES = new Set<string>(['status', 'step', 'token', 'result', 'error', 'done'])
 
 // Parses SSE text that may stop anywhere: the events completed so far, and what is left over for the next chunk.
 export function parseEvents(chunk: string, carry: string): { events: ChatEvent[]; carry: string } {
@@ -219,13 +240,47 @@ export function changedFields(d: Decision): { row: number; field: string; before
 
 export type FileState = 'queued' | 'reading' | 'done' | 'failed'
 
+const readLabel = (state: 'done' | 'failed', rows: number | null | undefined, reason: string | null | undefined) =>
+  state === 'failed' ? (reason ? `Failed: ${reason}` : 'Failed') : rows == null ? 'Read' : `Read (${rows} ${rows === 1 ? 'row' : 'rows'})`
+
 // What a file's chip says, from the latest step that names it.
 export function fileStatus(name: string, steps: Step[]): { state: FileState; label: string } {
   const step = [...steps].reverse().find(s => s.file === name)
   if (!step) return { state: 'queued', label: 'Queued' }
   if (step.state === 'running') return { state: 'reading', label: 'Reading' }
-  if (step.state === 'failed') return { state: 'failed', label: step.reason ? `Failed: ${step.reason}` : 'Failed' }
-  return { state: 'done', label: step.rows == null ? 'Read' : `Read (${step.rows} ${step.rows === 1 ? 'row' : 'rows'})` }
+  return { state: step.state, label: readLabel(step.state, step.rows, step.reason) }
+}
+
+// What a saved file's chip says, from how it was read.
+export const readStatus = (f: FileRead): { state: FileState; label: string } =>
+  ({ state: f.state, label: readLabel(f.state, f.rows, f.reason) })
+
+// Whether a turn's result has anything to show.
+export const hasResult = (r: TurnResult | null): r is TurnResult =>
+  r != null && (r.sorted.length > 0 || r.questions.length > 0 || r.trial_balance != null || r.post != null)
+
+// The items with every card for this question replaced by its current record.
+export const withQuestion = <T extends { result: TurnResult | null }>(items: T[], q: Question): T[] =>
+  items.map(item => item.result?.questions.some(c => c.id === q.id)
+    ? { ...item, result: { ...item.result, questions: item.result.questions.map(c => (c.id === q.id ? q : c)) } }
+    : item)
+
+// Where a question stands, in words; null while it is open.
+export function questionState(q: Question): string | null {
+  if (q.status === 'open') return null
+  if (q.status === 'resolved') return q.answer ? `Answered: ${q.answer}` : 'Resolved'
+  if (q.answer === "I don't have it") return q.kind === 'vat_invoice' ? 'Waiting for the VAT invoice' : 'Waiting for the receipt or invoice'
+  if (q.answer === 'Not sure') return 'Waiting: not sure of the date yet'
+  return `Waiting: ${q.answer}`
+}
+
+// What an answer did to the books, in one line; null when it changed nothing there.
+export function effectLine(a: AnswerResult): string | null {
+  if (a.post?.problems.length) return `Nothing was posted: ${a.post.problems.join(' ')}`
+  if (!a.trial_balance) return null
+  const held = a.trial_balance.suspense.length
+  const suspense = held === 0 ? 'nothing in Suspense' : `${held} ${held === 1 ? 'item' : 'items'} in Suspense`
+  return `Posted · ${a.trial_balance.is_balanced ? 'balanced' : 'not balanced'} · ${suspense}`
 }
 
 // The files a retry sends again: those not read the first time, each with its bank account. A file read once is
@@ -272,12 +327,12 @@ export const clientQuestions = (clientId: number) => request<Question[]>(`/api/c
 export const resetDemo = () => request<unknown>('/api/demo/reset', { method: 'POST', headers: WRITE }, 120_000)
 
 export const answerQuestion = (threadId: string, questionId: string, answer: Answer) =>
-  request<ReviewSummary>(`/api/chat/threads/${threadId}/questions/${questionId}/answer`, json('POST', answer), 120_000)
+  request<AnswerResult>(`/api/chat/threads/${threadId}/questions/${questionId}/answer`, json('POST', answer), 120_000)
 
-export function uploadForQuestion(threadId: string, questionId: string, file: File): Promise<ReviewSummary> {
+export function uploadForQuestion(threadId: string, questionId: string, file: File): Promise<AnswerResult> {
   const data = new FormData()
   data.append('file', file)
-  return request<ReviewSummary>(`/api/chat/threads/${threadId}/questions/${questionId}/document`,
+  return request<AnswerResult>(`/api/chat/threads/${threadId}/questions/${questionId}/document`,
                                 { method: 'POST', body: data, headers: WRITE }, 180_000)
 }
 
