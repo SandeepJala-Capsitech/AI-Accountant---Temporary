@@ -160,3 +160,11 @@ def test_env_example_lists_every_setting():
 
 def test_the_defaults_in_env_example_are_the_defaults():
     assert Settings.from_env(example_values()) == Settings.from_env({})
+
+
+def test_review_settings_read_from_env():
+    d = Settings.from_env({})
+    assert (d.review_wait_seconds, d.review_daily_limit) == (20, 20)
+    s = Settings.from_env({"LEDGERSYNC_REVIEW_WAIT": "5", "LEDGERSYNC_REVIEW_DAILY_LIMIT": "3"})
+    assert (s.review_wait_seconds, s.review_daily_limit) == (5, 3)
+    assert {"LEDGERSYNC_REVIEW_WAIT", "LEDGERSYNC_REVIEW_DAILY_LIMIT"} <= set(ENV_NAMES)

@@ -15,7 +15,8 @@ from pymongo.database import Database
 from pymongo.errors import DuplicateKeyError, OperationFailure
 
 from .errors import NotFound
-from .models import Change, ChangeDraft, ChatThread, Decision, DecisionDraft, Question, QuestionDraft
+from .models import (Change, ChangeDraft, ChatThread, Decision, DecisionDraft, Question, QuestionDraft, ReviewRun,
+                     ReviewState)
 from .rows import now_iso
 
 # What a document keeps besides its model: the idempotency key or question key it is found by, `seq`, the time in
@@ -28,6 +29,11 @@ _WITHOUT_TURNS = {"turns": 0}
 
 def _model(cls, doc: dict):
     return cls.model_validate({k: v for k, v in doc.items() if k not in _KEPT_APART})
+
+
+def _run(doc: dict) -> ReviewRun:
+    """A review run: unlike _model, this keeps `summary`, which is the run's own."""
+    return ReviewRun.model_validate({k: v for k, v in doc.items() if k not in ("_id", "seq")})
 
 
 def _hash(prev_hash: str, decision: Decision) -> str:
@@ -50,6 +56,9 @@ class AgentRecords:
         db.questions.create_index([("client_id", pymongo.ASCENDING), ("key", pymongo.ASCENDING)], unique=True)
         db.chat_threads.create_index([("client_id", pymongo.ASCENDING), ("updated_at", pymongo.ASCENDING)])
         db.changes.create_index([("client_id", pymongo.ASCENDING), ("seq", pymongo.ASCENDING)])
+        db.review_runs.create_index([("client_id", pymongo.ASCENDING), ("seq", pymongo.ASCENDING)])
+        db.review_state.create_index("client_id", unique=True)
+        db.review_rejected.create_index([("client_id", pymongo.ASCENDING), ("key", pymongo.ASCENDING)], unique=True)
 
     # ─── Decisions ─────────────────────────────────────────────────────────────
 
@@ -220,3 +229,74 @@ class AgentRecords:
         self.db.document_texts.update_one(
             {"_id": sha256}, {"$set": {"pages": list(pages), "method": method, "model": model,
                                        "created_at": now_iso()}}, upsert=True)
+
+    # ─── Background reviews ────────────────────────────────────────────────────
+
+    def review_state(self, client_id: int) -> ReviewState:
+        """Where the client's background review stands; a client never reviewed is at the start."""
+        doc = self.db.review_state.find_one({"client_id": client_id})
+        return ReviewState.model_validate({k: v for k, v in doc.items() if k != "_id"}) if doc \
+            else ReviewState(client_id=client_id)
+
+    def set_review_state(self, state: ReviewState) -> None:
+        self.db.review_state.replace_one({"client_id": state.client_id}, state.model_dump(mode="json"), upsert=True)
+
+    def start_review(self, client_id: int, year_start: dt.date, *, from_seq: int, to_seq: int,
+                     trigger_summary: str) -> ReviewRun:
+        """Records a run that has started, over the changes after from_seq up to to_seq."""
+        run = ReviewRun(id=uuid4().hex, client_id=client_id, year_start=year_start, status="running",
+                        started_at=now_iso(), trigger_summary=trigger_summary, from_seq=from_seq, to_seq=to_seq)
+        self.db.review_runs.insert_one({**run.model_dump(mode="json"), "_id": run.id, "seq": time.time_ns()})
+        return run
+
+    def finish_review(self, id: str, *, status: str, decision_ids=(), question_ids=(), summary: str = "",
+                      error: Optional[str] = None) -> ReviewRun:
+        """Ends the run with its outcome and what it decided and asked."""
+        changes = {"status": status, "finished_at": now_iso(), "decision_ids": list(decision_ids),
+                   "question_ids": list(question_ids), "summary": summary, "error": error}
+        doc = self.db.review_runs.find_one_and_update({"_id": id}, {"$set": changes},
+                                                      return_document=ReturnDocument.AFTER)
+        if not doc:
+            raise NotFound("This review was not found.")
+        return _run(doc)
+
+    def reviews(self, client_id: int, *, year_start: Optional[dt.date] = None, limit: int = 50) -> list[ReviewRun]:
+        """The client's runs, newest first; of one year if given."""
+        query: dict = {"client_id": client_id}
+        if year_start:
+            query["year_start"] = year_start.isoformat()
+        return [_run(doc) for doc in self.db.review_runs.find(query).sort("seq", pymongo.DESCENDING).limit(limit)]
+
+    def runs_on(self, client_id: int, day: dt.date) -> int:
+        """How many runs that started on the (UTC) day are done or failed: the ones that count against the limit."""
+        return self.db.review_runs.count_documents({
+            "client_id": client_id, "status": {"$in": ["done", "failed"]},
+            "started_at": {"$regex": "^" + day.isoformat()}})
+
+    def looked_at(self, client_id: int, year_start: dt.date) -> set[int]:
+        """Every row id the year's earlier runs were pointed at."""
+        found: set[int] = set()
+        for doc in self.db.review_runs.find({"client_id": client_id, "year_start": year_start.isoformat()},
+                                            {"looked_at": 1}):
+            found.update(doc.get("looked_at") or [])
+        return found
+
+    def mark_reviews_seen(self, client_id: int) -> int:
+        """Marks the client's finished runs seen, and says how many were not."""
+        return self.db.review_runs.update_many(
+            {"client_id": client_id, "status": "done", "seen": False}, {"$set": {"seen": True}}).modified_count
+
+    def unseen_background_changes(self, client_id: int) -> int:
+        """The applied and suggested decisions in the client's unseen done runs."""
+        ids = [i for doc in self.db.review_runs.find({"client_id": client_id, "status": "done", "seen": False},
+                                                     {"decision_ids": 1}) for i in doc.get("decision_ids") or []]
+        return self.db.decisions.count_documents(
+            {"client_id": client_id, "_id": {"$in": ids}, "status": {"$in": ["applied", "suggested"]}}) if ids else 0
+
+    def reject_key(self, client_id: int, key: str) -> None:
+        """Keeps the key of a change the person undid, so the review does not make it again."""
+        self.db.review_rejected.update_one({"client_id": client_id, "key": key},
+                                           {"$setOnInsert": {"created_at": now_iso()}}, upsert=True)
+
+    def is_rejected(self, client_id: int, key: str) -> bool:
+        return self.db.review_rejected.count_documents({"client_id": client_id, "key": key}, limit=1) > 0

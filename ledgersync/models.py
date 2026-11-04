@@ -282,6 +282,7 @@ class ClientFields(BaseModel):
     bank_accounts: list[BankAccount] = Field(
         default_factory=lambda: [BankAccount(code=BANK, name="Bank current account", kind="current")])
     folder: str = ""                   # where the client's files are on the computer the site runs on; "" for none
+    ai_review: Literal["automatic", "suggest", "off"] = "automatic"   # what the background AI review may do
 
     @field_validator("name", "contact_name", "contact_email", "contact_phone", "folder", mode="before")
     @classmethod
@@ -326,6 +327,7 @@ class ClientPatch(BaseModel):
     bank_accounts: Optional[list[BankAccount]] = None
     first_year_end: Optional[dt.date] = None
     folder: Optional[str] = None
+    ai_review: Optional[Literal["automatic", "suggest", "off"]] = None
     archived: Optional[bool] = None
 
 
@@ -532,7 +534,7 @@ class DecisionDraft(BaseModel):
     year_start: dt.date
     action: str
     rule: str                                  # e.g. "R2 Duplicate: kept the receipt"
-    status: Literal["applied", "refused"]
+    status: Literal["applied", "refused", "suggested"]
     row_ids: list[int] = Field(default_factory=list)
     evidence: list[Evidence] = Field(default_factory=list)
     reason: str = ""
@@ -540,6 +542,9 @@ class DecisionDraft(BaseModel):
     after: dict[str, dict] = Field(default_factory=dict)
     actor: str                                 # "agent:<model>", "user" or "rules"
     reverses: Optional[str] = None             # the decision this one undoes
+    trigger: Literal["chat", "background"] = "chat"   # who made it: a chat turn or the background review
+    review_id: Optional[str] = None            # the review run that made it
+    resolution: Optional[dict] = None          # the resolution's JSON, kept for a suggested decision
 
 
 class Decision(DecisionDraft):
@@ -553,7 +558,8 @@ class Decision(DecisionDraft):
 
 ChangeKind = Literal["upload_read", "upload_removed", "upload_bank_changed", "row_edited", "row_added",
                      "row_removed", "row_linked", "row_included", "rows_apart", "row_reverted", "client_changed",
-                     "opening_balances_changed", "question_answered", "decision", "year_reopened", "year_closed"]
+                     "opening_balances_changed", "question_answered", "decision", "year_reopened", "year_closed",
+                     "decision_undone", "decision_applied", "question_closed"]
 
 
 class ChangeDraft(BaseModel):
@@ -567,6 +573,7 @@ class ChangeDraft(BaseModel):
     before: dict = Field(default_factory=dict)
     after: dict = Field(default_factory=dict)
     summary: str                               # one line, plain English: "Row 25 changed: account 8201 → 2250"
+    in_chat: bool = False                      # made by a chat turn, which says so itself
 
 
 class Change(ChangeDraft):
@@ -605,3 +612,34 @@ class ChatThread(BaseModel):
     title: str
     created_at: str
     updated_at: str
+
+
+# ─── The background review's records ───────────────────────────────────────────
+
+class ReviewRun(BaseModel):
+    """One run of the background AI review over what changed in a client's year."""
+    id: str
+    client_id: int
+    year_start: dt.date
+    status: Literal["running", "done", "failed", "limited", "off"]
+    started_at: str
+    finished_at: Optional[str] = None
+    trigger_summary: str                       # "after 3 files were added"
+    from_seq: int                              # the changes it looked at: after from_seq, up to to_seq
+    to_seq: int
+    decision_ids: list[str] = Field(default_factory=list)
+    question_ids: list[str] = Field(default_factory=list)
+    looked_at: list[int] = Field(default_factory=list)   # the row ids the run was pointed at
+    summary: str = ""
+    error: Optional[str] = None
+    seen: bool = False                         # the person has opened the review's results
+
+
+class ReviewState(BaseModel):
+    """Where a client's background review stands: the last change it has looked at, when the next run is due, and
+    whether one is running or waits to retry."""
+    client_id: int
+    last_seq: int = 0
+    due_at: Optional[str] = None
+    running: bool = False
+    retry_at: Optional[str] = None

@@ -291,3 +291,108 @@ def test_a_new_decision_adds_one_change_and_a_retried_one_none(records):
     assert c.kind == "decision" and c.actor == decision.actor and c.row_ids == decision.row_ids
     assert c.after == {"decision_id": decision.id}
     assert c.summary == f"{decision.rule}: {decision.status}"
+
+
+# ─── Background reviews ────────────────────────────────────────────────────────
+
+def start(records, client_id=1, **changes):
+    fields = dict(from_seq=1, to_seq=5, trigger_summary="after 3 files were added")
+    return records.start_review(client_id, YEAR, **{**fields, **changes})
+
+
+def test_a_review_run_is_started_finished_and_listed_newest_first(records):
+    first = start(records)
+    assert first.status == "running" and first.finished_at is None and first.seen is False
+    assert (first.from_seq, first.to_seq, first.looked_at) == (1, 5, [])
+    second = start(records, from_seq=5, to_seq=9)
+    done = records.finish_review(first.id, status="done", decision_ids=["d1"], question_ids=["q1"], summary="ok")
+    assert done.status == "done" and done.finished_at and done.decision_ids == ["d1"] and done.question_ids == ["q1"]
+    assert done.summary == "ok" and done.error is None
+    failed = records.finish_review(second.id, status="failed", error="timed out")
+    assert failed.error == "timed out"
+    assert [r.id for r in records.reviews(1)] == [second.id, first.id]
+    assert [r.id for r in records.reviews(1, limit=1)] == [second.id]
+    assert records.reviews(1, year_start=dt.date(2024, 4, 1)) == []
+    assert [r.id for r in records.reviews(1, year_start=YEAR)] == [second.id, first.id]
+    assert records.reviews(2) == []
+
+
+def test_runs_on_counts_a_days_finished_runs(records):
+    for status in ("done", "failed", "limited", "off"):
+        run = start(records)
+        records.finish_review(run.id, status=status)
+    start(records)   # still running
+    today = dt.date.today()
+    assert records.runs_on(1, today) == 2
+    assert records.runs_on(1, today - dt.timedelta(days=1)) == 0
+    assert records.runs_on(2, today) == 0
+
+
+def test_marking_reviews_seen_clears_the_unseen_count(records):
+    one = start(records)
+    two = start(records)
+    records.finish_review(one.id, status="done", decision_ids=["a"])
+    records.finish_review(two.id, status="done", decision_ids=["b"])
+    for key, status in (("a", "applied"), ("b", "suggested")):
+        records.append_decision(draft(status=status, trigger="background"), key)
+    # decision ids are the stored ones; point the runs at them
+    ids = [d.id for d in records.decisions(1)]
+    records.db.review_runs.update_one({"_id": one.id}, {"$set": {"decision_ids": [ids[0]]}})
+    records.db.review_runs.update_one({"_id": two.id}, {"$set": {"decision_ids": [ids[1]]}})
+    assert records.unseen_background_changes(1) == 2
+    assert records.unseen_background_changes(2) == 0
+    assert records.mark_reviews_seen(1) == 2
+    assert records.unseen_background_changes(1) == 0
+    assert records.mark_reviews_seen(1) == 0
+
+
+def test_a_rejected_key_is_rejected_for_that_client_only(records):
+    assert not records.is_rejected(1, "k")
+    records.reject_key(1, "k")
+    records.reject_key(1, "k")
+    assert records.is_rejected(1, "k")
+    assert not records.is_rejected(2, "k")
+    assert not records.is_rejected(1, "other")
+
+
+def test_review_state_defaults_and_round_trips(records):
+    state = records.review_state(1)
+    assert (state.client_id, state.last_seq, state.due_at, state.running, state.retry_at) == (1, 0, None, False, None)
+    state.last_seq, state.due_at, state.running, state.retry_at = 7, "2026-01-01T00:00:00+00:00", True, "x"
+    records.set_review_state(state)
+    assert records.review_state(1) == state
+    assert records.review_state(2).last_seq == 0
+
+
+def test_looked_at_is_the_row_ids_of_that_years_earlier_runs(records):
+    one = start(records)
+    records.db.review_runs.update_one({"_id": one.id}, {"$set": {"looked_at": [3, 4]}})
+    other = records.start_review(1, dt.date(2024, 4, 1), from_seq=0, to_seq=1, trigger_summary="x")
+    records.db.review_runs.update_one({"_id": other.id}, {"$set": {"looked_at": [9]}})
+    assert records.looked_at(1, YEAR) == {3, 4}
+    assert records.looked_at(2, YEAR) == set()
+
+
+def test_a_decision_without_a_trigger_reads_as_chat_and_new_kinds_are_accepted(records):
+    decision, _ = records.append_decision(draft(), "k1")
+    records.db.decisions.update_one({"_id": decision.id}, {"$unset": {"trigger": ""}})
+    stored = records.decisions(1)[0]
+    assert stored.trigger == "chat" and stored.review_id is None and stored.resolution is None
+    suggested, _ = records.append_decision(draft(status="suggested", trigger="background", review_id="r",
+                                                 resolution={"a": 1}), "k2")
+    assert records.decisions(1)[1].resolution == {"a": 1}
+    for kind in ("decision_undone", "decision_applied", "question_closed"):
+        c = records.add_change(change_draft(kind=kind, in_chat=True))
+        assert c.in_chat
+    assert records.changes(1)[-1].in_chat is True
+    assert records.add_change(change_draft()).in_chat is False
+
+
+def test_a_client_defaults_to_automatic_ai_review(mongo_store):
+    client = mongo_store.create_client(ClientFields(name="X Ltd", business_type="sole_trader", contact_name="Bo",
+                                                    first_year_end=dt.date(2026, 3, 31)))
+    assert client.ai_review == "automatic"
+    assert mongo_store.update_client(client.id, {"ai_review": "suggest"}).ai_review == "suggest"
+    assert mongo_store.get_client(client.id).ai_review == "suggest"
+    mongo_store.db.clients.update_one({"id": client.id}, {"$unset": {"ai_review": ""}})
+    assert mongo_store.get_client(client.id).ai_review == "automatic"
