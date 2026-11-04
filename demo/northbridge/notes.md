@@ -104,7 +104,7 @@ Each document's `.rows.json` holds its reading.
   becomes the claim's, owed to Priya on 2110. The Barclays COSTCO WHOLESALE £58.00 line is then left unpaired
   (a `possible_payment` towards the sheet line), and is **held in Suspense** as a bank line of £50 or more. It
   warns `booked_twice`: "Also booked from the expenses sheet's receipt (Costco Wholesale UK Ltd, £58.00, 21 Oct
-  2026). Keep one."
+  2026). If this line paid it, drop the expenses sheet line: this line then pays the receipt."
 - **Inkwell:** the sheet line (£27.50) and the invoice (£30.22) are from the same shop on the same day. Both get
   `amount_conflict`. The invoice is held, and the sheet line is booked. INKWELL SUPPLIES £30.22 on 12/10 then has
   no invoice to pay, so it is booked as a cost (under £50). The invoice also warns `vat_not_booked`: "The invoice

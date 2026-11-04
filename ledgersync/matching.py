@@ -443,8 +443,8 @@ def _paid_again(rows: list[Transaction], changes: list[dict], lines: list[int], 
                         and not any(k in apart[n] for k in r.rows)), None)
         if receipt is not None:
             twice = issue("booked_twice", f"Also booked from the expenses sheet's receipt ({receipt.counterparty}, "
-                                          f"{_gbp(receipt.total)}, {long_date(receipt.date)}). If this line paid it, drop "
-                                          "the expenses sheet line: this line then pays the receipt.",
+                                          f"{_gbp(receipt.total)}, {long_date(receipt.date)}). If this line paid "
+                                          "it, drop the expenses sheet line: this line then pays the receipt.",
                           related=receipt.rows + claim_lines.get(receipt.ref, []))
             change["issues"] = change.get("issues", line.issues) + [twice]
 

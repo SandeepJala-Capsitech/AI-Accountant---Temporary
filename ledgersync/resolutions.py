@@ -180,9 +180,14 @@ def _keep_one(rows: dict[int, SavedRow], row_id: int, r: KeepOne, **_) -> _Chang
     few days), and the kept row ranks at least as high as each dropped one. The dropped rows leave the books, but not
     the bank line that pays the receipt or invoice kept: that is its payment, not a duplicate."""
     named = [r.keep_row_id, *r.drop_row_ids]
+    keep = rows[r.keep_row_id]
+    if (row_id not in named and keep.document_type in ("receipt", "invoice")
+            and row_id in {line.id for line in _paying_lines(rows, keep)}):
+        raise _Refused(f"Row {row_id} is the bank line that pays the {_kind(keep)} kept, not a duplicate. Send the "
+                       f"call with the {_kind(keep)} as row_id, and drop only the expenses-sheet line; the bank line "
+                       "then pays it.")
     if not r.drop_row_ids or len(set(named)) < len(named) or row_id not in named:
         raise _Refused(f"Keep one row and drop others, row {row_id} among them.")
-    keep = rows[r.keep_row_id]
     _usable(keep)
     for drop in (rows[n] for n in r.drop_row_ids):
         _usable(drop, kept=False)

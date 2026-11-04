@@ -41,7 +41,7 @@ booked as well: £64.80, a bank line of £50 or more, so it goes to Suspense. Th
 
 The bank line raises `possible_payment`: "may pay" the sheet line. That is the wrong reading, because the card paid
 Staples, not Priya. It also raises `booked_twice`: "Also booked from the expenses sheet's receipt (Staples, £64.80,
-13 Oct 2026). Keep one."
+13 Oct 2026). If this line paid it, drop the expenses sheet line: this line then pays the receipt."
 
 ## The decision
 

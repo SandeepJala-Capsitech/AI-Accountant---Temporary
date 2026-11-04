@@ -290,12 +290,13 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
                                                    description="Why, in a sentence or two the person will read.")],
                       runtime: ToolRuntime[ChatContext]) -> dict:
         """Resolves an issue on a row, when the evidence settles it. keep_one: the same purchase recorded more than
-        once; keep the best-ranked record and drop the other records of it. A bank line that pays the receipt or invoice
-        you keep is its payment, not a duplicate: leave it out of drop_row_ids. row_id can be the kept row. use_primary:
-        two records disagree; use the better-ranked one. split_vat: one VAT total over items at different rates; split the row into parts that add up exactly to
-        it, with VAT at each part's rate matching the VAT printed. set_vat_from_document: the document prints VAT the
-        row doesn't book. The services check the resolution against the evidence and refuse what it doesn't support,
-        saying why. Sent again once applied, it returns the same decision."""
+        once; keep the best-ranked record and drop the other records of it. A bank line that pays the receipt or
+        invoice you keep is its payment, not a duplicate: leave it out of drop_row_ids. row_id can be the kept row.
+        use_primary: two records disagree; use the better-ranked one. split_vat: one VAT total over items at
+        different rates; split the row into parts that add up exactly to it, with VAT at each part's rate matching the
+        VAT printed. set_vat_from_document: the document prints VAT the row doesn't book. The services check the
+        resolution against the evidence and refuse what it doesn't support, saying
+        why. Sent again once applied, it returns the same decision."""
         ctx = runtime.context
         _step(runtime, f"Checking row {row_id}…")
         decision = resolve(store, records, client_id=ctx.client_id, thread_id=ctx.thread_id, actor=actor,

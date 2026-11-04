@@ -232,7 +232,7 @@ def test_keep_one_accepts_the_card_line_that_pays_the_kept_receipt(mongo_store, 
     assert decision.status == "applied" and saved(mongo_store, nb.id, nb.sheet_costco).excluded
 
 
-# ─── keep_one: the bank line that pays the receipt kept (the duplicate-receipt-spreadsheet case) ───────────────
+# ─── keep_one: the bank line that pays the receipt kept (the duplicate-receipt-spreadsheet case) ──
 
 CASE = Path(__file__).parent.parent / "eval" / "agent_cases" / "duplicate-receipt-spreadsheet"
 
@@ -275,6 +275,15 @@ def test_keep_one_refuses_to_drop_the_bank_line_that_pays_the_receipt_kept(mongo
     assert not saved(mongo_store, staples.id, staples.sheet).excluded
 
 
+def test_keep_one_asked_on_the_bank_line_points_to_the_receipt_as_the_row(mongo_store, records, staples):
+    # The booked_twice issue sits on the bank line, so the call is aimed at it: the refusal must not say to drop it.
+    decision = staples_call(mongo_store, records, staples, staples.bank, [staples.sheet])
+    assert decision.status == "refused" and "pays the receipt kept" in decision.reason
+    assert "with the receipt as row_id" in decision.reason and "among them" not in decision.reason
+    assert not saved(mongo_store, staples.id, staples.sheet).excluded
+    assert not saved(mongo_store, staples.id, staples.bank).excluded
+
+
 def test_keep_one_keeps_the_receipt_and_the_bank_line_that_pays_it(mongo_store, records, staples):
     decision = staples_call(mongo_store, records, staples, staples.receipt, [staples.sheet])
     assert decision.status == "applied" and decision.row_ids == sorted([staples.receipt, staples.sheet])
@@ -282,6 +291,7 @@ def test_keep_one_keeps_the_receipt_and_the_bank_line_that_pays_it(mongo_store, 
     assert not saved(mongo_store, staples.id, staples.bank).excluded
     line, receipt = shown(mongo_store, staples.id, staples.bank), shown(mongo_store, staples.id, staples.receipt)
     assert line.recorded_by is not None and line.recorded_by.ref == receipt.document_ref and not booked(line)
+    assert "booked_twice" not in [i.code for i in line.issues]
     assert booked(receipt) and [p.ref for p in receipt.paid_by] == [line.document_ref]
     ledger_book.post(mongo_store, records, staples.id, YEAR)
     tb = ledger_book.posted_trial_balance(mongo_store, records, staples.id, YEAR)
