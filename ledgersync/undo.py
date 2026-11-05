@@ -84,7 +84,7 @@ def _undo_close(records: AgentRecords, locks: ClientLocks, client_id: int, d: De
         was_rejected = records.is_rejected(client_id, key)
         written = False
         try:
-            records.set_question(q.id, d.before["question"]["status"])
+            records.set_question(q.id, d.before["question"]["status"], d.before["question"].get("answer"))
             records.reject_key(client_id, key)
             undone = _undone(records, d)
             written = True
@@ -146,12 +146,19 @@ def apply_suggestion(store: MongoStore, records: AgentRecords, locks: ClientLock
         raise InvalidInput("This is not a suggestion.")
     if decision_id in records.applied_suggestions(client_id):
         raise InvalidInput("This suggestion was applied already.")
-    resolution = TypeAdapter(Resolution).validate_python(d.resolution)
-    with locks.hold(client_id):
-        made = resolutions.resolve(
-            store, records, client_id=client_id, thread_id=d.thread_id, actor="user", row_id=d.row_ids[0],
-            resolution=resolution, evidence=d.evidence, reason=d.reason, texts=texts, trigger="background",
-            review_id=d.review_id, suggest=False)
+    if d.resolution.get("action") == "close_question":
+        with locks.hold(client_id):
+            made = questions.close(
+                store, records, client_id=client_id, year_start=d.year_start, question_id=d.resolution["question_id"],
+                reason=d.resolution["reason"], evidence=d.evidence, texts=texts, actor="user", trigger="background",
+                review_id=d.review_id, suggest=False)
+    else:
+        resolution = TypeAdapter(Resolution).validate_python(d.resolution)
+        with locks.hold(client_id):
+            made = resolutions.resolve(
+                store, records, client_id=client_id, thread_id=d.thread_id, actor="user", row_id=d.row_ids[0],
+                resolution=resolution, evidence=d.evidence, reason=d.reason, texts=texts, trigger="background",
+                review_id=d.review_id, suggest=False)
     if made.status == "applied":
         upkeep.after_change(store, records, locks, ChangeDraft(
             client_id=client_id, year_start=made.year_start, actor="user", kind="decision_applied",

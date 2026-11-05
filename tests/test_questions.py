@@ -353,7 +353,7 @@ from test_resolutions import nb, pages  # noqa: E402,F401
 
 def close_args(records, nb, pages, q, *quotes, **kw):
     uid = nb.upload("costco.txt")
-    return dict(client_id=nb.id, question_id=q.id, reason="The receipt says so.", actor="agent:test",
+    return dict(client_id=nb.id, year_start=date(2026, 4, 1), question_id=q.id, reason="The receipt says so.", actor="agent:test",
                 trigger="background", review_id="r1", texts=lambda n: pages.get(n, []),
                 evidence=[Evidence(upload_id=uid, quote=t) for t in quotes], **kw)
 
@@ -380,3 +380,12 @@ def test_a_suggested_closing_leaves_the_question_open_and_a_rule_question_cannot
                                                  kind="date", text="When?", why="No date.", source="rules"), "k")
     with pytest.raises(InvalidInput):
         questions.close(store, records, **close_args(records, nb, pages, rule, "Printer paper        52.80"))
+
+
+def test_a_question_of_another_year_cannot_be_closed(store, records, pages, nb):
+    q = questions.ask(records, client_id=nb.id, year_start=date(2026, 4, 1), row_ids=[nb.receipt], text="Q?", why="?")
+    args = close_args(records, nb, pages, q, "Printer paper        52.80")
+    args["year_start"] = date(2025, 4, 1)
+    with pytest.raises(InvalidInput, match="That question belongs to another year."):
+        questions.close(store, records, **args)
+    assert records.question(q.id).status == "open"

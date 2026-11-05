@@ -436,7 +436,8 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
         otherwise, saying why. Questions the rules ask can't be closed."""
         ctx = runtime.context
         _step(runtime, "Checking whether the question is answered…")
-        decision = questions.close(store, records, client_id=ctx.client_id, question_id=question_id, reason=reason,
+        decision = questions.close(store, records, client_id=ctx.client_id, year_start=ctx.year_start,
+                                   question_id=question_id, reason=reason,
                                    evidence=evidence, texts=texts(ctx.client_id), actor=actor, trigger=ctx.trigger,
                                    review_id=ctx.review_id, suggest=ctx.mode == "suggest")
         if decision.status == "refused":

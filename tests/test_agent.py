@@ -756,7 +756,7 @@ def test_close_question_after_a_persons_change_to_its_rows(mongo_store, deps, st
     [d] = deps.records.decisions(staples)
     assert (d.action, d.trigger, d.review_id, d.actor) == ("close_question", "background", "rev1",
                                                            "agent:qwen/qwen3.8-27b")
-    assert d.before == {"question": {"status": "open"}} and d.after == {"question": {"status": "resolved"}}
+    assert d.before == {"question": {"status": "open", "answer": None}} and d.after == {"question": {"status": "resolved"}}
     [quote] = d.evidence
     assert (quote.upload_id, quote.upload_name, quote.quote) == (0, "change record", change.summary)
     assert any(c.kind == "question_closed" and c.row_ids == [row_id] for c in deps.records.changes(staples))

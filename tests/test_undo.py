@@ -219,7 +219,7 @@ def closed_question(store, records, pages, nb):
     from ledgersync.models import Evidence
     q = questions.ask(records, client_id=nb.id, year_start=YEAR, row_ids=[nb.receipt], text="For the office?", why="?")
     records.set_question(q.id, "waiting", "Not sure")
-    d = questions.close(store, records, client_id=nb.id, question_id=q.id, reason="Receipt.", actor=ACTOR,
+    d = questions.close(store, records, client_id=nb.id, year_start=YEAR, question_id=q.id, reason="Receipt.", actor=ACTOR,
                         trigger="background", review_id="r1", texts=lambda n: pages.get(n, []),
                         evidence=[Evidence(upload_id=nb.upload("costco.txt"), quote="Printer paper        52.80")])
     assert d.status == "applied" and records.question(q.id).status == "resolved"
@@ -231,11 +231,11 @@ def test_undoing_a_closed_question_reopens_it_to_its_old_status_and_the_ai_does_
     q, d = closed_question(mongo_store, records, pages, nb)
     undone = undo.undo_decision(mongo_store, records, locks, client_id=nb.id, decision_id=d.id)
     assert (undone.action, undone.reverses, undone.before, undone.after) == (
-        "undo", d.id, {"question": {"status": "resolved"}}, {"question": {"status": "waiting"}})
+        "undo", d.id, {"question": {"status": "resolved"}}, {"question": {"status": "waiting", "answer": "Not sure"}})
     assert records.question(q.id).status == "waiting"
     assert any(c.kind == "decision_undone" and c.after == {"decision_id": d.id} for c in records.changes(nb.id))
     from ledgersync import questions
-    again = questions.close(mongo_store, records, client_id=nb.id, question_id=q.id, reason="Receipt.", actor=ACTOR,
+    again = questions.close(mongo_store, records, client_id=nb.id, year_start=YEAR, question_id=q.id, reason="Receipt.", actor=ACTOR,
                             trigger="background", texts=lambda n: pages.get(n, []), evidence=d.evidence)
     assert (again.status, again.reason) == ("refused", "A person undid this change.")
     assert records.question(q.id).status == "waiting"
@@ -257,3 +257,31 @@ def test_a_failed_undo_of_a_closed_question_leaves_it_closed(mongo_store, record
     monkeypatch.undo()
     undo.undo_decision(mongo_store, records, locks, client_id=nb.id, decision_id=d.id)
     assert records.question(q.id).status == "waiting"
+
+
+def test_undoing_a_closed_question_gives_back_its_earlier_answer(mongo_store, records, locks, pages, nb):
+    q, d = closed_question(mongo_store, records, pages, nb)
+    assert d.before == {"question": {"status": "waiting", "answer": "Not sure"}}
+    undo.undo_decision(mongo_store, records, locks, client_id=nb.id, decision_id=d.id)
+    back = records.question(q.id)
+    assert (back.status, back.answer) == ("waiting", "Not sure")
+
+
+def test_a_suggested_closing_is_applied_as_the_person_once(mongo_store, records, locks, pages, nb):
+    from ledgersync import questions
+    from ledgersync.models import Evidence
+    q = questions.ask(records, client_id=nb.id, year_start=YEAR, row_ids=[nb.receipt], text="For the office?", why="?")
+    s = questions.close(mongo_store, records, client_id=nb.id, year_start=YEAR, question_id=q.id, reason="Receipt.",
+                        actor=ACTOR, trigger="background", review_id="r1", texts=lambda n: pages.get(n, []),
+                        evidence=[Evidence(upload_id=nb.upload("costco.txt"), quote="Printer paper        52.80")],
+                        suggest=True)
+    assert s.status == "suggested" and s.resolution["action"] == "close_question"
+    assert records.question(q.id).status == "open"
+    made = apply(mongo_store, records, locks, pages, nb, s)
+    assert (made.status, made.actor, made.action, made.review_id) == ("applied", "user", "close_question", "r1")
+    assert made.id != s.id and records.question(q.id).status == "resolved"
+    assert records.applied_suggestions(nb.id) == {s.id: made.id}
+    assert any(c.kind == "decision_applied" and c.after == {"decision_id": s.id, "applied_as": made.id}
+               for c in records.changes(nb.id))
+    with pytest.raises(InvalidInput, match="applied already"):
+        apply(mongo_store, records, locks, pages, nb, s)

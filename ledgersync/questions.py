@@ -199,7 +199,7 @@ def answer(store: MongoStore, records: AgentRecords, *, client_id: int, thread_i
 CLOSED_BY_THE_AI = "Closed by the AI: "
 
 
-def close(store: MongoStore, records: AgentRecords, *, client_id: int, question_id: str, reason: str,
+def close(store: MongoStore, records: AgentRecords, *, client_id: int, year_start: dt.date, question_id: str, reason: str,
           evidence: list[Evidence], texts: Texts, actor: str, trigger: str, review_id: Optional[str] = None,
           suggest: bool = False) -> Decision:
     """Closes a question of the agent's own that the books have since answered, and records it as a decision. Only an
@@ -211,6 +211,8 @@ def close(store: MongoStore, records: AgentRecords, *, client_id: int, question_
     q = records.question(question_id)
     if q is None or q.client_id != client_id:
         raise NotFound("This question was not found.")
+    if q.year_start != year_start:
+        raise InvalidInput("That question belongs to another year.")
     key = f"close|{q.id}"
     if (done := records.decision_by_key(client_id, key)) is not None and done.status == "applied" \
             and not records.is_rejected(client_id, key):
@@ -239,10 +241,11 @@ def close(store: MongoStore, records: AgentRecords, *, client_id: int, question_
             return refused(why or "Nothing since the question was asked answers it.")
         names = {u["id"]: u["name"] for u in b.uploads}
         quotes = [e.model_copy(update={"upload_name": names.get(e.upload_id, "")}) for e in evidence]
-    before, after = {"question": {"status": q.status}}, {"question": {"status": "resolved"}}
+    before, after = {"question": {"status": q.status, "answer": q.answer}}, {"question": {"status": "resolved"}}
     if suggest:
         return records.append_decision(DecisionDraft(**draft, status="suggested", reason=reason, evidence=quotes, before=before,
-                                                     after=after), f"{key}|suggested")[0]
+                                                     after=after, resolution={"action": "close_question",
+                                                                              "question_id": q.id, "reason": reason}), f"{key}|suggested")[0]
     made = records.append_decision(DecisionDraft(**draft, status="applied", reason=reason, evidence=quotes, before=before,
                                                  after=after), key)[0]
     records.set_question(q.id, "resolved", f"{CLOSED_BY_THE_AI}{reason}")
