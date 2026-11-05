@@ -152,13 +152,14 @@ def ask(records: AgentRecords, *, client_id: int, year_start: dt.date, row_ids: 
 
 
 def answer(store: MongoStore, records: AgentRecords, *, client_id: int, thread_id: Optional[str], question_id: str,
-           answer: Answer) -> Answered:
+           answer: Answer, now: Optional[dt.datetime] = None, wait: int = 20) -> Answered:
     """Applies the person's answer, then works the questions out again and posts the year. A date answers a date
     question: the row is dated by resolutions.set_date (a date outside the books is InvalidInput, and the question
     stays open) and the question is resolved. "I don't have it" and "Not sure" leave the question waiting. A
     question already resolved is left as it is (and nothing is posted); the same answer twice is one decision.
     Returns the year's open and waiting questions, and the posting of the question's year (the year a date moved
-    the row to is posted too)."""
+    the row to is posted too). An answer outside a chat (no thread_id) makes the client due for a background review
+    `wait` seconds after `now`."""
     q = records.question(question_id)
     if q is None or q.client_id != client_id:
         raise NotFound("This question was not found.")
@@ -186,9 +187,12 @@ def answer(store: MongoStore, records: AgentRecords, *, client_id: int, thread_i
         said = "Not sure"
         records.set_question(q.id, "waiting", said)
     if not (q.status == "waiting" and q.answer == said):   # the same answer again changes nothing to record
-        records.add_change(ChangeDraft(client_id=client_id, year_start=q.year_start, actor="user",
-                                       kind="question_answered", row_ids=list(q.row_ids), after={"answer": said},
-                                       summary=f"Answered: {q.text}"))
+        made = ChangeDraft(client_id=client_id, year_start=q.year_start, actor="user", kind="question_answered",
+                           row_ids=list(q.row_ids), after={"answer": said}, summary=f"Answered: {q.text}")
+        records.add_change(made)
+        if thread_id is None:   # in a chat, the chat's agent handles the answer
+            from . import reviews   # here: reviews imports the agent
+            reviews.note(records, made, now=now or reviews.utcnow(), wait=wait)
     posts = []
     for year in years:
         refresh(store, records, client_id, year)

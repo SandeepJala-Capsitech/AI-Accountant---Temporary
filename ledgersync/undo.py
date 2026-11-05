@@ -42,10 +42,11 @@ def _restore(store, records, client_id, key, was_rejected, saved, rows, uploads)
 
 
 def undo_decision(store: MongoStore, records: AgentRecords, locks: ClientLocks, *, client_id: int,
-                  decision_id: str) -> Decision:
+                  decision_id: str, wait: int = 20) -> Decision:
     """Puts back what an applied decision changed and records the reversal. InvalidInput when the decision isn't the
     client's, isn't applied, was undone already, or a row it changed has changed since (the person changes it by
-    hand then). The change is remembered, so neither the chat nor the review makes it again."""
+    hand then). The change is remembered, so neither the chat nor the review makes it again. wait: seconds before the
+    background review of the undo starts."""
     d = records.decision(client_id, decision_id)
     if d is None:
         raise InvalidInput("This decision was not found.")
@@ -60,7 +61,7 @@ def undo_decision(store: MongoStore, records: AgentRecords, locks: ClientLocks, 
         undone = _undo_rows(store, records, locks, client_id, d, key)
     upkeep.after_change(store, records, locks, ChangeDraft(
         client_id=client_id, year_start=d.year_start, actor="user", kind="decision_undone", row_ids=d.row_ids,
-        before=d.after, after={"decision_id": decision_id}, summary=f"Undid {d.rule} (rows {', '.join(map(str, d.row_ids))})"))
+        before=d.after, after={"decision_id": decision_id}, summary=f"Undid {d.rule} (rows {', '.join(map(str, d.row_ids))})"), wait=wait)
     return undone
 
 
@@ -137,7 +138,7 @@ def _undo_rows(store: MongoStore, records: AgentRecords, locks: ClientLocks, cli
 
 
 def apply_suggestion(store: MongoStore, records: AgentRecords, locks: ClientLocks, *, client_id: int,
-                     decision_id: str, texts: Texts) -> Decision:
+                     decision_id: str, texts: Texts, wait: int = 20) -> Decision:
     """Makes a suggested decision as the person: the stored resolution and evidence go through resolve again, which
     checks them against the rows as they are now. Returns the new decision, which is refused if they no longer hold.
     InvalidInput when the decision isn't the client's suggestion, or was applied already."""
@@ -163,5 +164,5 @@ def apply_suggestion(store: MongoStore, records: AgentRecords, locks: ClientLock
         upkeep.after_change(store, records, locks, ChangeDraft(
             client_id=client_id, year_start=made.year_start, actor="user", kind="decision_applied",
             row_ids=made.row_ids, after={"decision_id": decision_id, "applied_as": made.id},
-            summary=f"Applied the suggestion: {made.rule} (rows {', '.join(map(str, made.row_ids))})"))
+            summary=f"Applied the suggestion: {made.rule} (rows {', '.join(map(str, made.row_ids))})"), wait=wait)
     return made

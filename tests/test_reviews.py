@@ -93,7 +93,10 @@ def test_a_batch_of_uploads_causes_one_run_after_the_last_is_read(make, staples)
     assert h.worker.tick(secs(25)) == []   # the last file was read at 10: due at 30
     h.busy.clear()
     assert h.worker.tick(secs(29)) == []
-    [run] = h.worker.tick(secs(31))
+    h.busy.append("reading")
+    assert h.worker.tick(secs(31)) == [] and h.model.seen == []   # due, but a file is still being read
+    h.busy.clear()
+    [run] = h.worker.tick(secs(32))
     assert run.status == "done" and run.trigger_summary == "after 3 files were added"
     assert h.worker.tick(secs(60)) == []
     assert len(h.model.seen) == 1
@@ -298,3 +301,50 @@ def test_a_change_in_a_year_that_is_not_open_causes_no_run(make, staples):
     h.change(staples, T, year_start=YEAR - dt.timedelta(days=365))
     assert h.worker.tick(secs(21)) == []
     assert h.records.review_state(staples).due_at is None
+
+
+def test_two_workers_ticking_the_same_due_client_run_it_once(make, staples):
+    from_other = []
+
+    def while_running(messages):
+        # the other worker, which read the client as due and idle before this run began, ticks now
+        from_other.extend(other.tick(secs(21)))
+        return say("Looked.")
+
+    h = make(while_running, say("A second run."))
+    other = reviews.Worker(h.chat, h.settings, busy=lambda client_id: False)
+    h.change(staples, T)
+    stale = h.records.due_review_states()
+    h.records.due_review_states = lambda: stale
+
+    first = h.worker.tick(secs(21))
+
+    assert len(first) == 1 and from_other == [] and len(h.model.seen) == 1
+
+
+def test_claiming_a_running_review_fails(records):
+    records.patch_review_state(5, running=False)
+    assert records.claim_review(5) is True
+    assert records.claim_review(5) is False
+    records.patch_review_state(5, running=False)
+    assert records.claim_review(5) is True
+
+
+def test_a_client_that_is_gone_or_archived_is_not_retried(make, mongo_store, staples):
+    h = make(say("Looked."))
+    h.change(staples, T)
+    mongo_store.update_client(staples, {"archived": True})
+    assert h.worker.tick(secs(21)) == []
+    state = h.records.review_state(staples)
+    assert (state.due_at, state.retry_at, state.running) == (None, None, False)
+
+    h.records.patch_review_state(9999, due_at=reviews._iso(T))   # a client that does not exist
+    assert h.worker.tick(secs(21)) == []
+    assert h.records.review_state(9999).due_at is None and h.records.review_state(9999).retry_at is None
+
+
+def test_one_bad_state_does_not_stop_the_tick(make, staples):
+    h = make(say("Looked."))
+    h.records.patch_review_state(4242, due_at="not a time")
+    h.change(staples, T)
+    assert len(h.worker.tick(secs(21))) == 1

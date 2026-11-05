@@ -285,3 +285,10 @@ def test_a_suggested_closing_is_applied_as_the_person_once(mongo_store, records,
                for c in records.changes(nb.id))
     with pytest.raises(InvalidInput, match="applied already"):
         apply(mongo_store, records, locks, pages, nb, s)
+
+
+def test_an_undo_makes_the_client_due_after_the_wait_it_is_given(mongo_store, records, locks, pages, nb):
+    d = call(mongo_store, records, pages, nb, nb.sheet_costco, keep_receipt(nb), QUOTE)
+    undo.undo_decision(mongo_store, records, locks, client_id=nb.id, decision_id=d.id, wait=777)
+    due = dt.datetime.fromisoformat(records.review_state(nb.id).due_at)
+    assert abs((due - dt.datetime.now(dt.timezone.utc)).total_seconds() - 777) < 60

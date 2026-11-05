@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Callable, Optional
 from . import books, upkeep
 from .agent.run import stream_turn
 from .agent.tools import ChatContext, _to_look_at
+from .errors import NotFound
 from .models import Change, ChangeDraft, ReviewRun
 from .records import AgentRecords
 
@@ -251,11 +252,23 @@ class Worker:
         now = now or self.clock()
         records, runs = self.chat.records, []
         for state in records.due_review_states():
-            if state.running or _when(state.due_at) > now or self.busy(state.client_id):
+            try:
+                if state.running or _when(state.due_at) > now or self.busy(state.client_id):
+                    continue
+                if state.retry_at and _when(state.retry_at) > now:
+                    continue
+                try:
+                    client = self.chat.store.get_client(state.client_id)
+                except NotFound:
+                    client = None
+                if client is None or client.archived:   # gone or archived: there is nothing to review
+                    records.patch_review_state(state.client_id, due_at=None, retry_at=None)
+                    continue
+                if not records.claim_review(state.client_id):   # another worker has it
+                    continue
+            except Exception:
+                logger.exception("The review worker couldn't look at client %s", state.client_id)
                 continue
-            if state.retry_at and _when(state.retry_at) > now:
-                continue
-            records.patch_review_state(state.client_id, running=True)
             try:
                 runs.extend(run(self.chat, state.client_id, now=now))
             except Exception:

@@ -389,3 +389,19 @@ def test_a_question_of_another_year_cannot_be_closed(store, records, pages, nb):
     with pytest.raises(InvalidInput, match="That question belongs to another year."):
         questions.close(store, records, **args)
     assert records.question(q.id).status == "open"
+
+
+def test_an_answer_outside_a_chat_makes_the_client_due_and_one_in_a_chat_does_not(store, records, acme):
+    from datetime import datetime, timezone
+    add_rows(store, acme, undated_taxi(), year_start=YEAR_1)
+    [q] = refresh(store, records, acme)
+    questions.answer(store, records, client_id=acme, thread_id="t1", question_id=q.id,
+                     answer=DateAnswer(kind="date", date=date(2025, 8, 14)))
+    assert records.review_state(acme).due_at is None   # the chat's agent handles it
+
+    add_rows(store, acme, undated_taxi(description="taxi 2"), year_start=YEAR_1)
+    [q2] = [x for x in refresh(store, records, acme) if x.id != q.id]
+    at = datetime(2026, 11, 4, 10, 0, tzinfo=timezone.utc)
+    questions.answer(store, records, client_id=acme, thread_id=None, question_id=q2.id,
+                     answer=DateAnswer(kind="date", date=date(2025, 8, 15)), now=at, wait=30)
+    assert records.review_state(acme).due_at == "2026-11-04T10:00:30+00:00"

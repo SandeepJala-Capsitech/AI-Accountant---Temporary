@@ -298,6 +298,12 @@ class AgentRecords:
             raise ValueError(f"Not review state fields: {sorted(unknown)}")
         self.db.review_state.update_one({"client_id": client_id}, {"$set": fields}, upsert=True)
 
+    def claim_review(self, client_id: int) -> bool:
+        """Marks the client's review running unless it is already, in one step; whether this call claimed it."""
+        doc = self.db.review_state.find_one_and_update(
+            {"client_id": client_id, "running": {"$ne": True}}, {"$set": {"running": True}})
+        return doc is not None
+
     def due_review_states(self) -> list[ReviewState]:
         """The states of the clients with a review due (not yet whether the time has come)."""
         return [ReviewState.model_validate({k: v for k, v in doc.items() if k != "_id"})
