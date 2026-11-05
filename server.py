@@ -601,12 +601,15 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         store.get_client(client_id)
         records = chat.records
         applied = records.applied_suggestions(client_id)
+        runs = records.reviews(client_id, year_start=year_start)
+        decisions = {d.id: d for d in records.decisions_by_ids(client_id, [i for r in runs for i in r.decision_ids])}
+        asked = {q.id: q for q in records.questions_by_ids(client_id, [i for r in runs for i in r.question_ids])}
         found = []
-        for run in records.reviews(client_id, year_start=year_start):
-            decisions = [d for d in (records.decision(client_id, i) for i in run.decision_ids) if d]
-            asked = [q for q in (records.question(i) for i in run.question_ids) if q and q.client_id == client_id]
-            found.append(ReviewDetail(**run.model_dump(), decisions=decisions, questions=asked,
-                                      applied={d.id: applied[d.id] for d in decisions if d.id in applied}))
+        for run in runs:
+            mine = [decisions[i] for i in run.decision_ids if i in decisions]
+            found.append(ReviewDetail(**run.model_dump(), decisions=mine,
+                                      questions=[asked[i] for i in run.question_ids if i in asked],
+                                      applied={d.id: applied[d.id] for d in mine if d.id in applied}))
         return found
 
     @app.post("/api/clients/{client_id}/reviews/seen")

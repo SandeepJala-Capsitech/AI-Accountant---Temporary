@@ -35,6 +35,18 @@ def app(mongo_store, pages, nb):
     api.__exit__(None, None, None)
 
 
+@pytest.fixture
+def app_other(make, mongo_store, client_id, pages, nb):
+    """Two clients on one API: client_id (mine) and nb (theirs), with theirs' applied decision and open question."""
+    from ledgersync import questions
+    api = make()
+    api.records = AgentRecords(mongo_store.db)
+    decision = call(mongo_store, api.records, pages, nb, nb.sheet_costco, keep_receipt(nb), QUOTE)
+    question = questions.ask(api.records, client_id=nb.id, year_start=YEAR, row_ids=[nb.receipt],
+                             text="For the office?", why="?")
+    return api, client_id, nb.id, decision, question
+
+
 def review_with(records, nb, *decisions, questions=()):
     """A finished, unseen run holding the decisions and questions."""
     run = records.start_review(nb.id, YEAR, from_seq=0, to_seq=1, trigger_summary="after 1 file was added")
@@ -140,18 +152,21 @@ def test_a_question_is_answered_by_date_with_no_chat(make, mongo_store, client_i
     assert mongo_store.db.review_state.find_one({"client_id": client_id})["due_at"]   # due a review
 
 
-def test_a_question_of_another_client_is_not_found(make, mongo_store, client_id):
-    api = make(say("The taxi has no date."), reads=[transactions_json(TAXI)])
-    thread = new_thread(api, client_id)
-    [question] = result_of(send(api, thread["id"], "Review October.", TAXI_RECEIPT))["questions"]
+def test_another_clients_decision_and_question_are_out_of_reach(make, app_other):
+    api, mine, theirs, decision, question = app_other
+    base = f"/api/clients/{mine}"
 
-    wrong = api.post(f"/api/clients/{client_id + 1}/questions/{question['id']}/answer",
-                     json={"kind": "date", "date": "2026-10-09"})
+    assert api.post(f"{base}/decisions/{decision.id}/undo").status_code == 422
+    assert api.post(f"{base}/decisions/{decision.id}/apply").status_code == 422
+    assert api.post(f"{base}/questions/{question.id}/answer", json={"kind": "date", "date": "2026-10-09"}
+                    ).status_code == 404
+    assert api.post(f"{base}/questions/{question.id}/document",
+                    files={"file": ("a.txt", b"x", "text/plain")}).status_code == 404
+    assert api.get(f"{base}/reviews").json() == []
+    assert api.records.question(question.id).status == "open"
 
-    assert wrong.status_code == 404
 
-
-def test_a_document_answers_a_question_with_no_chat(make, client_id):
+def test_a_document_answers_a_question_with_no_chat(make, mongo_store, client_id):
     api, thread, question = held_payment(make, client_id, transactions_json(INVOICE))
 
     uploaded = api.post(f"/api/clients/{client_id}/questions/{question['id']}/document",
@@ -162,6 +177,19 @@ def test_a_document_answers_a_question_with_no_chat(make, client_id):
     assert (answered["question"]["id"], answered["question"]["status"]) == (question["id"], "resolved")
     assert answered["trial_balance"]["suspense"] == []
     assert api.get(f"/api/clients/{client_id}/questions").json() == []
+    assert mongo_store.db.review_state.find_one({"client_id": client_id})["due_at"]   # due a review
+
+
+def test_a_document_answer_in_a_chat_makes_no_review_due(make, mongo_store, client_id):
+    api, thread, question = held_payment(make, client_id, transactions_json(INVOICE))
+    mongo_store.db.review_state.delete_many({"client_id": client_id})
+
+    uploaded = api.post(f"/api/chat/threads/{thread['id']}/questions/{question['id']}/document",
+                        files={"file": (INVOICE_FILE[0], INVOICE_FILE[1].encode(), "text/plain")})
+
+    assert uploaded.status_code == 200, uploaded.text
+    state = mongo_store.db.review_state.find_one({"client_id": client_id})
+    assert not state or not state.get("due_at")
 
 
 def test_the_ai_review_setting_round_trips_and_is_recorded(make, mongo_store, client_id):
@@ -173,3 +201,13 @@ def test_the_ai_review_setting_round_trips_and_is_recorded(make, mongo_store, cl
     assert api.get(f"/api/clients/{client_id}").json()["ai_review"] == "suggest"
     [change] = [c for c in AgentRecords(mongo_store.db).changes(client_id) if c.kind == "client_changed"]
     assert change.after == {"ai_review": "suggest"} and change.before == {"ai_review": "automatic"}
+
+
+def test_decisions_and_questions_are_fetched_by_ids_for_one_client(mongo_store, records, pages, nb, client_id):
+    from ledgersync import questions
+    d = call(mongo_store, records, pages, nb, nb.sheet_costco, keep_receipt(nb), QUOTE)
+    q = questions.ask(records, client_id=nb.id, year_start=YEAR, row_ids=[nb.receipt], text="For?", why="?")
+
+    assert [x.id for x in records.decisions_by_ids(nb.id, [d.id, "none"])] == [d.id]
+    assert [x.id for x in records.questions_by_ids(nb.id, ["none", q.id])] == [q.id]
+    assert records.decisions_by_ids(client_id, [d.id]) == [] and records.questions_by_ids(client_id, [q.id]) == []

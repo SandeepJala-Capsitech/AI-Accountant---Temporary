@@ -33,7 +33,7 @@ from ledgersync.config import Settings
 from ledgersync.errors import InvalidInput, LedgerSyncError, ModelUnavailable, NotFound, YearClosed
 from ledgersync.jobs import SUCCEEDED, Job
 from ledgersync.ledger import require_active
-from ledgersync.models import (ChatThread, Client, Decision, PostedTrialBalance, PostResult, Question,
+from ledgersync.models import (ChangeDraft, ChatThread, Client, Decision, PostedTrialBalance, PostResult, Question,
                                Transaction)
 from ledgersync.records import AgentRecords
 from ledgersync.rows import now_iso
@@ -553,4 +553,11 @@ class Chat:
             if still.status != "resolved":
                 payment = next((r.tx for r in self.store.rows(client.id) if r.id in still.row_ids[:1]), None)
                 self.records.set_question_why(question_id, _mismatch(file.name, rows, payment))
+        if thread_id is None:   # outside a chat nobody else handles it: the background review looks again
+            from .. import reviews   # here: reviews imports the agent
+            made = ChangeDraft(client_id=client.id, year_start=asked.year_start, actor="user", kind="question_answered",
+                               row_ids=list(asked.row_ids), after={"answer": file.name},
+                               summary=f"Answered: {asked.text}")
+            self.records.add_change(made)
+            reviews.note(self.records, made, now=reviews.utcnow(), wait=self.settings.review_wait_seconds)
         return self._answered_for(client.id, year_start, thread_id, since, question_id, post)

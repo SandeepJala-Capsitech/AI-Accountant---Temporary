@@ -112,6 +112,12 @@ class AgentRecords:
         doc = self.db.decisions.find_one({"client_id": client_id, "_id": decision_id})
         return _model(Decision, doc) if doc else None
 
+    def decisions_by_ids(self, client_id: int, ids) -> list[Decision]:
+        """The client's decisions with these ids (one query), in the order of the ids; others are left out."""
+        found = {doc["_id"]: _model(Decision, doc)
+                 for doc in self.db.decisions.find({"client_id": client_id, "_id": {"$in": list(ids)}})}
+        return [found[i] for i in ids if i in found]
+
     def reversal_of(self, client_id: int, decision_id: str) -> Optional[Decision]:
         """The client's decision that reverses the one given, if any."""
         doc = self.db.decisions.find_one({"client_id": client_id, "reverses": decision_id})
@@ -199,6 +205,12 @@ class AgentRecords:
         """The question with this id, in any status, if there is one."""
         doc = self.db.questions.find_one({"id": id})
         return _model(Question, doc) if doc else None
+
+    def questions_by_ids(self, client_id: int, ids) -> list[Question]:
+        """The client's questions with these ids (one query), in the order of the ids; others are left out."""
+        found = {doc["id"]: _model(Question, doc)
+                 for doc in self.db.questions.find({"client_id": client_id, "id": {"$in": list(ids)}})}
+        return [found[i] for i in ids if i in found]
 
     def questions(self, client_id: int, year_start: Optional[dt.date],
                   statuses: tuple[str, ...] = ("open", "waiting")) -> list[Question]:
