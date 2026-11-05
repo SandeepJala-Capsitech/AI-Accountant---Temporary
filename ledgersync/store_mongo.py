@@ -519,6 +519,31 @@ class MongoStore:
         wanted = set(row_ids)
         return {r["id"]: r["data"] for r in doc.get("rows", []) if r["id"] in wanted}
 
+    def raw_rows(self, client_id: int, row_ids) -> tuple[list[dict], list[dict]]:
+        """The stored rows with these ids, and the uploads they belong to, whole, for restore_rows to put back."""
+        doc = self.db.clients.find_one({"id": client_id}, {"rows": 1, "uploads": 1})
+        if not doc:
+            raise NotFound("This client was not found.")
+        rows = [r for r in doc.get("rows", []) if r["id"] in set(row_ids)]
+        wanted = {r["upload_id"] for r in rows}
+        return rows, [u for u in doc.get("uploads", []) if u["id"] in wanted]
+
+    def restore_rows(self, client_id: int, rows: list[dict], uploads: list[dict]) -> None:
+        """Adds back whichever of these rows and uploads (as raw_rows read them) the client no longer has."""
+        doc = self.db.clients.find_one({"id": client_id}, {"rows.id": 1, "uploads.id": 1})
+        if not doc:
+            raise NotFound("This client was not found.")
+        have_rows = {r["id"] for r in doc.get("rows", [])}
+        have_uploads = {u["id"] for u in doc.get("uploads", [])}
+        push = {}
+        if missing := [r for r in rows if r["id"] not in have_rows]:
+            push["rows"] = {"$each": missing}
+        if missing_uploads := [u for u in uploads if u["id"] not in have_uploads]:
+            push["uploads"] = {"$each": missing_uploads}
+        if push:
+            self.db.clients.update_one({"id": client_id}, {"$push": push, "$set": {"updated_at": now_iso()},
+                                                           "$inc": {"revision": 1}})
+
     def put_row_data(self, client_id: int, data: dict[int, dict]) -> None:
         """Writes rows' data back as row_data read it, replacing it whole. Like patch_row, it writes only if the
         client's document still has the revision it was read at, and otherwise reads and tries again."""

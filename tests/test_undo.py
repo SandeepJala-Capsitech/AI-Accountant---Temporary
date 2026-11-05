@@ -151,3 +151,35 @@ def test_a_row_with_a_person_change_on_record_is_refused_to_the_background(mongo
     person_changed(records, nb, nb.sheet_costco, kind)
     refused = call(mongo_store, records, pages, nb, nb.sheet_costco, keep_receipt(nb), QUOTE, trigger="background")
     assert refused.status == "refused" and refused.reason.startswith(f"A person changed row {nb.sheet_costco};")
+
+
+def rows_state(store, nb):
+    return {r.id: r.tx.model_dump(mode="json") for r in store.rows(nb.id)}, len(store.uploads(nb.id))
+
+
+@pytest.mark.parametrize("failing", ["delete_row", "append_decision", "reject_key"])
+def test_a_failed_undo_of_a_split_leaves_everything_as_it_was(mongo_store, records, locks, pages, nb, monkeypatch,
+                                                              failing):
+    d = call(mongo_store, records, pages, nb, nb.receipt, costco_split(), "Printer paper 52.80 A", "Biscuits 12.00 Z")
+    assert d.status == "applied"
+    key = records.decision_key(nb.id, d.id)
+    before = rows_state(mongo_store, nb)
+    target, name = (mongo_store, "delete_row") if failing == "delete_row" else (records, failing)
+    real = getattr(target, name)
+    calls = []
+
+    def boom(*a, **kw):
+        calls.append(1)
+        if failing != "delete_row" or len(calls) == 2:   # a split's second part: the first is already gone
+            raise RuntimeError("down")
+        return real(*a, **kw)
+
+    monkeypatch.setattr(target, name, boom)
+    with pytest.raises(RuntimeError):
+        undo.undo_decision(mongo_store, records, locks, client_id=nb.id, decision_id=d.id)
+    monkeypatch.undo()
+    assert rows_state(mongo_store, nb) == before
+    assert records.reversal_of(nb.id, d.id) is None
+    assert not records.is_rejected(nb.id, key)
+    undo.undo_decision(mongo_store, records, locks, client_id=nb.id, decision_id=d.id)   # and it still can be
+    assert len(mongo_store.rows(nb.id)) == 4

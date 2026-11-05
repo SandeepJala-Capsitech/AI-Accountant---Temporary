@@ -3,6 +3,7 @@ a stored decision: the log only grows. An undo is a decision of its own that rev
 suggestion is a new applied decision, and the change record says which suggestion it came from."""
 from __future__ import annotations
 
+import logging
 from decimal import Decimal, InvalidOperation
 from typing import Optional
 
@@ -16,6 +17,7 @@ from .records import AgentRecords
 from .resolutions import Resolution, Texts
 from .store_mongo import MongoStore
 
+logger = logging.getLogger(__name__)
 _NUMBERS = {"gross", "vat"}
 
 
@@ -28,8 +30,15 @@ def _same(field: str, now, wanted) -> bool:
     return now == wanted
 
 
-def _decision(records: AgentRecords, client_id: int, decision_id: str) -> Optional[Decision]:
-    return next((d for d in records.decisions(client_id) if d.id == decision_id), None)
+def _restore(store, records, client_id, key, was_rejected, saved, rows, uploads) -> None:
+    """Puts back what a failed undo changed. Never raises: the failure that called it is what gets reported."""
+    for step in (lambda: store.restore_rows(client_id, rows, uploads),
+                 lambda: store.put_row_data(client_id, saved),
+                 lambda: None if was_rejected else records.unreject_key(client_id, key)):
+        try:
+            step()
+        except Exception:   # noqa: BLE001 - best effort; the rest is still put back
+            logger.exception("Couldn't put back client %s's rows after a failed undo", client_id)
 
 
 def undo_decision(store: MongoStore, records: AgentRecords, locks: ClientLocks, *, client_id: int,
@@ -37,12 +46,12 @@ def undo_decision(store: MongoStore, records: AgentRecords, locks: ClientLocks, 
     """Puts back what an applied decision changed and records the reversal. InvalidInput when the decision isn't the
     client's, isn't applied, was undone already, or a row it changed has changed since (the person changes it by
     hand then). The change is remembered, so neither the chat nor the review makes it again."""
-    d = _decision(records, client_id, decision_id)
+    d = records.decision(client_id, decision_id)
     if d is None:
         raise InvalidInput("This decision was not found.")
     if d.status != "applied" or d.action == "undo":
         raise InvalidInput("Only a change that was made can be undone.")
-    if any(x.reverses == decision_id for x in records.decisions(client_id)):
+    if records.reversal_of(client_id, decision_id) is not None:
         raise InvalidInput("This change was undone already.")
     key = records.decision_key(client_id, decision_id) or ""
     with locks.hold(client_id):
@@ -55,19 +64,25 @@ def undo_decision(store: MongoStore, records: AgentRecords, locks: ClientLocks, 
         touched = [int(n) for n in d.before]
         parts = [int(n) for n in d.after if n not in d.before]
         saved = store.row_data(client_id, touched)
+        kept_rows, kept_uploads = store.raw_rows(client_id, parts)
+        was_rejected = records.is_rejected(client_id, key)
+        # The undo decision is the commit point: it is written last, and until it is, any failure puts everything
+        # back (the rows, the parts, the rejected key), so the books and the record never disagree.
         try:
             for n, values in d.before.items():
                 store.patch_row(client_id, int(n), dict(values))
+            for n in parts:
+                store.delete_row(client_id, n)
+            records.reject_key(client_id, key)
+            undone, _ = records.append_decision(DecisionDraft(
+                client_id=client_id, year_start=d.year_start, action="undo", rule=f"Undo: {d.rule}",
+                status="applied", row_ids=d.row_ids, reason=f"A person undid {d.rule}.", before=d.after,
+                after=d.before, actor="user", reverses=decision_id), f"undo|{decision_id}")
         except Exception:
-            store.put_row_data(client_id, saved)
+            if records.reversal_of(client_id, decision_id) is not None:
+                raise   # the decision was written (what failed came after): the rows are as it says
+            _restore(store, records, client_id, key, was_rejected, saved, kept_rows, kept_uploads)
             raise
-        for n in parts:
-            store.delete_row(client_id, n)
-        undone, _ = records.append_decision(DecisionDraft(
-            client_id=client_id, year_start=d.year_start, action="undo", rule=f"Undo: {d.rule}", status="applied",
-            row_ids=d.row_ids, reason=f"A person undid {d.rule}.", before=d.after, after=d.before, actor="user",
-            reverses=decision_id), f"undo|{decision_id}")
-        records.reject_key(client_id, key)
     upkeep.after_change(store, records, locks, ChangeDraft(
         client_id=client_id, year_start=d.year_start, actor="user", kind="decision_undone", row_ids=d.row_ids,
         before=d.after, after={"decision_id": decision_id}, summary=f"Undid {d.rule} (rows {', '.join(map(str, d.row_ids))})"))
@@ -79,7 +94,7 @@ def apply_suggestion(store: MongoStore, records: AgentRecords, locks: ClientLock
     """Makes a suggested decision as the person: the stored resolution and evidence go through resolve again, which
     checks them against the rows as they are now. Returns the new decision, which is refused if they no longer hold.
     InvalidInput when the decision isn't the client's suggestion, or was applied already."""
-    d = _decision(records, client_id, decision_id)
+    d = records.decision(client_id, decision_id)
     if d is None or d.status != "suggested" or d.resolution is None:
         raise InvalidInput("This is not a suggestion.")
     if decision_id in records.applied_suggestions(client_id):

@@ -65,6 +65,9 @@ class AgentRecords:
         db.questions.create_index([("client_id", pymongo.ASCENDING), ("key", pymongo.ASCENDING)], unique=True)
         db.chat_threads.create_index([("client_id", pymongo.ASCENDING), ("updated_at", pymongo.ASCENDING)])
         db.changes.create_index([("client_id", pymongo.ASCENDING), ("seq", pymongo.ASCENDING)])
+        db.changes.create_index([("client_id", pymongo.ASCENDING), ("actor", pymongo.ASCENDING),
+                                 ("kind", pymongo.ASCENDING)])
+        db.decisions.create_index([("client_id", pymongo.ASCENDING), ("reverses", pymongo.ASCENDING)])
         db.review_runs.create_index([("client_id", pymongo.ASCENDING), ("seq", pymongo.ASCENDING)])
         db.review_state.create_index("client_id", unique=True)
         db.review_rejected.create_index([("client_id", pymongo.ASCENDING), ("key", pymongo.ASCENDING)], unique=True)
@@ -102,6 +105,16 @@ class AgentRecords:
     def decision_by_key(self, client_id: int, idempotency_key: str) -> Optional[Decision]:
         """The client's decision stored under the key, if any."""
         doc = self.db.decisions.find_one({"client_id": client_id, "idempotency_key": idempotency_key})
+        return _model(Decision, doc) if doc else None
+
+    def decision(self, client_id: int, decision_id: str) -> Optional[Decision]:
+        """The client's decision with the id, if any."""
+        doc = self.db.decisions.find_one({"client_id": client_id, "_id": decision_id})
+        return _model(Decision, doc) if doc else None
+
+    def reversal_of(self, client_id: int, decision_id: str) -> Optional[Decision]:
+        """The client's decision that reverses the one given, if any."""
+        doc = self.db.decisions.find_one({"client_id": client_id, "reverses": decision_id})
         return _model(Decision, doc) if doc else None
 
     def decision_key(self, client_id: int, decision_id: str) -> Optional[str]:
@@ -326,6 +339,10 @@ class AgentRecords:
         """Keeps the key of a change the person undid, so the review does not make it again."""
         self.db.review_rejected.update_one({"client_id": client_id, "key": key},
                                            {"$setOnInsert": {"created_at": now_iso()}}, upsert=True)
+
+    def unreject_key(self, client_id: int, key: str) -> None:
+        """Takes a key back out, when the undo that added it could not be finished."""
+        self.db.review_rejected.delete_one({"client_id": client_id, "key": key})
 
     def is_rejected(self, client_id: int, key: str) -> bool:
         return self.db.review_rejected.count_documents({"client_id": client_id, "key": key}, limit=1) > 0
