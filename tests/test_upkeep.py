@@ -147,3 +147,12 @@ def test_posting_to_a_closed_year_writes_nothing(store, records, acme_with_year_
     result = ledger_book.post(store, records, acme_with_year_one, YEAR_1)
     assert result.batch_id is None and result.problems == ["That year is closed."]
     assert batches(records, acme_with_year_one, YEAR_1) == 0
+
+
+def test_a_change_makes_the_client_due_for_a_review_after_the_wait(store, records, locks, acme):
+    import datetime as dt
+    at = dt.datetime(2026, 11, 4, 10, 0, tzinfo=dt.timezone.utc)
+    upkeep.after_change(store, records, locks, change(acme, in_chat=True), today=TODAY, now=at)
+    assert records.review_state(acme).due_at is None   # a chat's own change needs no review
+    upkeep.after_change(store, records, locks, change(acme), today=TODAY, now=at, wait=45)
+    assert records.review_state(acme).due_at == "2026-11-04T10:00:45+00:00"

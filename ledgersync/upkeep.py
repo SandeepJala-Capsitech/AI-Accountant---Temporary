@@ -51,13 +51,17 @@ def settle_open_years(store: MongoStore, records: AgentRecords, client_id: int, 
 
 
 def after_change(store: MongoStore, records: AgentRecords, locks: ClientLocks, change: ChangeDraft, *,
-                 today: Optional[dt.date] = None) -> dict[dt.date, PostResult]:
-    """Records the change, then settles every year of the client that isn't closed, each under the client's lock
+                 today: Optional[dt.date] = None, wait: int = 20,
+                 now: Optional[dt.datetime] = None) -> dict[dt.date, PostResult]:
+    """Records the change, makes the client due for a background review `wait` seconds from `now` (the current time)
+    when the change needs one, then settles every year of the client that isn't closed, each under the client's lock
     (which re-checks that the year is still open). A year whose settling fails is logged and left out of the result;
     nothing is raised, recording the change included."""
     results: dict[dt.date, PostResult] = {}
     try:
         records.add_change(change)
+        from . import reviews   # here: reviews imports the agent, which imports this module
+        reviews.note(records, change, now=now or reviews.utcnow(), wait=wait)
     except Exception:
         logger.exception("Couldn't record a change to client %s: %s", change.client_id, change.summary)
     try:

@@ -153,6 +153,15 @@ class AgentRecords:
         # a change keeps its own seq and summary, which _model would set apart
         return [Change.model_validate({k: v for k, v in doc.items() if k != "_id"}) for doc in reversed(docs)]
 
+    def changes_after(self, client_id: int, seq: int, *, year_start: Optional[dt.date] = None) -> list[Change]:
+        """Every change of the client with a seq above `seq`, ordered by (seq, id); of one year and those with no
+        year, if given."""
+        query: dict = {"client_id": client_id, "seq": {"$gt": seq}}
+        if year_start:
+            query["year_start"] = {"$in": [year_start.isoformat(), None]}
+        docs = self.db.changes.find(query).sort([("seq", pymongo.ASCENDING), ("_id", pymongo.ASCENDING)])
+        return [Change.model_validate({k: v for k, v in doc.items() if k != "_id"}) for doc in docs]
+
     def person_rows(self, client_id: int) -> set[int]:
         """The rows a person changed: those named by one of their edits, links, inclusions, not-the-sames, reverts or
         hand entries in the record of changes."""
@@ -281,11 +290,29 @@ class AgentRecords:
     def set_review_state(self, state: ReviewState) -> None:
         self.db.review_state.replace_one({"client_id": state.client_id}, state.model_dump(mode="json"), upsert=True)
 
+    def patch_review_state(self, client_id: int, **fields) -> None:
+        """Sets only these fields of the client's review state, so a write to one field (a change making the client
+        due) never undoes another's (the worker marking it running)."""
+        unknown = set(fields) - set(ReviewState.model_fields) - {"client_id"}
+        if unknown:
+            raise ValueError(f"Not review state fields: {sorted(unknown)}")
+        self.db.review_state.update_one({"client_id": client_id}, {"$set": fields}, upsert=True)
+
+    def due_review_states(self) -> list[ReviewState]:
+        """The states of the clients with a review due (not yet whether the time has come)."""
+        return [ReviewState.model_validate({k: v for k, v in doc.items() if k != "_id"})
+                for doc in self.db.review_state.find({"due_at": {"$ne": None}})]
+
+    def running_review_states(self) -> list[ReviewState]:
+        return [ReviewState.model_validate({k: v for k, v in doc.items() if k != "_id"})
+                for doc in self.db.review_state.find({"running": True})]
+
     def start_review(self, client_id: int, year_start: dt.date, *, from_seq: int, to_seq: int,
-                     trigger_summary: str) -> ReviewRun:
-        """Records a run that has started, over the changes after from_seq up to to_seq."""
+                     trigger_summary: str, looked_at=()) -> ReviewRun:
+        """Records a run that has started, over the changes after from_seq up to to_seq, pointed at these rows."""
         run = ReviewRun(id=uuid4().hex, client_id=client_id, year_start=year_start, status="running",
-                        started_at=now_iso(), trigger_summary=trigger_summary, from_seq=from_seq, to_seq=to_seq)
+                        started_at=now_iso(), trigger_summary=trigger_summary, from_seq=from_seq, to_seq=to_seq,
+                        looked_at=list(looked_at))
         self.db.review_runs.insert_one({**run.model_dump(mode="json"), "_id": run.id, "seq": time.time_ns()})
         return run
 

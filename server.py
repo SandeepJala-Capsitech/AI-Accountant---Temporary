@@ -15,7 +15,7 @@ from fastapi import FastAPI, File, Form, Header, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from ledgersync import (accounts, adapter, books, demo, folder, intake, ledger, ledger_book, pipeline, posting,
+from ledgersync import (accounts, adapter, books, demo, folder, intake, ledger, ledger_book, pipeline, posting, reviews,
                         upkeep)
 from ledgersync.agent.chat import AnswerResult, Chat, ChatFile, NewThread, ThreadDetail, ThreadPatch
 from ledgersync.blobs import BlobStore, GridFSBlobStore
@@ -67,8 +67,14 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
     async def lifespan(app: FastAPI):
         if settings.warmup:
             threading.Thread(target=model_client.warm_up, name="model-warmup", daemon=True).start()
+        worker = None
+        if settings.warmup and settings.review_worker:   # tests turn warmup off, so no thread runs there
+            worker = reviews.Worker(chat, settings, busy=files_being_read)
+            worker.start()
         yield
         try:
+            if worker is not None:
+                worker.stop()
             jobs.shutdown()
         finally:
             if owns_store:
@@ -105,15 +111,16 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
 
     def changed(client_id: int, kind: str, summary: str, *, actor: str = "user", year_start: Optional[dt.date] = None,
                 row_ids=(), upload_id: Optional[int] = None, before: Optional[dict] = None,
-                after: Optional[dict] = None, settle: bool = True) -> None:
+                after: Optional[dict] = None, settle: bool = True, in_chat: bool = False) -> None:
         """Records a change to the client's books once it has been made, then settles them: the rows matching dated,
         the questions and the posting are brought up to date at once. Never raises after the change is recorded.
         With settle False the change is only recorded: a chat turn settles the books itself once its files are read."""
         draft = ChangeDraft(client_id=client_id, year_start=year_start, actor=actor, kind=kind, row_ids=list(row_ids),
-                            upload_id=upload_id, before=before or {}, after=after or {}, summary=summary)
+                            upload_id=upload_id, before=before or {}, after=after or {}, summary=summary,
+                            in_chat=in_chat)
         try:   # the change is already saved: recording or settling it must never fail the request or the read job
             if settle:
-                upkeep.after_change(store, chat.records, chat.locks, draft)
+                upkeep.after_change(store, chat.records, chat.locks, draft, wait=settings.review_wait_seconds)
             else:
                 chat.records.add_change(draft)
         except Exception:
@@ -127,7 +134,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
 
     def run_analysis(item, ctx, client: Optional[Client] = None, name: str = "Pasted text", sha256: str = "",
                      bank_account: Optional[str] = None, year_start: Optional[dt.date] = None,
-                     actor: str = "user", settle: bool = True) -> dict:
+                     actor: str = "user", settle: bool = True, in_chat: bool = False) -> dict:
         """Reads one input. For a client: the model is told its name, kind of business and its other bank accounts,
         the rows are booked with its settings, and they are saved to it as an upload when any were found (not after
         a cancel), added to the year starting year_start; none is saved when any falls in a closed year. A
@@ -170,15 +177,20 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
                                                    bank_account=own if statement else None,
                                                    year_start=year_start)
             changed(client.id, "upload_read", f"{name} read: {rows_word(len(transactions))}", actor=actor,
-                    year_start=year_start, upload_id=result["upload_id"], settle=settle)
+                    year_start=year_start, upload_id=result["upload_id"], settle=settle, in_chat=in_chat)
         return result
 
     reading: Counter = Counter()   # (client id, sha256) of each file a job is reading for a client, once per job
     reading_lock = threading.Lock()
 
+    def files_being_read(client_id: int) -> bool:
+        """Whether a job is reading a file for the client: its review waits."""
+        with reading_lock:
+            return any(owner == client_id for owner, _ in reading)
+
     def submit_analysis(item, client: Optional[Client], name: str, sha256: str, content_type: str, data: bytes,
                         year_start: Optional[dt.date], bank_account: Optional[str], *, once: bool = False,
-                        actor: str = "user", settle: bool = True):
+                        actor: str = "user", settle: bool = True, in_chat: bool = False):
         """Keeps the original file (when it has a sha256) and queues the analysis of an input already checked. With
         once, a file a job is already reading for the client is not queued again: returns None."""
         key = (client.id, sha256) if client is not None and sha256 else None
@@ -197,7 +209,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
 
         def work(ctx):
             return run_analysis(item, ctx, client, name, sha256, bank_account,
-                                year_start if client is not None else None, actor, settle)
+                                year_start if client is not None else None, actor, settle, in_chat)
 
         try:
             if sha256:
@@ -486,7 +498,8 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         model_client.ensure_available()
         bank = file.bank_account or ledger.settings_for(client).bank_account
         return submit_analysis(item, client, file.name, hashlib.sha256(data).hexdigest(), file.content_type, data,
-                               year_start, bank, settle=False)   # the chat's turn settles once its files are read
+                               year_start, bank, settle=False,   # the chat's turn settles once its files are read
+                               in_chat=True)
 
     chat = Chat(settings, store, blobs, read=read_chat_file, vision=model_client, model=chat_model)
 
