@@ -183,3 +183,21 @@ def test_a_failed_undo_of_a_split_leaves_everything_as_it_was(mongo_store, recor
     assert not records.is_rejected(nb.id, key)
     undo.undo_decision(mongo_store, records, locks, client_id=nb.id, decision_id=d.id)   # and it still can be
     assert len(mongo_store.rows(nb.id)) == 4
+
+
+def test_a_failed_undo_is_put_back_even_when_reading_the_record_fails_too(mongo_store, records, locks, pages, nb,
+                                                                           monkeypatch):
+    d = call(mongo_store, records, pages, nb, nb.sheet_costco, keep_receipt(nb), QUOTE)
+    key = records.decision_key(nb.id, d.id)
+    before = rows_state(mongo_store, nb)
+
+    def down(*a, **kw):
+        raise RuntimeError("down")
+
+    monkeypatch.setattr(records, "append_decision", down)
+    monkeypatch.setattr(records, "reversal_of", down)
+    with pytest.raises(RuntimeError):
+        undo.undo_decision(mongo_store, records, locks, client_id=nb.id, decision_id=d.id)
+    monkeypatch.undo()
+    assert rows_state(mongo_store, nb) == before
+    assert not records.is_rejected(nb.id, key)

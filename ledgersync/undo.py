@@ -66,8 +66,10 @@ def undo_decision(store: MongoStore, records: AgentRecords, locks: ClientLocks, 
         saved = store.row_data(client_id, touched)
         kept_rows, kept_uploads = store.raw_rows(client_id, parts)
         was_rejected = records.is_rejected(client_id, key)
-        # The undo decision is the commit point: it is written last, and until it is, any failure puts everything
-        # back (the rows, the parts, the rejected key), so the books and the record never disagree.
+        # The undo decision is the commit point: it is written last, and a failure in this process before it is
+        # written puts everything back (the rows, the parts, the rejected key). A crash of the process between
+        # reject_key and the decision is not covered.
+        written = False
         try:
             for n, values in d.before.items():
                 store.patch_row(client_id, int(n), dict(values))
@@ -78,10 +80,10 @@ def undo_decision(store: MongoStore, records: AgentRecords, locks: ClientLocks, 
                 client_id=client_id, year_start=d.year_start, action="undo", rule=f"Undo: {d.rule}",
                 status="applied", row_ids=d.row_ids, reason=f"A person undid {d.rule}.", before=d.after,
                 after=d.before, actor="user", reverses=decision_id), f"undo|{decision_id}")
+            written = True
         except Exception:
-            if records.reversal_of(client_id, decision_id) is not None:
-                raise   # the decision was written (what failed came after): the rows are as it says
-            _restore(store, records, client_id, key, was_rejected, saved, kept_rows, kept_uploads)
+            if not written:
+                _restore(store, records, client_id, key, was_rejected, saved, kept_rows, kept_uploads)
             raise
     upkeep.after_change(store, records, locks, ChangeDraft(
         client_id=client_id, year_start=d.year_start, actor="user", kind="decision_undone", row_ids=d.row_ids,
