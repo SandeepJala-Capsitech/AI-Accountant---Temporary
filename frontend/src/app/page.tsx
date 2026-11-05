@@ -116,6 +116,7 @@ export default function ClientsPage() {
                     <td>
                       <Link href={hrefOf(c)} className="strong" onClick={e => e.stopPropagation()}>{c.name}</Link>
                       <div className="muted small">{BUSINESS_TYPES[c.business_type]}</div>
+                      {!!c.ai_unseen && <span className="badge badge-accent">AI: {c.ai_unseen} new {c.ai_unseen === 1 ? 'change' : 'changes'}</span>}
                     </td>
                     <td>
                       {c.contact_name}

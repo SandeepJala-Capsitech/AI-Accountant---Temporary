@@ -10,6 +10,7 @@ import { changeClient, getSummary, type ClientFields, type YearSummary } from '@
 import { BUSINESS_TYPES, transactionCount } from '@/lib/clientRules'
 import { money, postedLedgerNote } from '@/lib/ledger'
 import { bankCheckText, fullDate } from '@/lib/sections'
+import { newestFirst, listReviews, overviewReviewLine, unseenChanges } from '@/lib/reviews'
 import { sectionHref } from '@/lib/years'
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
@@ -22,12 +23,18 @@ export default function OverviewSection() {
   const [error, setError] = useState('')
   const [editing, setEditing] = useState(false)
   const [needYou, setNeedYou] = useState(0)             // open and waiting questions, from every chat on the client
+  const [reviewLine, setReviewLine] = useState<string | null>(null)   // the AI review's last run; null when it has had none
   const [unposted, setUnposted] = useState<number | null>(null)   // changes not in the posted ledger; null until known
 
   // What the accountant chat has to say about the client; a failure just leaves these out.
   useEffect(() => {
     let current = true
     clientQuestions(client.id).then(qs => { if (current) setNeedYou(qs.filter(q => q.status !== 'resolved').length) }).catch(() => {})
+    listReviews(client.id, year.start).then(runs => {
+      if (!current) return
+      const done = newestFirst(runs).filter(r => r.status === 'done')
+      setReviewLine(overviewReviewLine(done[0]?.started_at ?? null, unseenChanges(runs)))
+    }).catch(() => { if (current) setReviewLine(null) })
     postedTrialBalance(client.id, year.start)
       .then(tb => { if (current) setUnposted(tb.unposted_changes ?? 0) }).catch(() => { if (current) setUnposted(null) })
     return () => { current = false }
@@ -95,6 +102,7 @@ export default function OverviewSection() {
         {needYou > 0 && (
           <p><Link href={attentionHref(client.id)} className="link-btn">{needYou} {needYou === 1 ? 'thing needs' : 'things need'} you</Link></p>
         )}
+        {reviewLine && <p><Link href={sectionHref(client.id, year.start, 'ai-review')} className="link-btn">{reviewLine}</Link></p>}
         {ledgerNote && <p className="muted small">{ledgerNote}</p>}
         {summary && (
           <dl className="details">

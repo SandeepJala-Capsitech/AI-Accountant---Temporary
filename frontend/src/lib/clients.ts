@@ -12,6 +12,8 @@ export interface BankAccount {
   kind: BankAccountKind
 }
 
+export type AiReviewMode = 'automatic' | 'suggest' | 'off'
+
 export interface ClientFields {
   name: string
   business_type: BusinessType
@@ -22,6 +24,7 @@ export interface ClientFields {
   first_year_end: string     // the end of the first year the books are kept for: "2026-03-31"
   bank_accounts: BankAccount[]
   folder: string             // where the client's files are on the computer the site runs on; '' for none
+  ai_review?: AiReviewMode   // what the background review may do; automatic when not given
 }
 
 export interface ClosedYear {
@@ -42,6 +45,7 @@ export interface Client extends ClientFields {
 export interface ClientSummary extends Client {
   rows: number
   to_review: number          // rows with an error or a warning
+  ai_unseen?: number         // changes from background reviews the person hasn't looked at
 }
 
 export interface StatementCheck {

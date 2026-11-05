@@ -1,12 +1,12 @@
 'use client'
 
 import { useState, type FormEvent } from 'react'
-import type { BankAccountKind, BusinessType, Client, ClientFields } from '@/lib/clients'
+import type { AiReviewMode, BankAccountKind, BusinessType, Client, ClientFields } from '@/lib/clients'
 import { bankAccountsLeft, BANK_KINDS, BUSINESS_TYPES, clientFormErrors } from '@/lib/clientRules'
 
 const NEW_CLIENT: ClientFields = {
   name: '', business_type: 'limited_company', contact_name: '', contact_email: '', contact_phone: '', vat_registered: true,
-  first_year_end: '', bank_accounts: [{ code: '', name: 'Bank current account', kind: 'current' }], folder: '',
+  first_year_end: '', bank_accounts: [{ code: '', name: 'Bank current account', kind: 'current' }], folder: '', ai_review: 'automatic',
 }
 
 // Adds a client, or edits one. The responsible person is the client's own contact. A bank account that has a code
@@ -20,6 +20,7 @@ export default function ClientDialog({ client, onCancel, onSave }: {
     name: client.name, business_type: client.business_type, contact_name: client.contact_name,
     contact_email: client.contact_email, contact_phone: client.contact_phone, vat_registered: client.vat_registered,
     first_year_end: client.first_year_end, bank_accounts: client.bank_accounts.map(a => ({ ...a })), folder: client.folder,
+    ai_review: client.ai_review ?? 'automatic',
   } : NEW_CLIENT))
   const [showErrors, setShowErrors] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -121,6 +122,15 @@ export default function ClientDialog({ client, onCancel, onSave }: {
           <input className="input" value={fields.folder} onChange={e => set('folder', e.target.value)}
                  placeholder="e.g. /Users/you/Clients/Acme" />
           <span className="hint">Where this client’s files are on this computer. Optional: it lets you import new files in one go.</span>
+        </label>
+        <label className="field">
+          <span>AI review</span>
+          <select className="input" value={fields.ai_review ?? 'automatic'} onChange={e => set('ai_review', e.target.value as AiReviewMode)}>
+            <option value="automatic">Automatic</option>
+            <option value="suggest">Suggest only</option>
+            <option value="off">Off</option>
+          </select>
+          <span className="hint">After the books change and go quiet, the AI looks them over. Automatic makes the changes (you can undo them); Suggest only leaves them for you to apply.</span>
         </label>
         <label className="switch">
           <input type="checkbox" checked={fields.vat_registered} onChange={e => set('vat_registered', e.target.checked)} />
