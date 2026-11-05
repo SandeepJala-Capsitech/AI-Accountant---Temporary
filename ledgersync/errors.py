@@ -89,6 +89,13 @@ class InvalidInput(LedgerSyncError):
     code = "invalid_input"
 
 
+class SameFile(LedgerSyncError):
+    """A file already saved for the client, or being read for it now: read again, its rows would be booked twice."""
+
+    status_code = 409
+    code = "same_file"
+
+
 class RefusedRequest(LedgerSyncError):
     """A request any web page could have sent unasked: it lacks the header the LedgerSync pages send."""
 

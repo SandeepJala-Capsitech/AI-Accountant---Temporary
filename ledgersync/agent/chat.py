@@ -30,7 +30,7 @@ from pydantic import BaseModel, StringConstraints, ValidationError
 from ledgersync import books, ledger_book, questions, upkeep
 from ledgersync.blobs import BlobStore
 from ledgersync.config import Settings
-from ledgersync.errors import InvalidInput, LedgerSyncError, ModelUnavailable, NotFound, YearClosed
+from ledgersync.errors import InvalidInput, LedgerSyncError, ModelUnavailable, NotFound, SameFile, YearClosed
 from ledgersync.jobs import SUCCEEDED, Job
 from ledgersync.ledger import require_active
 from ledgersync.models import (ChatThread, Client, Decision, PostedTrialBalance, PostResult, Question,
@@ -246,8 +246,10 @@ def _outcome(job: Job) -> tuple[list[dict], Optional[dict]]:
     return [], job.error or {"code": "cancelled", "message": "Reading it was cancelled.", "status_code": 409}
 
 
-def _unread(step: dict, name: str, reason: str) -> dict:
-    return {**step, "text": f"Couldn't read {name}: {reason}", "state": "failed", "reason": reason}
+def _unread(step: dict, name: str, reason: str, *, skipped: bool = False) -> dict:
+    """A file not read: one refused says "Couldn't read <name>: <reason>"; one skipped as already saved says why in
+    full ("Skipped <name>: same file as ...")."""
+    return {**step, "text": reason if skipped else f"Couldn't read {name}: {reason}", "state": "failed", "reason": reason}
 
 
 def _file_read(step: dict) -> FileRead:
@@ -441,7 +443,8 @@ class Chat:
     def _read_all(self, client: Client, year_start: dt.date, files: list[ChatFile],
                   read: list[FileRead]) -> Iterator[ChatEvent]:
         """Starts reading every file (side by side, as many as the job registry runs at once), then says how each
-        went, in order: "Reading <name>…", then "Read <name> (n rows)" or "Couldn't read <name>: <reason>". Each
+        went, in order: "Reading <name>…", then "Read <name> (n rows)", "Couldn't read <name>: <reason>", or "Skipped
+        <name>: same file as ..." for a file already saved for the client or sent twice. Each
         file's outcome is added to `read` as its last step is said."""
         reading = []
         for k, file in enumerate(files):
@@ -450,7 +453,7 @@ class Chat:
             try:
                 reading.append((step, file.name, self.read_file(client, file, year_start)))
             except LedgerSyncError as exc:
-                unread = _unread(step, file.name, exc.message)
+                unread = _unread(step, file.name, exc.message, skipped=isinstance(exc, SameFile))
                 read.append(_file_read(unread))
                 yield ChatEvent("step", unread)
         for step, name, job in reading:

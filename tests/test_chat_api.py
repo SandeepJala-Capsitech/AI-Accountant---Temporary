@@ -190,6 +190,35 @@ def test_message_streams_steps_then_result_then_done(make, client_id):
         {"name": "empty.txt", "state": "failed", "rows": None, "reason": "'empty.txt' is empty."}]
 
 
+def test_a_file_already_saved_for_the_client_is_skipped_not_booked_again(make, mongo_store, client_id):
+    # A spreadsheet sent to the chat a second time was read and booked again: every line was in the books twice.
+    api = make(say("I read the statement."), say("That one is in already."), reads=[transactions_json(PAYMENT)])
+    thread = new_thread(api, client_id)
+    send(api, thread["id"], "Review October.", STATEMENT)
+    [saved] = mongo_store.uploads(client_id)
+    day = dt.datetime.fromisoformat(saved["created_at"])
+
+    events = send(api, thread["id"], "Here it is again.", STATEMENT)
+
+    skipped = (f"Skipped barclays-october.csv: same file as barclays-october.csv, uploaded {day.day} {day:%b}, so its "
+               "rows are already in the books.")
+    assert [(s["text"], s["state"]) for kind, s in events if kind == "step" and s.get("file")] == [
+        ("Reading barclays-october.csv…", "running"), (skipped, "failed")]
+    assert (len(mongo_store.uploads(client_id)), len(mongo_store.rows(client_id))) == (1, 1)
+
+
+def test_a_file_sent_twice_in_one_message_is_read_once(make, mongo_store, client_id):
+    api = make(say("I read the statement."), reads=[transactions_json(PAYMENT)])
+    thread = new_thread(api, client_id)
+
+    events = send(api, thread["id"], "Review October.", STATEMENT, STATEMENT)
+
+    last = [s["text"] for kind, s in events if kind == "step" and s.get("file") and s["state"] != "running"]
+    assert sorted(text.split(":")[0] for text in last) == ["Read barclays-october.csv (1 row)",
+                                                           "Skipped barclays-october.csv"]
+    assert (len(mongo_store.uploads(client_id)), len(mongo_store.rows(client_id))) == (1, 1)
+
+
 def test_a_review_result_holds_its_questions_and_posting(make, client_id):
     api = make(say("One payment needs its invoice."), reads=[transactions_json(PAYMENT)])
     thread = new_thread(api, client_id)

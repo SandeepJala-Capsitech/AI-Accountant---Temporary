@@ -22,7 +22,8 @@ from ledgersync.blobs import BlobStore, GridFSBlobStore
 from ledgersync.accounts import choosable
 from ledgersync.checks import long_date, normalise
 from ledgersync.config import Settings
-from ledgersync.errors import InvalidInput, LedgerSyncError, NotFound, RefusedRequest, StorageError, UnreadableFile
+from ledgersync.errors import (InvalidInput, LedgerSyncError, NotFound, RefusedRequest, SameFile, StorageError,
+                               UnreadableFile)
 from ledgersync.extractor import TransactionExtractor
 from ledgersync.model_client import ModelClient
 from ledgersync.jobs import JobStore
@@ -480,13 +481,24 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
     def read_chat_file(client: Client, file: ChatFile, year_start: dt.date):
         """Reads a file sent to the chat as /api/analyze reads an upload: checked, kept and read in a job that saves
         its rows to the client, added to the year; a statement's on its bank account, by default the client's first
-        current account. Refused (LedgerSyncError) before it is read when it fails its checks."""
+        current account. Refused (LedgerSyncError) before it is read when it fails its checks, and skipped (SameFile)
+        when the same file is already saved for the client or being read for it, as the Documents page and a folder
+        import skip it: read again, its rows would be booked twice."""
         data = intake.read_limited(io.BytesIO(file.data), settings.max_upload_bytes)
         item = intake.load_upload(file.name, data, settings.max_pdf_pages)
+        sha256 = hashlib.sha256(data).hexdigest()
+        saved = next((u for u in store.uploads(client.id) if u["sha256"] == sha256), None)
+        if saved is not None:
+            day = dt.datetime.fromisoformat(saved["created_at"])
+            raise SameFile(f"Skipped {file.name}: same file as {saved['name']}, uploaded {day.day} {day:%b}, so its "
+                           "rows are already in the books.")
         model_client.ensure_available()
         bank = file.bank_account or ledger.settings_for(client).bank_account
-        return submit_analysis(item, client, file.name, hashlib.sha256(data).hexdigest(), file.content_type, data,
-                               year_start, bank, settle=False)   # the chat's turn settles once its files are read
+        job = submit_analysis(item, client, file.name, sha256, file.content_type, data, year_start, bank, once=True,
+                              settle=False)   # the chat's turn settles once its files are read
+        if job is None:
+            raise SameFile(f"Skipped {file.name}: the same file is being read already.")
+        return job
 
     chat = Chat(settings, store, blobs, read=read_chat_file, vision=model_client, model=chat_model)
 
