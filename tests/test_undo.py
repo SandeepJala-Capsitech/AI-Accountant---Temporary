@@ -210,3 +210,50 @@ def test_a_failed_undo_is_put_back_even_when_reading_the_record_fails_too(mongo_
     assert rows_state(mongo_store, nb) == before
     assert records.reversal_of(nb.id, d.id) is None
     assert not records.is_rejected(nb.id, key)
+
+
+# ─── Undoing the AI's closing of a question ────────────────────────────────────
+
+def closed_question(store, records, pages, nb):
+    from ledgersync import questions
+    from ledgersync.models import Evidence
+    q = questions.ask(records, client_id=nb.id, year_start=YEAR, row_ids=[nb.receipt], text="For the office?", why="?")
+    records.set_question(q.id, "waiting", "Not sure")
+    d = questions.close(store, records, client_id=nb.id, question_id=q.id, reason="Receipt.", actor=ACTOR,
+                        trigger="background", review_id="r1", texts=lambda n: pages.get(n, []),
+                        evidence=[Evidence(upload_id=nb.upload("costco.txt"), quote="Printer paper        52.80")])
+    assert d.status == "applied" and records.question(q.id).status == "resolved"
+    return q, d
+
+
+def test_undoing_a_closed_question_reopens_it_to_its_old_status_and_the_ai_does_not_close_it_again(
+        mongo_store, records, locks, pages, nb):
+    q, d = closed_question(mongo_store, records, pages, nb)
+    undone = undo.undo_decision(mongo_store, records, locks, client_id=nb.id, decision_id=d.id)
+    assert (undone.action, undone.reverses, undone.before, undone.after) == (
+        "undo", d.id, {"question": {"status": "resolved"}}, {"question": {"status": "waiting"}})
+    assert records.question(q.id).status == "waiting"
+    assert any(c.kind == "decision_undone" and c.after == {"decision_id": d.id} for c in records.changes(nb.id))
+    from ledgersync import questions
+    again = questions.close(mongo_store, records, client_id=nb.id, question_id=q.id, reason="Receipt.", actor=ACTOR,
+                            trigger="background", texts=lambda n: pages.get(n, []), evidence=d.evidence)
+    assert (again.status, again.reason) == ("refused", "A person undid this change.")
+    assert records.question(q.id).status == "waiting"
+
+
+def test_a_failed_undo_of_a_closed_question_leaves_it_closed(mongo_store, records, locks, pages, nb, monkeypatch):
+    q, d = closed_question(mongo_store, records, pages, nb)
+    real = records.append_decision
+
+    def fail(draft, key, id=None):
+        if draft.action == "undo":
+            raise RuntimeError("down")
+        return real(draft, key, id)
+    monkeypatch.setattr(records, "append_decision", fail)
+    with pytest.raises(RuntimeError):
+        undo.undo_decision(mongo_store, records, locks, client_id=nb.id, decision_id=d.id)
+    assert records.question(q.id).status == "resolved"
+    assert not records.is_rejected(nb.id, records.decision_key(nb.id, d.id))
+    monkeypatch.undo()
+    undo.undo_decision(mongo_store, records, locks, client_id=nb.id, decision_id=d.id)
+    assert records.question(q.id).status == "waiting"

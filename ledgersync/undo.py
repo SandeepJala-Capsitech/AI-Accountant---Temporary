@@ -9,7 +9,7 @@ from typing import Optional
 
 from pydantic import TypeAdapter
 
-from . import resolutions, upkeep
+from . import questions, resolutions, upkeep
 from .agent.locks import ClientLocks
 from .errors import InvalidInput
 from .models import ChangeDraft, Decision, DecisionDraft
@@ -54,6 +54,55 @@ def undo_decision(store: MongoStore, records: AgentRecords, locks: ClientLocks, 
     if records.reversal_of(client_id, decision_id) is not None:
         raise InvalidInput("This change was undone already.")
     key = records.decision_key(client_id, decision_id) or ""
+    if d.action == "close_question":
+        undone = _undo_close(records, locks, client_id, d, key)
+    else:
+        undone = _undo_rows(store, records, locks, client_id, d, key)
+    upkeep.after_change(store, records, locks, ChangeDraft(
+        client_id=client_id, year_start=d.year_start, actor="user", kind="decision_undone", row_ids=d.row_ids,
+        before=d.after, after={"decision_id": decision_id}, summary=f"Undid {d.rule} (rows {', '.join(map(str, d.row_ids))})"))
+    return undone
+
+
+def _undone(records: AgentRecords, d: Decision) -> Decision:
+    """Records the decision that reverses d."""
+    return records.append_decision(DecisionDraft(
+        client_id=d.client_id, year_start=d.year_start, action="undo", rule=f"Undo: {d.rule}",
+        status="applied", row_ids=d.row_ids, reason=f"A person undid {d.rule}.", before=d.after,
+        after=d.before, actor="user", reverses=d.id), f"undo|{d.id}")[0]
+
+
+def _undo_close(records: AgentRecords, locks: ClientLocks, client_id: int, d: Decision, key: str) -> Decision:
+    """Reopens the question a close_question decision closed, to the status it had, and remembers that a person
+    reopened it, so the AI doesn't close it again. If the undo fails before its decision is written the question is
+    put back as it was closed. InvalidInput when the question has changed since (it was answered or reopened)."""
+    q = records.question(key.split("|")[1]) if key.startswith("close|") else None
+    if q is None or q.client_id != client_id or q.status != "resolved" \
+            or not (q.answer or "").startswith(questions.CLOSED_BY_THE_AI):
+        raise InvalidInput("The question has changed since; leave it as it is.")
+    with locks.hold(client_id):
+        was_rejected = records.is_rejected(client_id, key)
+        written = False
+        try:
+            records.set_question(q.id, d.before["question"]["status"])
+            records.reject_key(client_id, key)
+            undone = _undone(records, d)
+            written = True
+            return undone
+        except Exception:
+            if not written:
+                for step in (lambda: records.set_question(q.id, "resolved", q.answer),
+                             lambda: None if was_rejected else records.unreject_key(client_id, key)):
+                    try:
+                        step()
+                    except Exception:   # noqa: BLE001 - best effort; the rest is still put back
+                        logger.exception("Couldn't put back question %s after a failed undo", q.id)
+            raise
+
+
+def _undo_rows(store: MongoStore, records: AgentRecords, locks: ClientLocks, client_id: int, d: Decision,
+               key: str) -> Decision:
+    """Puts back the rows a decision changed (and removes the parts it made), and records the reversal."""
     with locks.hold(client_id):
         rows = {r.id: r.tx for r in store.rows(client_id)}
         for n, wanted in d.after.items():
@@ -78,18 +127,12 @@ def undo_decision(store: MongoStore, records: AgentRecords, locks: ClientLocks, 
             for n in parts:
                 store.delete_row(client_id, n)
             records.reject_key(client_id, key)
-            undone, _ = records.append_decision(DecisionDraft(
-                client_id=client_id, year_start=d.year_start, action="undo", rule=f"Undo: {d.rule}",
-                status="applied", row_ids=d.row_ids, reason=f"A person undid {d.rule}.", before=d.after,
-                after=d.before, actor="user", reverses=decision_id), f"undo|{decision_id}")
+            undone = _undone(records, d)
             written = True
         except Exception:
             if not written:
                 _restore(store, records, client_id, key, was_rejected, saved, kept_rows, kept_uploads)
             raise
-    upkeep.after_change(store, records, locks, ChangeDraft(
-        client_id=client_id, year_start=d.year_start, actor="user", kind="decision_undone", row_ids=d.row_ids,
-        before=d.after, after={"decision_id": decision_id}, summary=f"Undid {d.rule} (rows {', '.join(map(str, d.row_ids))})"))
     return undone
 
 

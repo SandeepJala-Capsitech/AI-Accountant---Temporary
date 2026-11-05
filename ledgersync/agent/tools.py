@@ -80,10 +80,14 @@ _MATCHES = ("paid_by", "pays", "recorded_by", "copy_of")
 
 @dataclass
 class ChatContext:
-    """Who a run works for, from the server: the client, the year the chat is on, and the chat."""
+    """Who a run works for, from the server: the client, the year the chat is on, and the chat. trigger: a chat turn or the
+    background review; mode: whether its resolutions are made (apply) or only suggested; review_id: the review run."""
     client_id: int
     thread_id: str
     year_start: dt.date
+    trigger: Literal["chat", "background"] = "chat"
+    mode: Literal["apply", "suggest"] = "apply"
+    review_id: Optional[str] = None
 
 
 def _never(thread_id: str) -> bool:
@@ -100,6 +104,19 @@ class AgentDeps:
     blobs: BlobStore
     vision: Optional[Any] = None
     is_cancelled: Callable[[str], bool] = field(default=_never)
+
+
+def _reviews_since_last_chat(records: AgentRecords, ctx: ChatContext) -> list[dict]:
+    """Up to five of the background reviews that finished after the client's previous chat was last used (all of
+    them when there is none), newest first: when each ran, what it said, how many changes it made and how many
+    questions it asked."""
+    previous = next((t for t in records.threads(ctx.client_id) if t.id != ctx.thread_id), None)
+    ran = [r for r in records.reviews(ctx.client_id, limit=50)
+           if r.status == "done" and r.finished_at and (previous is None or r.finished_at > previous.updated_at)]
+    return [{"ran_at": r.finished_at, "summary": r.summary,
+             "sorted": sum((d := records.decision(ctx.client_id, n)) is not None and d.status == "applied"
+                           for n in r.decision_ids),
+             "asked": len(r.question_ids)} for r in ran[:5]]
 
 
 def family_of(code: str) -> Family:
@@ -191,8 +208,8 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
     @tool
     def get_overview(runtime: ToolRuntime[ChatContext]) -> dict:
         """The client, its years, and the year this chat is on: its rows and documents, how many rows need a look in
-        each family of issue, how many are held in Suspense for a document, the questions still open and the
-        decisions made so far, and the accounts a row can be coded to (code and name)."""
+        each family of issue, how many are held in Suspense for a document, the questions still open, the
+        decisions made so far, the background reviews since the last chat, and the accounts a row can be coded to (code and name)."""
         ctx = runtime.context
         _step(runtime, "Looking over the books…")
         built = books.ledger(store, ctx.client_id, ctx.year_start)
@@ -208,6 +225,7 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
             "held_in_suspense": sum(held is not None for _, held, _ in looked),
             "open_questions": len(records.questions(ctx.client_id, ctx.year_start)),
             "decisions": len(records.decisions(ctx.client_id, ctx.year_start)),
+            "background_reviews_since_last_chat": _reviews_since_last_chat(records, ctx),
             "accounts": [{"code": a.code, "name": a.name}
                          for a in choosable(built.client.business_type, bank_choices(built.client))],
         }
@@ -350,7 +368,12 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
         _step(runtime, f"Checking row {row_id}…")
         decision = resolve(store, records, client_id=ctx.client_id, thread_id=ctx.thread_id, actor=actor,
                            row_id=row_id, resolution=resolution, evidence=evidence, reason=reason,
-                           texts=texts(ctx.client_id))
+                           texts=texts(ctx.client_id), trigger=ctx.trigger, review_id=ctx.review_id,
+                           suggest=ctx.mode == "suggest")
+        if decision.status == "suggested":
+            _step(runtime, f"Row {row_id}: suggested {decision.rule}", "done")
+            return _out({"decision_id": decision.id, "status": "suggested", "rule": decision.rule,
+                         "before": decision.before, "after": decision.after})
         if decision.status != "applied":
             _step(runtime, f"Didn't change row {row_id}", "failed", decision.reason)
             return {"status": "refused", "why": decision.reason}
@@ -396,6 +419,32 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
                               text=question.strip(), why=why.strip())
         _step(runtime, f"Asked: {asked.text}", "done")
         return {"question_id": asked.id, "status": asked.status, **({"note": dropped} if dropped else {})}
+
+    @tool
+    def close_question(question_id: Annotated[str, Field(description="A question you asked (an id from list_questions "
+                                                                     "whose asked_by is agent).")],
+                       reason: Annotated[str, Field(min_length=1, max_length=300,
+                                                    description="Why the question no longer needs asking, in a "
+                                                                "sentence the person will read.")],
+                       runtime: ToolRuntime[ChatContext],
+                       evidence: Annotated[list[Evidence], BeforeValidator(_evidence_from_json), Field(
+                           max_length=3, description="Quotes, exactly as printed in the documents of the question's "
+                                                     "rows, that answer it. Not needed when a person has changed "
+                                                     "one of its rows since it was asked.")] = []) -> dict:
+        """Closes a question you asked that the books have since answered: a person changed one of its rows after it
+        was asked, or a document of its rows (quoted in evidence) says the answer. The services check this and refuse
+        otherwise, saying why. Questions the rules ask can't be closed."""
+        ctx = runtime.context
+        _step(runtime, "Checking whether the question is answered…")
+        decision = questions.close(store, records, client_id=ctx.client_id, question_id=question_id, reason=reason,
+                                   evidence=evidence, texts=texts(ctx.client_id), actor=actor, trigger=ctx.trigger,
+                                   review_id=ctx.review_id, suggest=ctx.mode == "suggest")
+        if decision.status == "refused":
+            _step(runtime, "Left the question open", "failed", decision.reason)
+            return {"status": "refused", "why": decision.reason}
+        _step(runtime, "Closed the question" if decision.status == "applied" else "Suggested closing the question",
+              "done")
+        return _out({"decision_id": decision.id, "status": decision.status, "rule": decision.rule})
 
     @tool
     def list_questions(runtime: ToolRuntime[ChatContext]) -> dict:
@@ -475,4 +524,4 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
         return _out(result)
 
     return [get_overview, list_issues, list_rows, get_row, list_documents, read_document, resolve_issue, ask_user,
-            list_questions, list_decisions, list_changes, get_trial_balance]
+            close_question, list_questions, list_decisions, list_changes, get_trial_balance]
