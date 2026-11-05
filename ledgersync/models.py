@@ -340,6 +340,7 @@ class FolderImport(BaseModel):
 class ClientSummary(Client):
     rows: int = 0
     to_review: int = 0   # rows with an error or a warning
+    ai_unseen: int = 0   # changes and suggestions of background reviews the person hasn't seen
 
 
 class Upload(BaseModel):
@@ -643,3 +644,11 @@ class ReviewState(BaseModel):
     due_at: Optional[str] = None
     running: bool = False
     retry_at: Optional[str] = None
+
+
+class ReviewDetail(ReviewRun):
+    """A run with the decisions it made and the questions it asked. A suggestion the person applied has applied_as,
+    the id of the decision that applied it."""
+    decisions: list[Decision] = Field(default_factory=list)
+    questions: list[Question] = Field(default_factory=list)
+    applied: dict[str, str] = Field(default_factory=dict)   # suggestion id -> the applied decision's id

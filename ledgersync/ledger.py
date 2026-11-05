@@ -210,8 +210,9 @@ def _year_of(store: MongoStore, client: Client, row: Optional[StoredRow] = None,
     return _books().year_of_row(client, row, uploads) or 0   # a row before the first year shows in it
 
 
-def summaries(store: MongoStore, archived: bool = False) -> list[ClientSummary]:
-    """The clients page: each client with how many rows it has and how many need a look. A client's ledger is
+def summaries(store: MongoStore, archived: bool = False, records=None) -> list[ClientSummary]:
+    """The clients page: each client with how many rows it has, how many need a look and, given the agent's
+    records, how many changes the background review made that the person hasn't seen. A client's ledger is
     built again only once its work has changed (its revision moved)."""
     counted = _counted.setdefault(store, {})
     found = []
@@ -221,7 +222,8 @@ def summaries(store: MongoStore, archived: bool = False) -> list[ClientSummary]:
         if known is None or known[0] != revision:
             rows = _books().all_rows(store, client.id)
             known = counted[client.id] = (revision, len(rows), sum(needs_review(r) for r in rows))
-        found.append(ClientSummary(**client.model_dump(), rows=known[1], to_review=known[2]))
+        unseen = records.unseen_background_changes(client.id) if records is not None else 0
+        found.append(ClientSummary(**client.model_dump(), rows=known[1], to_review=known[2], ai_unseen=unseen))
     return found
 
 

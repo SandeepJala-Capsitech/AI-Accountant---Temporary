@@ -15,8 +15,9 @@ from fastapi import FastAPI, File, Form, Header, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from ledgersync import (accounts, adapter, books, demo, folder, intake, ledger, ledger_book, pipeline, posting, reviews,
-                        upkeep)
+from ledgersync import (accounts, adapter, books, demo, folder, intake, ledger, ledger_book, pipeline, posting, questions,
+                        reviews, undo, upkeep)
+from ledgersync.agent.tools import AgentDeps, upload_texts
 from ledgersync.agent.chat import AnswerResult, Chat, ChatFile, NewThread, ThreadDetail, ThreadPatch
 from ledgersync.blobs import BlobStore, GridFSBlobStore
 from ledgersync.accounts import choosable
@@ -30,7 +31,7 @@ from ledgersync.matching import match
 from ledgersync.models import (AnalysisResult, BankCheck, BusinessSettings, BusinessType, ChangeDraft, ChatThread,
                                Client,
                                ClientFields, ClientPatch, ClientSummary, Decision, FolderImport, InvoiceSummary, Ledger,
-                               LedgerRequest, ManualUpload, OpeningBalances, PostedTrialBalance, Question, RowPatch,
+                               LedgerRequest, ManualUpload, OpeningBalances, PostedTrialBalance, Question, ReviewDetail, RowPatch,
                                TransactionList, TrialBalance, UploadPatch, Year, YearSummary)
 from ledgersync.questions import Answer
 from ledgersync.store_mongo import MongoStore
@@ -292,7 +293,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
 
     @app.get("/api/clients", response_model=list[ClientSummary])
     def list_clients(archived: bool = False):
-        return ledger.summaries(store, archived)
+        return ledger.summaries(store, archived, chat.records)
 
     @app.post("/api/clients", response_model=Client, status_code=201)
     def add_client(fields: ClientFields):
@@ -591,6 +592,64 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
     def client_decisions(client_id: int, year_start: Optional[dt.date] = None):
         store.get_client(client_id)
         return chat.records.decisions(client_id, year_start)
+
+    # ─── The background AI review ───────────────────────────────────────────────
+
+    @app.get("/api/clients/{client_id}/reviews", response_model=list[ReviewDetail])
+    def client_reviews(client_id: int, year_start: Optional[dt.date] = None):
+        """The client's background reviews, newest first, each with its decisions and its questions."""
+        store.get_client(client_id)
+        records = chat.records
+        applied = records.applied_suggestions(client_id)
+        found = []
+        for run in records.reviews(client_id, year_start=year_start):
+            decisions = [d for d in (records.decision(client_id, i) for i in run.decision_ids) if d]
+            asked = [q for q in (records.question(i) for i in run.question_ids) if q and q.client_id == client_id]
+            found.append(ReviewDetail(**run.model_dump(), decisions=decisions, questions=asked,
+                                      applied={d.id: applied[d.id] for d in decisions if d.id in applied}))
+        return found
+
+    @app.post("/api/clients/{client_id}/reviews/seen")
+    def reviews_seen(client_id: int, x_ledgersync: Optional[str] = Header(None)):
+        from_our_pages(x_ledgersync)
+        store.get_client(client_id)
+        return {"marked": chat.records.mark_reviews_seen(client_id)}
+
+    @app.post("/api/clients/{client_id}/decisions/{decision_id}/undo", response_model=Decision)
+    def undo_decision(client_id: int, decision_id: str, x_ledgersync: Optional[str] = Header(None)):
+        from_our_pages(x_ledgersync)
+        store.get_client(client_id)
+        return undo.undo_decision(store, chat.records, chat.locks, client_id=client_id, decision_id=decision_id,
+                                  wait=settings.review_wait_seconds)
+
+    @app.post("/api/clients/{client_id}/decisions/{decision_id}/apply", response_model=Decision)
+    def apply_decision(client_id: int, decision_id: str, x_ledgersync: Optional[str] = Header(None)):
+        from_our_pages(x_ledgersync)
+        store.get_client(client_id)
+        deps = AgentDeps(store=store, records=chat.records, blobs=blobs, vision=model_client)
+        return undo.apply_suggestion(store, chat.records, chat.locks, client_id=client_id, decision_id=decision_id,
+                                     texts=upload_texts(deps, client_id), wait=settings.review_wait_seconds)
+
+    @app.post("/api/clients/{client_id}/questions/{question_id}/answer")
+    def answer_client_question(client_id: int, question_id: str, answer: Answer,
+                               x_ledgersync: Optional[str] = Header(None)):
+        """Answers a question without a chat (the background review's); the client is made due for a review."""
+        from_our_pages(x_ledgersync)
+        ledger.require_active(store.get_client(client_id))
+        with chat.locks.hold(client_id):
+            answered = questions.answer(store, chat.records, client_id=client_id, thread_id=None,
+                                        question_id=question_id, answer=answer, wait=settings.review_wait_seconds)
+        return {"questions": answered.questions}
+
+    @app.post("/api/clients/{client_id}/questions/{question_id}/document", response_model=AnswerResult)
+    def client_question_document(client_id: int, question_id: str, file: UploadFile = File(...),
+                                 x_ledgersync: Optional[str] = Header(None)):
+        from_our_pages(x_ledgersync)
+        client = store.get_client(client_id)
+        asked = chat.records.question(question_id)
+        if asked is None or asked.client_id != client_id:
+            raise NotFound("This question was not found.")
+        return chat.answer_with_document(client, asked.year_start, question_id, sent_file(file))
 
     @app.get("/api/clients/{client_id}/years/{start}/posted-trial-balance", response_model=PostedTrialBalance)
     def posted_trial_balance(client_id: int, start: dt.date):

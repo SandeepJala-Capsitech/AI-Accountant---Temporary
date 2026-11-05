@@ -106,6 +106,16 @@ class AgentDeps:
     is_cancelled: Callable[[str], bool] = field(default=_never)
 
 
+def upload_texts(deps: AgentDeps, client_id: int) -> Callable[[int], list[str]]:
+    """The pages of one of the client's uploads, by its id (none for an upload that isn't the client's)."""
+    uploads = {u["id"]: u for u in deps.store.uploads(client_id)}
+
+    def pages(upload_id: int) -> list[str]:
+        upload = uploads.get(upload_id)
+        return documents.text_of(upload, deps.blobs, deps.records, deps.vision) if upload else []
+    return pages
+
+
 def _reviews_since_last_chat(records: AgentRecords, ctx: ChatContext) -> list[dict]:
     """Up to five of the background reviews that finished after the client's previous chat was last used (all of
     them when there is none), newest first: when each ran, what it said, how many changes it made and how many
@@ -197,13 +207,7 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
     store, records = deps.store, deps.records
 
     def texts(client_id: int) -> Callable[[int], list[str]]:
-        """The pages of one of the client's uploads, by its id (none for an upload that isn't the client's)."""
-        uploads = {u["id"]: u for u in store.uploads(client_id)}
-
-        def pages(upload_id: int) -> list[str]:
-            upload = uploads.get(upload_id)
-            return documents.text_of(upload, deps.blobs, records, deps.vision) if upload else []
-        return pages
+        return upload_texts(deps, client_id)
 
     @tool
     def get_overview(runtime: ToolRuntime[ChatContext]) -> dict:
