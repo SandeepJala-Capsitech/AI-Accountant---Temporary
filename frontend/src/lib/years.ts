@@ -4,6 +4,7 @@ import type { Year } from './clients'
 
 export const SECTIONS = [
   { slug: 'overview', title: 'Overview' },
+  { slug: 'ai-review', title: 'AI review' },
   { slug: 'documents', title: 'Documents' },
   { slug: 'bank', title: 'Bank' },
   { slug: 'invoices', title: 'Invoices' },

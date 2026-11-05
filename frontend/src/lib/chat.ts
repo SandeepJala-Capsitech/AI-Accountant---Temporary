@@ -32,7 +32,8 @@ export interface Decision {
   year_start: string
   action: string
   rule: string               // "R2 Duplicate: kept the receipt"
-  status: 'applied' | 'refused'
+  status: 'applied' | 'refused' | 'suggested'
+  trigger?: 'chat' | 'background'   // where it came from: a chat turn, or a background review
   row_ids: number[]
   evidence: Evidence[]
   reason: string

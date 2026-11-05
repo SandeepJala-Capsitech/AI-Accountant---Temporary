@@ -343,3 +343,65 @@ def test_an_answer_change_records_the_answer_and_a_repeated_one_records_nothing(
     made = [c for c in records.changes(acme) if c.kind == "question_answered"]
 
     assert [c.after for c in made] == [{"answer": "14 Aug 2025"}, {"answer": "I don't have it"}]
+
+
+# ─── Closing the agent's own question ──────────────────────────────────────────
+
+from ledgersync.models import Evidence, QuestionDraft  # noqa: E402
+from test_resolutions import nb, pages  # noqa: E402,F401
+
+
+def close_args(records, nb, pages, q, *quotes, **kw):
+    uid = nb.upload("costco.txt")
+    return dict(client_id=nb.id, year_start=date(2026, 4, 1), question_id=q.id, reason="The receipt says so.", actor="agent:test",
+                trigger="background", review_id="r1", texts=lambda n: pages.get(n, []),
+                evidence=[Evidence(upload_id=uid, quote=t) for t in quotes], **kw)
+
+
+def test_a_question_is_closed_by_a_quote_from_its_rows_document(store, records, pages, nb):
+    q = questions.ask(records, client_id=nb.id, year_start=date(2026, 4, 1), row_ids=[nb.receipt],
+                      text="Is the paper for the office?", why="Unclear.")
+    d = questions.close(store, records, **close_args(records, nb, pages, q, "Printer paper        52.80"))
+    assert (d.status, d.action, d.trigger, d.review_id) == ("applied", "close_question", "background", "r1")
+    assert d.evidence[0].upload_name == "costco.txt"
+    assert records.question(q.id).answer == "Closed by the AI: The receipt says so."
+    again = questions.close(store, records, **close_args(records, nb, pages, q, "Printer paper        52.80"))
+    assert again.id == d.id   # asked again, the same decision
+
+
+def test_a_suggested_closing_leaves_the_question_open_and_a_rule_question_cannot_be_closed(store, records, pages, nb):
+    q = questions.ask(records, client_id=nb.id, year_start=date(2026, 4, 1), row_ids=[nb.receipt],
+                      text="Is the paper for the office?", why="Unclear.")
+    d = questions.close(store, records, **close_args(records, nb, pages, q, "Printer paper        52.80",
+                                                     suggest=True))
+    assert d.status == "suggested" and records.question(q.id).status == "open"
+    assert not [c for c in records.changes(nb.id) if c.kind == "question_closed"]
+    rule = records.upsert_question(QuestionDraft(client_id=nb.id, year_start=date(2026, 4, 1), row_ids=[nb.receipt],
+                                                 kind="date", text="When?", why="No date.", source="rules"), "k")
+    with pytest.raises(InvalidInput):
+        questions.close(store, records, **close_args(records, nb, pages, rule, "Printer paper        52.80"))
+
+
+def test_a_question_of_another_year_cannot_be_closed(store, records, pages, nb):
+    q = questions.ask(records, client_id=nb.id, year_start=date(2026, 4, 1), row_ids=[nb.receipt], text="Q?", why="?")
+    args = close_args(records, nb, pages, q, "Printer paper        52.80")
+    args["year_start"] = date(2025, 4, 1)
+    with pytest.raises(InvalidInput, match="That question belongs to another year."):
+        questions.close(store, records, **args)
+    assert records.question(q.id).status == "open"
+
+
+def test_an_answer_outside_a_chat_makes_the_client_due_and_one_in_a_chat_does_not(store, records, acme):
+    from datetime import datetime, timezone
+    add_rows(store, acme, undated_taxi(), year_start=YEAR_1)
+    [q] = refresh(store, records, acme)
+    questions.answer(store, records, client_id=acme, thread_id="t1", question_id=q.id,
+                     answer=DateAnswer(kind="date", date=date(2025, 8, 14)))
+    assert records.review_state(acme).due_at is None   # the chat's agent handles it
+
+    add_rows(store, acme, undated_taxi(description="taxi 2"), year_start=YEAR_1)
+    [q2] = [x for x in refresh(store, records, acme) if x.id != q.id]
+    at = datetime(2026, 11, 4, 10, 0, tzinfo=timezone.utc)
+    questions.answer(store, records, client_id=acme, thread_id=None, question_id=q2.id,
+                     answer=DateAnswer(kind="date", date=date(2025, 8, 15)), now=at, wait=30)
+    assert records.review_state(acme).due_at == "2026-11-04T10:00:30+00:00"

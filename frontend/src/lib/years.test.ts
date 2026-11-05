@@ -34,7 +34,7 @@ test('the current year is the one that holds today, else the latest', () => {
 })
 
 test('only the six sections are sections', () => {
-  assert.deepEqual(SECTIONS.map(s => s.slug), ['overview', 'documents', 'bank', 'invoices', 'transactions', 'trial-balance'])
+  assert.deepEqual(SECTIONS.map(s => s.slug), ['overview', 'ai-review', 'documents', 'bank', 'invoices', 'transactions', 'trial-balance'])
   assert.equal(isSection('bank'), true)
   assert.equal(isSection('payroll'), false)
 })

@@ -17,7 +17,8 @@ ENV_NAMES = (
     "GROQ_API_KEY", "GROQ_MODEL", "GROQ_BASE_URL", "GROQ_TIMEOUT", "GROQ_MAX_OUTPUT_TOKENS",
     "GROQ_REASONING_EFFORT", "GROQ_MAX_IMAGES",
     "MONGODB_URI", "MONGODB_DB_NAME", "LEDGERSYNC_MONGO_MAX_POOL",
-    "LEDGERSYNC_AGENT_TIMEOUT", "LEDGERSYNC_DEMO",
+    "LEDGERSYNC_AGENT_TIMEOUT", "LEDGERSYNC_DEMO", "LEDGERSYNC_REVIEW_WAIT", "LEDGERSYNC_REVIEW_DAILY_LIMIT",
+    "LEDGERSYNC_REVIEW_WORKER",
 )
 
 
@@ -91,6 +92,9 @@ class Settings:
     # How long one of the accountant chat's answers may take (it runs on openrouter_model, with OPENROUTER_API_KEY).
     agent_timeout: float = 60.0           # seconds
     demo: bool = False                    # the demo's reset is offered (POST /api/demo/reset)
+    review_wait_seconds: int = 20         # how long after the last change the background review waits to start
+    review_daily_limit: int = 20          # background reviews a client may have in a day
+    review_worker: bool = True            # the API runs the background review (with warmup; tests drive it by hand)
 
     @property
     def max_upload_bytes(self) -> int:
@@ -155,4 +159,7 @@ class Settings:
             mongodb_max_pool=max(1, _number(env, "LEDGERSYNC_MONGO_MAX_POOL", d.mongodb_max_pool)),
             agent_timeout=_number(env, "LEDGERSYNC_AGENT_TIMEOUT", d.agent_timeout, float),
             demo=_flag(env.get("LEDGERSYNC_DEMO", "0")),
+            review_wait_seconds=max(0, _number(env, "LEDGERSYNC_REVIEW_WAIT", d.review_wait_seconds)),
+            review_daily_limit=max(0, _number(env, "LEDGERSYNC_REVIEW_DAILY_LIMIT", d.review_daily_limit)),
+            review_worker=_flag(env.get("LEDGERSYNC_REVIEW_WORKER", "1")),
         )

@@ -28,7 +28,7 @@ from ledgersync.checks import issue
 from ledgersync.config import Settings
 from ledgersync.errors import ModelUnavailable
 from ledgersync.model_client import ModelClient
-from ledgersync.models import ClientFields
+from ledgersync.models import ChangeDraft, ClientFields
 from ledgersync.records import AgentRecords
 
 ROOT = Path(__file__).parent.parent
@@ -514,8 +514,8 @@ def test_no_tool_can_set_a_date():
 
     tools = make_tools(AgentDeps(store=None, records=None, blobs=None), actor="agent:test")
     assert {t.name for t in tools} == {"get_overview", "list_issues", "list_rows", "get_row", "list_documents", "read_document",
-                                       "resolve_issue", "ask_user", "list_questions", "list_decisions",
-                                       "list_changes", "get_trial_balance"}
+                                       "resolve_issue", "ask_user", "close_question", "list_questions",
+                                       "list_decisions", "list_changes", "get_trial_balance"}
     for tool in tools:
         for name, field in properties(tool.tool_call_schema.model_json_schema()):
             assert "date" not in name and field.get("format") not in ("date", "date-time"), (tool.name, name)
@@ -700,3 +700,123 @@ def test_list_changes_since_says_when_there_are_more_than_it_returns(mongo_store
 
     page = json.loads(answered(model, 1)[0].content)
     assert len(page["changes"]) == 200 and page["more"] is True
+
+
+# ─── The agent in a background review ──────────────────────────────────────────
+
+def background(client_id: int, **fields) -> ChatContext:
+    return ChatContext(client_id=client_id, thread_id=uuid4().hex, year_start=YEAR, trigger="background",
+                       review_id="rev1", **fields)
+
+
+@pytest.mark.mongo
+def test_resolve_issue_carries_the_contexts_trigger_and_mode(mongo_store, deps, staples):
+    args = keep_the_receipt(mongo_store, staples)
+    model = ScriptedChatModel(replies=[call("resolve_issue", **args), say("Suggested.")])
+    agent = build_agent(SETTINGS, deps, model=model, checkpointer=InMemorySaver())
+
+    list(stream_turn(agent, background(staples, mode="suggest"), "Review."))
+
+    [decision] = deps.records.decisions(staples)
+    assert (decision.status, decision.trigger, decision.review_id) == ("suggested", "background", "rev1")
+    assert json.loads(answered(model, 1)[0].content)["status"] == "suggested"
+    assert not next(r for r in mongo_store.rows(staples) if r.id == args["resolution"]["drop_row_ids"][0]).tx.excluded
+
+
+def agent_question(deps, client_id: int, row_id: int):
+    """A question of the agent's own about the row, asked on the first of January 2030 (for the changes after it)."""
+    from ledgersync import questions
+    q = questions.ask(deps.records, client_id=client_id, year_start=YEAR, row_ids=[row_id], text="Is it personal?",
+                      why="Unclear.")
+    deps.records.db.questions.update_one({"id": q.id}, {"$set": {"created_at": "2030-01-01T10:00:00+00:00"}})
+    return q
+
+
+def close_it(deps, ctx, question_id: str, **args) -> dict:
+    model = ScriptedChatModel(replies=[call("close_question", question_id=question_id, reason="Answered.", **args),
+                                       say("Closed.")])
+    agent = build_agent(SETTINGS, deps, model=model, checkpointer=InMemorySaver())
+    list(stream_turn(agent, ctx, "Close it."))
+    return json.loads(answered(model, 1)[0].content)
+
+
+@pytest.mark.mongo
+def test_close_question_after_a_persons_change_to_its_rows(mongo_store, deps, staples):
+    row_id = mongo_store.rows(staples)[0].id
+    q = agent_question(deps, staples, row_id)
+    change = deps.records.add_change(ChangeDraft(client_id=staples, year_start=YEAR, actor="user", kind="row_edited",
+                                                 row_ids=[row_id], summary=f"Row {row_id} changed: account 7504"))
+    mongo_store.db.changes.update_one({"_id": change.id}, {"$set": {"created_at": "2030-01-01T12:00:00+00:00"}})
+
+    result = close_it(deps, background(staples), q.id)
+
+    assert result["status"] == "applied"
+    closed = deps.records.question(q.id)
+    assert (closed.status, closed.answer) == ("resolved", "Closed by the AI: Answered.")
+    [d] = deps.records.decisions(staples)
+    assert (d.action, d.trigger, d.review_id, d.actor) == ("close_question", "background", "rev1",
+                                                           "agent:qwen/qwen3.8-27b")
+    assert d.before == {"question": {"status": "open", "answer": None}} and d.after == {"question": {"status": "resolved"}}
+    [quote] = d.evidence
+    assert (quote.upload_id, quote.upload_name, quote.quote) == (0, "change record", change.summary)
+    assert any(c.kind == "question_closed" and c.row_ids == [row_id] for c in deps.records.changes(staples))
+
+
+@pytest.mark.mongo
+def test_close_question_refused_without_a_change_or_document(mongo_store, deps, staples):
+    row = mongo_store.rows(staples)[0]
+    row_id = row.id
+    q = agent_question(deps, staples, row_id)
+    other = deps.records.add_change(ChangeDraft(client_id=staples, year_start=YEAR, actor="user", kind="row_edited",
+                                                row_ids=[row_id + 100], summary="Another row changed"))
+    earlier = deps.records.add_change(ChangeDraft(client_id=staples, year_start=YEAR, actor="user",
+                                                  kind="row_edited", row_ids=[row_id], summary="Before it was asked"))
+    for c, when in ((other, "2030-01-01T12:00:00+00:00"), (earlier, "2029-12-31T12:00:00+00:00")):
+        mongo_store.db.changes.update_one({"_id": c.id}, {"$set": {"created_at": when}})
+
+    result = close_it(deps, background(staples), q.id)
+
+    assert result == {"status": "refused", "why": "Nothing since the question was asked answers it."}
+    assert deps.records.question(q.id).status == "open"
+    [d] = deps.records.decisions(staples)
+    assert (d.status, d.action) == ("refused", "close_question")
+    quote = close_it(deps, background(staples), q.id,
+                     evidence=[{"upload_id": row.upload_id, "quote": "no such words in it"}])
+    assert quote["status"] == "refused" and "isn't in" in quote["why"]
+    assert deps.records.question(q.id).status == "open"
+
+
+@pytest.mark.mongo
+def test_get_overview_lists_background_reviews_since_the_last_chat(mongo_store, deps, staples):
+    records = deps.records
+    old = records.create_thread(staples, YEAR, "Earlier chat")
+    mongo_store.db.chat_threads.update_one({"_id": old.id}, {"$set": {"updated_at": "2030-01-02T00:00:00+00:00"}})
+
+    def run(when: str, summary: str, decisions=(), asked=()):
+        r = records.start_review(staples, YEAR, from_seq=0, to_seq=1, trigger_summary="after a file")
+        records.finish_review(r.id, status="done", decision_ids=decisions, question_ids=asked, summary=summary)
+        mongo_store.db.review_runs.update_one({"_id": r.id}, {"$set": {"finished_at": when}})
+
+    from ledgersync.models import DecisionDraft
+    applied = records.append_decision(DecisionDraft(client_id=staples, year_start=YEAR, action="keep_one", rule="R2",
+                                                    status="applied", actor="agent:x"), "k1")[0]
+    suggested = records.append_decision(DecisionDraft(client_id=staples, year_start=YEAR, action="keep_one", rule="R2",
+                                                      status="suggested", actor="agent:x"), "k2")[0]
+    run("2030-01-01T00:00:00+00:00", "Before the last chat.")
+    run("2030-01-03T00:00:00+00:00", "Sorted the receipt.", decisions=[applied.id, suggested.id], asked=["q1"])
+    model = ScriptedChatModel(replies=[call("get_overview"), say("Hello.")])
+    agent = build_agent(SETTINGS, deps, model=model, checkpointer=InMemorySaver())
+
+    list(stream_turn(agent, context(staples), "Hi."))
+
+    shown = json.loads(answered(model, 1)[0].content)["background_reviews_since_last_chat"]
+    assert shown == [{"ran_at": "2030-01-03T00:00:00+00:00", "summary": "Sorted the receipt.", "sorted": 1,
+                      "asked": 1}]
+
+
+def test_the_prompt_has_the_background_and_chat_passages():
+    assert ("In a background review no person is reading. Look at what changed (list_changes) and the rows it "
+            "touched; settle what the evidence supports; ask only what you must; end with one short line saying "
+            "what you did.") in SYSTEM_PROMPT
+    assert ("At the start of a chat, if get_overview lists background reviews since the last chat, say in one line "
+            "what they did.") in SYSTEM_PROMPT

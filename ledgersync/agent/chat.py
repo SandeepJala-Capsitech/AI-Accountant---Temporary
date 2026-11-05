@@ -33,7 +33,7 @@ from ledgersync.config import Settings
 from ledgersync.errors import InvalidInput, LedgerSyncError, ModelUnavailable, NotFound, SameFile, YearClosed
 from ledgersync.jobs import SUCCEEDED, Job
 from ledgersync.ledger import require_active
-from ledgersync.models import (ChatThread, Client, Decision, PostedTrialBalance, PostResult, Question,
+from ledgersync.models import (ChangeDraft, ChatThread, Client, Decision, PostedTrialBalance, PostResult, Question,
                                Transaction)
 from ledgersync.records import AgentRecords
 from ledgersync.rows import now_iso
@@ -150,8 +150,13 @@ def since_now(records: AgentRecords, client_id: int) -> Since:
 
 def sorted_since(records: AgentRecords, thread: ChatThread, since: Since) -> list[Decision]:
     """The decisions this chat applied since then, oldest first."""
-    return [d for d in records.decisions(thread.client_id, since=since.at)
-            if d.id not in since.before and d.status == "applied" and d.thread_id == thread.id]
+    return _applied_since(records, thread.client_id, thread.id, since)
+
+
+def _applied_since(records: AgentRecords, client_id: int, thread_id: Optional[str], since: Since) -> list[Decision]:
+    """The decisions applied since then under this thread id (None: outside any chat), oldest first."""
+    return [d for d in records.decisions(client_id, since=since.at)
+            if d.id not in since.before and d.status == "applied" and d.thread_id == thread_id]
 
 
 def _config(thread_id: str) -> dict:
@@ -464,24 +469,32 @@ class Chat:
             yield ChatEvent("step", last)
 
     def _write(self, thread: ChatThread, since: Since) -> PostResult:
+        return self._write_for(thread.client_id, thread.year_start, thread.id, since)
+
+    def _write_for(self, client_id: int, year_start: dt.date, thread_id: Optional[str], since: Since) -> PostResult:
         """With the client's lock held: records the rows matching dated from the bank, works the questions out and
         posts the year, with the decisions this chat made since then behind the posting; then settles the client's other
         open years, which the files read may have put rows in."""
         try:
-            return upkeep.settle(self.store, self.records, thread.client_id, thread.year_start, thread_id=thread.id,
-                                 decision_ids=[d.id for d in sorted_since(self.records, thread, since)])
+            return upkeep.settle(self.store, self.records, client_id, year_start, thread_id=thread_id,
+                                 decision_ids=[d.id for d in _applied_since(self.records, client_id, thread_id, since)])
         finally:   # a file read in the chat can hold rows of any open year: they are settled too
-            upkeep.settle_open_years(self.store, self.records, thread.client_id, except_year=thread.year_start,
-                                     thread_id=thread.id)
+            upkeep.settle_open_years(self.store, self.records, client_id, except_year=year_start,
+                                     thread_id=thread_id)
 
     def _answered(self, thread: ChatThread, since: Since, question_id: str, post: PostResult) -> AnswerResult:
+        return self._answered_for(thread.client_id, thread.year_start, thread.id, since, question_id, post)
+
+    def _answered_for(self, client_id: int, year_start: dt.date, thread_id: Optional[str], since: Since,
+                      question_id: str, post: PostResult) -> AnswerResult:
         """The question as it stands, with what this chat sorted since then and, when the posting wrote something,
         the year's posted trial balance and the posting (the posting too when it couldn't write)."""
         wrote = post.batch_id is not None
         return AnswerResult(
-            question=self.records.question(question_id), sorted=sorted_since(self.records, thread, since),
-            trial_balance=(ledger_book.posted_trial_balance(self.store, self.records, thread.client_id,
-                                                            thread.year_start) if wrote else None),
+            question=self.records.question(question_id),
+            sorted=_applied_since(self.records, client_id, thread_id, since),
+            trial_balance=(ledger_book.posted_trial_balance(self.store, self.records, client_id, year_start)
+                           if wrote else None),
             post=post if wrote or post.problems else None)
 
     # ─── Answers ───────────────────────────────────────────────────────────────
@@ -511,26 +524,47 @@ class Chat:
             return self._answered(thread, since, question_id, answered.post)
 
     def document(self, thread: ChatThread, question_id: str, file: ChatFile) -> AnswerResult:
+        """A document sent for a question in a chat: see answer_with_document."""
+        require_active(self.store.get_client(thread.client_id))
+        asked = self._question(thread, question_id)
+        result = self.answer_with_document(self.store.get_client(thread.client_id), thread.year_start, asked.id, file,
+                                           thread_id=thread.id)
+        self.records.touch_thread(thread.id)
+        return result
+
+    def answer_with_document(self, client: Client, year_start: dt.date, question_id: str, file: ChatFile, *,
+                             thread_id: Optional[str] = None) -> AnswerResult:
         """Reads the file sent for a question into the client's documents, then records, works the questions out and
         posts as a turn ends. If the question is still asked, its reason says the file didn't match: "Read <name>,
         but it doesn't match: <payee>, £<total> against <payee>, £<amount>." Returns the question with what the file
-        did."""
-        client = self.store.get_client(thread.client_id)
+        did. thread_id: the chat it was sent in (None: the question's list, outside any chat)."""
         require_active(client)
-        asked = self._question(thread, question_id)
+        asked = self.records.question(question_id)
+        if asked is None or asked.client_id != client.id:
+            raise NotFound("This question was not found.")
         if asked.kind not in _DOCUMENT_KINDS:
             raise InvalidInput("This question isn't asking for a document.")
         since = since_now(self.records, client.id)
-        rows, error = _outcome(self.read_file(client, file, thread.year_start))
+        rows, error = _outcome(self.read_file(client, file, year_start))
         if error:
             refused = LedgerSyncError(f"Couldn't read {file.name}: {error['message']}", code=error.get("code"))
             refused.status_code = error.get("status_code", 422)
             raise refused
         with self.locks.hold(client.id):
-            post = self._write(thread, since)
+            post = self._write_for(client.id, year_start, thread_id, since)
             still = self.records.question(question_id)
             if still.status != "resolved":
                 payment = next((r.tx for r in self.store.rows(client.id) if r.id in still.row_ids[:1]), None)
                 self.records.set_question_why(question_id, _mismatch(file.name, rows, payment))
-        self.records.touch_thread(thread.id)
-        return self._answered(thread, since, question_id, post)
+        if thread_id is None and still.status == "resolved":   # outside a chat nobody else handles the answer
+            try:   # the books are settled: recording the answer must never fail the request
+                from .. import reviews   # here: reviews imports the agent
+                made = ChangeDraft(client_id=client.id, year_start=asked.year_start, actor="user",
+                                   kind="question_answered", row_ids=list(asked.row_ids), after={"answer": file.name},
+                                   summary=f"Answered: {asked.text}", in_chat=False)
+                self.records.add_change(made)
+                reviews.note(self.records, made, now=reviews.utcnow(), wait=self.settings.review_wait_seconds)
+            except Exception:
+                logging.getLogger("ledgersync.upkeep").exception(
+                    "Couldn't record the answer to question %s for client %s", question_id, client.id)
+        return self._answered_for(client.id, year_start, thread_id, since, question_id, post)

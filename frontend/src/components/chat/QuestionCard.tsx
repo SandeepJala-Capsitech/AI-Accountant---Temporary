@@ -2,15 +2,17 @@
 
 import { useRef, useState } from 'react'
 import { answerQuestion, questionControl, questionState, uploadForQuestion, type Answer, type AnswerResult, type Question } from '@/lib/chat'
+import type { Answerer } from '@/lib/reviews'
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
 // One question, in amber: what is asked, why it matters, and its answer control. A date or a document goes to the
 // question's own route, which returns that question with its effect; a question in words is answered as a chat message.
-export default function QuestionCard({ question, number, threadId, onAnswered, onSay, effect, busy: working }: {
+export default function QuestionCard({ question, number, threadId, answerer, onAnswered, onSay, effect, busy: working }: {
   question: Question
   number: number
-  threadId: string
+  threadId?: string                  // the chat the card is in; the default answerer uses its routes
+  answerer?: Answerer                // answers some other way, such as a background review's client routes
   onAnswered: (a: AnswerResult) => void
   onSay: (text: string) => void      // sends a chat message on this thread
   effect: string | null              // what the answer did, shown on every card for this question
@@ -36,9 +38,13 @@ export default function QuestionCard({ question, number, threadId, onAnswered, o
       setBusy('')
     }
   }
-  const answer = (a: Answer, what: string) => run(what, () => answerQuestion(threadId, question.id, a))
+  const how: Answerer = answerer ?? {
+    answer: (qid, a) => answerQuestion(threadId ?? '', qid, a),
+    upload: (qid, file) => uploadForQuestion(threadId ?? '', qid, file),
+  }
+  const answer = (a: Answer, what: string) => run(what, () => how.answer(question.id, a))
   const upload = (file: File | undefined) => {
-    if (file) run(`Reading ${file.name}…`, () => uploadForQuestion(threadId, question.id, file))
+    if (file) run(`Reading ${file.name}…`, () => how.upload(question.id, file))
   }
   const say = () => {
     if (!words.trim()) return

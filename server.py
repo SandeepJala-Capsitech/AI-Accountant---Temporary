@@ -15,8 +15,9 @@ from fastapi import FastAPI, File, Form, Header, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from ledgersync import (accounts, adapter, books, demo, folder, intake, ledger, ledger_book, pipeline, posting,
-                        upkeep)
+from ledgersync import (accounts, adapter, books, demo, folder, intake, ledger, ledger_book, pipeline, posting, questions,
+                        reviews, undo, upkeep)
+from ledgersync.agent.tools import AgentDeps, upload_texts
 from ledgersync.agent.chat import AnswerResult, Chat, ChatFile, NewThread, ThreadDetail, ThreadPatch
 from ledgersync.blobs import BlobStore, GridFSBlobStore
 from ledgersync.accounts import choosable
@@ -31,7 +32,7 @@ from ledgersync.matching import match
 from ledgersync.models import (AnalysisResult, BankCheck, BusinessSettings, BusinessType, ChangeDraft, ChatThread,
                                Client,
                                ClientFields, ClientPatch, ClientSummary, Decision, FolderImport, InvoiceSummary, Ledger,
-                               LedgerRequest, ManualUpload, OpeningBalances, PostedTrialBalance, Question, RowPatch,
+                               LedgerRequest, ManualUpload, OpeningBalances, PostedTrialBalance, Question, ReviewDetail, RowPatch,
                                TransactionList, TrialBalance, UploadPatch, Year, YearSummary)
 from ledgersync.questions import Answer
 from ledgersync.store_mongo import MongoStore
@@ -68,8 +69,14 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
     async def lifespan(app: FastAPI):
         if settings.warmup:
             threading.Thread(target=model_client.warm_up, name="model-warmup", daemon=True).start()
+        worker = None
+        if settings.warmup and settings.review_worker:   # tests turn warmup off, so no thread runs there
+            worker = reviews.Worker(chat, settings, busy=files_being_read)
+            worker.start()
         yield
         try:
+            if worker is not None:
+                worker.stop()
             jobs.shutdown()
         finally:
             if owns_store:
@@ -106,15 +113,16 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
 
     def changed(client_id: int, kind: str, summary: str, *, actor: str = "user", year_start: Optional[dt.date] = None,
                 row_ids=(), upload_id: Optional[int] = None, before: Optional[dict] = None,
-                after: Optional[dict] = None, settle: bool = True) -> None:
+                after: Optional[dict] = None, settle: bool = True, in_chat: bool = False) -> None:
         """Records a change to the client's books once it has been made, then settles them: the rows matching dated,
         the questions and the posting are brought up to date at once. Never raises after the change is recorded.
         With settle False the change is only recorded: a chat turn settles the books itself once its files are read."""
         draft = ChangeDraft(client_id=client_id, year_start=year_start, actor=actor, kind=kind, row_ids=list(row_ids),
-                            upload_id=upload_id, before=before or {}, after=after or {}, summary=summary)
+                            upload_id=upload_id, before=before or {}, after=after or {}, summary=summary,
+                            in_chat=in_chat)
         try:   # the change is already saved: recording or settling it must never fail the request or the read job
             if settle:
-                upkeep.after_change(store, chat.records, chat.locks, draft)
+                upkeep.after_change(store, chat.records, chat.locks, draft, wait=settings.review_wait_seconds)
             else:
                 chat.records.add_change(draft)
         except Exception:
@@ -128,7 +136,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
 
     def run_analysis(item, ctx, client: Optional[Client] = None, name: str = "Pasted text", sha256: str = "",
                      bank_account: Optional[str] = None, year_start: Optional[dt.date] = None,
-                     actor: str = "user", settle: bool = True) -> dict:
+                     actor: str = "user", settle: bool = True, in_chat: bool = False) -> dict:
         """Reads one input. For a client: the model is told its name, kind of business and its other bank accounts,
         the rows are booked with its settings, and they are saved to it as an upload when any were found (not after
         a cancel), added to the year starting year_start; none is saved when any falls in a closed year. A
@@ -171,15 +179,20 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
                                                    bank_account=own if statement else None,
                                                    year_start=year_start)
             changed(client.id, "upload_read", f"{name} read: {rows_word(len(transactions))}", actor=actor,
-                    year_start=year_start, upload_id=result["upload_id"], settle=settle)
+                    year_start=year_start, upload_id=result["upload_id"], settle=settle, in_chat=in_chat)
         return result
 
     reading: Counter = Counter()   # (client id, sha256) of each file a job is reading for a client, once per job
     reading_lock = threading.Lock()
 
+    def files_being_read(client_id: int) -> bool:
+        """Whether a job is reading a file for the client: its review waits."""
+        with reading_lock:
+            return any(owner == client_id for owner, _ in reading)
+
     def submit_analysis(item, client: Optional[Client], name: str, sha256: str, content_type: str, data: bytes,
                         year_start: Optional[dt.date], bank_account: Optional[str], *, once: bool = False,
-                        actor: str = "user", settle: bool = True):
+                        actor: str = "user", settle: bool = True, in_chat: bool = False):
         """Keeps the original file (when it has a sha256) and queues the analysis of an input already checked. With
         once, a file a job is already reading for the client is not queued again: returns None."""
         key = (client.id, sha256) if client is not None and sha256 else None
@@ -198,7 +211,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
 
         def work(ctx):
             return run_analysis(item, ctx, client, name, sha256, bank_account,
-                                year_start if client is not None else None, actor, settle)
+                                year_start if client is not None else None, actor, settle, in_chat)
 
         try:
             if sha256:
@@ -281,7 +294,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
 
     @app.get("/api/clients", response_model=list[ClientSummary])
     def list_clients(archived: bool = False):
-        return ledger.summaries(store, archived)
+        return ledger.summaries(store, archived, chat.records)
 
     @app.post("/api/clients", response_model=Client, status_code=201)
     def add_client(fields: ClientFields):
@@ -495,7 +508,8 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         model_client.ensure_available()
         bank = file.bank_account or ledger.settings_for(client).bank_account
         job = submit_analysis(item, client, file.name, sha256, file.content_type, data, year_start, bank, once=True,
-                              settle=False)   # the chat's turn settles once its files are read
+                              settle=False,   # the chat's turn settles once its files are read
+                              in_chat=True)   # and a file read in a chat is reviewed by that chat, not in the background
         if job is None:
             raise SameFile(f"Skipped {file.name}: the same file is being read already.")
         return job
@@ -590,6 +604,67 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
     def client_decisions(client_id: int, year_start: Optional[dt.date] = None):
         store.get_client(client_id)
         return chat.records.decisions(client_id, year_start)
+
+    # ─── The background AI review ───────────────────────────────────────────────
+
+    @app.get("/api/clients/{client_id}/reviews", response_model=list[ReviewDetail])
+    def client_reviews(client_id: int, year_start: Optional[dt.date] = None):
+        """The client's background reviews, newest first, each with its decisions and its questions."""
+        store.get_client(client_id)
+        records = chat.records
+        applied = records.applied_suggestions(client_id)
+        runs = records.reviews(client_id, year_start=year_start)
+        decisions = {d.id: d for d in records.decisions_by_ids(client_id, [i for r in runs for i in r.decision_ids])}
+        asked = {q.id: q for q in records.questions_by_ids(client_id, [i for r in runs for i in r.question_ids])}
+        found = []
+        for run in runs:
+            mine = [decisions[i] for i in run.decision_ids if i in decisions]
+            found.append(ReviewDetail(**run.model_dump(), decisions=mine,
+                                      questions=[asked[i] for i in run.question_ids if i in asked],
+                                      applied={d.id: applied[d.id] for d in mine if d.id in applied}))
+        return found
+
+    @app.post("/api/clients/{client_id}/reviews/seen")
+    def reviews_seen(client_id: int, x_ledgersync: Optional[str] = Header(None)):
+        from_our_pages(x_ledgersync)
+        store.get_client(client_id)
+        return {"marked": chat.records.mark_reviews_seen(client_id)}
+
+    @app.post("/api/clients/{client_id}/decisions/{decision_id}/undo", response_model=Decision)
+    def undo_decision(client_id: int, decision_id: str, x_ledgersync: Optional[str] = Header(None)):
+        from_our_pages(x_ledgersync)
+        store.get_client(client_id)
+        return undo.undo_decision(store, chat.records, chat.locks, client_id=client_id, decision_id=decision_id,
+                                  wait=settings.review_wait_seconds)
+
+    @app.post("/api/clients/{client_id}/decisions/{decision_id}/apply", response_model=Decision)
+    def apply_decision(client_id: int, decision_id: str, x_ledgersync: Optional[str] = Header(None)):
+        from_our_pages(x_ledgersync)
+        store.get_client(client_id)
+        deps = AgentDeps(store=store, records=chat.records, blobs=blobs, vision=model_client)
+        return undo.apply_suggestion(store, chat.records, chat.locks, client_id=client_id, decision_id=decision_id,
+                                     texts=upload_texts(deps, client_id), wait=settings.review_wait_seconds)
+
+    @app.post("/api/clients/{client_id}/questions/{question_id}/answer")
+    def answer_client_question(client_id: int, question_id: str, answer: Answer,
+                               x_ledgersync: Optional[str] = Header(None)):
+        """Answers a question without a chat (the background review's); the client is made due for a review."""
+        from_our_pages(x_ledgersync)
+        ledger.require_active(store.get_client(client_id))
+        with chat.locks.hold(client_id):
+            answered = questions.answer(store, chat.records, client_id=client_id, thread_id=None,
+                                        question_id=question_id, answer=answer, wait=settings.review_wait_seconds)
+        return {"questions": answered.questions}
+
+    @app.post("/api/clients/{client_id}/questions/{question_id}/document", response_model=AnswerResult)
+    def client_question_document(client_id: int, question_id: str, file: UploadFile = File(...),
+                                 x_ledgersync: Optional[str] = Header(None)):
+        from_our_pages(x_ledgersync)
+        client = store.get_client(client_id)
+        asked = chat.records.question(question_id)
+        if asked is None or asked.client_id != client_id:
+            raise NotFound("This question was not found.")
+        return chat.answer_with_document(client, asked.year_start, question_id, sent_file(file))
 
     @app.get("/api/clients/{client_id}/years/{start}/posted-trial-balance", response_model=PostedTrialBalance)
     def posted_trial_balance(client_id: int, start: dt.date):

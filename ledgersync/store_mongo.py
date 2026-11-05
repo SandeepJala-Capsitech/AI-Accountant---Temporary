@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 _PATCH_TRIES = 5
 
 _CLIENT_FIELDS = ("name", "business_type", "contact_name", "contact_email", "contact_phone", "vat_registered",
-                  "bank_accounts", "first_year_end", "folder")
+                  "bank_accounts", "first_year_end", "folder", "ai_review")
 _CLIENT_PROJECTION = {
     "id": 1,
     "name": 1,
@@ -38,6 +38,7 @@ _CLIENT_PROJECTION = {
     "bank_accounts": 1,
     "first_year_end": 1,
     "folder": 1,
+    "ai_review": 1,
     "closed_years": 1,
     "archived_at": 1,
     "created_at": 1,
@@ -68,6 +69,7 @@ def _client(doc: dict, earliest: Optional[dt.date] = None) -> Client:
         contact_phone=doc.get("contact_phone", ""),
         vat_registered=bool(doc.get("vat_registered", True)),
         folder=doc.get("folder", ""),
+        ai_review=doc.get("ai_review", "automatic"),
         **({"bank_accounts": doc["bank_accounts"]} if doc.get("bank_accounts") else {}),
         closed_years=[ClosedYear.model_validate(y) for y in doc.get("closed_years") or []],
         archived=doc.get("archived_at") is not None,
@@ -168,6 +170,7 @@ class MongoStore:
             "bank_accounts": _stored_accounts(fields.bank_accounts),
             "first_year_end": fields.first_year_end.isoformat() if fields.first_year_end else None,
             "folder": fields.folder,
+            "ai_review": fields.ai_review,
             "opening": OpeningBalances().model_dump(mode="json"),
             "closed_years": [],
             "archived_at": None,
@@ -515,6 +518,31 @@ class MongoStore:
             raise NotFound("This client was not found.")
         wanted = set(row_ids)
         return {r["id"]: r["data"] for r in doc.get("rows", []) if r["id"] in wanted}
+
+    def raw_rows(self, client_id: int, row_ids) -> tuple[list[dict], list[dict]]:
+        """The stored rows with these ids, and the uploads they belong to, whole, for restore_rows to put back."""
+        doc = self.db.clients.find_one({"id": client_id}, {"rows": 1, "uploads": 1})
+        if not doc:
+            raise NotFound("This client was not found.")
+        rows = [r for r in doc.get("rows", []) if r["id"] in set(row_ids)]
+        wanted = {r["upload_id"] for r in rows}
+        return rows, [u for u in doc.get("uploads", []) if u["id"] in wanted]
+
+    def restore_rows(self, client_id: int, rows: list[dict], uploads: list[dict]) -> None:
+        """Adds back whichever of these rows and uploads (as raw_rows read them) the client no longer has."""
+        doc = self.db.clients.find_one({"id": client_id}, {"rows.id": 1, "uploads.id": 1})
+        if not doc:
+            raise NotFound("This client was not found.")
+        have_rows = {r["id"] for r in doc.get("rows", [])}
+        have_uploads = {u["id"] for u in doc.get("uploads", [])}
+        push = {}
+        if missing := [r for r in rows if r["id"] not in have_rows]:
+            push["rows"] = {"$each": missing}
+        if missing_uploads := [u for u in uploads if u["id"] not in have_uploads]:
+            push["uploads"] = {"$each": missing_uploads}
+        if push:
+            self.db.clients.update_one({"id": client_id}, {"$push": push, "$set": {"updated_at": now_iso()},
+                                                           "$inc": {"revision": 1}})
 
     def put_row_data(self, client_id: int, data: dict[int, dict]) -> None:
         """Writes rows' data back as row_data read it, replacing it whole. Like patch_row, it writes only if the

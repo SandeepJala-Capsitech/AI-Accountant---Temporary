@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 from typing import Annotated, Literal, NamedTuple, Optional, Union
+from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
@@ -17,10 +18,11 @@ from .checks import booked, long_date
 from .errors import InvalidInput, NotFound
 from .evidence_rules import document_rule
 from .ledger import settings_for
-from .models import ChangeDraft, Ledger, PostResult, Question, QuestionDraft, Transaction
+from .models import (ChangeDraft, Decision, DecisionDraft, Evidence, Ledger, PostResult, Question, QuestionDraft,
+                     Transaction)
 from .money import ZERO
 from .records import AgentRecords
-from .resolutions import set_date
+from .resolutions import Texts, check_quotes, set_date
 from .store_mongo import MongoStore
 
 _OVER = {"receipt_or_invoice": "£50 or more", "vat_invoice": "Over £250"}
@@ -150,13 +152,14 @@ def ask(records: AgentRecords, *, client_id: int, year_start: dt.date, row_ids: 
 
 
 def answer(store: MongoStore, records: AgentRecords, *, client_id: int, thread_id: Optional[str], question_id: str,
-           answer: Answer) -> Answered:
+           answer: Answer, now: Optional[dt.datetime] = None, wait: int = 20) -> Answered:
     """Applies the person's answer, then works the questions out again and posts the year. A date answers a date
     question: the row is dated by resolutions.set_date (a date outside the books is InvalidInput, and the question
     stays open) and the question is resolved. "I don't have it" and "Not sure" leave the question waiting. A
     question already resolved is left as it is (and nothing is posted); the same answer twice is one decision.
     Returns the year's open and waiting questions, and the posting of the question's year (the year a date moved
-    the row to is posted too)."""
+    the row to is posted too). An answer outside a chat (no thread_id) makes the client due for a background review
+    `wait` seconds after `now`."""
     q = records.question(question_id)
     if q is None or q.client_id != client_id:
         raise NotFound("This question was not found.")
@@ -184,11 +187,73 @@ def answer(store: MongoStore, records: AgentRecords, *, client_id: int, thread_i
         said = "Not sure"
         records.set_question(q.id, "waiting", said)
     if not (q.status == "waiting" and q.answer == said):   # the same answer again changes nothing to record
-        records.add_change(ChangeDraft(client_id=client_id, year_start=q.year_start, actor="user",
-                                       kind="question_answered", row_ids=list(q.row_ids), after={"answer": said},
-                                       summary=f"Answered: {q.text}"))
+        made = ChangeDraft(client_id=client_id, year_start=q.year_start, actor="user", kind="question_answered",
+                           row_ids=list(q.row_ids), after={"answer": said}, summary=f"Answered: {q.text}")
+        records.add_change(made)
+        if thread_id is None:   # in a chat, the chat's agent handles the answer
+            from . import reviews   # here: reviews imports the agent
+            reviews.note(records, made, now=now or reviews.utcnow(), wait=wait)
     posts = []
     for year in years:
         refresh(store, records, client_id, year)
         posts.append(ledger_book.post(store, records, client_id, year, decision_ids=decision_ids))
     return Answered(records.questions(client_id, q.year_start), posts[0])
+
+
+CLOSED_BY_THE_AI = "Closed by the AI: "
+
+
+def close(store: MongoStore, records: AgentRecords, *, client_id: int, year_start: dt.date, question_id: str, reason: str,
+          evidence: list[Evidence], texts: Texts, actor: str, trigger: str, review_id: Optional[str] = None,
+          suggest: bool = False) -> Decision:
+    """Closes a question of the agent's own that the books have since answered, and records it as a decision. Only an
+    open or waiting question of the agent's can be closed. It needs one of two things: a change by a person, made
+    after the question was asked, to one of its rows (the change's summary is the evidence), or quotes from the rows'
+    documents that pass the same check as a resolution's. Without either the decision is refused. Asked again once
+    closed it returns that decision; a closing that a person undid is refused. suggest=True records the closing as a
+    suggested decision and leaves the question as it is."""
+    q = records.question(question_id)
+    if q is None or q.client_id != client_id:
+        raise NotFound("This question was not found.")
+    if q.year_start != year_start:
+        raise InvalidInput("That question belongs to another year.")
+    key = f"close|{q.id}"
+    if (done := records.decision_by_key(client_id, key)) is not None and done.status == "applied" \
+            and not records.is_rejected(client_id, key):
+        return done
+    if q.source != "agent" or q.status not in ("open", "waiting"):
+        raise InvalidInput("Only an open question the AI asked can be closed.")
+    draft = dict(client_id=client_id, year_start=q.year_start, action="close_question",
+                 rule="Closed a question the books answer", row_ids=list(q.row_ids), actor=actor,
+                 trigger=trigger, review_id=review_id)
+
+    def refused(why: str) -> Decision:
+        return records.append_decision(DecisionDraft(**draft, status="refused", reason=why),
+                                       f"{key}|refused|{uuid4().hex}")[0]
+
+    if records.is_rejected(client_id, key):
+        return refused("A person undid this change.")
+    theirs = [c for c in records.changes(client_id, year_start=q.year_start, since=q.created_at, limit=1000)
+              if c.actor == "user" and c.kind != "question_answered" and set(c.row_ids) & set(q.row_ids)]
+    if theirs:
+        quotes = [Evidence(upload_id=0, upload_name="change record", quote=theirs[-1].summary)]
+    else:
+        b = books._books(store, client_id)
+        rows = {r.id: r for r in books._saved_rows(b, None)[0]}
+        why = check_quotes(b, rows, list(q.row_ids), evidence, texts) if evidence else None
+        if not evidence or why is not None:
+            return refused(why or "Nothing since the question was asked answers it.")
+        names = {u["id"]: u["name"] for u in b.uploads}
+        quotes = [e.model_copy(update={"upload_name": names.get(e.upload_id, "")}) for e in evidence]
+    before, after = {"question": {"status": q.status, "answer": q.answer}}, {"question": {"status": "resolved"}}
+    if suggest:
+        return records.append_decision(DecisionDraft(**draft, status="suggested", reason=reason, evidence=quotes, before=before,
+                                                     after=after, resolution={"action": "close_question",
+                                                                              "question_id": q.id, "reason": reason}), f"{key}|suggested")[0]
+    made = records.append_decision(DecisionDraft(**draft, status="applied", reason=reason, evidence=quotes, before=before,
+                                                 after=after), key)[0]
+    records.set_question(q.id, "resolved", f"{CLOSED_BY_THE_AI}{reason}")
+    records.add_change(ChangeDraft(client_id=client_id, year_start=q.year_start, actor=actor, kind="question_closed",
+                                   row_ids=list(q.row_ids), before=before, after=after,
+                                   summary=f"Closed the question: {q.text}", in_chat=trigger == "chat"))
+    return made

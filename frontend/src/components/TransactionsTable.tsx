@@ -77,6 +77,7 @@ function AgentBadge({ decisions }: { decisions: Decision[] }) {
       {decisions.map(d => (
         <div key={d.id}>
           <strong>{d.rule}</strong>{d.status === 'refused' && ' (refused)'}
+          <div className="muted">{d.trigger === 'background' ? 'From a background review' : 'From a chat'}</div>
           {d.reason && <div>{d.reason}</div>}
           {d.evidence.map((e, k) => <div key={k} className="muted">{e.upload_name}: “{e.quote}”</div>)}
           {changedFields(d).map((c, k) => (

@@ -378,24 +378,80 @@ def _record(records: AgentRecords, key: str, draft: dict, id: Optional[str] = No
     return records.append_decision(DecisionDraft(**{**draft, **fields}), key, id=id)[0]
 
 
+def _suggested_values(b, change: _Change) -> tuple[dict, dict]:
+    """The before and after of a change that isn't made (a suggestion), worked out from the change. A split's parts
+    have no rows yet, so they are listed as "part 1", "part 2"."""
+    stored = {s.id: s.tx for s in b.stored}
+    before = {str(n): _values(stored[n], p) for n, p in change.patches.items()}
+    after = {str(n): dict(p) for n, p in change.patches.items()}
+    if change.split:
+        before[str(change.split[0])] = {"superseded_by": None}
+        after[str(change.split[0])] = {"superseded_by": "pending"}
+        for i, part in enumerate(change.split[1], 1):
+            after[f"part {i}"] = _values(part, ["description", "account_code", "gross", "vat", "vat_treatment"])
+    return before, after
+
+
+def key_of(client_id: int, row_id: int, resolution) -> str:
+    """The idempotency key of a resolution asked about a row: its client, the rows it names and its arguments."""
+    return _key(f"{client_id}|{_named(row_id, resolution)}|{resolution.model_dump_json()}")
+
+
 def _applied(records: AgentRecords, client_id: int, key: str) -> Optional[Decision]:
     """The decision already applied under the key, which a retry returns."""
     done = records.decision_by_key(client_id, key)
     return done if done is not None and done.status == "applied" else None
 
 
+def check_quotes(b, rows: dict[int, SavedRow], named: list[int], evidence: list[Evidence], texts: Texts,
+                 extra: Optional[set[int]] = None) -> Optional[str]:
+    """R0's check of the evidence quoted for the rows named: each upload is the client's and holds one of the rows, a
+    record matched with one (or one of extra, the bank lines paying the invoice or receipt kept), and each quote
+    (four characters or more, spaces aside) is in the text of its upload whatever its spacing and case. Returns the
+    refusal, or None when every quote holds."""
+    uploads = {u["id"]: u["name"] for u in b.uploads}
+    theirs = set().union(*(_uploads_of(rows, rows[n]) for n in named if n in rows)) | (extra or set())
+    pages: dict[int, str] = {}
+
+    def text(upload_id: int) -> str:
+        if upload_id not in pages:
+            try:
+                pages[upload_id] = _normalised(" ".join(texts(upload_id) or []))
+            except LedgerSyncError:
+                pages[upload_id] = ""
+        return pages[upload_id]
+
+    for e in evidence:
+        if e.upload_id not in uploads:
+            return f"Upload {e.upload_id} isn't one of {b.client.name}'s documents."
+        if e.upload_id not in theirs:
+            return (f"{uploads[e.upload_id]} can't be quoted for rows {', '.join(map(str, named))}: it "
+                    "isn't one of their documents, nor a record matched with them, nor a bank line paying "
+                    "the one kept. This is only about which documents can be quoted. Quote from: "
+                    f"{', '.join(sorted(uploads[u] for u in theirs))}.")
+        if len("".join(e.quote.split())) < _SHORTEST_QUOTE:
+            return f"\"{e.quote}\" is too short to show anything: quote {_SHORTEST_QUOTE} characters or more."
+        if _normalised(e.quote) not in text(e.upload_id):
+            return f"\"{e.quote}\" isn't in {uploads[e.upload_id]}."
+    return None
+
+
 def resolve(store: MongoStore, records: AgentRecords, *, client_id: int, thread_id: Optional[str], actor: str,
-            row_id: int, resolution: Resolution, evidence: list[Evidence], reason: str, texts: Texts) -> Decision:
+            row_id: int, resolution: Resolution, evidence: list[Evidence], reason: str, texts: Texts,
+            trigger: str = "chat", review_id: Optional[str] = None, suggest: bool = False) -> Decision:
     """Checks the resolution against its evidence and the rules, and makes it, or refuses it; either way it is
     recorded. Asked again with the same rows and arguments once applied, it returns that decision; a refusal is
     tried afresh. R0, for every action: the rows are the client's, their year is open, each upload cited is the
     client's and holds one of the rows, a record matched with one, or (for the invoice or receipt kept) the bank
     line that pays it, each quote (four characters or more, spaces aside) is in the text of its upload whatever its
-    spacing and case, and afterwards no row touched has a new error."""
+    spacing and case, and afterwards no row touched has a new error. Before those, a change a person undid is
+    refused, and so is a row a person changed when the background review asks (trigger="background"). suggest=True
+    records what would change as a suggested decision (kept with the resolution) and changes nothing; its key has
+    "|suggested" after it, so applying it later isn't answered by it."""
     named = _named(row_id, resolution)
-    key = _key(f"{client_id}|{named}|{resolution.model_dump_json()}")
-    if (done := _applied(records, client_id, key)) is not None:
-        return done
+    key = key_of(client_id, row_id, resolution)
+    if (done := _applied(records, client_id, key)) is not None and not records.is_rejected(client_id, key):
+        return done   # (not one a person undid: it is refused below, not reported as made)
     b = books._books(store, client_id)
     rows = {r.id: r for r in books._saved_rows(b, None)[0]}
     place = {s.id: k for k, s in enumerate(b.stored)}
@@ -403,6 +459,7 @@ def resolve(store: MongoStore, records: AgentRecords, *, client_id: int, thread_
     uploads = {u["id"]: u["name"] for u in b.uploads}
     draft = dict(client_id=client_id, thread_id=thread_id, year_start=year.start, action=resolution.action,
                  rule=_RULES[resolution.action], row_ids=named, reason=reason, actor=actor,
+                 trigger=trigger, review_id=review_id,
                  evidence=[e.model_copy(update={"upload_name": uploads.get(e.upload_id, "")}) for e in evidence])
     pages: dict[int, str] = {}
 
@@ -415,6 +472,13 @@ def resolve(store: MongoStore, records: AgentRecords, *, client_id: int, thread_
         return pages[upload_id]
 
     try:
+        if records.is_rejected(client_id, key):
+            raise _Refused("A person undid this change.")
+        if trigger == "background":
+            theirs = records.person_rows(client_id)
+            for n in named:
+                if n in rows and n in theirs:
+                    raise _Refused(f"A person changed row {n}; a background review leaves it to them.")
         if b.client.archived:
             raise _Refused(f"{b.client.name} is archived.")
         stray = [n for n in named if n not in rows]
@@ -426,27 +490,21 @@ def resolve(store: MongoStore, records: AgentRecords, *, client_id: int, thread_
             raise _Refused(exc.message) from exc
         if not evidence:
             raise _Refused("No evidence was cited.")
-        theirs = set().union(*(_uploads_of(rows, rows[n]) for n in named))
         kept = {"use_primary": getattr(resolution, "primary_row_id", None),
                 "keep_one": getattr(resolution, "keep_row_id", None)}.get(resolution.action)
         if kept in rows and (resolution.action == "use_primary" or rows[kept].document_type in ("receipt", "invoice")):
-            theirs |= {line.upload_id for line in _paying_lines(rows, rows[kept])}
-        for e in evidence:
-            if e.upload_id not in uploads:
-                raise _Refused(f"Upload {e.upload_id} isn't one of {b.client.name}'s documents.")
-            if e.upload_id not in theirs:
-                raise _Refused(f"{uploads[e.upload_id]} can't be quoted for rows {', '.join(map(str, named))}: it "
-                               "isn't one of their documents, nor a record matched with them, nor a bank line paying "
-                               "the one kept. This is only about which documents can be quoted. Quote from: "
-                               f"{', '.join(sorted(uploads[u] for u in theirs))}.")
-            if len("".join(e.quote.split())) < _SHORTEST_QUOTE:
-                raise _Refused(f"\"{e.quote}\" is too short to show anything: quote {_SHORTEST_QUOTE} characters or "
-                               "more.")
-            if _normalised(e.quote) not in text(e.upload_id):
-                raise _Refused(f"\"{e.quote}\" isn't in {uploads[e.upload_id]}.")
+            extra = {line.upload_id for line in _paying_lines(rows, rows[kept])}
+        else:
+            extra = set()
+        if (why := check_quotes(b, rows, named, evidence, lambda n: [text(n)], extra=extra)) is not None:
+            raise _Refused(why)
         change = _ACTIONS[resolution.action](rows, row_id, resolution, b=b, text=text)
     except _Refused as refused:
         return _record(records, key, draft, status="refused", reason=str(refused))
+    if suggest:
+        before, after = _suggested_values(b, change)
+        return _record(records, f"{key}|suggested", draft, status="suggested", before=before, after=after,
+                       rule=change.rule, resolution=resolution.model_dump(mode="json"))
     return _commit(store, records, b, change, key, draft)
 
 

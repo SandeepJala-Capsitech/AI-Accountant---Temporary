@@ -23,7 +23,8 @@ from .years import year_bounds
 DEMO_DIR = Path(__file__).resolve().parent.parent / "demo" / "northbridge"
 # What the chat keeps for a client beside its rows. decisions, ledger_entries and posting_batches are append-only;
 # the demo reset is the one thing that deletes from them.
-_KEPT_FOR_CLIENT = ("decisions", "questions", "chat_threads", "ledger_entries", "posting_batches", "changes")
+_KEPT_FOR_CLIENT = ("decisions", "questions", "chat_threads", "ledger_entries", "posting_batches", "changes",
+                     "review_runs", "review_state", "review_rejected")
 
 
 def _read(name: str):

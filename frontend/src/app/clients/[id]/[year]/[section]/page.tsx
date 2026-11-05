@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { useParams } from 'next/navigation'
 import { useClientYear } from '@/components/ClientYearContext'
+import AiReviewSection from '@/components/AiReviewSection'
 import BankSection from '@/components/BankSection'
 import DocumentsSection from '@/components/DocumentsSection'
 import InvoicesSection from '@/components/InvoicesSection'
@@ -26,6 +27,7 @@ export default function SectionPage() {
     )
   }
   if (params.section === 'overview') return <OverviewSection />
+  if (params.section === 'ai-review') return <AiReviewSection />
   if (params.section === 'documents') return <DocumentsSection />
   if (params.section === 'bank') return <BankSection />
   if (params.section === 'invoices') return <InvoicesSection />

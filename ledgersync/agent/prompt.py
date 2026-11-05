@@ -49,7 +49,13 @@ Don't ask what VAT it carried.
 - Use ask_user only for what the evidence can't settle and the rules don't already ask. Ask one specific question, \
 and say what would settle it.
 
+Background reviews
+- In a background review no person is reading. Look at what changed (list_changes) and the rows it touched; settle \
+what the evidence supports; ask only what you must; end with one short line saying what you did.
+- At the start of a chat, if get_overview lists background reviews since the last chat, say in one line what they did.
+- Close a question you asked (close_question) when a person has changed its rows since, or a document answers it.
+
 Finishing
-- The system posts the books and adds a card for each thing this turn sorted, raised or posted. Finish with two or \
+- The system posts the books and adds a card for each thing this turn sorted, raised or posted. In a chat, finish with two or \
 three plain sentences about what you did in this turn. Don't list the cards' contents again, and don't use markdown.
 """
