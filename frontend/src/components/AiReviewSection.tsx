@@ -31,13 +31,15 @@ export default function AiReviewSection() {
     try {
       setRuns(newestFirst(await listReviews(client.id, year.start)))
       setError('')
+      return true
     } catch (e) {
       setError(message(e))
+      return false
     }
   }, [client.id, year.start])
 
   useEffect(() => {
-    load().then(() => markReviewsSeen(client.id).catch(() => {}))
+    load().then(ok => { if (ok) markReviewsSeen(client.id).catch(() => {}) })
   }, [load, client.id])
 
   const toggle = (id: string) => setOpen(o => { const n = new Set(o); if (n.has(id)) n.delete(id); else n.add(id); return n })
@@ -52,7 +54,6 @@ export default function AiReviewSection() {
       await reload()
     } catch (e) {
       setProblems(p => ({ ...p, [d.id]: message(e) }))
-      if (what === 'undo') setUndone(u => new Set(u).add(d.id))
     } finally {
       setWorking('')
     }

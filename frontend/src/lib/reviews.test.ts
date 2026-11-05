@@ -52,13 +52,14 @@ test('overviewReviewLine', () => {
   assert.equal(overviewReviewLine('2026-11-04T10:42:00', 2), "AI review: last run 10:42. 2 changes you haven't looked at")
 })
 
-test('unseenChanges counts what unseen runs applied, not undos or seen runs', () => {
+test('unseenChanges counts applied and suggested changes of unseen done runs, not undos, seen or other runs', () => {
   const undo = { ...decision('u', 'applied'), reverses: 'a' }
   const runs = [
     run({ decisions: [decision('a', 'applied'), undo, decision('s', 'suggested')] }),
     run({ id: 'r2', seen: true, decisions: [decision('b', 'applied')] }),
+    run({ id: 'r3', status: 'failed', decisions: [decision('c', 'applied'), decision('d', 'applied')] }),
   ]
-  assert.equal(unseenChanges(runs), 1)
+  assert.equal(unseenChanges(runs), 2)
   assert.equal(isReversed(runs[0], 'a'), true)
   assert.equal(isReversed(runs[0], 'x'), false)
 })

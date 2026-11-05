@@ -93,9 +93,11 @@ export function overviewReviewLine(lastRunAt: string | null, unseen: number): st
   return `AI review: last run ${clock(new Date(lastRunAt))}. ${unseen} ${unseen === 1 ? 'change' : 'changes'} you haven't looked at`
 }
 
-// The changes the person hasn't looked at: what unseen runs applied (an undo is not one of them).
+// The changes the person hasn't looked at, as the server counts them for the clients list: what unseen finished
+// runs applied (an undo is not one of them) or suggested.
 export const unseenChanges = (runs: ReviewDetail[]): number =>
-  runs.filter(r => !r.seen).reduce((n, r) => n + r.decisions.filter(d => d.status === 'applied' && !d.reverses).length, 0)
+  runs.filter(r => !r.seen && r.status === 'done').reduce((n, r) =>
+    n + r.decisions.filter(d => (d.status === 'applied' && !d.reverses) || d.status === 'suggested').length, 0)
 
 // Whether a change in this run has been undone: another decision of the run reverses it.
 export const isReversed = (run: ReviewDetail, decisionId: string): boolean => run.decisions.some(d => d.reverses === decisionId)
