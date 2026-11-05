@@ -69,6 +69,8 @@ def undo_decision(store: MongoStore, records: AgentRecords, locks: ClientLocks, 
         # The undo decision is the commit point: it is written last, and a failure in this process before it is
         # written puts everything back (the rows, the parts, the rejected key). A crash of the process between
         # reject_key and the decision is not covered.
+        # written: set once append_decision returns. A failure inside it after its insert (recording its change)
+        # still runs the restore; that gap is parked.
         written = False
         try:
             for n, values in d.before.items():
