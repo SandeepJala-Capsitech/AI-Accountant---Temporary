@@ -12,7 +12,7 @@ from ledgersync.blobs import MemoryBlobStore
 from ledgersync.config import Settings
 from ledgersync.records import AgentRecords
 from server import create_app
-from test_chat_api import (INVOICE, INVOICE_FILE, TAXI, TAXI_RECEIPT, client_id, held_payment, make,  # noqa: F401
+from test_chat_api import (INVOICE, other_invoice, INVOICE_FILE, TAXI, TAXI_RECEIPT, client_id, held_payment, make,  # noqa: F401
                            new_thread, result_of, send)
 from test_resolutions import YEAR, call, keep_receipt, nb, pages, records, saved  # noqa: F401
 
@@ -211,3 +211,47 @@ def test_decisions_and_questions_are_fetched_by_ids_for_one_client(mongo_store, 
     assert [x.id for x in records.decisions_by_ids(nb.id, [d.id, "none"])] == [d.id]
     assert [x.id for x in records.questions_by_ids(nb.id, ["none", q.id])] == [q.id]
     assert records.decisions_by_ids(client_id, [d.id]) == [] and records.questions_by_ids(client_id, [q.id]) == []
+
+
+def answered_changes(records, client_id):
+    return [c for c in records.changes(client_id) if c.kind == "question_answered"]
+
+
+def test_a_document_answer_records_an_answer_not_in_a_chat(make, mongo_store, client_id):
+    api, thread, question = held_payment(make, client_id, transactions_json(INVOICE))
+
+    api.post(f"/api/clients/{client_id}/questions/{question['id']}/document",
+             files={"file": (INVOICE_FILE[0], INVOICE_FILE[1].encode(), "text/plain")})
+
+    [change] = answered_changes(AgentRecords(mongo_store.db), client_id)
+    assert (change.actor, change.in_chat, change.after) == ("user", False, {"answer": INVOICE_FILE[0]})
+
+
+def test_a_document_that_does_not_fit_records_no_answer_and_makes_no_review_due(make, mongo_store, client_id):
+    api, thread, question = held_payment(make, client_id, transactions_json(other_invoice("Acme Print Ltd", 200.0, "A-17")))
+    mongo_store.db.review_state.delete_many({"client_id": client_id})
+
+    uploaded = api.post(f"/api/clients/{client_id}/questions/{question['id']}/document",
+                        files={"file": ("acme.txt", b"An invoice.", "text/plain")})
+
+    assert uploaded.status_code == 200 and uploaded.json()["question"]["status"] == "open"
+    assert answered_changes(AgentRecords(mongo_store.db), client_id) == []
+    state = mongo_store.db.review_state.find_one({"client_id": client_id})
+    assert not state or not state.get("due_at")
+
+
+def test_a_failure_recording_the_document_answer_does_not_fail_the_request(make, mongo_store, client_id, monkeypatch):
+    api, thread, question = held_payment(make, client_id, transactions_json(INVOICE))
+    original = AgentRecords.add_change
+
+    def failing(self, c):
+        if c.kind == "question_answered":
+            raise RuntimeError("write failed")
+        return original(self, c)
+    monkeypatch.setattr(AgentRecords, "add_change", failing)
+
+    uploaded = api.post(f"/api/clients/{client_id}/questions/{question['id']}/document",
+                        files={"file": (INVOICE_FILE[0], INVOICE_FILE[1].encode(), "text/plain")})
+
+    assert uploaded.status_code == 200, uploaded.text
+    assert uploaded.json()["question"]["status"] == "resolved"

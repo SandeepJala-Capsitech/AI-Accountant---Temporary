@@ -553,11 +553,15 @@ class Chat:
             if still.status != "resolved":
                 payment = next((r.tx for r in self.store.rows(client.id) if r.id in still.row_ids[:1]), None)
                 self.records.set_question_why(question_id, _mismatch(file.name, rows, payment))
-        if thread_id is None:   # outside a chat nobody else handles it: the background review looks again
-            from .. import reviews   # here: reviews imports the agent
-            made = ChangeDraft(client_id=client.id, year_start=asked.year_start, actor="user", kind="question_answered",
-                               row_ids=list(asked.row_ids), after={"answer": file.name},
-                               summary=f"Answered: {asked.text}")
-            self.records.add_change(made)
-            reviews.note(self.records, made, now=reviews.utcnow(), wait=self.settings.review_wait_seconds)
+        if thread_id is None and still.status == "resolved":   # outside a chat nobody else handles the answer
+            try:   # the books are settled: recording the answer must never fail the request
+                from .. import reviews   # here: reviews imports the agent
+                made = ChangeDraft(client_id=client.id, year_start=asked.year_start, actor="user",
+                                   kind="question_answered", row_ids=list(asked.row_ids), after={"answer": file.name},
+                                   summary=f"Answered: {asked.text}", in_chat=False)
+                self.records.add_change(made)
+                reviews.note(self.records, made, now=reviews.utcnow(), wait=self.settings.review_wait_seconds)
+            except Exception:
+                logging.getLogger("ledgersync.upkeep").exception(
+                    "Couldn't record the answer to question %s for client %s", question_id, client.id)
         return self._answered_for(client.id, year_start, thread_id, since, question_id, post)
