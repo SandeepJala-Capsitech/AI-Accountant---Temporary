@@ -268,7 +268,8 @@ def _mismatch(name: str, rows: list[dict], payment: Optional[Transaction]) -> st
     theirs = (f"{read.get('counterparty') or read['description']}, {_gbp(read.get('document_total') or read['gross'])}"
               if read else "nothing to pay")
     ours = f"{payment.counterparty or payment.description}, {_gbp(payment.gross)}" if payment else "the payment"
-    return f"Read {name}, but it doesn't match: {theirs} against {ours}."
+    return (f"Read {name}, but it doesn't match: {theirs} against {ours}. "
+            "It's saved and booked; remove it in Transactions if it isn't theirs.")
 
 
 def _until_done(events: queue.Queue) -> Iterator[ChatEvent]:

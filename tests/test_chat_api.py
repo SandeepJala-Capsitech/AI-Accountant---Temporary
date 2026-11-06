@@ -520,7 +520,8 @@ def test_upload_that_does_not_fit_says_why(make, client_id, who, total, file):
     answered = uploaded.json()
     assert (answered["question"]["id"], answered["question"]["status"]) == (question["id"], "open")
     assert answered["question"]["why"] == (
-        f"Read {file}, but it doesn't match: {who}, £{total:.2f} against Brightline Print, £240.00.")
+        f"Read {file}, but it doesn't match: {who}, £{total:.2f} against Brightline Print, £240.00. "
+        "It's saved and booked; remove it in Transactions if it isn't theirs.")
     assert answered["trial_balance"] is None or answered["trial_balance"]["suspense"][0]["gross"] == "240.00"
 
 
