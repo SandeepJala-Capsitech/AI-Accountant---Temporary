@@ -13,7 +13,7 @@ import openrouter
 import pytest
 from agent_fakes import ScriptedChatModel, call, say
 from langchain.agents.middleware import model_retry
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
 import run_scripted_resolutions as scripted
@@ -22,6 +22,7 @@ from ledgersync import ledger_book
 from ledgersync.agent import AgentDeps, ChatContext, ChatEvent, build_agent, stream_turn
 from ledgersync.agent.llm import chat_model
 from ledgersync.agent.prompt import SYSTEM_PROMPT
+from ledgersync.agent.run import _STOP
 from ledgersync.agent.tools import make_tools
 from ledgersync.blobs import GridFSBlobStore
 from ledgersync.checks import issue
@@ -107,6 +108,45 @@ def test_unknown_tool_reported_back():
     [result] = answered(model, 1)
     assert result.status == "error" and "There is no tool called set_date" in result.content
     assert kinds(events) == ["token"]
+
+
+class StreamedAgent:
+    """Stands in for the agent's graph: stream() yields what it was given, as LangGraph's stream modes do."""
+
+    def __init__(self, *chunks):
+        self.chunks = chunks
+
+    def stream(self, *args, **kwargs):
+        yield from self.chunks
+
+
+def said(message_id: str, text: str, **more):
+    """A piece of a model call's reply as the "messages" stream mode sends it."""
+    return "messages", (AIMessageChunk(content=text, id=message_id, **more), {"langgraph_node": "model"})
+
+
+def test_a_reply_has_no_blank_runs_from_whitespace_the_model_sends_around_tool_calls():
+    # Qwen sends "\n\n" before a tool call, and around its words: none of it is a reply, and replies of separate
+    # model calls are apart by exactly one blank line.
+    agent = StreamedAgent(
+        said("a", "\n\n"),                                          # a call that only calls a tool
+        said("b", "\n\n"), said("b", "Let me look"), said("b", ".\n"), said("b", "\n"),
+        said("c", "\n\n\n"),                                        # another
+        said("d", "Done."), said("d", "\n\nSecond"), said("d", " part."), said("d", "\n\n"),
+    )
+
+    events = list(stream_turn(agent, context(), "Review the books."))
+
+    assert kinds(events) == ["token"] * len(events)
+    assert "".join(e.data["text"] for e in events) == "Let me look.\n\nDone.\n\nSecond part."
+
+
+def test_what_the_stop_says_is_trimmed_too():
+    agent = StreamedAgent(said("a", "Looking.\n\n"), ("updates", {_STOP: {"messages": [AIMessage("\n\nStopped.\n")]}}))
+
+    events = list(stream_turn(agent, context(), "Review the books."))
+
+    assert "".join(e.data["text"] for e in events) == "Looking.\n\nStopped."
 
 
 def test_a_fault_in_a_tool_is_answered_so_the_thread_stays_usable():

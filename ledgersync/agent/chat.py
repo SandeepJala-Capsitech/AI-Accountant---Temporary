@@ -191,10 +191,10 @@ def _open_year(store: MongoStore, client_id: int) -> dt.date:
 
 def _messages(messages: list, turns: dict[str, TurnRecord]) -> list[ChatMessage]:
     """The chat's messages as the page shows them: the person's, with the files they carried, and the agent's replies
-    (a turn's replies in one, apart by a blank line) with their turn's result when that isn't empty. A turn that has
-    a result but no reply gets a reply with no text. `turns` holds the kept turns by the id of the person's message;
-    one whose message isn't in the memory is shown after the rest, as a reply with no text. Tool calls and their
-    results are left out, and so are notes, which are for the agent alone."""
+    (a turn's replies in one, each trimmed and apart by a blank line) with their turn's result when that isn't empty.
+    A turn that has a result but no reply gets a reply with no text. `turns` holds the kept turns by the id of the
+    person's message; one whose message isn't in the memory is shown after the rest, as a reply with no text. Tool
+    calls and their results are left out, and so are notes, which are for the agent alone."""
     kept = dict(turns)
     replies: list[str] = []   # the texts of the replies since the person's last message
     exchanges: list[tuple[Optional[HumanMessage], list[str]]] = [(None, replies)]   # a reply before any message
@@ -203,8 +203,8 @@ def _messages(messages: list, turns: dict[str, TurnRecord]) -> list[ChatMessage]
             if not m.additional_kwargs.get("note"):
                 replies = []
                 exchanges.append((m, replies))
-        elif isinstance(m, AIMessage) and m.text:
-            replies.append(m.text)
+        elif isinstance(m, AIMessage) and (said := m.text.strip()):   # not the whitespace sent around tool calls
+            replies.append(said)
     shown: list[ChatMessage] = []
     for person, texts in exchanges:
         turn = kept.pop(person.id, None) if person else None

@@ -12,7 +12,7 @@ import pytest
 from agent_fakes import ScriptedChatModel, call, say
 from fakes import FakeModel, transactions_json
 from fastapi.testclient import TestClient
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.mongodb import MongoDBSaver
 
 from ledgersync import books, ledger, ledger_book
@@ -324,6 +324,21 @@ def test_reload_keeps_each_reply_with_its_result(make, client_id):
     assert messages[0]["files"] == [{"name": "barclays-october.csv", "state": "done", "rows": 1, "reason": None}]
     assert [q["kind"] for q in messages[1]["result"]["questions"]] == ["receipt_or_invoice"]
     assert messages[2]["files"] == [] and messages[3]["result"] is None
+
+
+def test_a_reloaded_reply_has_no_blank_runs_from_whitespace_around_tool_calls():
+    def tool_call(call_id: str) -> dict:
+        return {"name": "list_rows", "args": {}, "id": call_id, "type": "tool_call"}
+
+    messages = [HumanMessage("Review the books.", id="m1"),
+                AIMessage("\n\n", tool_calls=[tool_call("c1")]), ToolMessage("[]", tool_call_id="c1"),
+                AIMessage("\n\nLet me look.\n\n", tool_calls=[tool_call("c2")]), ToolMessage("[]", tool_call_id="c2"),
+                AIMessage("Done.\n\nSecond part.\n")]
+
+    shown = chat_module._messages(messages, {})
+
+    assert [(m.role, m.text) for m in shown] == [("user", "Review the books."),
+                                                 ("assistant", "Let me look.\n\nDone.\n\nSecond part.")]
 
 
 def test_a_card_shows_the_question_as_it_stands_now(make, client_id):

@@ -63,13 +63,42 @@ def _failure(exc: Exception) -> ChatEvent:
     return _error("agent_failed", "Something went wrong while I was working, so I stopped. The server log says what.")
 
 
+class _Reply:
+    """The turn's reply as it streams: each model call's words without the whitespace around them (Qwen sends "\\n\\n"
+    before a tool call, and around its words), and the words of separate model calls apart by one blank line."""
+
+    def __init__(self):
+        self.sent = False     # whether any words were sent
+        self._begun = False   # whether the current model call's words have begun
+        self._held = ""       # whitespace after its last words, sent only if more words follow
+
+    def start(self) -> None:
+        """A new model call starts saying something."""
+        self._begun, self._held = False, ""
+
+    def add(self, text: str) -> str:
+        """What to send for this piece of the current model call's reply: "" while there are no new words."""
+        text = self._held + text
+        if not self._begun:
+            text = text.lstrip()
+        words = text.rstrip()
+        self._held = text[len(words):]
+        if not words:
+            return ""
+        if not self._begun and self.sent:
+            words = "\n\n" + words
+        self._begun = self.sent = True
+        return words
+
+
 def stream_turn(agent, ctx: ChatContext, text: str, *, message_id: Optional[str] = None,
                 called: Optional[set[str]] = None) -> Iterator[ChatEvent]:
     """Runs the agent on the person's message in the chat's thread (its earlier messages come from the checkpoints),
     for the context's client and year, and yields what it does:
     - a step for each tool it runs, as the tool says it (running, then done or failed); a tool call it couldn't run
       (a tool that doesn't exist, arguments that don't fit) is answered to the model and shows no step;
-    - its reply, a token at a time; replies of separate model calls apart by a blank line;
+    - its reply, a token at a time, without the whitespace around each model call's words; the words of separate
+      model calls apart by one blank line;
     - at the end, an error if the run stopped early: loop_limit at the model or tool call limit (or the recursion
       limit), with how many steps it took; model_unavailable when the model still failed after its retries; or the
       code of any other error.
@@ -78,7 +107,7 @@ def stream_turn(agent, ctx: ChatContext, text: str, *, message_id: Optional[str]
     config = {"configurable": {"thread_id": ctx.thread_id}, "recursion_limit": RECURSION_LIMIT}
     steps: dict[str, dict] = {}
     limited = False
-    replied, last = False, None   # whether any reply was sent, and the id of the message it came from
+    reply, last = _Reply(), None   # the reply so far, and the id of the model call it last came from
     try:
         for mode, chunk in agent.stream({"messages": [HumanMessage(content=text, id=message_id)]}, config,
                                         context=ctx, stream_mode=["messages", "updates", "custom"]):
@@ -88,10 +117,11 @@ def stream_turn(agent, ctx: ChatContext, text: str, *, message_id: Optional[str]
             elif mode == "messages":
                 message, meta = chunk
                 if meta.get("langgraph_node") == "model" and isinstance(message, AIMessage) and message.text:
-                    if replied and message.id != last:
-                        yield ChatEvent("token", {"text": "\n\n"})
-                    replied, last = True, message.id
-                    yield ChatEvent("token", {"text": message.text})
+                    if message.id != last:
+                        reply.start()
+                        last = message.id
+                    if words := reply.add(message.text):
+                        yield ChatEvent("token", {"text": words})
             elif mode == "updates":
                 for node, update in chunk.items():
                     messages = update.get("messages", []) if isinstance(update, dict) else []
@@ -107,7 +137,9 @@ def stream_turn(agent, ctx: ChatContext, text: str, *, message_id: Optional[str]
                         limited = True
                     elif node == _STOP:
                         for said in (m for m in messages if isinstance(m, AIMessage)):
-                            yield ChatEvent("token", {"text": ("\n\n" if replied else "") + said.text})
+                            reply.start()
+                            if words := reply.add(said.text):
+                                yield ChatEvent("token", {"text": words})
     except GraphRecursionError:
         limited = True
     except Exception as exc:   # noqa: BLE001 - every failure ends the turn with an error event
