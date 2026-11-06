@@ -900,3 +900,18 @@ def test_resolve_issue_and_close_question_work_under_the_client_lock(mongo_store
 def test_agent_deps_have_their_own_client_locks_unless_given_one():
     assert AgentDeps(store=None, records=None, blobs=None).locks is not AgentDeps(store=None, records=None,
                                                                                     blobs=None).locks
+
+
+def garbled_call() -> AIMessage:
+    return AIMessage(content="", invalid_tool_calls=[{"name": "resolve_issue", "args": '{"row_id": 1,', "id": "call_x",
+                                                      "error": "Invalid JSON", "type": "invalid_tool_call"}])
+
+
+def test_a_last_step_whose_arguments_are_not_json_ends_with_an_error():
+    events = list(stream_turn(offline_agent(ScriptedChatModel(replies=[garbled_call()])), context(), "Go."))
+
+    assert kinds(events) == ["error"]
+    assert events[0].data == {"code": "agent_failed",
+                              "message": "My last step came out garbled, so I stopped. Send it again."}
+
+
