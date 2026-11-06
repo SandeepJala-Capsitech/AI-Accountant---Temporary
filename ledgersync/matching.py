@@ -11,10 +11,11 @@ from decimal import Decimal
 from itertools import combinations
 from typing import Optional, Sequence
 
-from .accounts import BY_CODE, CREDITORS, DEBTORS, STAFF_EXPENSES, AccountType
+from .accounts import BY_CODE, CLEARING, CREDITORS, DEBTORS, STAFF_EXPENSES, AccountType
 from .checks import MATCHING_ISSUES, PAYROLL_OWED, booked, issue, long_date, reclaims_vat
 from .models import BusinessSettings, Direction, Issue, OpenItem, Settlement, Transaction
-from .money import ZERO, VatTreatment
+from .payees import processor
+from .money import PENNY, ZERO, VatTreatment
 
 WINDOW = dt.timedelta(days=31)   # a payment may be suggested for a document dated within 31 days of it
 PART_WINDOW = dt.timedelta(days=120)  # a part payment, an overpayment or a set of documents: at most 120 days after
@@ -247,7 +248,7 @@ def match_documents(rows: list[Transaction], settings: BusinessSettings,
         for n in doc.rows:
             changes[n].update(owed=doc.open, document_direction=Direction(doc.direction), paid_by=list(doc.paid_by))
     matched = [tx.model_copy(update=change) if change else tx for tx, change in zip(rows, changes)]
-    matched = [_with_sale_without_vat(tx, settings) for tx in matched]
+    matched = [_with_payout_report(_with_sale_without_vat(tx, settings)) for tx in matched]
     statuses = {ref: DocumentStatus(open=doc.open, paid_by=list(doc.paid_by)) for ref, doc in documents.items()}
     return _without_payroll(matched), statuses
 
@@ -287,6 +288,19 @@ def _with_sale_without_vat(tx: Transaction, settings: BusinessSettings) -> Trans
             and booked(tx) and booked_line(tx)):
         return tx.model_copy(update={"issues": tx.issues + [issue(
             "sale_without_vat", "A sale with no VAT shown: book it from its invoice, or choose its VAT rate.")]})
+    return tx
+
+
+def _with_payout_report(tx: Transaction) -> Transaction:
+    """A payment processor's payout held in Payment Processor Clearing, which no payout report (read as an agent's
+    statement) pays yet: the report is needed to book the sales, fees and refunds it is made of."""
+    if (tx.document_type == "statement" and tx.direction == Direction.IN and tx.account_code == CLEARING
+            and not tx.pays and booked(tx) and booked_line(tx)):
+        who = processor(tx.counterparty, tx.description) or "payment processor"
+        when = f" for {long_date(tx.date)}" if tx.date else ""
+        return tx.model_copy(update={"issues": tx.issues + [issue(
+            "payout_report", f"A {who} payout is sales less {who}'s fees and refunds: upload the {who} payout report"
+                             f"{when}, so they are booked. Held in Payment Processor Clearing until then.")]})
     return tx
 
 
@@ -349,7 +363,7 @@ def _cleared(tx: Transaction) -> Transaction:
     """The row without the outputs of an earlier match."""
     return tx.model_copy(update={"paid_against": None, "pays": [], "candidates": [], "owed": None, "paid_by": [],
                                  "copy_of": None, "recorded_by": None, "claimed_in": None, "vat_found": None,
-                                 "date_found": None, "amount_found": None,
+                                 "date_found": None, "amount_found": None, "documented_by": None,
                                  "issues": [i for i in tx.issues if i.code not in MATCHING_ISSUES]})
 
 
@@ -425,6 +439,19 @@ def _pair_receipts(rows: list[Transaction], changes: list[dict], lines: list[int
     for receipt, n in _only_each_other([r for r in receipts if r.ref not in used],
                                        [n for n in open_lines if n not in used_lines], differs):
         line, first = rows[n], receipt.rows[0]
+        rate = _subtotal_only(rows[first], receipt, line)
+        if rate:   # the receipt was read at its total before VAT: the bank line books the payment, documented by it
+            held = Settlement(ref=line.document_ref or f"row-{n}", amount=line.gross, date=line.date,
+                              description=line.description, kind=line.document_type)
+            for r in receipt.rows:
+                changes[r]["recorded_by"] = held
+            changes[n]["documented_by"] = receipt.settlement(receipt.total)
+            note = issue("subtotal_only", f"The receipt prints {_gbp(receipt.total)} before VAT and no total; the bank "
+                                          f"paid {_gbp(line.gross)}, which is {_gbp(receipt.total)} plus VAT at {rate}. "
+                                          "Booked from the bank line with no VAT: get a complete copy to reclaim the "
+                                          f"{_gbp(line.gross - receipt.total)} VAT.", related=[n])
+            changes[first].update(issues=rows[first].issues + [note])
+            continue
         asks = issue("amount_conflict", f"Read as {_gbp(receipt.total)}; the bank paid {_gbp(line.gross)}. Not booked "
                                         "until you choose.", related=[n])
         held = Settlement(ref=line.document_ref or f"row-{n}", amount=line.gross, date=line.date,
@@ -432,6 +459,18 @@ def _pair_receipts(rows: list[Transaction], changes: list[dict], lines: list[int
         for r in receipt.rows:   # the payment counts once meanwhile: the bank line's
             changes[r]["recorded_by"] = held
         changes[first].update(amount_found=line.gross, issues=rows[first].issues + [asks])
+
+
+_RATES_IN_WORDS = ((Decimal("0.20"), "20%"), (Decimal("0.05"), "5%"))
+
+
+def _subtotal_only(tx: Transaction, receipt: _Document, line: Transaction) -> Optional[str]:
+    """The VAT rate, in words, when a receipt was read at its total before VAT: what it books is the net it prints, and
+    the bank paid exactly that plus VAT at 20% or 5% (a receipt cut off before its VAT and total). None otherwise."""
+    if tx.document_net is None or tx.document_net != receipt.total:
+        return None
+    return next((words for rate, words in _RATES_IN_WORDS
+                 if abs(receipt.total + (receipt.total * rate).quantize(PENNY) - line.gross) <= PENNY), None)
 
 
 def _paid_again(rows: list[Transaction], changes: list[dict], lines: list[int], apart: list[set[int]]) -> None:

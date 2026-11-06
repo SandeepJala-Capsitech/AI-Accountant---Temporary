@@ -524,3 +524,67 @@ def test_a_year_closed_now_is_stamped_with_the_rules(mongo_store, acme_with_year
     client = books.close(mongo_store, acme_with_year_one, YEAR_1)
 
     assert client.closed_years[0].rules == "document_rules"
+
+
+# ─── Statements that print only running balances, and missing paperwork ──────
+
+def _october_statement(**extra):
+    """A statement for October 2025 printing only running balances: it opens at £1,000.00 (before its first line) and
+    closes at £950.00."""
+    line = dict(document_type="statement", **extra)
+    return (row(**line, date=date(2025, 10, 1), gross=D("100.00"), account_code="7504", counterparty="Paper Shop",
+                balance=D("900.00")),
+            row(**line, date=date(2025, 10, 2), direction="in", gross=D("50.00"), account_code="4000",
+                counterparty="Bright Cafe", balance=D("950.00")))
+
+
+def test_a_statement_with_only_running_balances_is_checked_against_its_last_one(store, acme):
+    add_rows(store, acme, *_october_statement())
+    [check] = books.bank_checks(store, acme, YEAR_1)
+    assert (check.statement, check.statement_date, check.books, check.difference) == (
+        D("950.00"), date(2025, 10, 2), D("-50.00"), D("-1000.00"))
+
+
+def test_statements_missing_before_the_first_one_are_named_with_the_gap(store, acme):
+    add_rows(store, acme, *_october_statement())
+    name = store.get_client(acme).bank_accounts[0].name
+    assert books.summary(store, acme, YEAR_1).missing_paperwork == [
+        f"{name}: no statements for April to September 2025. The statement from 1 Oct 2025 opens at £1,000.00; "
+        "the books have £0.00 then."]
+
+
+def test_a_statement_that_follows_on_from_the_books_needs_nothing_more(store, acme_with_statement_missing_a_line):
+    assert books.summary(store, acme_with_statement_missing_a_line, YEAR_1).missing_paperwork == []
+
+
+def test_a_gap_between_two_statements_is_named(store, acme):
+    line = dict(document_type="statement", account_code="7504", counterparty="Paper Shop")
+    add_rows(store, acme, row(**line, date=date(2025, 4, 3), gross=D("10.00"), opening_balance=D("0.00"),
+                              balance=D("-10.00"), closing_balance=D("-10.00")))
+    add_rows(store, acme, *_october_statement())
+    name = store.get_client(acme).bank_accounts[0].name
+    assert books.summary(store, acme, YEAR_1).missing_paperwork == [
+        f"{name}: no statements for May to September 2025. The statement from 1 Oct 2025 opens at £1,000.00; "
+        "the one before closed at -£10.00."]
+
+
+def test_an_account_with_no_statement_is_named(store, acme):
+    ledger.change_client(store, acme, ClientPatch(bank_accounts=[
+        *store.get_client(acme).bank_accounts, BankAccount(name="Starling savings", kind="savings")]))
+    add_rows(store, acme, *_october_statement())
+    missing = books.summary(store, acme, YEAR_1).missing_paperwork
+    assert missing[-1] == "Starling savings: no statement for this year yet."
+
+
+def test_an_overdrawn_directors_loan_is_pointed_out(store, acme):
+    add_rows(store, acme, row(date=date(2025, 10, 9), gross=D("2000.00"), account_code="2250",
+                              document_type="statement", counterparty="P ASHDOWN"))
+    assert books.summary(store, acme, YEAR_1).pointers == [
+        "The Director's Loan Account is overdrawn by £2,000.00 (the director owes the company). If it is still owed "
+        "nine months after the year end, s455 tax is due on it."]
+
+
+def test_a_directors_loan_owed_to_the_director_needs_no_pointer(store, acme):
+    add_rows(store, acme, row(date=date(2025, 10, 9), direction="in", gross=D("500.00"), account_code="2250",
+                              document_type="statement", counterparty="P ASHDOWN"))
+    assert books.summary(store, acme, YEAR_1).pointers == []

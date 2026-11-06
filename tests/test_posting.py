@@ -282,3 +282,36 @@ def test_net_pay_and_paye_from_the_report_and_the_bank_book_wages_in_full():
     tb = trial_balance(report + bank, HELPER_SETTINGS)
     assert net(tb, "7000") == Decimal("4000.00") and net(tb, "7006") == Decimal("100.00")
     assert net(tb, "2220") == net(tb, "2210") == 0 and net(tb, "1200") == Decimal("-4100.00")
+
+
+# ─── CIS: tax a contractor takes off an invoice and pays to HMRC ──────────────
+
+def test_a_sale_with_cis_taken_off_books_the_whole_sale_and_the_tax_withheld():
+    # Ashdown's invoice AJ-2041: £4,000 of work (reverse charge, no VAT), CIS 20% on the £3,000 labour, £3,400 due.
+    # It was booked as a £3,400 sale, and the £600 the customer paid to HMRC vanished.
+    sale = tx("in", "3400.00", "4000", document_type="invoice", cis_deducted="600.00")
+    assert lines(sale) == [("4000", "0.00", "4000.00"), ("1104", "600.00", "0.00"), ("1100", "3400.00", "0.00")]
+
+
+def test_a_subcontractors_invoice_with_cis_taken_off_owes_the_tax_to_hmrc():
+    bill = tx("out", "800.00", "7602", document_type="invoice", cis_deducted="200.00")
+    assert lines(bill) == [("7602", "1000.00", "0.00"), ("2215", "0.00", "200.00"), ("2100", "0.00", "800.00")]
+
+
+def test_a_cis_sale_paid_in_full_leaves_nothing_owed_and_the_tax_withheld_as_an_asset():
+    sale = tx("in", "3400.00", "4000", document_type="invoice", cis_deducted="600.00", counterparty="Fenwick Builders Ltd",
+              document_number="AJ-2041", document_ref="aj")
+    paid = Transaction(direction="in", gross="3400.00", account_code="4000", description="t",
+                       document_type="statement", counterparty="Fenwick Builders Ltd", date=dt.date(2026, 10, 2))
+    tb = trial_balance([sale, paid], REGISTERED)
+    assert (net(tb, "4000"), net(tb, "1104"), net(tb, "1100"), net(tb, "1200")) == (
+        Decimal("-4000.00"), Decimal("600.00"), 0, Decimal("3400.00"))
+    assert tb.is_balanced
+
+
+def test_a_cis_sale_says_where_the_tax_went():
+    sale = normalise(tx("in", "3400.00", "4000", document_type="invoice", cis_deducted="600.00"), REGISTERED)
+    assert [(i.code, i.severity, i.message) for i in sale.issues] == [
+        ("cis_deducted", "info", "CIS £600.00 taken off by the customer: booked to CIS Deducted, so the sale is "
+                                 "£4,000.00.")]
+    assert sale.net == Decimal("4000.00")

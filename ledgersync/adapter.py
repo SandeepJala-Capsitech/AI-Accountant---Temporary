@@ -9,7 +9,8 @@ import uuid
 from decimal import Decimal
 from typing import Optional
 
-from .accounts import BY_CODE, SUSPENSE
+from .accounts import BY_CODE, CLEARING, DIRECTORS_LOAN, DRAWINGS, SUSPENSE, AccountType
+from .payees import personal, processor
 from .checks import OWED_TO, issue, normalise
 from .models import DOCUMENT_TYPES, BusinessSettings, Direction, Transaction
 from .money import VatTreatment, to_money, vat_in_gross
@@ -143,12 +144,69 @@ def _only_printed_totals(rows: list[dict], text: str) -> list[dict]:
             else row for row in rows]
 
 
+def _printed_vat(row: dict, vat: Optional[Decimal], printed: Optional[set[Decimal]]) -> Optional[Decimal]:
+    """The row's VAT when its document prints it, or prints the VAT total it is a share of: VAT the reader worked out
+    (20% of a subtotal on a receipt cut off before its VAT) can't be reclaimed, so it is dropped. Kept on a bank line,
+    and for a file with no text layer to check against."""
+    if vat is None or not vat or printed is None or _document_type(row) == "statement":
+        return vat
+    total = to_money(row.get("document_vat"))
+    return vat if abs(vat) in printed or (total is not None and abs(total) in printed) else None
+
+
+def _worked_out(row: dict, printed: Optional[set[Decimal]]) -> bool:
+    """Whether a document's row has a figure its text doesn't print: neither its amount nor its document's total is
+    in the text (a receipt cut off before its total). Never for a bank line, or a file with no text layer."""
+    if printed is None or _document_type(row) == "statement":
+        return False
+    figures = [to_money(row.get(name)) for name in ("amount", "document_total")]
+    return not any(abs(f) in printed for f in figures if f is not None)
+
+
+_CIS = re.compile(r"\bCIS\b|Construction Industry Scheme", re.IGNORECASE)
+
+
+def _cis(row: dict, gross: Decimal, vat: Optional[Decimal], net: Optional[Decimal], text: Optional[str],
+         printed: Optional[set[Decimal]]) -> Optional[Decimal]:
+    """The CIS deduction taken off an invoice: as read, or else, when the reader missed it, the gap between its printed
+    net (with its VAT) and the amount due, if the text names CIS and prints that gap as a figure. None on anything but
+    an invoice."""
+    if _document_type(row) != "invoice":
+        return None
+    read = to_money(row.get("cis_deducted"))
+    if read:
+        return abs(read)
+    if net is None or text is None or printed is None or not _CIS.search(text):
+        return None
+    gap = abs(net) + abs(vat or 0) - gross
+    return gap if gap > 0 and gap in printed else None
+
+
+def _recoded(code: str, row: dict, settings: BusinessSettings) -> str:
+    """What a bookkeeper recodes on sight. A payment processor's payout on a bank statement goes to Payment Processor
+    Clearing, not to sales: it is sales less the processor's fees and refunds, which its payout report shows. Spending
+    with a consumer service (a streaming subscription) is the owner's: the Director's Loan Account for a company,
+    Drawings for anyone else (left as read when the kind of business isn't known)."""
+    account = BY_CODE.get(code)
+    if account is None:
+        return code
+    loose = code == SUSPENSE or account.type in (AccountType.INCOME, AccountType.EXPENSE)
+    names = (row.get("counterparty"), row.get("description"))
+    if row.get("direction") == "in" and _document_type(row) == "statement" and loose and processor(*names):
+        return CLEARING
+    if (row.get("direction") != "in" and loose and settings.business_type and account.type != AccountType.INCOME
+            and personal(*names)):
+        return DIRECTORS_LOAN if settings.business_type == "limited_company" else DRAWINGS
+    return code
+
+
 def to_transactions(rows: list[dict], source: str, settings: BusinessSettings, opening_balance=None,
                     closing_balance=None, agent=None, text: Optional[str] = None) -> list[Transaction]:
     """The model's rows as ledger rows; a bank statement's opening and closing balances, and an agent's statement's
     agent, which the model gives once, go on each of its rows. text is what the file prints, when it has a text layer
     (a spreadsheet, csv or text, a PDF with text): a claim's total it does not print is dropped. None for an image."""
     result = []
+    printed = _numbers_in(text) if text is not None else None
     if text is not None:
         rows = _only_printed_totals(rows, text)
     rows = [dict(row, agent=agent) if _document_type(row) == "agent_statement" else row
@@ -174,12 +232,20 @@ def to_transactions(rows: list[dict], source: str, settings: BusinessSettings, o
         elif code == SUSPENSE:   # the model itself found no account: a purchase, which still needs its document
             issues.append(issue("account_unclear",
                                 "Account unclear: put in Suspense. Choose one."))
-        vat, net = to_money(row.get("vat")), to_money(row.get("document_net"))
+        recoded = _recoded(code, dict(row, direction="in" if said_in and amount > 0 else "out"), settings)
+        if recoded != code:
+            issues = [i for i in issues if i.code != "account_unclear"]
+            code = recoded
+        vat, net = _printed_vat(row, to_money(row.get("vat")), printed), to_money(row.get("document_net"))
         kind = _document_type(row)
         statement = kind == "statement"
+        gross = abs(amount)
+        cis = _cis(row, gross, vat, net, text, printed)
+        if cis and net is not None and gross == abs(net) + abs(vat or 0):   # read before the deduction: what is due
+            gross -= cis
         tx = Transaction(date=parse_date(row.get("date")), description=str(row.get("description") or ""),
                          direction=Direction.IN if said_in and amount > 0 else Direction.OUT,
-                         gross=abs(amount), vat=abs(vat) if vat is not None else None,   # sign: direction
+                         gross=gross, vat=abs(vat) if vat is not None else None,   # sign: direction
                          account_code=code, currency=row.get("currency"), source=source,
                          method="llm", issues=issues, document_type=kind,
                          counterparty=str(row.get("counterparty") or "").strip() or None,
@@ -190,6 +256,7 @@ def to_transactions(rows: list[dict], source: str, settings: BusinessSettings, o
                          document_total=_printed_total(row) if key else None,
                          document_net=abs(net) if net is not None and not statement else None,
                          not_vat_invoice=not statement and bool(row.get("not_vat_invoice")),
+                         total_worked_out=_worked_out(row, printed), cis_deducted=cis,
                          document_ref=refs[key] if key else uuid.uuid4().hex[:12],
                          balance=to_money(row.get("balance")) if statement else None,
                          opening_balance=to_money(opening_balance) if statement else None,

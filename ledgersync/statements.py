@@ -11,7 +11,7 @@ from .models import Direction, Issue, StatementCheck, Transaction
 from .money import ZERO
 
 
-def _signed(tx: Transaction, credit_card: bool) -> Decimal:
+def signed(tx: Transaction, credit_card: bool) -> Decimal:
     """How the line moves the balance the statement prints: money in raises a bank's balance; on a credit card,
     whose balance is what is owed, spending raises it and a repayment lowers it."""
     gross = tx.gross if tx.direction == Direction.IN else -tx.gross
@@ -36,7 +36,7 @@ def check_statement(rows: list[Transaction], credit_card: bool = False) -> tuple
 
     def moved(start: int, stop: int) -> Decimal:
         """The money in less the money out of lines[start:stop]."""
-        return sum((_signed(rows[lines[k]], credit_card) for k in range(start, stop)), ZERO)
+        return sum((signed(rows[lines[k]], credit_card) for k in range(start, stop)), ZERO)
 
     def fits(expected: list[tuple[int, Decimal]]) -> int:
         return sum(rows[lines[k]].balance == want for k, want in expected)

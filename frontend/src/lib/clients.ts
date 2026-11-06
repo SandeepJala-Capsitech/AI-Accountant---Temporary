@@ -156,6 +156,8 @@ export interface YearSummary {
   bank: BankCheck[]
   trial_balance: 'balanced' | 'blocked'
   problems: string[]         // what stops the trial balance
+  missing_paperwork?: string[]   // statements the books need and don't have, in words
+  pointers?: string[]            // what an accountant would want to know, in words
 }
 
 export interface AccountChoice {

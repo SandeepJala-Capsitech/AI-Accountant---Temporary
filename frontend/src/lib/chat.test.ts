@@ -77,6 +77,8 @@ test('each kind of question gets its control', () => {
   assert.equal(questionControl(question('date')), 'date')
   assert.equal(questionControl(question('receipt_or_invoice')), 'upload')
   assert.equal(questionControl(question('vat_invoice')), 'upload')
+  assert.equal(questionControl(question('payout_report')), 'upload')
+  assert.equal(questionControl(question('payroll_report')), 'upload')
   assert.equal(questionControl(question('other')), 'text')
 })
 

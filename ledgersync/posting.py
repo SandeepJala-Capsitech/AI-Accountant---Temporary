@@ -6,13 +6,18 @@ from collections import defaultdict
 from decimal import Decimal
 from typing import Optional, Sequence
 
-from .accounts import BY_CODE, PURCHASE_VAT, SALES_VAT, VAT_ACCOUNTS, AccountType
+from .accounts import BY_CODE, CIS_DEDUCTED, CIS_PAYABLE, PURCHASE_VAT, SALES_VAT, VAT_ACCOUNTS, AccountType
 from .checks import booked, normalise
 from .errors import InvalidTransactions
 from .matching import match
 from .models import (BusinessSettings, Direction, JournalLine, OpenItem, Transaction, TrialBalance,
                      TrialBalanceLine)
 from .money import ZERO
+
+
+def withheld(tx: Transaction) -> Decimal:
+    """The CIS tax a contractor took off the row's invoice: nothing on a bank line, which pays only what is due."""
+    return tx.cis_deducted if tx.cis_deducted and tx.document_type != "statement" and tx.paid_against is None else ZERO
 
 
 def journal_for(tx: Transaction, index: int) -> list[JournalLine]:
@@ -26,6 +31,10 @@ def journal_for(tx: Transaction, index: int) -> list[JournalLine]:
     lines = [JournalLine(transaction=index, code=leg, description=tx.description,
                          debit=amount if out else ZERO, credit=ZERO if out else amount)
              for leg, amount in ((code, tx.net), (vat_account, tx.vat_posted)) if amount]
+    cis = withheld(tx)
+    if cis:   # the tax a contractor withheld: owed by HMRC to the business on a sale, to HMRC on a cost
+        lines.append(JournalLine(transaction=index, code=CIS_PAYABLE if out else CIS_DEDUCTED,
+                                 description=tx.description, debit=ZERO if out else cis, credit=cis if out else ZERO))
     lines.append(JournalLine(transaction=index, code=tx.contra_account_code, description=tx.description,
                              debit=ZERO if out else tx.gross, credit=tx.gross if out else ZERO))
     debits, credits = sum(l.debit for l in lines), sum(l.credit for l in lines)

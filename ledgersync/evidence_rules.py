@@ -72,6 +72,9 @@ def document_rule(tx: Transaction, settings: BusinessSettings) -> DocumentRule:
     own settings later; none changes them yet."""
     if not _covered(tx):
         return DocumentRule(action="book", reclaim_vat=True, reason="No document is needed for this kind of row.")
+    if tx.document_type == "statement" and tx.documented_by is not None:
+        return DocumentRule(action="book", reclaim_vat=False,
+                            reason="Its receipt prints no total: booked from the bank line, with no VAT reclaimed.")
     if tx.document_type in ("statement", "expense_claim"):   # a line with no document behind it
         if tx.gross < NO_DOCUMENT_LIMIT:
             return DocumentRule(action="book", reclaim_vat=False,

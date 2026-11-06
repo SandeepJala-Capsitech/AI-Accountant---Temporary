@@ -10,10 +10,10 @@ import datetime as dt
 from collections import defaultdict
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Optional
+from typing import NamedTuple, Optional
 
 from . import years as yr
-from .accounts import BY_CODE, CREDITORS, DEBTORS, AccountType, reserve_for
+from .accounts import BY_CODE, CREDITORS, DEBTORS, DIRECTORS_LOAN, AccountType, reserve_for
 from .checks import booked, issue, long_date, normalise
 from .errors import InvalidInput, InvalidTransactions, NotFound
 from .evidence_rules import document_rule, journal_with_rule
@@ -26,7 +26,7 @@ from .models import (BankCheck, BusinessSettings, Client, ClosedYear, InvoiceSum
 from .money import ZERO, to_money
 from .posting import journal_for, matched_rows, summarise
 from .rows import StoredRow, now_iso
-from .statements import check_statement
+from .statements import signed, check_statement
 from .store_mongo import MongoStore
 
 # What books.close stamps a year with when it closes it under the document rules (ClosedYear.rules).
@@ -354,36 +354,126 @@ def invoices(store: MongoStore, client_id: int, year_start: dt.date) -> list[Inv
     return _invoices(b, b.index(year_start))
 
 
-def _bank_checks(b: _Books, n: int, tb: TrialBalance) -> list[BankCheck]:
-    # Each account's latest statement ending in the year: its last line's date and the closing balance it prints.
-    latest: dict[str, tuple[dt.date, int, Decimal]] = {}
+class _Statement(NamedTuple):
+    """One upload's lines on a bank account in a year, with the balances it prints: opening before its first line and
+    closing after its last, from its printed opening and closing or else from its running balances (None when it
+    prints neither)."""
+    upload_id: int
+    first: dt.date
+    last: dt.date
+    opening: Optional[Decimal]
+    closing: Optional[Decimal]
+
+
+def _statements(b: _Books, n: int) -> dict[str, list[_Statement]]:
+    """Each bank account's statements in year n, by account code, oldest first. A statement that prints no closing
+    balance but a running balance on its lines (Starling, Monzo and most CSV exports) closes at its last line's
+    balance and opens at its first line's balance less that line."""
+    found: dict[str, list[_Statement]] = defaultdict(list)
+    kinds = {a.code: a.kind for a in b.client.bank_accounts}
     for upload in b.uploads:
         lines = [k for k, row in enumerate(b.stored) if row.upload_id == upload["id"]
-                 and row.tx.document_type == "statement"]
-        dated = [k for k in lines if b.stored[k].tx.date]
-        closings = [b.stored[k].tx.closing_balance for k in lines if b.stored[k].tx.closing_balance is not None]
-        if not dated or not closings:
+                 and row.tx.document_type == "statement" and row.tx.date and b.placed[k] == n]
+        if not lines:
             continue
-        last = max(dated, key=lambda k: (b.stored[k].tx.date, k))
         account = upload["bank_account"] or b.settings.bank_account
-        day = b.stored[last].tx.date
-        if b.placed[last] == n and (account not in latest or (day, upload["id"]) > latest[account][:2]):
-            latest[account] = (day, upload["id"], closings[-1])
+        card = kinds.get(account) == "credit_card"
+        lines.sort(key=lambda k: (b.stored[k].tx.date, k))
+        txs = [b.stored[k].tx for k in lines]
+        closings = [tx.closing_balance for tx in txs if tx.closing_balance is not None]
+        openings = [tx.opening_balance for tx in txs if tx.opening_balance is not None]
+        closing = closings[-1] if closings else txs[-1].balance
+        opening = openings[0] if openings else (txs[0].balance - signed(txs[0], card)
+                                                if txs[0].balance is not None else None)
+        found[account].append(_Statement(upload["id"], txs[0].date, txs[-1].date, opening, closing))
+    for account in found:
+        found[account].sort(key=lambda s: (s.first, s.upload_id))
+    return found
 
-    def held(code: str, day: Optional[dt.date]) -> Decimal:
-        """What the books hold in the account, from its opening and the year's rows up to day (all of them if None)."""
-        moved = sum((line.debit - line.credit for line in tb.journal if line.code == code and (
-            day is None or (b.stored[line.transaction].tx.date or dt.date.max) <= day)), ZERO)
-        balance = moved + sum((line.debit - line.credit for line in tb.opening if line.code == code), ZERO)
-        return -balance if next(a.kind for a in b.client.bank_accounts if a.code == code) == "credit_card" else balance
 
+def _held(b: _Books, tb: TrialBalance, code: str, day: Optional[dt.date], *, before: bool = False) -> Decimal:
+    """What the books hold in the account, from its opening and the year's rows up to day (all of them if None;
+    only those dated before day with before), as a statement prints it (what a card owes is positive)."""
+    def counts(line) -> bool:
+        when = b.stored[line.transaction].tx.date or dt.date.max
+        return day is None or (when < day if before else when <= day)
+
+    moved = sum((line.debit - line.credit for line in tb.journal if line.code == code and counts(line)), ZERO)
+    balance = moved + sum((line.debit - line.credit for line in tb.opening if line.code == code), ZERO)
+    return -balance if next(a.kind for a in b.client.bank_accounts if a.code == code) == "credit_card" else balance
+
+
+def _bank_checks(b: _Books, n: int, tb: TrialBalance) -> list[BankCheck]:
+    """Each account's books against its latest statement ending in the year: that statement's last line's date and
+    closing balance."""
+    statements = _statements(b, n)
     checks = []
     for account in b.client.bank_accounts:
-        day, _, printed = latest.get(account.code, (None, 0, None))
-        books = held(account.code, day)
+        latest = max((s for s in statements.get(account.code, []) if s.closing is not None),
+                     key=lambda s: (s.last, s.upload_id), default=None)
+        day, printed = (latest.last, latest.closing) if latest else (None, None)
+        books = _held(b, tb, account.code, day)
         checks.append(BankCheck(code=account.code, name=account.name, kind=account.kind, books=books, statement=printed,
                                 statement_date=day, difference=None if printed is None else books - printed))
     return checks
+
+
+def _months(start: dt.date, stop: dt.date) -> Optional[str]:
+    """The months from start's month up to, not including, stop's month, in words ("April to September 2026",
+    "December 2025 to January 2026", "May 2026"); None when there are none."""
+    first = start.replace(day=1)
+    last = stop.replace(day=1) - yr.DAY
+    if last < first:
+        return None
+    if (first.year, first.month) == (last.year, last.month):
+        return f"{first:%B %Y}"
+    return f"{first:%B} to {last:%B %Y}" if first.year == last.year else f"{first:%B %Y} to {last:%B %Y}"
+
+
+def _pointers(tb: TrialBalance) -> list[str]:
+    """What an accountant would want pointed out in the year's figures: a director's loan the director owes (a debit
+    balance), which s455 taxes if it is still owed nine months after the year end."""
+    owed = sum((line.debit - line.credit for line in tb.lines if line.code == DIRECTORS_LOAN), ZERO)
+    if owed > 0:
+        return [f"The Director's Loan Account is overdrawn by {_gbp(owed)} (the director owes the company). If it is "
+                "still owed nine months after the year end, s455 tax is due on it."]
+    return []
+
+
+def _missing_paperwork(b: _Books, n: int, tb: TrialBalance) -> list[str]:
+    """The statements the year's books need and don't have, for each of the client's bank accounts and cards (petty
+    cash has none): an account with no statement in the year; and a break in the chain, where a statement opens at
+    another balance than the books held before it (the first) or the one before it closed at, with the months between
+    that no statement covers."""
+    statements = _statements(b, n)
+    missing = []
+    for account in b.client.bank_accounts:
+        if account.kind == "petty_cash":
+            continue
+        mine = statements.get(account.code, [])
+        if not mine:
+            missing.append(f"{account.name}: no statement for this year yet.")
+            continue
+        previous: Optional[_Statement] = None
+        for s in mine:
+            if s.opening is None:
+                previous = s
+                continue
+            if previous is None:
+                expected, said = _held(b, tb, account.code, s.first, before=True), "the books have {x} then"
+                months = _months(b.years[n].start, s.first)
+            elif previous.closing is not None:
+                expected, said = previous.closing, "the one before closed at {x}"
+                months = _months(previous.last.replace(day=28) + dt.timedelta(days=4), s.first)
+            else:
+                previous = s
+                continue
+            if s.opening != expected:
+                gap = f"no statements for {months}" if months else "lines are missing before it"
+                missing.append(f"{account.name}: {gap}. The statement from {long_date(s.first)} opens at "
+                               f"{_gbp(s.opening)}; {said.format(x=_gbp(expected))}.")
+            previous = s
+    return missing
 
 
 def bank_checks(store: MongoStore, client_id: int, year_start: dt.date) -> list[BankCheck]:
@@ -411,9 +501,13 @@ def summary(store: MongoStore, client_id: int, year_start: dt.date) -> YearSumma
     owed = _invoices(b, n)
     problems: list[str] = []
     bank: list[BankCheck] = []
+    missing: list[str] = []
+    pointers: list[str] = []
     try:
         tb = _trial_balance(b, n)
         bank = _bank_checks(b, n, tb)
+        missing = _missing_paperwork(b, n, tb)
+        pointers = _pointers(tb)
         if not tb.is_balanced:
             problems = [f"The trial balance doesn't balance: debits {_gbp(tb.total_debits)}, credits "
                         f"{_gbp(tb.total_credits)}."]
@@ -422,7 +516,8 @@ def summary(store: MongoStore, client_id: int, year_start: dt.date) -> YearSumma
     return YearSummary(year=_year_now(b, n), rows=len(rows), to_review=sum(needs_review(r) for r in rows),
                        unpaid_sales=sum((owed_at_end(i) for i in owed if i.kind == "sale"), ZERO),
                        unpaid_purchases=sum((owed_at_end(i) for i in owed if i.kind == "purchase"), ZERO), bank=bank,
-                       trial_balance="blocked" if problems else "balanced", problems=problems)
+                       trial_balance="blocked" if problems else "balanced", problems=problems,
+                       missing_paperwork=missing, pointers=pointers)
 
 
 def export(store: MongoStore, client_id: int, year_start: dt.date, day: dt.date) -> tuple[bytes, str]:

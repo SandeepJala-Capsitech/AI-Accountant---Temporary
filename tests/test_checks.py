@@ -466,3 +466,43 @@ def test_an_excluded_row_is_not_booked_even_when_included():
 
 def test_a_superseded_row_is_not_booked():
     assert booked(tx(superseded_by="d1")) is False
+
+
+@pytest.mark.parametrize("account", ["8204", "7901", "7302"])   # insurance, bank charges, vehicle licences
+def test_a_difference_on_an_account_that_carries_no_vat_is_not_taken_for_vat(account):
+    # Hiscox's schedule prints a £1,125.00 premium and a £1,260.00 total: the £135.00 is Insurance Premium Tax, not VAT,
+    # but the row said "The invoice shows £135.00 VAT; none is booked", and the AI couldn't clear it.
+    t = normalise(tx(gross="1260.00", account=account, document_type="invoice", document_total="1260.00",
+                     document_net="1125.00"), REGISTERED)
+    assert "vat_not_booked" not in [code for code, _ in codes(t)]
+
+
+def test_vat_on_rent_is_still_looked_for_where_the_landlord_may_charge_it():
+    t = normalise(tx(gross="1200.00", account="7100", document_type="invoice", document_total="1200.00",
+                     document_net="1000.00"), REGISTERED)
+    assert codes(t) == [("vat_not_booked", "warning")]
+
+
+def test_vat_worked_out_from_a_total_the_document_does_not_print_is_not_said_to_be_shown():
+    # Screwfix's receipt is cut off at "Subtotal 72.00 / VAT 20": £86.40 and £14.40 are not on it, yet the row said
+    # "The receipt shows £14.40 VAT".
+    t = normalise(tx(gross="86.40", account="5000", document_type="receipt", document_total="86.40",
+                     document_net="72.00", total_worked_out=True), REGISTERED)
+    assert codes(t) == [("vat_not_booked", "warning")]
+    assert t.issues[0].message == ("The receipt doesn't print its total: £86.40 was worked out from what it does print. "
+                                   "Get a complete copy to reclaim the £14.40 VAT.")
+
+
+def test_a_total_the_document_does_not_print_says_so():
+    t = normalise(tx(gross="30.00", document_type="receipt", total_worked_out=True), REGISTERED)
+    assert codes(t) == [("total_worked_out", "warning")]
+    assert t.issues[0].message == ("The receipt doesn't print £30.00: it was worked out from what it does print. "
+                                   "Check it against the document.")
+
+
+def test_spending_that_looks_personal_says_where_it_went():
+    t = normalise(tx(gross="12.99", account="2250", counterparty="Netflix.com", document_type="statement"),
+                  BusinessSettings(business_type="limited_company"))
+    assert [(i.code, i.severity, i.message) for i in t.issues] == [
+        ("personal", "info", "Netflix looks like personal spending: booked to the Director's Loan Account. Recode it "
+                             "if it was for the business.")]

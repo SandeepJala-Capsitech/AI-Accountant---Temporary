@@ -22,7 +22,7 @@ from pymongo.database import Database
 from pymongo.errors import DuplicateKeyError
 
 from . import books
-from .accounts import BY_CODE, PURCHASE_VAT, SALES_VAT, SUSPENSE
+from .accounts import BY_CODE, CIS_DEDUCTED, CIS_PAYABLE, PURCHASE_VAT, SALES_VAT, SUSPENSE
 from .checks import most_vat
 from .errors import InvalidTransactions
 from .evidence_rules import DocumentRule, document_rule, journal_with_rule
@@ -177,7 +177,8 @@ def _problems(lines: list[dict], rows: dict[int, Transaction], vat_registered: b
             if fresh:
                 problems.append(f"Row {r} isn't one of the year's booked rows.")
             continue
-        own = {tx.paid_against or tx.account_code, tx.contra_account_code, SUSPENSE}
+        own = {tx.paid_against or tx.account_code, tx.contra_account_code, SUSPENSE,
+               *((CIS_DEDUCTED, CIS_PAYABLE) if tx.cis_deducted else ())}
         for l in (l for l in fresh if l["code"] not in own):
             amount = abs(l["debit"] - l["credit"])
             if l["code"] not in (SALES_VAT, PURCHASE_VAT):

@@ -109,7 +109,33 @@ A client with staff sends a monthly payroll report from its payroll software. It
 the wages as costs: gross pay (7000 Gross Wages, or 7001 for directors), employer's NI (7006) and employer's pension
 (7007), against what is owed on 2220 Net Wages, 2210 PAYE and National Insurance and 2230 Pension Fund. The bank lines
 that pay the staff, HMRC and the pension provider are coded to those liability accounts and clear them. A bank line
-coded to wages with no payroll report for that month is flagged "Book wages from the payroll report".
+coded to wages with no payroll report for that month is flagged "Book wages from the payroll report". A payment to
+HMRC for PAYE with no payroll report that month or the one before asks for the report.
+
+### Missing paperwork
+
+The Overview lists the statements the books need and don't have: an account or card with no statement in the year,
+and a break in the chain, where a statement opens at another balance than the books held before it (or than the
+statement before it closed at), with the months no statement covers. A statement that prints only a running balance
+on each line (Starling, Monzo and most CSV exports) is checked against its last line's balance. The Overview also
+points out a director's loan the director owes the company (s455).
+
+### What the rules book on sight
+
+- **CIS.** An invoice with a Construction Industry Scheme deduction is booked at its whole value: a sale's deduction
+  to 1104 CIS Deducted, which the customer paid to HMRC for the business; a subcontractor's to 2215 CIS Payable. What
+  is owed is the amount due after it, so the payment clears the invoice.
+- **Payment processors.** A payout from Stripe, PayPal, Square, SumUp, Zettle, Shopify, GoCardless, Amazon, eBay or
+  Etsy is sales less the processor's fees and refunds: it goes to 1250 Payment Processor Clearing and asks for the
+  payout report, which is read like an agent's statement (sales in, fees out, the payout the net paid over) and
+  clears it.
+- **Personal spending.** A streaming or gaming subscription (Netflix, Spotify and the like) goes to the Director's
+  Loan Account for a company, Drawings for anyone else, with a note; recode it if it was for the business.
+- **Figures a document doesn't print.** For a file with a text layer, VAT the document doesn't print is dropped (it
+  can't be reclaimed), and an amount it doesn't print is flagged "Total not printed". A receipt read at its total
+  before VAT, whose card payment is exactly that plus 20% or 5%, documents the payment: the bank line books it, with no
+  VAT, and the receipt asks for a complete copy. A receipt never replaces a bank line of another amount.
+- **Insurance.** The gap between a premium and its total is Insurance Premium Tax, not VAT, and isn't flagged.
 
 ### Importing from the client's folder
 

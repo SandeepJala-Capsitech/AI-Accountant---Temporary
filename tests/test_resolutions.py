@@ -687,3 +687,26 @@ def test_record_automatic_turns_bank_dating_into_decision(mongo_store, records, 
     assert saved(mongo_store, nb.id, receipt).date is None   # matching dates it; the row is not changed
     assert record_automatic(mongo_store, records, client_id=nb.id, year_start=YEAR, thread_id="t1") == []
     assert len(records.decisions(nb.id)) == 1
+
+
+SCREWFIX = """SCREWFIX DIRECT
+VAT Reg No GB 232 4155 08
+03/10/2026 09:12
+Subtotal 72.00
+VAT 20"""
+
+
+def test_use_primary_never_lets_a_receipt_replace_a_bank_line_of_another_amount(mongo_store, records, pages, nb):
+    # Ashdown's Screwfix receipt was read at its £72.00 subtotal; the bank paid £86.40. The AI kept the receipt and
+    # dropped the bank line, so £14.40 that left the bank vanished from the books and the bank stopped agreeing.
+    [receipt] = add(mongo_store, nb.id, pages, "screwfix.txt", SCREWFIX,
+                    row(date=dt.date(2026, 10, 3), description="Screwfix", counterparty="Screwfix Direct",
+                        gross=Decimal("72.00"), account_code="5000", document_total=Decimal("72.00")))
+    line, statement = bank_line(nb, mongo_store, pages, "86.40", dt.date(2026, 10, 3), "SCREWFIX DIRECT")
+    decision = call(mongo_store, records, pages, nb, receipt,
+                    UsePrimary(action="use_primary", primary_row_id=receipt, other_row_id=line),
+                    "Subtotal 72.00", upload=nb.upload("screwfix.txt"))
+    assert decision.status == "refused"
+    assert decision.reason == ("The bank paid £86.40 and the receipt reads £72.00: what left the bank stays as the "
+                               "bank shows it, so the receipt can't replace the bank line.")
+    assert not saved(mongo_store, nb.id, line).excluded

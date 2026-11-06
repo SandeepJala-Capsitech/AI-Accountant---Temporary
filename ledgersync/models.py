@@ -117,6 +117,10 @@ class Transaction(BaseModel):
                                                    # net paid over), which matching checks its rows against
     document_net: Optional[Decimal] = None         # the total before VAT printed on its document, if it prints one
     not_vat_invoice: bool = False                  # its document says it is not a VAT invoice
+    cis_deducted: Optional[Decimal] = None         # on an invoice: Construction Industry Scheme tax taken off it,
+                                                   # as printed; gross is the amount due after it
+    total_worked_out: bool = False                 # its document has a text layer that prints neither its amount nor
+                                                   # its total: the reader worked the figure out (a cut-off receipt)
     document_ref: Optional[str] = None
     include: bool = False
     # Inputs set only by the accountant chat's decisions (never by a person's edit, so not in rows.EDITABLE or
@@ -150,6 +154,8 @@ class Transaction(BaseModel):
     recorded_by: Optional[Settlement] = None       # a bank line or a claim line: the receipt or invoice for the
                                                    # same payment, booked instead; this row is not booked
     claimed_in: Optional[Settlement] = None        # a receipt or invoice on an expense claim: owed to the claimant
+    documented_by: Optional[Settlement] = None     # a bank line whose receipt prints no total (read at its subtotal):
+                                                   # the receipt; the line books the payment, with no VAT
     vat_found: Optional[Decimal] = None            # a receipt or invoice on a claim: VAT its prices and the claim agree
                                                    # on, not booked because it says it is not a VAT invoice (Book VAT)
     date_found: Optional[dt.date] = None           # a receipt, or a claim line, whose other record (its claim line,
@@ -477,6 +483,8 @@ class YearSummary(BaseModel):
     bank: list[BankCheck]
     trial_balance: Literal["balanced", "blocked"]
     problems: list[str] = Field(default_factory=list)
+    missing_paperwork: list[str] = Field(default_factory=list)   # statements the books need and don't have, in words
+    pointers: list[str] = Field(default_factory=list)   # what an accountant would want to know, in words
 
 
 class RowPatch(BaseModel):
@@ -589,7 +597,7 @@ class QuestionDraft(BaseModel):
     client_id: int
     year_start: dt.date
     row_ids: list[int] = Field(default_factory=list)
-    kind: Literal["date", "receipt_or_invoice", "vat_invoice", "other"]
+    kind: Literal["date", "receipt_or_invoice", "vat_invoice", "payout_report", "payroll_report", "other"]
     text: str                                  # "When was this taxi?"
     why: str                                   # "£50 or more, so I need ..."
     source: Literal["rules", "agent"]

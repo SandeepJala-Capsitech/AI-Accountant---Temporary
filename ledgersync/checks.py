@@ -10,20 +10,23 @@ from .accounts import (BY_CODE, CAPITAL, CREDITORS, DEBTORS, DIRECTORS_LOAN, DIV
                        NET_WAGES, PAYE, PENSION, STAFF_EXPENSES, WAGES, Account, AccountType)
 from .models import NOT_TRANSACTIONS, BusinessSettings, Direction, Issue, Transaction
 from .money import PENNY, ZERO, VatTreatment, vat_in_gross
+from .payees import personal
 
 _NO_VAT = {AccountType.LIABILITY, AccountType.EQUITY}
 # Issues matching.match adds; listed here so validating again replaces them instead of adding copies.
 MATCHING_ISSUES = {"choose_payment", "part_payment", "overpayment", "possible_payment", "stale_link",
                    "mixed_link", "duplicate_document", "total_mismatch", "claim_vat", "vat_worked_out",
                    "not_vat_invoice", "date_conflict", "date_from_claim", "date_from_bank", "booked_twice",
-                   "amount_conflict", "open_document", "no_payroll", "transfer", "sale_without_vat"}
+                   "amount_conflict", "open_document", "no_payroll", "transfer", "sale_without_vat",
+                   "payout_report", "subtotal_only"}
 # Issues statements.check_statement adds to bank lines, and file_dates.check_file_date to a document; derived too,
 # so checking again replaces them.
 STATEMENT_ISSUES = {"statement_gap", "statement_total", "file_date"}
 _DERIVED = {"unknown_account", "same_account", "non_gbp_currency", "vat_not_applicable", "vat_estimated",
             "vat_arithmetic", "vat_rate_mismatch", "date_missing", "date_out_of_period", "unusual_direction",
             "not_booked", "vat_blocked", "director_loan", "wages_from_bank",
-            "payroll_owed_to", "before_first_year", "vat_not_booked", "needs_document"} | MATCHING_ISSUES | STATEMENT_ISSUES
+            "payroll_owed_to", "before_first_year", "vat_not_booked", "needs_document", "total_worked_out",
+            "cis_deducted", "personal"} | MATCHING_ISSUES | STATEMENT_ISSUES
 
 
 def issue(code: str, message: str, severity: str = "warning", related: Sequence[int] = ()) -> Issue:
@@ -119,15 +122,32 @@ def most_vat(gross: Decimal) -> Decimal:
     return vat_in_gross(gross, VatTreatment.STANDARD) + Decimal("0.05") + (gross / 500).quantize(PENNY)
 
 
+# Exempt accounts whose supplier may still charge VAT: a landlord who opted to tax.
+_MAY_OPT_TO_TAX = frozenset({"7100", "4904"})
+
+
+def _carries_no_vat(account: Optional[Account]) -> bool:
+    """Whether what is booked to the account is never charged VAT: zero-rated or outside the scope of VAT, or exempt
+    (insurance, whose total adds Insurance Premium Tax, not VAT; bank charges), except rent."""
+    return account is not None and (account.vat in (VatTreatment.ZERO, VatTreatment.OUTSIDE_SCOPE)
+                                    or (account.vat == VatTreatment.EXEMPT and account.code not in _MAY_OPT_TO_TAX))
+
+
 def _vat_not_booked(tx: Transaction, settings: BusinessSettings) -> Optional[Issue]:
     """A row read with no VAT whose document prints a total and a net that differ by VAT it could hold (above
-    nothing, at most a sixth of the total): the reading missed the VAT line, so none is booked until it is added."""
-    if tx.document_total is None or tx.document_net is None or not reclaims_vat(tx, settings):
+    nothing, at most a sixth of the total): the reading missed the VAT line, so none is booked until it is added. Not
+    on an account that carries no VAT (the difference is another tax). When the document doesn't print its total
+    (total_worked_out), the VAT isn't shown either: it says so, and that a complete copy is needed."""
+    if (tx.document_total is None or tx.document_net is None or not reclaims_vat(tx, settings)
+            or _carries_no_vat(BY_CODE.get(tx.account_code))):
         return None
     shown = tx.document_total - tx.document_net
     if not ZERO < shown <= most_vat(tx.document_total):
         return None
     kind = tx.document_type.replace("_", " ")
+    if tx.total_worked_out:
+        return issue("vat_not_booked", f"The {kind} doesn't print its total: £{tx.document_total:,.2f} was worked out "
+                                       f"from what it does print. Get a complete copy to reclaim the £{shown:,.2f} VAT.")
     return issue("vat_not_booked", f"The {kind} shows £{shown:,.2f} VAT; none is booked.")
 
 
@@ -200,6 +220,10 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
     if mixed:
         kept = [i for i in kept if i.code != "mixed_items"]
         issues.append(_mixed_items(account, vat, tx.gross, untaxed))
+    if tx.total_worked_out and not any(i.code == "vat_not_booked" for i in issues):
+        issues.append(issue("total_worked_out", f"The {tx.document_type.replace('_', ' ')} doesn't print "
+                                                f"£{tx.gross:,.2f}: it was worked out from what it does print. Check it "
+                                                "against the document."))
 
     in_opening = bool(settings.books_start and tx.date and tx.date < settings.books_start)
     if tx.date is None:
@@ -222,11 +246,22 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
           and tx.account_code in (DIRECTORS_LOAN, SHARES, DIVIDENDS)):
         issues.append(issue("director_loan", f"{account.name} is for companies only. Use Drawings or "
                                              "Capital Introduced."))
+    service = personal(tx.counterparty, tx.description) if tx.account_code in (DIRECTORS_LOAN, DRAWINGS) else None
+    if service and tx.direction == Direction.OUT and account is not None:
+        issues.append(issue("personal", f"{service} looks like personal spending: booked to the {account.name}. "
+                                        "Recode it if it was for the business.", "info"))
     if tx.document_type == "statement" and tx.account_code in WAGES:
         issues.append(issue("wages_from_bank", "Book wages from the payroll report: code net pay to 2220 Net Wages."))
     if tx.document_type in NOT_TRANSACTIONS and not tx.include:   # copies and card payments: matching says so
         issues.append(issue("not_booked", f"Looks like {_NOT_TRANSACTION_NAMES[tx.document_type]}: not booked. "
                                           "Tick Include to book it.", "info"))
     net = tx.gross - posted if posted is not None else None
+    cis = tx.cis_deducted if tx.cis_deducted and tx.document_type != "statement" else None
+    if cis is not None and net is not None:
+        net += cis   # the sale or cost is the amount due plus the tax the contractor withheld for HMRC
+        issues.append(issue("cis_deducted", (
+            f"CIS £{cis:,.2f} taken off by the customer: booked to CIS Deducted, so the sale is £{net:,.2f}."
+            if tx.direction == Direction.IN else
+            f"CIS £{cis:,.2f} taken off for HMRC: booked to CIS Payable, so the cost is £{net:,.2f}."), "info"))
     return tx.model_copy(update={"vat_posted": posted, "net": net, "contra_account_code": contra,
                                  "in_opening": in_opening, "issues": kept + issues})

@@ -406,6 +406,25 @@ def test_get_overview_lists_the_accounts_a_row_can_be_coded_to(mongo_store, deps
     assert all(set(a) == {"code", "name"} for a in accounts)
 
 
+@pytest.mark.mongo
+def test_get_overview_gives_each_bank_against_its_statement_and_the_missing_paperwork(mongo_store, deps, acme):
+    add_rows(mongo_store, acme,
+             row(date=dt.date(2025, 10, 1), gross=Decimal("100.00"), account_code="7504", counterparty="Paper Shop",
+                 document_type="statement", balance=Decimal("900.00")),
+             year_start=dt.date(2025, 4, 1))
+    model = ScriptedChatModel(replies=[call("get_overview"), say("Looked.")])
+    agent = build_agent(SETTINGS, deps, model=model, checkpointer=InMemorySaver())
+
+    list(stream_turn(agent, ChatContext(client_id=acme, thread_id=uuid4().hex, year_start=dt.date(2025, 4, 1)),
+                     "Look over the books."))
+
+    overview = json.loads(answered(model, 1)[0].content)
+    [bank] = overview["bank"]
+    assert (bank["statement"], bank["books"], bank["difference"], bank["agrees"]) == ("900.00", "-100.00",
+                                                                                      "-1000.00", False)
+    assert overview["missing_paperwork"][0].endswith("opens at £1,000.00; the books have £0.00 then.")
+
+
 def ask_about(deps, client_id: int, *row_ids: int) -> tuple[dict, list]:
     """What ask_user answers when called on the rows in the client's first year, and the agent's questions then."""
     model = ScriptedChatModel(replies=[call("ask_user", row_ids=list(row_ids), question="When was it?",

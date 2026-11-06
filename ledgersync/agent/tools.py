@@ -202,6 +202,16 @@ def _related(row: SavedRow, rows: list[SavedRow]) -> list[SavedRow]:
                                                    or (row.document_ref and row.document_ref in refs(o)))]
 
 
+def _bank_position(store, client_id: int, year_start) -> dict:
+    """Each bank account's books against its latest statement, and what paperwork is missing; empty while rows need
+    fixing, which blocks the trial balance these are worked out from."""
+    summary = books.summary(store, client_id, year_start)
+    return {"bank": [{"account": c.name, "code": c.code, "books": c.books, "statement": c.statement,
+                      "statement_date": c.statement_date, "difference": c.difference,
+                      "agrees": c.difference is not None and c.difference == 0} for c in summary.bank],
+            "missing_paperwork": summary.missing_paperwork}
+
+
 def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
     """The tools, working on deps. actor: who resolve_issue records its decisions as made by ("agent:<model>")."""
     store, records = deps.store, deps.records
@@ -213,7 +223,9 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
     def get_overview(runtime: ToolRuntime[ChatContext]) -> dict:
         """The client, its years, and the year this chat is on: its rows and documents, how many rows need a look in
         each family of issue, how many are held in Suspense for a document, the questions still open, the
-        decisions made so far, the background reviews since the last chat, and the accounts a row can be coded to (code and name)."""
+        decisions made so far, the background reviews since the last chat, the accounts a row can be coded to (code and name),
+        each bank account's balance in the books against its latest statement (agrees only when the difference is
+        £0.00), and the statements the books are missing."""
         ctx = runtime.context
         _step(runtime, "Looking over the books…")
         built = books.ledger(store, ctx.client_id, ctx.year_start)
@@ -232,6 +244,7 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
             "background_reviews_since_last_chat": _reviews_since_last_chat(records, ctx),
             "accounts": [{"code": a.code, "name": a.name}
                          for a in choosable(built.client.business_type, bank_choices(built.client))],
+            **_bank_position(store, ctx.client_id, ctx.year_start),
         }
         _step(runtime, "Looked over the books", "done")
         return _out(result)

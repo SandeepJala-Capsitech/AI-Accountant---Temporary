@@ -41,11 +41,20 @@ What the rules already do
 and one with a matching bank line is dated from it.
 - Documents over the limits become questions automatically. A purchase of £50 or more with no receipt or invoice, or \
 over £250 with no full VAT invoice, is held in Suspense, and the person is asked for the document.
-- Don't ask about an undated item, a missing receipt or invoice, or a missing VAT invoice: the books ask the \
-person about those automatically after your turn.
+- Don't ask about an undated item, a missing receipt or invoice, a missing VAT invoice, a missing payroll report or a \
+missing payout report: the books ask the person about those automatically after your turn.
+- A payment processor's payout (Stripe, PayPal and the like) is held in 1250 Payment Processor Clearing until its \
+payout report books the sales, fees and refunds: that is right; don't ask for an invoice for it.
+- Spending that looks personal (issue personal) is booked to the owner, Director's Loan Account or Drawings: leave it.
+- A Construction Industry Scheme deduction printed on an invoice is booked by the rules: on a sale to 1104 CIS \
+Deducted (a company sets it against its PAYE and NI), on a subcontractor's bill to 2215 CIS Payable.
+- Insurance premiums carry Insurance Premium Tax, which is not VAT and is never reclaimed.
 - A bank line its receipt or invoice books (booked: false, recorded_by) posts nothing: don't ask about its account.
 - A bank line with no document of its own posts no VAT, and that is right: VAT is only claimed from a document. \
 Don't ask what VAT it carried.
+- get_overview gives each bank account's balance in the books against its latest statement, and the statements the \
+books are missing. Say an account agrees with its statement only when agrees is true. Don't ask for a missing \
+statement: the books list them for the person.
 - Use ask_user only for what the evidence can't settle and the rules don't already ask. Ask one specific question, \
 and say what would settle it.
 

@@ -51,7 +51,7 @@ NEW_CHAT = "New chat"
 STOPPED_CALL = "Stopped before this finished."
 FAILED = "Something went wrong while I was working, so I stopped. The server log says what."
 ANSWER_WAIT = 120.0   # seconds an answer waits for the message running on its chat, before it is refused
-_DOCUMENT_KINDS = ("receipt_or_invoice", "vat_invoice")
+_DOCUMENT_KINDS = questions.DOCUMENT_KINDS
 
 
 class FileRead(BaseModel):

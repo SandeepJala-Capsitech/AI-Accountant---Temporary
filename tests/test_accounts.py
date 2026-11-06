@@ -37,9 +37,10 @@ def test_debtors_and_creditors_have_their_own_codes():
 def test_a_model_may_choose_any_account_but_the_control_accounts():
     # The ledger splits VAT itself. What is owed (Debtors, Creditors, Expenses Owed to Staff) is picked by the
     # ledger from the document type. So are the accounts only year-end work posts to, and where a year's profit
-    # closes. The bank, 1200, is offered only to a client with another account, for a transfer between them.
+    # closes, and the CIS tax withheld on an invoice (from the invoice's CIS deduction). The bank, 1200, is offered
+    # only to a client with another account, for a transfer between them.
     ledger_only = {"2200", "2201", "1100", "2100", "2110", "0031", "0041", "0051", "0056", "1103", "2109",
-                   "3100", "3200", "8000", "8800"}
+                   "3100", "3200", "8000", "8800", "1104", "2215"}
     assert {a.code for a in model_accounts()} == set(BY_CODE) - ledger_only
     # Without a business type (an analysis with no client) a company's own accounts are left out, and so are
     # the bank accounts and cards beyond the first.

@@ -1085,3 +1085,67 @@ def test_a_bank_line_its_receipt_records_drops_the_unclear_account_issue_too():
                 issues=[issue("account_unclear", "Account unclear: put in Suspense. Choose one.")])
     _, ready = matched(receipt, line)
     assert ready.recorded_by.ref == "r" and "account_unclear" not in [i.code for i in ready.issues]
+
+
+# ─── A payment processor's payout and its report ──────────────────────────────
+
+def _payout_line():
+    return Transaction(date=dt.date(2026, 10, 15), description="Stripe payout", direction="in", gross="1163.10",
+                       account_code="1250", document_type="statement", counterparty="Stripe Payments UK")
+
+
+def test_a_payout_with_no_report_asks_for_it():
+    [line] = match([normalise(_payout_line(), SETTINGS)], SETTINGS)
+    [found] = [i for i in line.issues if i.code == "payout_report"]
+    assert found.message == ("A Stripe payout is sales less Stripe's fees and refunds: upload the Stripe payout "
+                             "report for 15 Oct 2026, so they are booked. Held in Payment Processor Clearing until then.")
+
+
+def test_the_payout_report_books_the_sales_and_fees_and_clears_the_payout():
+    report = dict(document_type="agent_statement", agent="Stripe", document_total=Decimal("1163.10"),
+                  document_ref="po", date=dt.date(2026, 10, 15))
+    rows = [Transaction(description="Card sales", direction="in", gross="1200.00", account_code="4000",
+                        counterparty="Customers", **report),
+            Transaction(description="Stripe fees", direction="out", gross="36.90", account_code="7901",
+                        counterparty="Stripe", **report),
+            _payout_line()]
+    tb = trial_balance(rows, SETTINGS)
+    assert (net(tb, "4000"), net(tb, "7901"), net(tb, "1250"), net(tb, "1100"), net(tb, "1200")) == (
+        Decimal("-1200.00"), Decimal("36.90"), 0, 0, Decimal("1163.10"))
+    line = match([normalise(t, SETTINGS) for t in rows], SETTINGS)[2]
+    assert "payout_report" not in [i.code for i in line.issues]
+
+
+# ─── A receipt cut off before its total ───────────────────────────────────────
+
+def _cut_off_receipt(gross="72.00"):
+    return Transaction(date=dt.date(2026, 10, 3), description="Screwfix", direction="out", gross=gross,
+                       account_code="5000", document_type="receipt", counterparty="Screwfix Direct",
+                       document_total=gross, document_net="72.00", supplier_vat_number="GB232415508",
+                       document_ref="sf")
+
+
+def _card_line(gross="86.40"):
+    return Transaction(date=dt.date(2026, 10, 3), description="Screwfix card payment", direction="out", gross=gross,
+                       account_code="5000", document_type="statement", counterparty="Screwfix Direct")
+
+
+def test_a_receipt_read_at_its_subtotal_is_the_document_for_the_bank_line_that_adds_the_vat():
+    # The reader took Screwfix's "Subtotal 72.00" as the total (the receipt is cut off at "VAT 20"); the bank paid
+    # £86.40, £72.00 plus 20%. It was an amount conflict, held in Suspense, which the AI then "resolved" wrongly.
+    receipt, line = match([normalise(t, SETTINGS) for t in (_cut_off_receipt(), _card_line())], SETTINGS)
+    assert line.documented_by is not None and line.documented_by.ref == "sf" and booked(line)
+    assert receipt.recorded_by is not None and not [i for i in receipt.issues if i.code == "amount_conflict"]
+    [note] = [i for i in receipt.issues if i.code == "subtotal_only"]
+    assert note.message == ("The receipt prints £72.00 before VAT and no total; the bank paid £86.40, which is £72.00 "
+                            "plus VAT at 20%. Booked from the bank line with no VAT: get a complete copy to reclaim "
+                            "the £14.40 VAT.")
+    from ledgersync.evidence_rules import document_rule
+    rule = document_rule(line, SETTINGS)
+    assert (rule.action, rule.reclaim_vat) == ("book", False)
+
+
+def test_a_bank_line_that_is_not_the_subtotal_plus_vat_is_still_a_conflict():
+    receipt, line = match([normalise(t, SETTINGS) for t in (_cut_off_receipt(), _card_line("90.00"))], SETTINGS)
+    assert line.documented_by is None
+    assert [i.code for i in receipt.issues if i.code == "amount_conflict"] == ["amount_conflict"]

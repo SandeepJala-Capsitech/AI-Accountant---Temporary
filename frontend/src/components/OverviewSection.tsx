@@ -103,6 +103,13 @@ export default function OverviewSection() {
           <p><Link href={attentionHref(client.id)} className="link-btn">{needYou} {needYou === 1 ? 'thing needs' : 'things need'} you</Link></p>
         )}
         {reviewLine && <p><Link href={sectionHref(client.id, year.start, 'ai-review')} className="link-btn">{reviewLine}</Link></p>}
+        {summary?.missing_paperwork?.length ? (
+          <div className="notice notice-warn">
+            <strong>Missing paperwork</strong>
+            <ul className="small">{summary.missing_paperwork.map(m => <li key={m}>{m}</li>)}</ul>
+          </div>
+        ) : null}
+        {summary?.pointers?.map(p => <p key={p} className="muted small">{p}</p>)}
         {ledgerNote && <p className="muted small">{ledgerNote}</p>}
         {summary && (
           <dl className="details">

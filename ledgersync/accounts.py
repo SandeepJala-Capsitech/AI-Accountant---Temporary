@@ -47,6 +47,8 @@ CHART: tuple[Account, ...] = (
             "Vans' value used up over the years (accumulated depreciation)."),
     Account("1100", "Debtors", _A, V.OUTSIDE_SCOPE, "Money customers owe for invoices the business has sent and not yet been paid."),
     Account("1103", "Prepayments", _A, V.OUTSIDE_SCOPE, "Costs paid in advance that belong to a later period."),
+    Account("1104", "CIS Deducted", _A, V.OUTSIDE_SCOPE,
+            "CIS tax customers took off the business's invoices and paid to HMRC for it."),
     Account("1200", "Bank Current Account", _A, V.OUTSIDE_SCOPE, "The business's main bank account."),
     Account("1201", "Bank Current Account 2", _A, V.OUTSIDE_SCOPE, "The business's second current account."),
     Account("1202", "Bank Current Account 3", _A, V.OUTSIDE_SCOPE, "The business's third current account."),
@@ -58,6 +60,8 @@ CHART: tuple[Account, ...] = (
             "The business's credit card; paying the card off from the bank is a transfer, not spending."),
     Account("1241", "Company Credit Card 2", _L, V.OUTSIDE_SCOPE,
             "The business's second credit card; paying it off from the bank is a transfer."),
+    Account("1250", "Payment Processor Clearing", _A, V.OUTSIDE_SCOPE,
+            "Payouts from Stripe, PayPal, Square and the like, until their payout report books the sales and fees."),
     Account("2100", "Creditors", _L, V.OUTSIDE_SCOPE, "Money the business owes suppliers for bills it has received and not yet paid."),
     Account("2109", "Accruals", _L, V.OUTSIDE_SCOPE, "Costs for the period that have not been billed or paid yet."),
     Account("2110", "Expenses Owed to Staff", _L, V.OUTSIDE_SCOPE, "Expense claims approved for staff and not yet reimbursed."),
@@ -65,6 +69,8 @@ CHART: tuple[Account, ...] = (
     Account("2201", "Purchase VAT", _L, V.OUTSIDE_SCOPE, "VAT paid to suppliers."),
     Account("2202", "VAT Liability", _L, V.OUTSIDE_SCOPE, "VAT paid to, or refunded by, HMRC for VAT returns."),
     Account("2210", "PAYE and National Insurance", _L, V.OUTSIDE_SCOPE, "Employees' income tax and National Insurance paid to HMRC."),
+    Account("2215", "CIS Payable", _L, V.OUTSIDE_SCOPE,
+            "CIS tax the business took off its subcontractors' invoices, owed to HMRC."),
     Account("2220", "Net Wages", _L, V.OUTSIDE_SCOPE,
             "Net pay owed to staff, from a payroll report; cleared by the bank payments to them."),
     Account("2230", "Pension Fund", _L, V.OUTSIDE_SCOPE, "Pension contributions owed to the pension provider."),
@@ -141,6 +147,8 @@ SHARES, DIVIDENDS, RETAINED, OWNERS_CAPITAL = "3000", "3250", "3200", "3100"
 NET_WAGES, PAYE, PENSION = "2220", "2210", "2230"
 WAGES = frozenset({"7000", "7001"})   # Gross Wages, Directors' Salaries: booked from the payroll report
 VAT_LIABILITY = "2202"
+CIS_DEDUCTED, CIS_PAYABLE = "1104", "2215"
+CLEARING = "1250"   # a payment processor's payouts, until its payout report books what they are made of   # the Construction Industry Scheme's tax, withheld from the business or by it
 HOTELS = "7402"
 # The bank accounts and cards a client may have, in the order they are added. Only a client's own are offered.
 BANK_SLOTS: dict[str, tuple[str, ...]] = {"current": ("1200", "1201", "1202"), "savings": ("1210", "1211"),
@@ -152,7 +160,7 @@ VAT_ACCOUNTS = frozenset({SALES_VAT, PURCHASE_VAT, VAT_LIABILITY})
 # accounts for what is owed (from the document type), and the accounts only year-end work posts to (depreciation,
 # accruals, prepayments, the tax charge and where profit closes). The bank accounts, 1200 too, are the other side of
 # each posting; a row is coded to one only as a transfer from another of the client's own (see choosable).
-_LEDGER_ONLY = frozenset({SALES_VAT, PURCHASE_VAT, DEBTORS, CREDITORS, STAFF_EXPENSES,
+_LEDGER_ONLY = frozenset({SALES_VAT, PURCHASE_VAT, DEBTORS, CREDITORS, STAFF_EXPENSES, CIS_DEDUCTED, CIS_PAYABLE,
                           "0031", "0041", "0051", "0056", "1103", "2109", OWNERS_CAPITAL, RETAINED, "8000", "8800"})
 # Accounts that exist for a limited company only, and those that exist for everyone else.
 _COMPANY_ONLY = frozenset({DIRECTORS_LOAN, "2320", SHARES, DIVIDENDS, "7001", "8800"})

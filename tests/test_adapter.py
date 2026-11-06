@@ -377,3 +377,108 @@ def test_only_a_claims_total_is_checked_against_the_text():
     rows = to_transactions([dict(ROW, document_total=72.0)], source="pdf", settings=BusinessSettings(),
                            text="no figure here")
     assert rows[0].document_total == Decimal("72.00")
+
+
+CUT_OFF = dict(ROW, description="Screwfix", amount=-86.40, account="5000 Purchases", document_type="receipt",
+               counterparty="Screwfix Direct", document_total=86.40, document_net=72.00)
+
+
+def test_a_total_the_receipt_does_not_print_is_marked_worked_out():
+    [t] = to_transactions([CUT_OFF], source="text", settings=BusinessSettings(),
+                          text="SCREWFIX DIRECT\nSubtotal 72.00\nVAT 20")
+    assert t.total_worked_out is True
+
+
+@pytest.mark.parametrize("text", ["Subtotal 72.00\nVAT 14.40\nTotal 86.40", None])   # printed; an image: no text
+def test_a_printed_total_or_one_read_from_an_image_is_not_marked_worked_out(text):
+    [t] = to_transactions([CUT_OFF], source="text", settings=BusinessSettings(), text=text)
+    assert t.total_worked_out is False
+
+
+def test_a_bank_line_is_never_marked_worked_out():
+    [t] = to_transactions([dict(CUT_OFF, document_type="statement")], source="table", settings=BusinessSettings(),
+                          text="03/10/2026,Screwfix,-86.4")
+    assert t.total_worked_out is False
+
+
+CIS_SALE = dict(ROW, description="Fenwick Builders, first fix joinery", amount=3400.0, direction="in",
+                account="4000 Sales", document_type="invoice", counterparty="Fenwick Builders Ltd",
+                document_number="AJ-2041", document_total=3400.0, document_net=4000.0)
+CIS_TEXT = ("Labour 3,000.00\nMaterials 1,000.00\nNet 4,000.00\nVAT: Reverse charge\n"
+            "CIS deduction 20% on labour (600.00)\nAmount due 3,400.00")
+
+
+def test_a_cis_deduction_read_from_the_invoice_is_kept():
+    [t] = to_transactions([dict(CIS_SALE, cis_deducted=600.0)], source="pdf", settings=BusinessSettings(), text=CIS_TEXT)
+    assert (t.gross, t.cis_deducted) == (Decimal("3400.00"), Decimal("600.00"))
+
+
+def test_a_cis_deduction_the_reader_missed_is_found_from_the_printed_net_and_the_word_cis():
+    [t] = to_transactions([CIS_SALE], source="pdf", settings=BusinessSettings(), text=CIS_TEXT)
+    assert (t.gross, t.cis_deducted) == (Decimal("3400.00"), Decimal("600.00"))
+
+
+def test_an_amount_read_before_the_cis_deduction_becomes_the_amount_due():
+    [t] = to_transactions([dict(CIS_SALE, amount=4000.0, cis_deducted=600.0)], source="pdf",
+                          settings=BusinessSettings(), text=CIS_TEXT)
+    assert (t.gross, t.cis_deducted) == (Decimal("3400.00"), Decimal("600.00"))
+
+
+def test_a_discount_without_cis_is_not_taken_for_cis():
+    [t] = to_transactions([CIS_SALE], source="pdf", settings=BusinessSettings(),
+                          text="Net 4,000.00\nEarly payment discount (600.00)\nAmount due 3,400.00")
+    assert t.cis_deducted is None
+
+
+PAYOUT = dict(ROW, description="Stripe payout", amount=1163.10, direction="in", account="4000 Sales",
+              document_type="statement", counterparty="Stripe Payments UK", date="2026-10-15")
+
+
+def test_a_payment_processors_payout_goes_to_clearing_not_sales():
+    # Ashdown's £1,163.10 Stripe payout was booked as one sale, with "choose its VAT rate": a payout is sales less
+    # Stripe's fees and refunds, and only its payout report shows each.
+    [t] = to_transactions([PAYOUT], source="table", settings=BusinessSettings())
+    assert t.account_code == "1250"
+
+
+@pytest.mark.parametrize("change", [{"direction": "out", "amount": -20.0, "account": "7504 Office Stationery"},
+                                    {"counterparty": "Fenwick Builders Ltd", "description": "Fenwick Builders, AJ-2041"}])
+def test_money_paid_out_through_a_processor_or_a_customers_payment_is_left_as_read(change):
+    [t] = to_transactions([dict(PAYOUT, **change)], source="table", settings=BusinessSettings())
+    assert t.account_code == str(change.get("account", "4000"))[:4]
+
+
+NETFLIX = dict(ROW, description="Netflix subscription", amount=-12.99, account="8201 Subscriptions and Software",
+               document_type="statement", counterparty="Netflix.com", date="2026-10-22")
+
+
+@pytest.mark.parametrize("business_type, code", [("limited_company", "2250"), ("sole_trader", "3260"),
+                                                  (None, "8201")])
+def test_a_streaming_subscription_is_booked_to_the_owner(business_type, code):
+    [t] = to_transactions([NETFLIX], source="table", settings=BusinessSettings(business_type=business_type))
+    assert t.account_code == code
+
+
+def test_vat_the_document_does_not_print_is_not_taken():
+    # On a third reading the reader worked out Screwfix's £14.40 VAT (20% of £72.00), and it was reclaimed: the
+    # receipt never prints it, so there's nothing to reclaim it with.
+    [t] = to_transactions([dict(CUT_OFF, vat=14.40, document_vat=14.40)], source="text", settings=BusinessSettings(),
+                          text="SCREWFIX DIRECT\nSubtotal 72.00\nVAT 20")
+    assert t.vat is None
+
+
+@pytest.mark.parametrize("text", ["Subtotal 72.00\nVAT 14.40\nTotal 86.40", None])   # printed; an image: no text
+def test_vat_the_document_prints_or_read_from_an_image_is_kept(text):
+    [t] = to_transactions([dict(CUT_OFF, vat=14.40, document_vat=14.40)], source="text", settings=BusinessSettings(),
+                          text=text)
+    assert t.vat == Decimal("14.40")
+
+
+def test_a_rows_vat_that_is_its_share_of_a_printed_vat_total_is_kept():
+    rows = [dict(ROW, amount=-60.0, vat=10.0, document_vat=15.0, document_total=90.0, document_type="invoice",
+                 account="7504 Office Stationery"),
+            dict(ROW, amount=-30.0, vat=5.0, document_vat=15.0, document_total=90.0, document_type="invoice",
+                 account="7502 Telephone and Internet")]
+    texts = to_transactions(rows, source="pdf", settings=BusinessSettings(), text="Paper 50.00\nCalls 25.00\nVAT 15.00\n"
+                                                                                  "Total 90.00")
+    assert [t.vat for t in texts] == [Decimal("10.00"), Decimal("5.00")]

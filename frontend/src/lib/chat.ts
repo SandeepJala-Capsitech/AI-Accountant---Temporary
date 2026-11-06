@@ -46,7 +46,7 @@ export interface Decision {
   hash: string
 }
 
-export type QuestionKind = 'date' | 'receipt_or_invoice' | 'vat_invoice' | 'other'
+export type QuestionKind = 'date' | 'receipt_or_invoice' | 'vat_invoice' | 'payout_report' | 'payroll_report' | 'other'
 
 // A question for the person: open until answered, waiting when they have no answer yet, resolved once answered.
 export interface Question {
@@ -201,7 +201,7 @@ export function groupThreads(threads: ChatThread[], now: Date):
 // How a question is answered: a date (or Not sure), a document (or I don't have it), or in words.
 export function questionControl(q: Question): 'date' | 'upload' | 'text' {
   if (q.kind === 'date') return 'date'
-  if (q.kind === 'receipt_or_invoice' || q.kind === 'vat_invoice') return 'upload'
+  if (['receipt_or_invoice', 'vat_invoice', 'payout_report', 'payroll_report'].includes(q.kind)) return 'upload'
   return 'text'
 }
 

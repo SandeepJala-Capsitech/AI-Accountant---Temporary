@@ -227,6 +227,11 @@ def _use_primary(rows: dict[int, SavedRow], row_id: int, r: UsePrimary, **_) -> 
                        "same counterparty within a few days.")
     if _rank(primary) <= _rank(other):
         raise _Refused(f"The {_kind(primary)} doesn't rank above the {_kind(other)}.")
+    paid = primary.document_total or primary.gross
+    if other.document_type == "statement" and primary.document_type in _UNPAYABLE and paid != other.gross:
+        # What left the bank is a fact: a document read at another amount explains it, it can't replace it.
+        raise _Refused(f"The bank paid £{other.gross:,.2f} and the {_kind(primary)} reads £{paid:,.2f}: what left the "
+                       f"bank stays as the bank shows it, so the {_kind(primary)} can't replace the bank line.")
     if other.document_type == "statement" and primary.document_type == "payroll":
         # Leaving the bank line out would remove real cash and leave the wages owed; it pays the report as it is.
         raise _Refused("A bank line paying wages stays in the books: the payroll report doesn't replace it.")

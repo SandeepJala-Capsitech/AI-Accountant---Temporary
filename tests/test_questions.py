@@ -405,3 +405,22 @@ def test_an_answer_outside_a_chat_makes_the_client_due_and_one_in_a_chat_does_no
     questions.answer(store, records, client_id=acme, thread_id=None, question_id=q2.id,
                      answer=DateAnswer(kind="date", date=date(2025, 8, 15)), now=at, wait=30)
     assert records.review_state(acme).due_at == "2026-11-04T10:00:30+00:00"
+
+
+def test_a_payout_with_no_report_asks_for_it(store, records, acme):
+    add_rows(store, acme, row(date=date(2025, 10, 15), direction="in", gross=D("1163.10"), account_code="1250",
+                              document_type="statement", counterparty="Stripe Payments UK"), year_start=YEAR_1)
+    [q] = refresh(store, records, acme)
+    assert (q.kind, q.source, q.text) == ("payout_report", "rules", "Can you upload the Stripe payout report?")
+    assert q.why == ("£1,163.10 paid out by Stripe Payments UK on 15 Oct 2025 is sales less Stripe's fees and "
+                     "refunds. Held in Payment Processor Clearing until the report shows each.")
+
+
+def test_a_payment_of_paye_with_no_payroll_report_asks_for_it(store, records, acme):
+    add_rows(store, acme, row(date=date(2025, 10, 25), gross=D("612.40"), account_code="2210",
+                              document_type="statement", counterparty="HMRC PAYE"), year_start=YEAR_1)
+    [q] = refresh(store, records, acme)
+    assert (q.kind, q.text) == ("payroll_report", "Can you upload the payroll report for October 2025?")
+    assert q.why == ("£612.40 paid to HMRC PAYE on 25 Oct 2025, and no payroll report books the wages it is for.")
+    left = answer(store, records, acme, q, NoDocumentAnswer(kind="no_document"))
+    assert [(x.id, x.status) for x in left] == [(q.id, "waiting")]

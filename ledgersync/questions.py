@@ -21,6 +21,7 @@ from .ledger import settings_for
 from .models import (ChangeDraft, Decision, DecisionDraft, Evidence, Ledger, PostResult, Question, QuestionDraft,
                      Transaction)
 from .money import ZERO
+from .payees import processor
 from .records import AgentRecords
 from .resolutions import Texts, check_quotes, set_date
 from .store_mongo import MongoStore
@@ -28,6 +29,8 @@ from .store_mongo import MongoStore
 _OVER = {"receipt_or_invoice": "£50 or more", "vat_invoice": "Over £250"}
 _ASKS = {"receipt_or_invoice": "Can you upload the receipt or invoice?",
          "vat_invoice": "Can you upload the full VAT invoice?"}
+# The questions a document answers: those of the document rules, and a payout or payroll report the books lack.
+DOCUMENT_KINDS = frozenset({*_ASKS, "payout_report", "payroll_report"})
 
 
 class DateAnswer(BaseModel):
@@ -60,6 +63,10 @@ def _gbp(amount) -> str:
     return f"£{amount:,.2f}"
 
 
+def _on(tx: Transaction) -> str:
+    return f" on {long_date(tx.date)}" if tx.date else ""
+
+
 def _key(kind: str, row_id: int) -> str:
     """The key a rule question is kept under: one date question and one document question per row."""
     return f"{'date' if kind == 'date' else 'doc'}:{row_id}"
@@ -82,6 +89,16 @@ def _wanted(store: MongoStore, client_id: int,
         if tx.date is None:
             want(tx, "date", f"When was this {tx.description}?",
                  f"{_gbp(tx.gross)}, no date on it and no matching bank line.")
+        codes = {i.code for i in tx.issues}
+        if "payout_report" in codes:
+            who = processor(tx.counterparty, tx.description) or "payment processor"
+            want(tx, "payout_report", f"Can you upload the {who} payout report?",
+                 f"{_gbp(tx.gross)} paid out by {tx.counterparty or who}{_on(tx)} is sales less {who}'s fees and "
+                 "refunds. Held in Payment Processor Clearing until the report shows each.")
+        if "no_payroll" in codes and tx.date:
+            want(tx, "payroll_report", f"Can you upload the payroll report for {tx.date:%B %Y}?",
+                 f"{_gbp(tx.gross)} paid to {tx.counterparty or tx.description}{_on(tx)}, and no payroll report "
+                 "books the wages it is for.")
         rule = document_rule(tx, settings)
         if rule.action == "hold" and rule.needs:
             when = f" on {long_date(tx.date)}" if tx.date else ""
@@ -101,13 +118,14 @@ def _settled_by(store: MongoStore, client_id: int, q: Question) -> Optional[str]
     document is in; otherwise None. A bank line pays a document (pays) or is recorded by it (recorded_by, as a card
     payment is by its receipt). The document is looked up among all the client's rows: a card receipt can sit in
     another year than its line."""
-    if q.kind not in _ASKS or not q.row_ids:
+    if q.kind not in DOCUMENT_KINDS or not q.row_ids:
         return None
     rows = books.all_rows(store, client_id)
     tx = next((t for t in rows if t.id == q.row_ids[0]), None)
     if tx is None:
         return None
-    ref = tx.pays[0].ref if tx.pays else tx.recorded_by.ref if tx.recorded_by else None
+    ref = (tx.pays[0].ref if tx.pays else tx.recorded_by.ref if tx.recorded_by else
+           tx.documented_by.ref if tx.documented_by else None)
     paid = next((t for t in rows if ref and t.document_ref == ref), None)
     name = next((u["name"] for u in store.uploads(client_id) if paid is not None and u["id"] == paid.upload_id), None)
     return f"Matched to {name}" if name else None
@@ -179,7 +197,7 @@ def answer(store: MongoStore, records: AgentRecords, *, client_id: int, thread_i
         if decision.year_start not in years:   # the date moved the row to another year
             years.append(decision.year_start)
     elif isinstance(answer, NoDocumentAnswer):
-        if q.kind not in _ASKS:
+        if q.kind not in DOCUMENT_KINDS:
             raise InvalidInput("This question isn't asking for a document.")
         said = "I don't have it"
         records.set_question(q.id, "waiting", said)

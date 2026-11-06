@@ -301,3 +301,12 @@ def test_a_wanted_amount_finer_than_a_penny_is_not_a_change_forever(store, recor
     assert ledger_book.post(store, records, acme, YEAR_1).batch_id
     assert ledger_book.unposted_changes(store, records, acme, YEAR_1) == 0
     assert ledger_book.post(store, records, acme, YEAR_1).batch_id is None
+
+
+def test_a_cis_sale_posts_the_tax_withheld_to_cis_deducted(store, records, acme):
+    add_rows(store, acme, row(date=date(2025, 9, 20), direction="in", gross=D("3400.00"), account_code="4000",
+                              document_type="invoice", counterparty="Fenwick Builders Ltd", cis_deducted=D("600.00")))
+    result = ledger_book.post(store, records, acme, YEAR_1)
+    assert result.problems == []
+    assert lines_of(entries(records, acme)) == [("1100", D("3400.00"), ZERO), ("1104", D("600.00"), ZERO),
+                                                ("4000", ZERO, D("4000.00"))]
