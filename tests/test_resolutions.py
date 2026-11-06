@@ -671,7 +671,7 @@ def test_set_date_from_an_answer_is_recorded(mongo_store, records, nb, taxi):
     decision = set_date(mongo_store, records, client_id=nb.id, thread_id="t1", row_id=taxi,
                         date=dt.date(2026, 10, 16), question_id="q1")
     assert (decision.status, decision.actor, decision.action) == ("applied", "user", "set_date")
-    assert decision.rule.startswith("R1")
+    assert decision.rule.startswith("R1") and decision.reason == "Dated 16 Oct 2026 from the person's answer."
     assert decision.before == {str(taxi): {"date": None}} and decision.after == {str(taxi): {"date": "2026-10-16"}}
     assert saved(mongo_store, nb.id, taxi).date == dt.date(2026, 10, 16)
     again = set_date(mongo_store, records, client_id=nb.id, thread_id="t1", row_id=taxi,

@@ -529,7 +529,7 @@ def set_date(store: MongoStore, records: AgentRecords, *, client_id: int, thread
         return done
     draft = dict(client_id=client_id, thread_id=thread_id, actor="user", action="set_date", row_ids=[row_id],
                  year_start=b.years[year_index(b.client.first_year_end, date)].start, rule="R1 Date from the person",
-                 reason=f"The person answered question {question_id}: {long_date(date)}.")
+                 reason=f"Dated {long_date(date)} from the person's answer.")
     change = _Change(rule=draft["rule"], touched=[row_id], patches={row_id: {"date": date.isoformat()}})
     return _commit(store, records, b, change, key, draft)
 
