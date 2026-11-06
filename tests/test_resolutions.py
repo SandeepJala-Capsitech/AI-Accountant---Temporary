@@ -458,6 +458,17 @@ def test_vat_from_document_must_appear_in_text(mongo_store, records, pages, nb, 
     assert saved(mongo_store, nb.id, depot).vat == Decimal("3.00")
 
 
+def test_vat_printed_with_a_thousands_comma_is_found(mongo_store, records, pages, nb):
+    text = "Big Machines\nVAT 1,200.00\nTotal 7,200.00"
+    [big] = add(mongo_store, nb.id, pages, "big.pdf", text, row(
+        date=dt.date(2026, 10, 20), description="Machine", counterparty="Big Machines", gross=Decimal("7200.00"),
+        account_code="7504"))
+    decision = call(mongo_store, records, pages, nb, big,
+                    VatFromDocument(action="set_vat_from_document", vat=Decimal("1200.00")), "VAT 1,200.00",
+                    upload=nb.upload("big.pdf"))
+    assert decision.status == "applied" and saved(mongo_store, nb.id, big).vat == Decimal("1200.00")
+
+
 def test_vat_above_a_sixth_of_the_amount_is_refused(mongo_store, records, pages, nb, depot):
     pages[nb.upload("depot.pdf")] = [DEPOT + "\nVAT 3.60"]
     decision = call(mongo_store, records, pages, nb, depot,

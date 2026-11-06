@@ -284,7 +284,8 @@ def _vat_from_document(rows: dict[int, SavedRow], row_id: int, r: VatFromDocumen
     if not b.client.vat_registered or account is None or account.type in (AccountType.LIABILITY, AccountType.EQUITY):
         raise _Refused(f"No VAT is booked on {account.name if account else row.account_code} for {b.client.name}.")
     uploads = _uploads_of(rows, row, ("recorded_by", "pays"))
-    printed = re.compile(rf"(?<![\d.,]){re.escape(f'{r.vat:.2f}')}(?!\d)")
+    shapes = "|".join(re.escape(f) for f in dict.fromkeys((f"{r.vat:.2f}", f"{r.vat:,.2f}")))
+    printed = re.compile(rf"(?<![\d.,])(?:{shapes})(?!\d)")
     if not any(printed.search(text(u)) for u in uploads):
         raise _Refused(f"£{r.vat:.2f} isn't printed in the row's document.")
     return _Change(rule="R5 VAT from the document", touched=[row_id], patches={row_id: {"vat": f"{r.vat:.2f}"}})
