@@ -16,6 +16,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import queue
+import re
 import threading
 from dataclasses import dataclass
 from decimal import Decimal
@@ -50,6 +51,9 @@ logger = logging.getLogger(__name__)
 NEW_CHAT = "New chat"
 STOPPED_CALL = "Stopped before this finished."
 FAILED = "Something went wrong while I was working, so I stopped. The server log says what."
+LIMITED = "I stopped after too many steps, before finishing."
+# What the call limits' middleware says when it ends a run (langchain's own words), which a reload shows as LIMITED.
+_LIMIT_TEXT = re.compile(r"Model call limits exceeded: |(?:Tool|'[^']+' tool) call limit reached: ")
 ANSWER_WAIT = 120.0   # seconds an answer waits for the message running on its chat, before it is refused
 _DOCUMENT_KINDS = ("receipt_or_invoice", "vat_invoice")
 
@@ -204,7 +208,7 @@ def _messages(messages: list, turns: dict[str, TurnRecord]) -> list[ChatMessage]
                 replies = []
                 exchanges.append((m, replies))
         elif isinstance(m, AIMessage) and (said := m.text.strip()):   # not the whitespace sent around tool calls
-            replies.append(said)
+            replies.append(LIMITED if _LIMIT_TEXT.match(said) else said)
     shown: list[ChatMessage] = []
     for person, texts in exchanges:
         turn = kept.pop(person.id, None) if person else None

@@ -341,6 +341,17 @@ def test_a_reloaded_reply_has_no_blank_runs_from_whitespace_around_tool_calls():
                                                  ("assistant", "Let me look.\n\nDone.\n\nSecond part.")]
 
 
+@pytest.mark.parametrize("raw", ["Model call limits exceeded: run limit (30/30)",
+                                 "Tool call limit reached: run limit exceeded (81/80 calls).",
+                                 "'read_document' tool call limit reached: run limit exceeded (21/20 calls)."])
+def test_a_reloaded_turn_stopped_by_a_call_limit_says_so_in_plain_words(raw):
+    messages = [HumanMessage("Review the books.", id="m1"), AIMessage("Looking."), AIMessage(raw)]
+
+    shown = chat_module._messages(messages, {})
+
+    assert shown[-1].text == "Looking.\n\nI stopped after too many steps, before finishing."
+
+
 def test_a_card_shows_the_question_as_it_stands_now(make, client_id):
     api = make(say("The taxi has no date."), reads=[transactions_json(TAXI)])
     thread = new_thread(api, client_id)
