@@ -299,7 +299,10 @@ def add_manual(store: MongoStore, client_id: int, upload: ManualUpload) -> Ledge
         raise NotFound("That year was not found.")
     # A dated row goes by its date; an undated one waits in the year it was added to (today's, when none is said).
     ensure_open(client, [tx.date for tx in upload.transactions], upload.year_start or dt.date.today())
-    added = store.add_upload(client_id, upload.name.strip() or "Manual entry", upload.kind, upload.transactions,
+    # Only a decision of the agent excludes or supersedes a row, so a row sent by hand arrives without those marks.
+    fresh = [tx.model_copy(update={"excluded": False, "superseded_by": None, "decision_ids": []})
+             for tx in upload.transactions]
+    added = store.add_upload(client_id, upload.name.strip() or "Manual entry", upload.kind, fresh,
                              year_start=upload.year_start)
     return _books().ledger_of(store, client_id, _year_of(store, client, upload_id=added))
 
