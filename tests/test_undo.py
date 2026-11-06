@@ -6,8 +6,8 @@ import pytest
 
 from ledgersync import ledger, ledger_book, undo
 from ledgersync.agent.locks import ClientLocks
-from ledgersync.errors import InvalidInput
-from ledgersync.models import ChangeDraft, RowPatch
+from ledgersync.errors import InvalidInput, YearClosed
+from ledgersync.models import ChangeDraft, ClosedYear, RowPatch
 from test_resolutions import (ACTOR, YEAR, call, costco_split, keep_receipt, nb, pages, records,  # noqa: F401
                               saved)
 
@@ -90,6 +90,18 @@ def test_undo_puts_the_rows_back_and_records_a_reversal(mongo_store, records, lo
     assert any(c.kind == "decision_undone" and c.after == {"decision_id": d.id} for c in records.changes(nb.id))
     with pytest.raises(InvalidInput, match="undone already"):
         undo.undo_decision(mongo_store, records, locks, client_id=nb.id, decision_id=d.id)
+
+
+def test_undo_refuses_once_the_year_is_closed_and_changes_no_row(mongo_store, records, locks, pages, nb):
+    d = call(mongo_store, records, pages, nb, nb.sheet_costco, keep_receipt(nb), QUOTE)
+    assert d.status == "applied"
+    mongo_store.close_year(nb.id, ClosedYear(start=YEAR, end=dt.date(2027, 3, 31), closed_at="2027-04-30T00:00:00",
+                                             closing={}))
+    rows = mongo_store.row_data(nb.id, [int(n) for n in d.before])
+    with pytest.raises(YearClosed):
+        undo.undo_decision(mongo_store, records, locks, client_id=nb.id, decision_id=d.id)
+    assert mongo_store.row_data(nb.id, [int(n) for n in d.before]) == rows
+    assert records.reversal_of(nb.id, d.id) is None
 
 
 @pytest.mark.parametrize("trigger", ["chat", "background"])
