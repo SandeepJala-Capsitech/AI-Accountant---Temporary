@@ -95,6 +95,11 @@ Each document's `.rows.json` holds its reading.
   is on £36.00; £22.00 has none".
 - **Inkwell:** read as one row, £30.22 on 7504, with **`vat: null`** (the reading missed the VAT line). It has
   `document_net` 25.18 and `document_total` 30.22. This is the demo's "VAT from an invoice".
+  - **With a model reading** (`run_agent_eval.py --read model`, or the app reading the PDF itself), the model reads
+    the VAT line: 5.04 in 16 of 16 reads, over 4 realistic layouts of this invoice (tried 2026-11-04). So R5 does
+    not come up there, and the eval scores the expected R5 as `already_in_reading`, not as a failure. R5 still runs
+    live with `--read rows` and in the scripted demo, which both use this `.rows.json`. The user chose to keep it
+    this way (2026-11-06) rather than restage it.
 - **The sheet's lines:** each is an `expense_claim` row with counterparty Priya Shah, owed on 2110.
 
 ## What the books show before the agent acts
