@@ -3,6 +3,7 @@ and the thread from the run's context, a tool error goes back to the model and t
 or loops ends the turn with an error event, and no tool can set a date."""
 import datetime as dt
 import json
+from contextlib import contextmanager
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,6 +22,7 @@ from helpers import add_rows, row
 from ledgersync import ledger_book
 from ledgersync.agent import AgentDeps, ChatContext, ChatEvent, build_agent, stream_turn
 from ledgersync.agent.llm import chat_model
+from ledgersync.agent.locks import ClientLocks
 from ledgersync.agent.prompt import SYSTEM_PROMPT
 from ledgersync.agent.run import _STOP
 from ledgersync.agent.tools import make_tools
@@ -860,3 +862,41 @@ def test_the_prompt_has_the_background_and_chat_passages():
             "what you did.") in SYSTEM_PROMPT
     assert ("At the start of a chat, if get_overview lists background reviews since the last chat, say in one line "
             "what they did.") in SYSTEM_PROMPT
+
+
+class RecordingLocks(ClientLocks):
+    """The client locks, noting each client held and whether the lock was still held while the block ran."""
+
+    def __init__(self):
+        super().__init__()
+        self.held: list[int] = []
+        self.inside: list[int] = []
+
+    @contextmanager
+    def hold(self, client_id: int):
+        with super().hold(client_id):
+            self.held.append(client_id)
+            self.inside.append(client_id)
+            yield
+        self.inside.remove(client_id)
+
+
+@pytest.mark.mongo
+def test_resolve_issue_and_close_question_work_under_the_client_lock(mongo_store, staples):
+    locks = RecordingLocks()
+    deps = AgentDeps(store=mongo_store, records=AgentRecords(mongo_store.db), blobs=GridFSBlobStore(mongo_store.db),
+                     locks=locks)
+    args = keep_the_receipt(mongo_store, staples)
+    q = agent_question(deps, staples, mongo_store.rows(staples)[0].id)
+    model = ScriptedChatModel(replies=[call("resolve_issue", **args),
+                                       call("close_question", question_id=q.id, reason="Answered."), say("Done.")])
+    agent = build_agent(SETTINGS, deps, model=model, checkpointer=InMemorySaver())
+
+    list(stream_turn(agent, background(staples, mode="suggest"), "Go."))
+
+    assert locks.held == [staples, staples] and locks.inside == []
+
+
+def test_agent_deps_have_their_own_client_locks_unless_given_one():
+    assert AgentDeps(store=None, records=None, blobs=None).locks is not AgentDeps(store=None, records=None,
+                                                                                    blobs=None).locks

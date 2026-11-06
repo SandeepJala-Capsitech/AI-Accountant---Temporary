@@ -486,6 +486,9 @@ class MongoStore:
                 raise NotFound("This row was not found.")
             rows = doc.get("rows", [])
             target = next(r for r in rows if r["id"] == row_id)
+            if target["data"].get("superseded_by") or target["data"].get("excluded"):
+                raise ChangedMeanwhile("The row was split or dropped while this split was being made, so it "
+                                       "wasn't saved.")
             upload = next((u for u in doc.get("uploads", []) if u["id"] == target["upload_id"]), {})
             if ids is None:
                 ids = (self._next_id("upload_id"), self._next_id("row_id", len(parts)) if parts else 0)

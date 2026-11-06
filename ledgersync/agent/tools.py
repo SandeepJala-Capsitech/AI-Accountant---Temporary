@@ -30,6 +30,8 @@ from ledgersync.records import AgentRecords
 from ledgersync.resolutions import Resolution, resolve
 from ledgersync.store_mongo import MongoStore
 
+from .locks import ClientLocks
+
 Family = Literal["date", "duplicate", "combined_vat", "conflict", "missing_vat", "documents", "other"]
 
 # The family of each issue code, as list_issues sorts them. The codes are those checks.py, matching.py,
@@ -104,6 +106,7 @@ class AgentDeps:
     blobs: BlobStore
     vision: Optional[Any] = None
     is_cancelled: Callable[[str], bool] = field(default=_never)
+    locks: ClientLocks = field(default_factory=ClientLocks)
 
 
 def upload_texts(deps: AgentDeps, client_id: int) -> Callable[[int], list[str]]:
@@ -370,10 +373,11 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
         why. Sent again once applied, it returns the same decision."""
         ctx = runtime.context
         _step(runtime, f"Checking row {row_id}…")
-        decision = resolve(store, records, client_id=ctx.client_id, thread_id=ctx.thread_id, actor=actor,
-                           row_id=row_id, resolution=resolution, evidence=evidence, reason=reason,
-                           texts=texts(ctx.client_id), trigger=ctx.trigger, review_id=ctx.review_id,
-                           suggest=ctx.mode == "suggest")
+        with deps.locks.hold(ctx.client_id):
+            decision = resolve(store, records, client_id=ctx.client_id, thread_id=ctx.thread_id, actor=actor,
+                               row_id=row_id, resolution=resolution, evidence=evidence, reason=reason,
+                               texts=texts(ctx.client_id), trigger=ctx.trigger, review_id=ctx.review_id,
+                               suggest=ctx.mode == "suggest")
         if decision.status == "suggested":
             _step(runtime, f"Row {row_id}: suggested {decision.rule}", "done")
             return _out({"decision_id": decision.id, "status": "suggested", "rule": decision.rule,
@@ -440,10 +444,11 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
         otherwise, saying why. Questions the rules ask can't be closed."""
         ctx = runtime.context
         _step(runtime, "Checking whether the question is answered…")
-        decision = questions.close(store, records, client_id=ctx.client_id, year_start=ctx.year_start,
-                                   question_id=question_id, reason=reason,
-                                   evidence=evidence, texts=texts(ctx.client_id), actor=actor, trigger=ctx.trigger,
-                                   review_id=ctx.review_id, suggest=ctx.mode == "suggest")
+        with deps.locks.hold(ctx.client_id):
+            decision = questions.close(store, records, client_id=ctx.client_id, year_start=ctx.year_start,
+                                       question_id=question_id, reason=reason,
+                                       evidence=evidence, texts=texts(ctx.client_id), actor=actor,
+                                       trigger=ctx.trigger, review_id=ctx.review_id, suggest=ctx.mode == "suggest")
         if decision.status == "refused":
             _step(runtime, "Left the question open", "failed", decision.reason)
             return {"status": "refused", "why": decision.reason}

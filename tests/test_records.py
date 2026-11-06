@@ -214,6 +214,16 @@ def test_add_split_supersedes_and_adds_parts(mongo_store, acme):
         "split", "cafe.pdf (split)", "", YEAR, 2)
 
 
+@pytest.mark.parametrize("flag", [{"superseded_by": "dec0"}, {"excluded": True}])
+def test_add_split_of_a_row_already_superseded_or_excluded_is_refused(mongo_store, acme, flag):
+    mongo_store.add_upload(acme, "cafe.pdf", "pdf", [lunch(**flag)], year_start=YEAR)
+    [original] = mongo_store.rows(acme)
+    before = mongo_store.revision(acme)
+    with pytest.raises(ChangedMeanwhile):
+        mongo_store.add_split(acme, original.id, [lunch()], "dec1")
+    assert mongo_store.revision(acme) == before and len(mongo_store.rows(acme)) == 1
+
+
 def test_add_split_moves_the_revision_once(mongo_store, acme):
     mongo_store.add_upload(acme, "cafe.pdf", "pdf", [lunch()], year_start=YEAR)
     row_id = mongo_store.rows(acme)[0].id

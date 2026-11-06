@@ -332,7 +332,7 @@ class Chat:
                     except ModelUnavailable as exc:
                         model, self.unavailable = _NoModel(message=exc.message), exc.message
                 deps = AgentDeps(store=self.store, records=records, blobs=self.blobs, vision=self.vision,
-                                 is_cancelled=self.runs.is_cancelled)
+                                 is_cancelled=self.runs.is_cancelled, locks=self.locks)
                 self._agent = build_agent(self.settings, deps, model=model)
             return self._agent
 
