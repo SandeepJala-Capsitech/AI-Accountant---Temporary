@@ -149,19 +149,20 @@ def _uploads_of(rows: dict[int, SavedRow], row: SavedRow, partners=_PARTNERS) ->
 
 def _paying_lines(rows: dict[int, SavedRow], doc: SavedRow) -> list[SavedRow]:
     """The bank lines matching would pair with the document as its payment: a statement row still in the books,
-    paying nothing and not set aside by a person, the same way, for exactly the document's total, dated on or after
-    it, and to the same payee by matching's own rule for the kind of document. A receipt takes a card line within a
-    few days whose name shares a word with the shop's (names_match, as the first pass of matching does); anything
-    else needs the line's counterparty to be surely the document's (same_payee), as matching does before it pays
-    automatically. Stricter than matching only where that errs towards asking."""
+    paying nothing or only this document, not set aside by a person or linked to another document, the same way,
+    for exactly the document's total, dated on or after it, and to the same payee by matching's own rule for the
+    kind of document. A receipt takes a card line within a few days whose name shares a word with the shop's
+    (names_match, as the first pass of matching does); anything else needs the line's counterparty to be surely
+    the document's (same_payee), as matching does before it pays automatically. Stricter than matching only where that errs towards asking."""
     total = doc.document_total or doc.gross
     if doc.date is None:
         return []
     receipt = doc.document_type == "receipt"
     found = []
     for line in rows.values():
-        if (line.document_type != "statement" or line.excluded or line.superseded_by or line.link is not None
-                or line.pays or line.direction != doc.direction or line.gross != total or line.date is None
+        if (line.document_type != "statement" or line.excluded or line.superseded_by
+                or (line.link is not None and doc.document_ref not in line.link)
+                or any(p.ref != doc.document_ref for p in line.pays) or line.direction != doc.direction or line.gross != total or line.date is None
                 or line.date < doc.date or (receipt and line.date - doc.date > CARD_DAYS)):
             continue
         if receipt:

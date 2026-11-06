@@ -328,6 +328,15 @@ def test_keep_one_refuses_to_drop_the_bank_line_that_pays_the_receipt_kept(mongo
     assert not saved(mongo_store, staples.id, staples.sheet).excluded
 
 
+def test_keep_one_refuses_to_drop_a_bank_line_already_paying_the_invoice_kept(mongo_store, records, pages, nb):
+    line, _ = bank_line(nb, mongo_store, pages, "30.22", dt.date(2026, 10, 12))
+    mongo_store.patch_row(nb.id, line, {"link": [saved(mongo_store, nb.id, nb.invoice).document_ref]})
+    keep = KeepOne(action="keep_one", keep_row_id=nb.invoice, drop_row_ids=[line])
+    decision = call(mongo_store, records, pages, nb, line, keep, "Total £30.22", upload=nb.upload("inkwell-invoice.pdf"))
+    assert decision.status == "refused" and "pays the invoice kept" in decision.reason
+    assert not saved(mongo_store, nb.id, line).excluded
+
+
 def test_keep_one_asked_on_the_bank_line_points_to_the_receipt_as_the_row(mongo_store, records, staples):
     # The booked_twice issue sits on the bank line, so the call is aimed at it: the refusal must not say to drop it.
     decision = staples_call(mongo_store, records, staples, staples.bank, [staples.sheet])
