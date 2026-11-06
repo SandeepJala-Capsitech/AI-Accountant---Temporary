@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { ApiError } from './api.ts'
 import {
-  answerQuestion, attentionHref, changedFields, effectLine, fileStatus, formatMoney, groupThreads, hasResult, looksLikeStatement, parseEvents,
+  agentDecisions, answerQuestion, attentionHref, changedFields, effectLine, fileStatus, formatMoney, groupThreads, hasResult, looksLikeStatement, parseEvents,
   questionControl, questionState, shouldPoll, readStatus, ruleBadge, retryFiles, shownAccounts, streamMessage, suspenseLabel, uploadForQuestion,
   withQuestion,
   type AnswerResult, type ChatEvent, type ChatThread, type Decision, type PostResult, type PostedTrialBalance, type Question,
@@ -264,4 +264,12 @@ test('a chat is polled only while a turn runs that this page did not send', () =
   assert.equal(shouldPoll({ running: true }, false), true)
   assert.equal(shouldPoll({ running: true }, true), false)
   assert.equal(shouldPoll({ running: false }, false), false)
+})
+
+test('agentDecisions leaves out a person\'s decisions, and says when none are loaded', () => {
+  const made = (id: string, actor: string) => ({ id, actor }) as Decision
+  const loaded = new Map([['a', made('a', 'agent:qwen')], ['u', made('u', 'user')], ['r', made('r', 'rules')]])
+  assert.deepEqual(agentDecisions(['a', 'u', 'r'], loaded)?.map(d => d.id), ['a', 'r'])
+  assert.deepEqual(agentDecisions(['u'], loaded), [])
+  assert.equal(agentDecisions(['x'], loaded), null)
 })

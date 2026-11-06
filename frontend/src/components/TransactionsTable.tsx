@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { clientDecisions, postedTrialBalance, type Issue } from '@/lib/api'
-import { changedFields, type Decision } from '@/lib/chat'
+import { agentDecisions, changedFields, type Decision } from '@/lib/chat'
 import { useClientYear } from '@/components/ClientYearContext'
 import type { Ledger, RowChange, SavedRow } from '@/lib/clients'
 import { DOCUMENT_TYPES, transactionCount } from '@/lib/clientRules'
@@ -203,14 +203,14 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
               const origin = `${uploads.get(row.upload_id) ?? ''} · ${DOCUMENT_TYPES[row.document_type ?? 'receipt'] ?? row.document_type}`
               const classes = [left || kindOf(row) === 'not booked' ? 'row-not-booked' : '',
                                check.cls === 'check-error' ? 'row-flag-error' : check.cls === 'check-warn' ? 'row-flag-warn' : '']
-              const touched = (row.decision_ids ?? []).flatMap(id => decisions.get(id) ?? [])
+              const touched = row.decision_ids?.length ? agentDecisions(row.decision_ids, decisions) : []
               return (
                 <tr key={row.id} className={classes.filter(Boolean).join(' ') || undefined}>
                   <td className="mono">{row.date ?? '—'}</td>
                   <td>
                     <span style={left ? { textDecoration: 'line-through' } : undefined}>{row.description}</span>
-                    {!!row.decision_ids?.length && (touched.length ? <AgentBadge decisions={touched} />
-                      : <span className="badge badge-accent">Agent</span>)}
+                    {touched === null ? <span className="badge badge-accent">Agent</span>
+                      : touched.length > 0 && <AgentBadge decisions={touched} />}
                     {left && <div className="row-status">{row.superseded_by ? 'Replaced' : 'Left out'}
                       {whyLeftOut(row) && `: ${whyLeftOut(row)}`}</div>}
                     {held.has(row.id) && <div className="row-status"><span className="badge badge-warn">Documentation required</span></div>}
