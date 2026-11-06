@@ -55,7 +55,11 @@ class ToolErrorsAsMessages(AgentMiddleware):
 
 class ModelErrorsAsUnavailable(AgentMiddleware):
     """Outside the retries: a model call that still fails raises ModelUnavailable with what went wrong, so the turn
-    ends saying the model isn't available."""
+    ends saying the model isn't available. The provider's key is blanked in what it says, in case an error echoes it."""
+
+    def __init__(self, api_key: str = ""):
+        super().__init__()
+        self._api_key = api_key
 
     def wrap_model_call(self, request, handler):
         try:
@@ -63,7 +67,10 @@ class ModelErrorsAsUnavailable(AgentMiddleware):
         except (GraphBubbleUp, LedgerSyncError):
             raise
         except Exception as exc:   # noqa: BLE001 - whatever the provider or its client raised
-            raise ModelUnavailable(str(exc).strip()[:300] or type(exc).__name__) from exc
+            said = str(exc).strip()
+            if self._api_key:   # blank first: shortening first could cut the key in half
+                said = said.replace(self._api_key, "***")
+            raise ModelUnavailable(said[:300] or type(exc).__name__) from exc
 
 
 class StopWhenCancelled(AgentMiddleware):

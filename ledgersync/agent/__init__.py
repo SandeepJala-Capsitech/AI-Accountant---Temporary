@@ -38,7 +38,7 @@ def build_agent(settings: Settings, deps: AgentDeps, *, model=None, checkpointer
         ToolCallLimitMiddleware(tool_name="read_document", run_limit=20),
         # The retries' last failure is raised (by default it would end the run as if the model had answered), and
         # the middleware outside them says the model is unavailable.
-        ModelErrorsAsUnavailable(),
+        ModelErrorsAsUnavailable(settings.api_key),
         ModelRetryMiddleware(max_retries=2, on_failure="error"),
         ToolErrorsAsMessages(),
     ]

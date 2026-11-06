@@ -915,3 +915,15 @@ def test_a_last_step_whose_arguments_are_not_json_ends_with_an_error():
                               "message": "My last step came out garbled, so I stopped. Send it again."}
 
 
+
+def test_the_key_is_blanked_in_the_error_a_failing_model_gives(monkeypatch):
+    monkeypatch.setattr(model_retry, "time", SimpleNamespace(sleep=lambda seconds: None))
+    key = "sk-or-v1-0123456789abcdef"
+    model = ScriptedChatModel(then=ConnectionError(f"401 for key {key} at the provider"))
+    agent = build_agent(Settings(openrouter_api_key=key),
+                        AgentDeps(store=None, records=None, blobs=None), model=model, checkpointer=InMemorySaver())
+
+    [error] = list(stream_turn(agent, context(), "Go."))
+
+    assert error.data["code"] == "model_unavailable"
+    assert key not in error.data["message"] and "401 for key *** at the provider" in error.data["message"]
