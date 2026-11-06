@@ -16,6 +16,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import queue
+import re
 import threading
 from dataclasses import dataclass
 from decimal import Decimal
@@ -50,6 +51,9 @@ logger = logging.getLogger(__name__)
 NEW_CHAT = "New chat"
 STOPPED_CALL = "Stopped before this finished."
 FAILED = "Something went wrong while I was working, so I stopped. The server log says what."
+LIMITED = "I stopped after too many steps, before finishing."
+# What the call limits' middleware says when it ends a run (langchain's own words), which a reload shows as LIMITED.
+_LIMIT_TEXT = re.compile(r"Model call limits exceeded: |(?:Tool|'[^']+' tool) call limit reached: ")
 ANSWER_WAIT = 120.0   # seconds an answer waits for the message running on its chat, before it is refused
 _DOCUMENT_KINDS = questions.DOCUMENT_KINDS
 
@@ -204,7 +208,7 @@ def _messages(messages: list, turns: dict[str, TurnRecord]) -> list[ChatMessage]
                 replies = []
                 exchanges.append((m, replies))
         elif isinstance(m, AIMessage) and (said := m.text.strip()):   # not the whitespace sent around tool calls
-            replies.append(said)
+            replies.append(LIMITED if _LIMIT_TEXT.match(said) else said)
     shown: list[ChatMessage] = []
     for person, texts in exchanges:
         turn = kept.pop(person.id, None) if person else None
@@ -268,7 +272,8 @@ def _mismatch(name: str, rows: list[dict], payment: Optional[Transaction]) -> st
     theirs = (f"{read.get('counterparty') or read['description']}, {_gbp(read.get('document_total') or read['gross'])}"
               if read else "nothing to pay")
     ours = f"{payment.counterparty or payment.description}, {_gbp(payment.gross)}" if payment else "the payment"
-    return f"Read {name}, but it doesn't match: {theirs} against {ours}."
+    return (f"Read {name}, but it doesn't match: {theirs} against {ours}. "
+            "It's saved and booked; remove it in Transactions if it isn't theirs.")
 
 
 def _until_done(events: queue.Queue) -> Iterator[ChatEvent]:
@@ -332,7 +337,7 @@ class Chat:
                     except ModelUnavailable as exc:
                         model, self.unavailable = _NoModel(message=exc.message), exc.message
                 deps = AgentDeps(store=self.store, records=records, blobs=self.blobs, vision=self.vision,
-                                 is_cancelled=self.runs.is_cancelled)
+                                 is_cancelled=self.runs.is_cancelled, locks=self.locks)
                 self._agent = build_agent(self.settings, deps, model=model)
             return self._agent
 

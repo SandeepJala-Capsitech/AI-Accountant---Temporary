@@ -3,6 +3,7 @@ a stored decision: the log only grows. An undo is a decision of its own that rev
 suggestion is a new applied decision, and the change record says which suggestion it came from."""
 from __future__ import annotations
 
+import datetime as dt
 import logging
 from decimal import Decimal, InvalidOperation
 from typing import Optional
@@ -12,6 +13,7 @@ from pydantic import TypeAdapter
 from . import questions, resolutions, upkeep
 from .agent.locks import ClientLocks
 from .errors import InvalidInput
+from .ledger import ensure_open
 from .models import ChangeDraft, Decision, DecisionDraft
 from .records import AgentRecords
 from .resolutions import Resolution, Texts
@@ -106,6 +108,10 @@ def _undo_rows(store: MongoStore, records: AgentRecords, locks: ClientLocks, cli
     """Puts back the rows a decision changed (and removes the parts it made), and records the reversal."""
     with locks.hold(client_id):
         rows = {r.id: r.tx for r in store.rows(client_id)}
+        # A closed year's rows are locked: neither the rows as they are nor the dates they would go back to.
+        days = [rows[int(n)].date for n in d.before if n.isdigit() and int(n) in rows]
+        days += [dt.date.fromisoformat(v["date"]) for v in d.before.values() if isinstance(v, dict) and v.get("date")]
+        ensure_open(store.get_client(client_id), days, d.year_start)
         for n, wanted in d.after.items():
             tx = rows.get(int(n)) if n.isdigit() else None
             now = tx.model_dump(mode="json") if tx else {}

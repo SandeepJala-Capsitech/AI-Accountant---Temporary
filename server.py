@@ -641,7 +641,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
     def apply_decision(client_id: int, decision_id: str, x_ledgersync: Optional[str] = Header(None)):
         from_our_pages(x_ledgersync)
         store.get_client(client_id)
-        deps = AgentDeps(store=store, records=chat.records, blobs=blobs, vision=model_client)
+        deps = AgentDeps(store=store, records=chat.records, blobs=blobs, vision=model_client, locks=chat.locks)
         return undo.apply_suggestion(store, chat.records, chat.locks, client_id=client_id, decision_id=decision_id,
                                      texts=upload_texts(deps, client_id), wait=settings.review_wait_seconds)
 

@@ -107,6 +107,7 @@ def stream_turn(agent, ctx: ChatContext, text: str, *, message_id: Optional[str]
     config = {"configurable": {"thread_id": ctx.thread_id}, "recursion_limit": RECURSION_LIMIT}
     steps: dict[str, dict] = {}
     limited = False
+    garbled = False   # whether the last model message only had tool calls whose arguments weren't JSON
     reply, last = _Reply(), None   # the reply so far, and the id of the model call it last came from
     try:
         for mode, chunk in agent.stream({"messages": [HumanMessage(content=text, id=message_id)]}, config,
@@ -133,6 +134,9 @@ def stream_turn(agent, ctx: ChatContext, text: str, *, message_id: Optional[str]
                             if isinstance(result, ToolMessage) and step and step["state"] == "running":
                                 steps[step["id"]] = _finished(step, result)
                                 yield ChatEvent("step", steps[step["id"]])
+                    elif node == "model":
+                        for made in (m for m in messages if isinstance(m, AIMessage)):
+                            garbled = bool(made.invalid_tool_calls) and not made.tool_calls and not made.text.strip()
                     elif node.startswith(_LIMITS) and any(isinstance(m, AIMessage) for m in messages):
                         limited = True
                     elif node == _STOP:
@@ -144,6 +148,9 @@ def stream_turn(agent, ctx: ChatContext, text: str, *, message_id: Optional[str]
         limited = True
     except Exception as exc:   # noqa: BLE001 - every failure ends the turn with an error event
         yield _failure(exc)
+        return
+    if garbled and not reply.sent and not limited:
+        yield _error("agent_failed", "My last step came out garbled, so I stopped. Send it again.")
         return
     if limited:
         yield _error("loop_limit", f"Stopped after {len(steps)} steps, before finishing.", steps=len(steps))

@@ -254,6 +254,14 @@ def test_a_manual_entry_is_saved_as_its_own_upload(store):
         ledger.add_manual(store, client.id, ManualUpload(transactions=[]))
 
 
+def test_a_row_added_by_hand_is_saved_without_the_marks_only_a_decision_sets(store):
+    client = store.create_client(CUBE)
+    ledger.add_manual(store, client.id, ManualUpload(transactions=[
+        row(document_type="receipt", method="user", excluded=True, superseded_by="dec1", decision_ids=["dec1"])]))
+    [saved] = store.rows(client.id)
+    assert (saved.tx.excluded, saved.tx.superseded_by, saved.tx.decision_ids) == (False, None, [])
+
+
 @pytest.mark.parametrize("code", ["9999", "3260"])   # not in the chart; Drawings, not for a limited company
 def test_a_row_added_by_hand_needs_an_account_the_client_can_use(store, code):
     # Rows sent to the API by hand were saved with any account, and one not in the chart blocked the trial balance.

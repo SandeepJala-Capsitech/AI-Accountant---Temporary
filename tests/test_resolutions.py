@@ -328,6 +328,15 @@ def test_keep_one_refuses_to_drop_the_bank_line_that_pays_the_receipt_kept(mongo
     assert not saved(mongo_store, staples.id, staples.sheet).excluded
 
 
+def test_keep_one_refuses_to_drop_a_bank_line_already_paying_the_invoice_kept(mongo_store, records, pages, nb):
+    line, _ = bank_line(nb, mongo_store, pages, "30.22", dt.date(2026, 10, 12))
+    mongo_store.patch_row(nb.id, line, {"link": [saved(mongo_store, nb.id, nb.invoice).document_ref]})
+    keep = KeepOne(action="keep_one", keep_row_id=nb.invoice, drop_row_ids=[line])
+    decision = call(mongo_store, records, pages, nb, line, keep, "Total £30.22", upload=nb.upload("inkwell-invoice.pdf"))
+    assert decision.status == "refused" and "pays the invoice kept" in decision.reason
+    assert not saved(mongo_store, nb.id, line).excluded
+
+
 def test_keep_one_asked_on_the_bank_line_points_to_the_receipt_as_the_row(mongo_store, records, staples):
     # The booked_twice issue sits on the bank line, so the call is aimed at it: the refusal must not say to drop it.
     decision = staples_call(mongo_store, records, staples, staples.bank, [staples.sheet])
@@ -456,6 +465,17 @@ def test_vat_from_document_must_appear_in_text(mongo_store, records, pages, nb, 
     assert applied.status == "applied" and applied.rule.startswith("R5")
     assert applied.before == {str(depot): {"vat": None}} and applied.after == {str(depot): {"vat": "3.00"}}
     assert saved(mongo_store, nb.id, depot).vat == Decimal("3.00")
+
+
+def test_vat_printed_with_a_thousands_comma_is_found(mongo_store, records, pages, nb):
+    text = "Big Machines\nVAT 1,200.00\nTotal 7,200.00"
+    [big] = add(mongo_store, nb.id, pages, "big.pdf", text, row(
+        date=dt.date(2026, 10, 20), description="Machine", counterparty="Big Machines", gross=Decimal("7200.00"),
+        account_code="7504"))
+    decision = call(mongo_store, records, pages, nb, big,
+                    VatFromDocument(action="set_vat_from_document", vat=Decimal("1200.00")), "VAT 1,200.00",
+                    upload=nb.upload("big.pdf"))
+    assert decision.status == "applied" and saved(mongo_store, nb.id, big).vat == Decimal("1200.00")
 
 
 def test_vat_above_a_sixth_of_the_amount_is_refused(mongo_store, records, pages, nb, depot):
@@ -660,7 +680,7 @@ def test_set_date_from_an_answer_is_recorded(mongo_store, records, nb, taxi):
     decision = set_date(mongo_store, records, client_id=nb.id, thread_id="t1", row_id=taxi,
                         date=dt.date(2026, 10, 16), question_id="q1")
     assert (decision.status, decision.actor, decision.action) == ("applied", "user", "set_date")
-    assert decision.rule.startswith("R1")
+    assert decision.rule.startswith("R1") and decision.reason == "Dated 16 Oct 2026 from the person's answer."
     assert decision.before == {str(taxi): {"date": None}} and decision.after == {str(taxi): {"date": "2026-10-16"}}
     assert saved(mongo_store, nb.id, taxi).date == dt.date(2026, 10, 16)
     again = set_date(mongo_store, records, client_id=nb.id, thread_id="t1", row_id=taxi,

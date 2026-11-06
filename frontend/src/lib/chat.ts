@@ -234,6 +234,14 @@ const fieldValue = (field: string, value: unknown): string => {
 
 const fieldName = (field: string) => FIELD_NAMES[field] ?? field.charAt(0).toUpperCase() + field.slice(1).replace(/_/g, ' ')
 
+// The decisions behind a row's Agent badge: those of its decision ids that are loaded and weren't a person's (an undo
+// is the person's). null when none of them is loaded, which the badge shows without a popover; [] when they are all
+// a person's, which shows no badge.
+export function agentDecisions(ids: string[], loaded: Map<string, Decision>): Decision[] | null {
+  const found = ids.flatMap(id => loaded.get(id) ?? [])
+  return found.length ? found.filter(d => d.actor !== 'user') : null
+}
+
 // A decision's before → after, one line per changed field of each row, in words.
 export function changedFields(d: Decision): { row: number; field: string; before: string; after: string }[] {
   const rows = [...new Set([...Object.keys(d.before), ...Object.keys(d.after)])].sort((a, b) => Number(a) - Number(b))
