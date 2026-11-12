@@ -16,6 +16,7 @@ from . import years as yr
 from .accounts import (BY_CODE, CREDITORS, DEBTORS, DIRECTORS_LOAN, LOANS, PURCHASE_VAT, SALES_VAT, SUSPENSE,
                        AccountType, reserve_for)
 from .checks import booked, issue, long_date, normalise, registered_on
+from .coding import usual_accounts, unusual_account_text
 from .duplicates import WINDOW, possible_duplicates, renumbered_invoices
 from .errors import InvalidInput, InvalidTransactions, NotFound
 from .evidence_rules import document_rule, journal_with_rule
@@ -259,6 +260,15 @@ def _saved_rows(b: _Books, n: Optional[int]) -> tuple[list[SavedRow], dict[int, 
                     "it, leave that one out; if they are two invoices, keep both.")
             ready[k] = ready[k].model_copy(update={"issues": [*ready[k].issues,
                                                              issue("possible_duplicate", said, related=earlier)]})
+    # A bill on another account than its supplier's other bills went to, in this year or any other: said on the
+    # row, and the rules suggest the usual account (resolutions.suggest_account_changes). A closed year's rows count
+    # as the supplier's history but are not flagged: they can't be changed.
+    open_rows = [not b.years[p].closed and "unusual_account" not in tx.accepted for p, tx in zip(b.placed, ready)]
+    for k, usual in enumerate(usual_accounts(ready, flag=open_rows)):
+        if usual is not None:
+            ready[k] = ready[k].model_copy(update={"issues": [
+                *ready[k].issues, issue("unusual_account", unusual_account_text(ready[k], usual),
+                                        related=usual.related)]})
     # The rows each issue is about, from their place in the rows matched to their row ids.
     rows = [SavedRow(**{**tx.model_dump(), "issues": [
                          {**i.model_dump(), "related": [b.stored[p].id for p in i.related]} for i in tx.issues]},

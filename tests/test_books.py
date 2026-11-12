@@ -744,3 +744,50 @@ def test_a_journal_far_ahead_or_for_billions_is_refused(store, acme):
     with pytest.raises(InvalidInput, match="too large"):
         ledger.add_manual(store, acme, entry(gross=D("99999999999.99")))
     ledger.add_manual(store, acme, entry())
+
+
+# ─── A bill coded away from its supplier's usual account ───────────────────────
+
+def vodafone(n, code, first=date(2025, 4, 20), **more):
+    """n Vodafone Ltd invoices of £86.40 on the account, a month apart from `first`, each its own document."""
+    return [row(**{**dict(document_type="invoice", counterparty="Vodafone Ltd", description="Vodafone bill",
+                          gross=D("86.40"), account_code=code, document_ref=f"voda-{code}-{first}-{k}",
+                          date=date(first.year + (first.month - 1 + k) // 12, (first.month - 1 + k) % 12 + 1, first.day)),
+                   **more}) for k in range(n)]
+
+
+def test_a_bill_on_the_wrong_account_says_the_usual_one(store, acme):
+    add_rows(store, acme, *vodafone(11, "7502"), *vodafone(1, "7400", first=date(2026, 3, 20)))
+    rows = books.ledger(store, acme, YEAR_1).transactions
+    usual, odd = rows[:11], rows[11]
+    assert not any(i.code == "unusual_account" for r in usual for i in r.issues)
+    [said] = [i for i in odd.issues if i.code == "unusual_account"]
+    assert said.severity == "warning"
+    assert said.message == ("Coded to 7400 Travel. The other 11 bills from Vodafone Ltd went to "
+                            "7502 Telephone and Internet.")
+    assert len(said.related) == 5 and set(said.related) <= {r.id for r in usual}
+
+
+def test_most_but_not_all_of_the_other_bills_says_how_many(store, acme):
+    add_rows(store, acme, *vodafone(4, "7502"), *vodafone(1, "7600", first=date(2025, 9, 20)),
+             *vodafone(1, "7400", first=date(2025, 10, 20)))
+    odd = books.ledger(store, acme, YEAR_1).transactions[5]
+    [said] = [i for i in odd.issues if i.code == "unusual_account"]
+    assert said.message == ("Coded to 7400 Travel. 4 of the other 5 bills from Vodafone Ltd went to "
+                            "7502 Telephone and Internet.")
+
+
+def test_an_accepted_unusual_account_is_quiet(store, acme):
+    add_rows(store, acme, *vodafone(11, "7502"),
+             *vodafone(1, "7400", first=date(2026, 3, 20), accepted=["unusual_account"]))
+    assert not any(i.code == "unusual_account" for r in books.ledger(store, acme, YEAR_1).transactions for i in r.issues)
+
+
+def test_a_closed_years_row_is_history_but_never_flagged(store, acme):
+    add_rows(store, acme, *vodafone(4, "7502"), *vodafone(1, "7400", first=date(2025, 9, 20)))
+    add_rows(store, acme, *vodafone(1, "7400", first=date(2026, 5, 20)))
+    books.close(store, acme, YEAR_1)
+    assert not any(i.code == "unusual_account" for r in books.ledger(store, acme, YEAR_1).transactions for i in r.issues)
+    [later] = books.ledger(store, acme, YEAR_2).transactions
+    [said] = [i for i in later.issues if i.code == "unusual_account"]
+    assert said.message.startswith("Coded to 7400 Travel. 4 of the other 5 bills")

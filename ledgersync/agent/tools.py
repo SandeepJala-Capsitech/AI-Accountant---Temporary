@@ -32,7 +32,7 @@ from ledgersync.store_mongo import MongoStore
 
 from .locks import ClientLocks
 
-Family = Literal["date", "duplicate", "combined_vat", "conflict", "missing_vat", "documents", "other"]
+Family = Literal["date", "duplicate", "combined_vat", "conflict", "missing_vat", "documents", "coding", "other"]
 
 # The family of each issue code, as list_issues sorts them. The codes are those checks.py, matching.py,
 # statements.py, file_dates.py and adapter.py give; any code not here is "other". A row the document rules hold in
@@ -53,8 +53,10 @@ FAMILIES: dict[str, Family] = {
     # A document that isn't a transaction, or that is missing.
     "not_booked": "documents", "open_document": "documents", "no_payroll": "documents",
     "needs_document": "documents",
-    # The reader found no account for a purchase and parked it in Suspense: a question about the account.
-    "account_unclear": "other",
+    # The account a purchase is on: none found by the reader (parked in Suspense), another than its supplier's
+    # usual one, or a cost account for equipment and a fixed asset for something small.
+    "account_unclear": "coding", "unusual_account": "coding", "asset_check": "coding", "should_be_asset": "coding",
+    "small_asset": "coding",
 }
 
 # The one slip live runs made in evidence sent as a JSON string: a stray quote after the integer upload id.
@@ -264,7 +266,8 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
         """The year's rows that need a look, by row id: each with its issues (code, family, message and the rows it
         names) and, if the document rules hold it in Suspense, the document it needs. Families: date, duplicate,
         combined_vat (one VAT total over items at different rates), conflict (two records disagree), missing_vat (VAT
-        on the document but not booked), documents (a document missing, or held in Suspense for one), other."""
+        on the document but not booked), documents (a document missing, or held in Suspense for one), coding (the
+        account a purchase is on), other."""
         ctx = runtime.context
         _step(runtime, "Listing what needs a look…")
         built = books.ledger(store, ctx.client_id, ctx.year_start)

@@ -224,6 +224,7 @@ const ISSUE_TITLES: Record<string, string> = {
   addressed_to: 'Addressed to someone else', refund_of_overpayment: 'Refund of an overpayment',
   future_date: 'Dated in a later year', journal_note: 'Journal', prepayment: 'Paid ahead?', reversed: 'Reversed',
   not_on_statement: 'Not on the statement', till_takings: 'Till takings',
+  unusual_account: "Not this supplier's usual account", asset_check: 'Checked for equipment', should_be_asset: 'Equipment?',
   vat_not_booked: 'VAT not booked', needs_document: 'Needs its document', booked_without_document: 'Booked without a receipt', claimed_less: 'Claimed less than its bill', total_worked_out: 'Total not printed',
   card_credit: 'Money in on a card', vat_unclaimed: 'VAT not reclaimed', on_account: 'Payment on account',
   payroll_person: 'Check this person\'s pay', cis_deducted: 'CIS deducted', payout_report: 'Payout report needed', personal: 'Looks personal', subtotal_only: 'Total not printed',
@@ -268,7 +269,7 @@ export const canBeApart = (code: string) => MAY_BE_ONE.has(code)
 
 // Warnings that are a matter of judgement, which a person who has looked can answer It's fine (checks.ACCEPTABLE).
 const ACCEPTABLE = new Set(['no_vat_number', 'vat_over_rate', 'small_asset', 'meal_check', 'addressed_to', 'future_date',
-                            'file_date'])
+                            'file_date', 'unusual_account', 'asset_check', 'should_be_asset'])
 export const canBeAccepted = (code: string) => ACCEPTABLE.has(code)
 export const acceptChange = (tx: Transaction, code: string): RowChange =>
   ({ accepted: [...new Set([...(tx.accepted ?? []), code])] })

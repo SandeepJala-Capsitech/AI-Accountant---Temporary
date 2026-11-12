@@ -75,3 +75,21 @@ def usual_accounts(rows: list[Transaction], *, flag: list[bool]) -> list[Optiona
                            key=lambda j: (rows[j].date or dt.date.min, j), reverse=True)
             found[k] = Usual(code=code, others=len(seen), on_usual=on_usual, related=usual[:RELATED])
     return found
+
+
+def _named(code: str) -> str:
+    return f"{code} {BY_CODE[code].name}"
+
+
+def usual_text(tx: Transaction, usual: Usual) -> str:
+    """Where the supplier's other bills went: "The other 11 bills from Vodafone Ltd went to 7502 Telephone and
+    Internet." The reason a suggested account change gives."""
+    who = (tx.counterparty or "").strip()
+    count = (f"The other {usual.others} bills" if usual.on_usual == usual.others
+             else f"{usual.on_usual} of the other {usual.others} bills")
+    return f"{count} from {who} went to {_named(usual.code)}."
+
+
+def unusual_account_text(tx: Transaction, usual: Usual) -> str:
+    """What the row says: the account it is on, then where the supplier's other bills went."""
+    return f"Coded to {_named(tx.account_code)}. {usual_text(tx, usual)}"

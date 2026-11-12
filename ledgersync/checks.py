@@ -35,7 +35,7 @@ _DERIVED = {"unknown_account", "same_account", "non_gbp_currency", "vat_not_appl
 # Warnings that are a matter of judgement: a person who has looked can say one is fine (Transaction.accepted), and it
 # is not raised on that row again.
 ACCEPTABLE = frozenset({"no_vat_number", "vat_over_rate", "small_asset", "meal_check", "addressed_to", "future_date",
-                        "file_date"})
+                        "file_date", "unusual_account", "asset_check", "should_be_asset"})
 # Words that say a cost was paid for time ahead, and the accounts whose bills usually are (insurance).
 _AHEAD = re.compile(r"\b(annual|yearly|12[- ]months?|per annum|in advance|quarter(ly)? rent)\b", re.IGNORECASE)
 _PAID_AHEAD = frozenset({"8204", "7303"})
