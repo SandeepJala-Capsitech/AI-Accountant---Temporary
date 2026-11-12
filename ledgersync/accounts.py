@@ -183,6 +183,11 @@ def pays_cards(own: tuple[str, ...], besides: Optional[str] = None) -> Optional[
                 next((c for c in own if c not in CARDS and c != besides), None))
 # The VAT accounts, which the trial balance lists last, after every other account.
 VAT_ACCOUNTS = frozenset({SALES_VAT, PURCHASE_VAT, VAT_LIABILITY})
+# Equipment kept for use, which a person or the AI can move a purchase to (not vehicles: a large payment to a garage
+# is far more often a repair), and the cost accounts equipment ends up on by mistake: a large purchase on one of
+# these is checked (checks.asset_check). Purchases is left out: stock is bought in large amounts all the time.
+FIXED_ASSETS = frozenset({"0020", "0030", "0040"})
+ASSET_CANDIDATES = frozenset({"7504", "7800", "7700", "7502"})
 # Picked by the ledger, never chosen for a row: the VAT control accounts (the ledger splits VAT itself), the
 # accounts for what is owed (from the document type), and the accounts only year-end work posts to (depreciation,
 # accruals, prepayments, the tax charge and where profit closes). The bank accounts, 1200 too, are the other side of

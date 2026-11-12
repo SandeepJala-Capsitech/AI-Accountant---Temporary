@@ -7,7 +7,7 @@ import re
 from decimal import Decimal
 from typing import Optional, Sequence
 
-from .accounts import (BY_CODE, CARDS, CAPITAL, CREDITORS, DEBTORS, DIRECTORS_LOAN, DIVIDENDS, DRAWINGS, HOTELS, SHARES,
+from .accounts import (ASSET_CANDIDATES, BY_CODE, CARDS, CAPITAL, CREDITORS, DEBTORS, DIRECTORS_LOAN, DIVIDENDS, DRAWINGS, HOTELS, SHARES,
                        NET_WAGES, PAYE, PENSION, PURCHASE_VAT, SALES_VAT, STAFF_EXPENSES, SUSPENSE, WAGES, Account,
                        AccountType)
 from .models import NOT_TRANSACTIONS, BusinessSettings, Direction, Issue, Transaction
@@ -31,7 +31,8 @@ _DERIVED = {"unknown_account", "same_account", "non_gbp_currency", "vat_not_appl
             "payroll_owed_to", "before_first_year", "vat_not_booked", "needs_document", "total_worked_out",
             "cis_deducted", "personal", "possible_duplicate", "booked_without_document", "card_credit", "vat_unclaimed",
             "on_account", "no_vat_number", "vat_over_rate", "reverse_charge", "before_vat_registration", "small_asset",
-            "meal_check", "future_date", "journal_note", "prepayment"} | MATCHING_ISSUES | STATEMENT_ISSUES
+            "meal_check", "future_date", "journal_note", "prepayment", "unusual_account", "asset_check",
+            "should_be_asset"} | MATCHING_ISSUES | STATEMENT_ISSUES
 # Warnings that are a matter of judgement: a person who has looked can say one is fine (Transaction.accepted), and it
 # is not raised on that row again.
 ACCEPTABLE = frozenset({"no_vat_number", "vat_over_rate", "small_asset", "meal_check", "addressed_to", "future_date",
@@ -41,6 +42,7 @@ _AHEAD = re.compile(r"\b(annual|yearly|12[- ]months?|per annum|in advance|quarte
 _PAID_AHEAD = frozenset({"8204", "7303"})
 PREPAYMENT_FROM = Decimal("300.00")   # an insurance bill from this much is asked about
 SMALL_ASSET = Decimal("100.00")   # equipment costing less is usually written off as a cost, not kept as an asset
+LARGE_COST = Decimal("500.00")    # a purchase of this much on a cost account may be equipment to keep as an asset
 MEAL_CHECK = Decimal("50.00")     # a meal from this much is asked about: with guests it is entertainment
 SUBSISTENCE, ENTERTAINMENT = "7406", "7403"
 
@@ -65,6 +67,12 @@ _NOT_TRANSACTION_NAMES = {
     "finance_agreement": "a finance or loan agreement",
     "other": "a document that is not a transaction",
 }
+
+
+def is_asset_candidate(tx: Transaction) -> bool:
+    """Whether a normalised row is a large purchase on a cost account that may be equipment (it carries the
+    asset_check note): the one case an account change to a fixed asset is allowed."""
+    return any(i.code == "asset_check" for i in tx.issues)
 
 
 def booked(tx: Transaction) -> bool:
@@ -355,6 +363,11 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
         issues.append(issue("small_asset", f"£{tx.gross:,.2f} is small to keep as {account.name}: an item under "
                                            f"£{SMALL_ASSET:,.0f} is usually written off as a cost. Recode it to the "
                                            "cost account of its kind, unless it is part of a bigger purchase."))
+    if (purchase and not mixed and tx.account_code in ASSET_CANDIDATES and tx.gross >= LARGE_COST
+            and (tx.document_total is None or tx.document_total >= LARGE_COST)):
+        # Only a note: whether it is equipment takes reading the document, which the coding specialist does.
+        issues.append(issue("asset_check", f"£{tx.gross:,.2f} on {account.code} {account.name}: checked for equipment "
+                                           "that should be kept as an asset.", "info"))
     if (tx.account_code == SUBSISTENCE and not journal and tx.direction == Direction.OUT and tx.gross >= MEAL_CHECK
             and tx.document_type in ("receipt", "invoice", "expense_claim")):
         issues.append(issue("meal_check", f"A meal of £{tx.gross:,.2f} on Subsistence: with clients or other guests it "

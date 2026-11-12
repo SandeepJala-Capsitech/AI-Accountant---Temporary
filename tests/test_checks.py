@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from helpers import SETTINGS as HELPER_SETTINGS, net, normalise_and_match, only_issue, row
 
 from ledgersync.accounts import BANK, CHART
-from ledgersync.checks import booked, normalise
+from ledgersync.checks import booked, is_asset_candidate, normalise
 from ledgersync.models import BusinessSettings, Issue, Transaction
 from ledgersync.posting import trial_balance
 from ledgersync.rows import saved_form
@@ -605,3 +605,53 @@ def test_a_cost_paid_ahead_is_pointed_out_once_the_year_end_is_known():
 def test_a_mixed_rate_note_doesnt_call_zero_rated_goods_a_tip():
     t = normalise(tx(gross="236.50", vat="24.00", account="5000", supplier_vat_number="GB1"), REGISTERED)
     assert "zero-rated or exempt items" in only_issue(t, "vat_rate_mismatch").message
+
+
+# ─── A large purchase on a cost account: checked for equipment ─────────────────
+
+def big(gross="1800.00", account="7504", **kw):
+    return normalise(tx(gross=gross, account=account, **{"document_type": "invoice", "document_total": gross, **kw}),
+                     REGISTERED)
+
+
+def test_a_large_purchase_on_a_candidate_account_is_marked():
+    said = only_issue(big(), "asset_check")
+    assert said.severity == "info"
+    assert said.message == "£1,800.00 on 7504 Office Stationery: checked for equipment that should be kept as an asset."
+    assert is_asset_candidate(big())
+
+
+def test_under_the_figure_is_not_marked():
+    assert "asset_check" not in dict(codes(big("499.99")))
+    assert "asset_check" in dict(codes(big("500.00")))
+
+
+def test_rent_and_stock_are_not_marked():
+    assert "asset_check" not in dict(codes(big(account="7100")))
+    assert "asset_check" not in dict(codes(big(account="5000")))
+
+
+def test_a_line_of_a_bigger_document_goes_by_the_line():
+    assert "asset_check" not in dict(codes(big("120.00", document_total="1800.00")))
+
+
+def test_a_document_with_no_total_goes_by_the_row():
+    assert "asset_check" in dict(codes(big(document_total=None)))
+
+
+def test_mixed_items_is_not_marked():
+    mixed = big(issues=[Issue(code="mixed_items", message="m", severity="warning")])
+    assert "asset_check" not in dict(codes(mixed)) and not is_asset_candidate(mixed)
+
+
+def test_a_bank_line_is_not_marked():
+    assert "asset_check" not in dict(codes(big(document_type="statement", document_total=None)))
+
+
+def test_money_in_is_not_marked():
+    assert "asset_check" not in dict(codes(big(direction="in")))
+
+
+def test_an_accepted_candidate_is_not_marked():
+    quiet = big(accepted=["asset_check"])
+    assert "asset_check" not in dict(codes(quiet)) and not is_asset_candidate(quiet)
