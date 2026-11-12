@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from ledgersync import (accounts, adapter, books, demo, folder, intake, ledger, ledger_book, pipeline, posting, questions,
-                        reviews, undo, upkeep)
+                        resolutions, reviews, undo, upkeep)
 from ledgersync.agent.tools import AgentDeps, upload_texts
 from ledgersync.agent.chat import AnswerResult, Chat, ChatFile, NewThread, ThreadDetail, ThreadPatch
 from ledgersync.blobs import BlobStore, GridFSBlobStore
@@ -412,6 +412,12 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
                  period_end: Optional[dt.date] = None):
         """The VAT return boxes for a period of the year, as a guide (books.vat_figures)."""
         return books.vat_figures(store, client_id, start, period_start, period_end)
+
+    @app.get("/api/clients/{client_id}/years/{start}/suggestions", response_model=list[Decision])
+    def year_suggestions(client_id: int, start: dt.date):
+        """The year's suggestions a person can still apply: the review's, and the account changes the rules suggest."""
+        books.ledger(store, client_id, start)   # NotFound for a client or a year that isn't there
+        return resolutions.waiting_suggestions(store, chat.records, client_id=client_id, year_start=start)
 
     @app.get("/api/clients/{client_id}/years/{start}/invoices", response_model=list[InvoiceSummary])
     def year_invoices(client_id: int, start: dt.date):

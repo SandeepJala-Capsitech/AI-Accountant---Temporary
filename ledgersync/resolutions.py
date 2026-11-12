@@ -16,8 +16,9 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 from . import books
-from .accounts import BY_CODE, AccountType, choosable
+from .accounts import BY_CODE, FIXED_ASSETS, AccountType, choosable
 from .checks import long_date
+from .coding import Usual, usual_accounts, usual_text
 from .file_dates import date_in_name
 from .errors import InvalidInput, LedgerSyncError, NotFound
 from .ledger import bank_choices, ensure_open, require_active
@@ -73,7 +74,16 @@ class SetDate(BaseModel):
     source_row_id: Optional[int] = None   # another record of the same purchase that gives the date, if one does
 
 
-Resolution = Annotated[Union[KeepOne, UsePrimary, SplitVat, VatFromDocument, SetDate], Field(discriminator="action")]
+class ChangeAccount(BaseModel):
+    action: Literal["change_account"]
+    account_code: str
+
+
+# What the accountant agent may ask for, and, with the account change the rules suggest, everything a decision holds.
+AgentResolution = Annotated[Union[KeepOne, UsePrimary, SplitVat, VatFromDocument, SetDate],
+                            Field(discriminator="action")]
+Resolution = Annotated[Union[KeepOne, UsePrimary, SplitVat, VatFromDocument, SetDate, ChangeAccount],
+                       Field(discriminator="action")]
 
 # Issues that say two rows are one transaction recorded twice, and the matches that pair such rows.
 _DUPLICATE_ISSUES = {"duplicate_document", "booked_twice", "total_mismatch", "date_conflict", "possible_duplicate"}
@@ -392,10 +402,54 @@ def _date_from_record(rows: dict[int, SavedRow], row_id: int, r: SetDate, *, b, 
                    patches={row_id: {"date": r.date.isoformat()}})
 
 
+def usual_account_of(rows: dict[int, SavedRow], row_id: int) -> Optional[Usual]:
+    """Where the row's supplier's other bills went, when the row is on another account (coding.usual_accounts over
+    all the client's rows); None otherwise."""
+    order = list(rows)
+    return usual_accounts([rows[n] for n in order], flag=[n == row_id for n in order])[order.index(row_id)]
+
+
+def _change_account(rows: dict[int, SavedRow], row_id: int, r: ChangeAccount, *, evidence, **_) -> _Change:
+    """R6. A row's account changes only where a check says it is on the wrong one, and only to where that check
+    points: its supplier's usual account (unusual_account; worked out again from the books, so a suggestion made
+    before the other bills moved no longer holds), a fixed asset for a large purchase the document shows to be
+    equipment (asset_check; the item quoted from the document), or a cost account for something too small to keep as
+    an asset (small_asset). Nothing else on the row changes."""
+    row = rows[row_id]
+    _usable(row)
+    target = BY_CODE.get(r.account_code)
+    if target is None:
+        raise _Refused(f"{r.account_code} isn't an account.")
+    said = {i.code for i in row.issues}
+    usual = usual_account_of(rows, row_id) if "unusual_account" in said else None
+    if usual is not None and usual.code == target.code:
+        rule = "R6 Account changed"
+    elif "asset_check" in said and target.code in FIXED_ASSETS:
+        if not evidence:
+            raise _Refused("No evidence was cited.")
+        rule = "R6 Account changed"
+    elif "small_asset" in said and target.type == AccountType.EXPENSE:
+        rule = "R6 Account changed"
+    elif usual is not None:
+        raise _Refused(f"The usual account for {(row.counterparty or '').strip()} is {usual.code} "
+                       f"{BY_CODE[usual.code].name}.")
+    elif "asset_check" in said:
+        raise _Refused("Equipment kept for use goes to " + ", ".join(
+            f"{c} {BY_CODE[c].name}" for c in sorted(FIXED_ASSETS)[:-1]) + f" or {sorted(FIXED_ASSETS)[-1]} "
+            f"{BY_CODE[sorted(FIXED_ASSETS)[-1]].name}.")
+    elif "small_asset" in said:
+        raise _Refused("A small item goes to a cost account.")
+    else:
+        raise _Refused("Nothing says this row is on the wrong account.")
+    return _Change(rule=rule, touched=[row_id], patches={row_id: {"account_code": target.code}})
+
+
 _ACTIONS = {"keep_one": _keep_one, "use_primary": _use_primary, "split_vat": _split_vat,
-            "set_vat_from_document": _vat_from_document, "set_date": _date_from_record}
+            "set_vat_from_document": _vat_from_document, "set_date": _date_from_record,
+            "change_account": _change_account}
 _RULES = {"keep_one": "R2 Duplicate", "use_primary": "R4 Conflict", "split_vat": "R3 Mixed VAT",
-          "set_vat_from_document": "R5 VAT from the document", "set_date": "R1 Date from another record"}
+          "set_vat_from_document": "R5 VAT from the document", "set_date": "R1 Date from another record",
+          "change_account": "R6 Account changed"}
 
 
 def _named(row_id: int, resolution) -> list[int]:
@@ -549,7 +603,9 @@ def resolve(store: MongoStore, records: AgentRecords, *, client_id: int, thread_
     client's and holds one of the rows, a record matched with one, or (for the invoice or receipt kept) the bank
     line that pays it, each quote (four characters or more, spaces aside) is in the text of its upload whatever its
     spacing and case, and afterwards no row touched has a new error. Before those, a change a person undid is
-    refused, and so is a row a person changed when the background review asks (trigger="background"). suggest=True
+    refused, and so is a row a person changed when the background review asks (trigger="background"). An account
+    change (R6) needs no evidence where the books themselves show the account, and is only ever suggested unless a
+    person makes it (actor "user"). suggest=True
     records what would change as a suggested decision (kept with the resolution) and changes nothing; its key has
     "|suggested" after it, so applying it later isn't answered by it."""
     named = _named(row_id, resolution)
@@ -578,7 +634,9 @@ def resolve(store: MongoStore, records: AgentRecords, *, client_id: int, thread_
     try:
         if records.is_rejected(client_id, key):
             raise _Refused("A person undid this change.")
-        if trigger == "background":
+        # An account change is only ever made by a person applying a suggestion, and the slip it corrects is often a
+        # person's own (the wrong account picked from the list): their rows are not left to them here.
+        if trigger == "background" and resolution.action != "change_account":
             theirs = records.person_rows(client_id)
             for n in named:
                 if n in rows and n in theirs:
@@ -592,7 +650,7 @@ def resolve(store: MongoStore, records: AgentRecords, *, client_id: int, thread_
             ensure_open(b.client, [b.years[b.placed[place[n]]].start for n in named])
         except LedgerSyncError as exc:
             raise _Refused(exc.message) from exc
-        if not evidence:
+        if not evidence and resolution.action != "change_account":   # R6 says itself when it needs a quote
             raise _Refused("No evidence was cited.")
         kept = {"use_primary": getattr(resolution, "primary_row_id", None),
                 "keep_one": getattr(resolution, "keep_row_id", None)}.get(resolution.action)
@@ -607,7 +665,7 @@ def resolve(store: MongoStore, records: AgentRecords, *, client_id: int, thread_
         change = _ACTIONS[resolution.action](rows, row_id, resolution, b=b, text=text, evidence=evidence)
     except _Refused as refused:
         return _record(records, key, draft, status="refused", reason=str(refused))
-    if suggest:
+    if suggest or (resolution.action == "change_account" and actor != "user"):   # R6: a person applies it
         before, after = _suggested_values(b, change)
         return _record(records, f"{key}|suggested", draft, status="suggested", before=before, after=after,
                        rule=change.rule, resolution=resolution.model_dump(mode="json"))
@@ -667,3 +725,64 @@ def record_automatic(store: MongoStore, records: AgentRecords, *, client_id: int
         if new:
             added.append(decision)
     return added
+
+
+# ─── Account changes the rules suggest, and what waits for a person ──────────────────────────────────────────────
+
+def _still_holds(rows: dict[int, SavedRow], d: Decision) -> bool:
+    """Whether a suggested account change is still one _change_account would allow: its row is in the books, still
+    carries the issue, and the suggestion still points where the issue does."""
+    row = rows.get(d.row_ids[0]) if d.row_ids else None
+    target = BY_CODE.get((d.resolution or {}).get("account_code", ""))
+    if row is None or target is None or row.excluded or row.superseded_by:
+        return False
+    said = {i.code for i in row.issues}
+    usual = usual_account_of(rows, row.id) if "unusual_account" in said else None
+    return ((usual is not None and usual.code == target.code)
+            or ("asset_check" in said and target.code in FIXED_ASSETS)
+            or ("small_asset" in said and target.type == AccountType.EXPENSE))
+
+
+def suggest_account_changes(store: MongoStore, records: AgentRecords, *, client_id: int,
+                            year_start: dt.date) -> list[Decision]:
+    """Records one suggested account change (R6), by the rules, for each row of the year that is on another account
+    than its supplier's other bills (unusual_account) and has none yet; returns those it added. No row is changed: a
+    person applies a suggestion. Run again, it adds none, and it never records a refusal: a row whose change a person
+    undid, an archived client and a closed year are passed over. A row a person coded by hand is suggested like any
+    other, since a wrong pick from the list is the slip this is for."""
+    b = books._books(store, client_id)
+    n = next((k for k, year in enumerate(b.years) if year.start == year_start), None)
+    if b.client.archived or n is None or b.years[n].closed:
+        return []
+    rows = {r.id: r for r in books._saved_rows(b, None)[0]}
+    place = {s.id: k for k, s in enumerate(b.stored)}
+    added = []
+    for row in rows.values():
+        if b.placed[place[row.id]] != n or not any(i.code == "unusual_account" for i in row.issues):
+            continue
+        usual = usual_account_of(rows, row.id)
+        if usual is None:
+            continue
+        resolution = ChangeAccount(action="change_account", account_code=usual.code)
+        key = key_of(client_id, row.id, resolution)
+        if records.is_rejected(client_id, key) or records.decision_by_key(client_id, f"{key}|suggested") is not None:
+            continue
+        made = resolve(store, records, client_id=client_id, thread_id=None, actor="rules", row_id=row.id,
+                       resolution=resolution, evidence=[], reason=usual_text(row, usual), texts=lambda _: [],
+                       suggest=True)
+        if made.status == "suggested":
+            added.append(made)
+    return added
+
+
+def waiting_suggestions(store: MongoStore, records: AgentRecords, *, client_id: int,
+                        year_start: dt.date) -> list[Decision]:
+    """The year's suggested decisions a person can still apply, oldest first: those not applied yet, and, of the
+    account changes, only those that still hold (the log is append-only, so a suggestion its row has outgrown stays
+    in it, and is left out here)."""
+    applied = records.applied_suggestions(client_id)
+    found = [d for d in records.decisions(client_id, year_start) if d.status == "suggested" and d.id not in applied]
+    if any(d.action == "change_account" for d in found):
+        rows = {r.id: r for r in books._saved_rows(books._books(store, client_id), None)[0]}
+        found = [d for d in found if d.action != "change_account" or _still_holds(rows, d)]
+    return found

@@ -11,7 +11,7 @@ from . import books, ledger_book, questions
 from .agent.locks import ClientLocks
 from .models import ChangeDraft, PostResult
 from .records import AgentRecords
-from .resolutions import record_automatic
+from .resolutions import record_automatic, suggest_account_changes
 from .store_mongo import MongoStore
 
 logger = logging.getLogger(__name__)
@@ -19,9 +19,11 @@ logger = logging.getLogger(__name__)
 
 def settle(store: MongoStore, records: AgentRecords, client_id: int, year_start: dt.date, *,
            thread_id: Optional[str] = None, decision_ids: Sequence[str] = ()) -> PostResult:
-    """With the client's lock held by the caller: records the rows matching dated from the bank, works the year's
-    questions out and posts the year, with the decisions behind the posting."""
+    """With the client's lock held by the caller: records the rows matching dated from the bank, suggests the usual
+    account for a bill on another, works the year's questions out and posts the year, with the decisions behind the
+    posting."""
     record_automatic(store, records, client_id=client_id, year_start=year_start, thread_id=thread_id)
+    suggest_account_changes(store, records, client_id=client_id, year_start=year_start)
     questions.refresh(store, records, client_id, year_start)
     return ledger_book.post(store, records, client_id, year_start, decision_ids=decision_ids)
 

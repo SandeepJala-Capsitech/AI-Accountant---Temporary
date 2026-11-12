@@ -27,7 +27,7 @@ from ledgersync.accounts import choosable
 from ledgersync.ledger import bank_choices, settings_for
 from ledgersync.models import Evidence, Ledger, SavedRow
 from ledgersync.records import AgentRecords
-from ledgersync.resolutions import Resolution, resolve
+from ledgersync.resolutions import AgentResolution, resolve
 from ledgersync.store_mongo import MongoStore
 
 from .locks import ClientLocks
@@ -370,7 +370,7 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
 
     @tool
     def resolve_issue(row_id: Annotated[int, Field(description="The row the resolution is about.")],
-                      resolution: Resolution,
+                      resolution: AgentResolution,
                       evidence: Annotated[list[Evidence], BeforeValidator(_evidence_from_json), Field(
                           min_length=1, max_length=3,
                           description="One to three quotes, each exactly as printed in the document with this upload "

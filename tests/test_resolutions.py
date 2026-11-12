@@ -10,14 +10,16 @@ from types import SimpleNamespace
 import pytest
 
 from helpers import net, row
-from ledgersync import books, documents, ledger_book
+from ledgersync import books, documents, ledger, ledger_book, undo
+from ledgersync.agent.locks import ClientLocks
+from ledgersync.models import ClientPatch, RowPatch
 from ledgersync.blobs import GridFSBlobStore
 from ledgersync.checks import booked
 from ledgersync.errors import InvalidInput
 from job_scoring import net_by_account
 from ledgersync.models import ClientFields, ClosedYear, Evidence, Issue, Transaction
 from ledgersync.records import AgentRecords
-from ledgersync.resolutions import (KeepOne, SetDate, SplitPart, SplitVat, UsePrimary, VatFromDocument, record_automatic,
+from ledgersync.resolutions import (ChangeAccount, suggest_account_changes, waiting_suggestions, KeepOne, SetDate, SplitPart, SplitVat, UsePrimary, VatFromDocument, record_automatic,
                                     resolve, set_date)
 
 pytestmark = pytest.mark.mongo
@@ -865,3 +867,221 @@ def test_the_date_a_document_prints_settles_another_date_in_its_file_name(mongo_
     applied = call(mongo_store, records, pages, nb, bill, dated(1), "Invoice date 01/09/2026", upload=nb.upload(name))
     assert applied.status == "applied" and "file_date" not in asked()
     assert saved(mongo_store, nb.id, bill).date == dt.date(2026, 9, 1)
+
+
+# ─── Changing a row's account (R6): always a suggestion until a person applies it ───────────────────────────────
+
+USUAL = "The other 11 bills from Vodafone Ltd went to 7502 Telephone and Internet."
+DELL = """Dell Corporation Ltd
+Invoice 77120   Date 3 November 2026
+Latitude 5450 laptop   1500.00
+VAT 300.00
+Total £1,800.00"""
+
+
+def to(code: str) -> ChangeAccount:
+    return ChangeAccount(action="change_account", account_code=code)
+
+
+@pytest.fixture
+def voda(mongo_store, pages):
+    """A client with eleven Vodafone bills on 7502 and one, the odd one, on 7400; a £1,800 Dell invoice on 7504; and
+    a £9.67 cable on 0030."""
+    store = mongo_store
+    client_id = new_client(store, "Harbour Lane Ltd")
+    bills = [row(date=dt.date(2026, 4 + k % 9, 12 + k // 9), description="Vodafone bill", counterparty="Vodafone Ltd",
+                 gross=Decimal("86.40"), account_code="7502", document_type="invoice", document_ref=f"v{k}")
+             for k in range(11)]
+    usual = add(store, client_id, pages, "vodafone.csv", "", *bills, kind="table")
+    [odd] = add(store, client_id, pages, "vodafone-march.pdf", "Vodafone   Total 86.40", row(
+        date=dt.date(2027, 3, 12), description="Vodafone bill", counterparty="Vodafone Ltd", gross=Decimal("86.40"),
+        account_code="7400", document_type="invoice", document_ref="v-odd"))
+    [dell] = add(store, client_id, pages, "dell.pdf", DELL, row(
+        date=dt.date(2026, 11, 3), description="Dell laptop", counterparty="Dell Corporation Ltd",
+        gross=Decimal("1800.00"), vat=Decimal("300.00"), account_code="7504", document_type="invoice",
+        document_number="77120", document_total=Decimal("1800.00"), supplier_vat_number="GB123456789"))
+    [cable] = add(store, client_id, pages, "cable.txt", "USB cable 9.67", row(
+        date=dt.date(2026, 11, 4), description="USB cable", counterparty="Currys", gross=Decimal("9.67"),
+        account_code="0030"))
+    return SimpleNamespace(id=client_id, usual=usual, odd=odd, dell=dell, cable=cable,
+                           upload=lambda name: upload_named(store, client_id, name))
+
+
+def change(store, records, pages, c, row_id, code, *quotes, upload=None, actor="rules", **kw):
+    return resolve(store, records, client_id=c.id, thread_id=None, actor=actor, row_id=row_id, resolution=to(code),
+                   evidence=[Evidence(upload_id=upload, quote=q) for q in quotes], reason=USUAL,
+                   texts=lambda uid: pages.get(uid, []), **kw)
+
+
+def account_of(store, client_id: int, row_id: int) -> str:
+    return saved(store, client_id, row_id).account_code
+
+
+def test_the_rules_suggestion_changes_nothing(mongo_store, records, pages, voda):
+    d = change(mongo_store, records, pages, voda, voda.odd, "7502")
+    assert (d.status, d.rule, d.action) == ("suggested", "R6 Account changed", "change_account")
+    assert d.before == {str(voda.odd): {"account_code": "7400"}}
+    assert d.after == {str(voda.odd): {"account_code": "7502"}}
+    assert d.resolution == {"action": "change_account", "account_code": "7502"}
+    assert account_of(mongo_store, voda.id, voda.odd) == "7400"
+
+
+def test_an_agent_cannot_apply_an_account_change_either(mongo_store, records, pages, voda):
+    d = change(mongo_store, records, pages, voda, voda.odd, "7502", actor=ACTOR, suggest=False)
+    assert d.status == "suggested" and account_of(mongo_store, voda.id, voda.odd) == "7400"
+
+
+def test_a_person_applies_an_account_change_and_can_undo_it(mongo_store, records, pages, voda):
+    locks = ClientLocks()
+    d = change(mongo_store, records, pages, voda, voda.odd, "7502")
+    made = undo.apply_suggestion(mongo_store, records, locks, client_id=voda.id, decision_id=d.id,
+                                 texts=lambda uid: pages.get(uid, []), wait=0)
+    assert (made.status, made.actor) == ("applied", "user")
+    assert account_of(mongo_store, voda.id, voda.odd) == "7502"
+    undo.undo_decision(mongo_store, records, locks, client_id=voda.id, decision_id=made.id, wait=0)
+    assert account_of(mongo_store, voda.id, voda.odd) == "7400"
+
+
+def test_a_person_can_apply_it_to_a_row_they_coded_by_hand(mongo_store, records, pages, voda):
+    """The slip this is for: someone picked the wrong account from the list."""
+    ledger.change_row(mongo_store, voda.id, voda.odd, RowPatch(account_code="7403"))
+    d = change(mongo_store, records, pages, voda, voda.odd, "7502")
+    made = undo.apply_suggestion(mongo_store, records, ClientLocks(), client_id=voda.id, decision_id=d.id,
+                                 texts=lambda uid: pages.get(uid, []), wait=0)
+    assert made.status == "applied" and account_of(mongo_store, voda.id, voda.odd) == "7502"
+
+
+def test_another_target_than_the_usual_account_is_refused(mongo_store, records, pages, voda):
+    d = change(mongo_store, records, pages, voda, voda.odd, "7600")
+    assert d.status == "refused"
+    assert d.reason == "The usual account for Vodafone Ltd is 7502 Telephone and Internet."
+
+
+def test_a_row_nothing_is_said_about_is_refused(mongo_store, records, pages, voda):
+    d = change(mongo_store, records, pages, voda, voda.usual[0], "7400")
+    assert (d.status, d.reason) == ("refused", "Nothing says this row is on the wrong account.")
+
+
+def test_applying_after_the_history_changed_is_refused(mongo_store, records, pages, voda):
+    d = change(mongo_store, records, pages, voda, voda.odd, "7502")
+    for row_id in voda.usual:   # the person decides Travel is right after all, and moves the others
+        ledger.change_row(mongo_store, voda.id, row_id, RowPatch(account_code="7400"))
+    made = undo.apply_suggestion(mongo_store, records, ClientLocks(), client_id=voda.id, decision_id=d.id,
+                                 texts=lambda uid: pages.get(uid, []), wait=0)
+    assert (made.status, made.reason) == ("refused", "Nothing says this row is on the wrong account.")
+    assert account_of(mongo_store, voda.id, voda.odd) == "7400"
+
+
+def test_an_asset_change_needs_a_quote_from_the_document(mongo_store, records, pages, voda):
+    bare = change(mongo_store, records, pages, voda, voda.dell, "0030")
+    assert (bare.status, bare.reason) == ("refused", "No evidence was cited.")
+    wrong = change(mongo_store, records, pages, voda, voda.dell, "0030", "Macbook Pro", upload=voda.upload("dell.pdf"))
+    assert wrong.status == "refused" and "isn't in dell.pdf" in wrong.reason
+    d = change(mongo_store, records, pages, voda, voda.dell, "0030", "Latitude 5450 laptop",
+               upload=voda.upload("dell.pdf"), actor=ACTOR)
+    assert d.status == "suggested" and d.after == {str(voda.dell): {"account_code": "0030"}}
+
+
+def test_an_asset_change_must_go_to_a_fixed_asset(mongo_store, records, pages, voda):
+    d = change(mongo_store, records, pages, voda, voda.dell, "7800", "Latitude 5450 laptop",
+               upload=voda.upload("dell.pdf"))
+    assert (d.status, d.reason) == ("refused", "Equipment kept for use goes to 0020 Plant and Machinery, 0030 Office "
+                                               "Equipment or 0040 Furniture and Fixtures.")
+
+
+def test_a_small_asset_goes_to_a_cost_account(mongo_store, records, pages, voda):
+    assert change(mongo_store, records, pages, voda, voda.cable, "7504").status == "suggested"
+    d = change(mongo_store, records, pages, voda, voda.cable, "0040")
+    assert (d.status, d.reason) == ("refused", "A small item goes to a cost account.")
+
+
+def test_an_account_that_does_not_exist_is_refused(mongo_store, records, pages, voda):
+    d = change(mongo_store, records, pages, voda, voda.cable, "7999")
+    assert (d.status, d.reason) == ("refused", "7999 isn't an account.")
+
+
+def test_an_account_change_in_a_closed_year_is_refused(mongo_store, records, pages, voda):
+    d0 = change(mongo_store, records, pages, voda, voda.odd, "7502")
+    mongo_store.close_year(voda.id, ClosedYear(start=YEAR, end=dt.date(2027, 3, 31), closed_at="2027-04-30T00:00:00",
+                                               closing={}))
+    made = undo.apply_suggestion(mongo_store, records, ClientLocks(), client_id=voda.id, decision_id=d0.id,
+                                 texts=lambda uid: pages.get(uid, []), wait=0)
+    assert made.status == "refused" and account_of(mongo_store, voda.id, voda.odd) == "7400"
+
+
+# ─── The rules suggest the usual account; what waits for a person ──────────────────────────────────────────────
+
+def suggested(store, records, c):
+    return suggest_account_changes(store, records, client_id=c.id, year_start=YEAR)
+
+
+def waiting(store, records, c):
+    return waiting_suggestions(store, records, client_id=c.id, year_start=YEAR)
+
+
+def test_the_rules_suggest_the_usual_account(mongo_store, records, voda):
+    [d] = suggested(mongo_store, records, voda)
+    assert (d.status, d.actor, d.action, d.row_ids) == ("suggested", "rules", "change_account", [voda.odd])
+    assert d.reason == USUAL
+    assert d.resolution == {"action": "change_account", "account_code": "7502"}
+    assert account_of(mongo_store, voda.id, voda.odd) == "7400"
+
+
+def test_run_again_the_rules_add_nothing(mongo_store, records, voda):
+    suggested(mongo_store, records, voda)
+    before = len(records.decisions(voda.id))
+    assert suggested(mongo_store, records, voda) == []
+    assert len(records.decisions(voda.id)) == before
+
+
+def test_a_row_coded_by_hand_is_still_suggested(mongo_store, records, voda):
+    ledger.change_row(mongo_store, voda.id, voda.odd, RowPatch(account_code="7403"))
+    [d] = suggested(mongo_store, records, voda)
+    assert d.before == {str(voda.odd): {"account_code": "7403"}}
+
+
+def test_an_undone_account_change_is_not_suggested_again(mongo_store, records, pages, voda):
+    locks = ClientLocks()
+    [d] = suggested(mongo_store, records, voda)
+    made = undo.apply_suggestion(mongo_store, records, locks, client_id=voda.id, decision_id=d.id,
+                                 texts=lambda uid: pages.get(uid, []), wait=0)
+    undo.undo_decision(mongo_store, records, locks, client_id=voda.id, decision_id=made.id, wait=0)
+    before = len(records.decisions(voda.id))
+    for _ in range(3):
+        assert suggested(mongo_store, records, voda) == []
+    assert len(records.decisions(voda.id)) == before
+    assert waiting(mongo_store, records, voda) == []
+
+
+def test_an_archived_client_gets_no_suggestion(mongo_store, records, voda):
+    ledger.change_client(mongo_store, voda.id, ClientPatch(archived=True))
+    assert suggested(mongo_store, records, voda) == []
+    assert records.decisions(voda.id) == []
+
+
+def test_a_closed_year_gets_no_suggestion(mongo_store, records, voda):
+    mongo_store.close_year(voda.id, ClosedYear(start=YEAR, end=dt.date(2027, 3, 31), closed_at="2027-04-30T00:00:00",
+                                               closing={}))
+    assert suggested(mongo_store, records, voda) == []
+    assert records.decisions(voda.id) == []
+
+
+def test_what_waits_leaves_out_the_applied_and_the_stale(mongo_store, records, pages, voda):
+    [second] = add(mongo_store, voda.id, pages, "vodafone-feb.pdf", "Vodafone   Total 86.40", row(
+        date=dt.date(2027, 2, 12), description="Vodafone bill", counterparty="Vodafone Ltd", gross=Decimal("86.40"),
+        account_code="7400", document_type="invoice", document_ref="v-odd-2"))
+    first, other = sorted(suggested(mongo_store, records, voda), key=lambda d: d.row_ids != [voda.odd])
+    assert [d.id for d in waiting(mongo_store, records, voda)] == [first.id, other.id] or \
+        {d.id for d in waiting(mongo_store, records, voda)} == {first.id, other.id}
+    undo.apply_suggestion(mongo_store, records, ClientLocks(), client_id=voda.id, decision_id=first.id,
+                          texts=lambda uid: pages.get(uid, []), wait=0)
+    assert [d.id for d in waiting(mongo_store, records, voda)] == [other.id]
+    ledger.change_row(mongo_store, voda.id, second, RowPatch(accepted=["unusual_account"]))   # "It's fine"
+    assert waiting(mongo_store, records, voda) == []
+
+
+def test_what_waits_keeps_a_reviews_suggestion(mongo_store, records, pages, nb):
+    d = call(mongo_store, records, pages, nb, nb.sheet_costco, KeepOne(action="keep_one", keep_row_id=nb.receipt,
+             drop_row_ids=[nb.sheet_costco]), "TOTAL  £64.80", trigger="background", review_id="r1", suggest=True)
+    assert d.status == "suggested"
+    assert [w.id for w in waiting_suggestions(mongo_store, records, client_id=nb.id, year_start=YEAR)] == [d.id]

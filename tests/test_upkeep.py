@@ -156,3 +156,13 @@ def test_a_change_makes_the_client_due_for_a_review_after_the_wait(store, record
     assert records.review_state(acme).due_at is None   # a chat's own change needs no review
     upkeep.after_change(store, records, locks, change(acme), today=TODAY, now=at, wait=45)
     assert records.review_state(acme).due_at == "2026-11-04T10:00:45+00:00"
+
+
+def test_settling_suggests_the_usual_account_for_a_bill_on_another(store, records, acme):
+    from test_books import vodafone
+    add_rows(store, acme, *vodafone(11, "7502"), *vodafone(1, "7400", first=date(2026, 3, 20)))
+    upkeep.settle(store, records, acme, YEAR_1)
+    upkeep.settle(store, records, acme, YEAR_1)   # settling again suggests nothing new
+    [d] = [d for d in records.decisions(acme, YEAR_1) if d.action == "change_account"]
+    assert (d.status, d.actor) == ("suggested", "rules")
+    assert d.after == {str(d.row_ids[0]): {"account_code": "7502"}}

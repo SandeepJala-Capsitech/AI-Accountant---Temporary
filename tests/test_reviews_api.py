@@ -258,3 +258,13 @@ def test_a_failure_recording_the_document_answer_does_not_fail_the_request(make,
 
     assert uploaded.status_code == 200, uploaded.text
     assert uploaded.json()["question"]["status"] == "resolved"
+
+
+def test_the_years_waiting_suggestions_are_listed(app, mongo_store, records, pages, nb):
+    d = call(mongo_store, records, pages, nb, nb.sheet_costco, keep_receipt(nb), QUOTE, trigger="background",
+             review_id="r1", suggest=True)
+    listed = app.get(f"/api/clients/{nb.id}/years/{YEAR}/suggestions")
+    assert listed.status_code == 200
+    assert [(s["id"], s["status"], s["action"]) for s in listed.json()] == [(d.id, "suggested", "keep_one")]
+    assert app.get(f"/api/clients/{nb.id}/years/2031-04-01/suggestions").status_code == 404
+    assert app.get(f"/api/clients/999999/years/{YEAR}/suggestions").status_code == 404
