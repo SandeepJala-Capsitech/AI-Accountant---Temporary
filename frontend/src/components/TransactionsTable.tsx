@@ -100,8 +100,9 @@ function AgentBadge({ decisions }: { decisions: Decision[] }) {
 // The client's saved rows: what needs review and why, statuses with Link, Unlink and Include, Edit, Add line,
 // Remove and Revert, and totals. When readOnly (a closed year or an archived client) no control changes a row; Show
 // both and the filters still work.
-export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, onAdd, onRemove }: {
+export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, onAdd, onRemove, show }: {
   ledger: Ledger
+  show?: number[]                               // rows to open on, side by side (a link from the problems list)
   readOnly: boolean
   onChange: (rowId: number, change: RowChange) => void
   onEdit?: (row: SavedRow) => void
@@ -131,7 +132,7 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
     return null
   }
   const [only, setOnly] = useState<string | null>(null)   // an issue code, 'review' for every flagged row, or all
-  const [focus, setFocus] = useState<number[] | null>(null)   // rows shown side by side (Show both), or none
+  const [focus, setFocus] = useState<number[] | null>(show?.length ? show : null)   // rows shown side by side (Show both), or none
   const [byDate, setByDate] = useState(true)
   const card = useRef<HTMLElement>(null)
   const uploads = useMemo(() => new Map(ledger.uploads.map(u => [u.id, u.name])), [ledger.uploads])

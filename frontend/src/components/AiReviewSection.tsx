@@ -1,16 +1,19 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import DecisionLine from '@/components/chat/DecisionLine'
+import ProblemsList from '@/components/ProblemsList'
 import QuestionCard from '@/components/chat/QuestionCard'
 import { useClientYear } from '@/components/ClientYearContext'
 import { effectLine, type AnswerResult, type Decision } from '@/lib/chat'
 import {
-  applySuggestion, clientAnswerer, isReversed, listReviews, markReviewsSeen, newestFirst, runSaid, runTitle, runWhen,
+  applySuggestion, clientAnswerer, isReversed, listReviews, listSuggestions, markReviewsSeen, newestFirst, runSaid, runTitle, runWhen,
   undoDecision,
   type ReviewDetail,
 } from '@/lib/reviews'
+import { groupProblems } from '@/lib/problems'
+import { sectionHref } from '@/lib/years'
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
@@ -20,9 +23,10 @@ const refusedLine = (n: number) =>
   `${n} other change${n === 1 ? '' : 's'} the AI tried ${n === 1 ? 'was' : 'were'} stopped by the checks and not made.`
 
 export default function AiReviewSection() {
-  const { client, year, reload } = useClientYear()
+  const { client, year, ledger, reload } = useClientYear()
   const router = useRouter()
   const [runs, setRuns] = useState<ReviewDetail[] | null>(null)
+  const [suggestions, setSuggestions] = useState<Decision[]>([])   // what waits for the person, the rules' too
   const [error, setError] = useState('')
   const [open, setOpen] = useState<Set<string>>(new Set())
   const [working, setWorking] = useState('')
@@ -33,7 +37,9 @@ export default function AiReviewSection() {
 
   const load = useCallback(async () => {
     try {
-      setRuns(newestFirst(await listReviews(client.id, year.start)))
+      const [reviews, waiting] = await Promise.all([listReviews(client.id, year.start), listSuggestions(client.id, year.start)])
+      setRuns(newestFirst(reviews))
+      setSuggestions(waiting)
       setError('')
       return true
     } catch (e) {
@@ -46,14 +52,21 @@ export default function AiReviewSection() {
     load().then(ok => { if (ok) markReviewsSeen(client.id).catch(() => {}) })
   }, [load, client.id])
 
+  // The year's open problems, from the rows the page already has, each with the suggestion waiting for it.
+  const groups = useMemo(() => groupProblems(ledger.transactions, suggestions), [ledger.transactions, suggestions])
+  // A problem's row on the Transactions page, beside the rows the problem names.
+  const rowHref = (rowId: number) => `${sectionHref(client.id, year.start, 'transactions')}?row=${rowId}`
+
   const toggle = (id: string) => setOpen(o => { const n = new Set(o); if (n.has(id)) n.delete(id); else n.add(id); return n })
 
   const change = async (d: Decision, what: 'undo' | 'apply') => {
     setWorking(d.id)
     setProblems(p => ({ ...p, [d.id]: '' }))
     try {
-      await (what === 'undo' ? undoDecision : applySuggestion)(client.id, d.id)
+      const made = await (what === 'undo' ? undoDecision : applySuggestion)(client.id, d.id)
       if (what === 'undo') setUndone(u => new Set(u).add(d.id))
+      // The checks can refuse a suggestion the books have moved on from: nothing changed, and it says why.
+      if (what === 'apply' && made.status === 'refused') setProblems(p => ({ ...p, [d.id]: `Not applied: ${made.reason}` }))
       await load()
       await reload()
     } catch (e) {
@@ -153,6 +166,8 @@ export default function AiReviewSection() {
     <section className="card section">
       <div className="section-head"><h2>AI review</h2></div>
       {error && <div className="notice notice-error">{error}</div>}
+      <ProblemsList groups={groups} rowHref={rowHref} canApply={!client.archived && !year.closed} working={working}
+                    refused={problems} onApply={d => change(d, 'apply')} />
       {!runs && !error && <p className="muted">Loading the reviews…</p>}
       {runs && runs.length === 0 && <p className="muted">No review has run on this year yet. One runs after the books change and go quiet.</p>}
       {runs?.map(run => (

@@ -1,5 +1,6 @@
 'use client'
 
+import { useSearchParams } from 'next/navigation'
 import { useState } from 'react'
 import { useClientYear } from '@/components/ClientYearContext'
 import { useConfirm } from '@/components/ConfirmDialog'
@@ -20,6 +21,10 @@ export default function TransactionsSection() {
   const [editing, setEditing] = useState<SavedRow | null>(null)
   const [adding, setAdding] = useState<{ template: Transaction; title: string } | null>(null)   // a row being added
   const readOnly = year.closed || client.archived
+  // ?row=7 (from the AI review's problems list): open on that row, beside the rows its problems name.
+  const wanted = Number(useSearchParams().get('row'))
+  const asked = ledger.transactions.find(r => r.id === wanted)
+  const show = asked ? [asked.id, ...asked.issues.flatMap(i => i.related ?? [])] : undefined
 
   // A change the API answers with the year's ledger: the year is loaded again to show it.
   const act = async (change: () => Promise<Ledger>) => {
@@ -51,7 +56,7 @@ export default function TransactionsSection() {
     <>
       {year.closed && <div className="notice notice-warn">{CLOSED_YEAR_NOTICE}</div>}
       {error && <div className="notice notice-error">{error}</div>}
-      <TransactionsTable ledger={ledger} readOnly={readOnly} onChange={(id, change) => act(() => changeRow(client.id, id, change))}
+      <TransactionsTable key={wanted || 'all'} ledger={ledger} readOnly={readOnly} show={show} onChange={(id, change) => act(() => changeRow(client.id, id, change))}
                          onEdit={setEditing} onAdd={startAdding} onRemove={remove} />
       {editing && (
         <EditRowDialog row={editing} client={client} onCancel={() => setEditing(null)} onSave={saveRow} />

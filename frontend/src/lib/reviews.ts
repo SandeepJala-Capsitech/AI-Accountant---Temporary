@@ -36,6 +36,9 @@ const post = (path: string) => request<unknown>(path, { method: 'POST', headers:
 
 export const listReviews = (clientId: number, yearStart: string) =>
   request<ReviewDetail[]>(`/api/clients/${clientId}/reviews?year_start=${encodeURIComponent(yearStart)}`)
+// The year's suggestions a person can still apply: the review's, and the account changes the rules suggest.
+export const listSuggestions = (clientId: number, yearStart: string) =>
+  request<Decision[]>(`/api/clients/${clientId}/years/${yearStart}/suggestions`)
 export const markReviewsSeen = (clientId: number) => post(`/api/clients/${clientId}/reviews/seen`)
 export const undoDecision = (clientId: number, id: string) =>
   request<Decision>(`/api/clients/${clientId}/decisions/${id}/undo`, { method: 'POST', headers: WRITE })
