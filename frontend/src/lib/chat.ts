@@ -155,6 +155,7 @@ export type ChatEvent =
   | { type: 'done'; data: Record<string, never> }
 
 export type Answer = { kind: 'date'; date: string } | { kind: 'no_document' } | { kind: 'not_sure' }
+  | { kind: 'without_document'; reason: string }   // book it with no VAT reclaimed: a person only, never the AI
 
 const EVENT_TYPES = new Set<string>(['status', 'step', 'token', 'result', 'error', 'done'])
 
@@ -204,6 +205,10 @@ export function questionControl(q: Question): 'date' | 'upload' | 'text' {
   if (['receipt_or_invoice', 'vat_invoice', 'payout_report', 'payroll_report'].includes(q.kind)) return 'upload'
   return 'text'
 }
+
+// Whether the question is a purchase held in Suspense for its receipt or invoice, which a person can book without it
+// (no VAT reclaimed) when there is none to be had. A payout or payroll report books other rows, so it can't be skipped.
+export const canBookWithout = (q: Question) => q.kind === 'receipt_or_invoice' || q.kind === 'vat_invoice'
 
 // "R2" from "R2 Duplicate: kept the receipt"; '' for a rule without a number.
 export const ruleBadge = (d: Decision): string => /^R\d+\b/.exec(d.rule)?.[0] ?? ''
@@ -284,6 +289,7 @@ export const withQuestion = <T extends { result: TurnResult | null }>(items: T[]
 // Where a question stands, in words; null while it is open.
 export function questionState(q: Question): string | null {
   if (q.status === 'open') return null
+  if (q.status === 'resolved' && q.answer?.startsWith('Booked without a receipt')) return q.answer
   if (q.status === 'resolved') return q.answer ? `Answered: ${q.answer}` : 'Resolved'
   if (q.answer === "I don't have it") return q.kind === 'vat_invoice' ? 'Waiting for the VAT invoice' : 'Waiting for the receipt or invoice'
   if (q.answer === 'Not sure') return 'Waiting: not sure of the date yet'
@@ -370,7 +376,7 @@ export async function streamMessage(
   const res = await fetch(`/api/chat/threads/${threadId}/messages`, { method: 'POST', body: data, headers: WRITE, signal })
     .catch((e: unknown) => {
       if (signal.aborted) throw e
-      throw new ApiError('Cannot reach the Super Accountant API. Is `python server.py` running?', 'network')
+      throw new ApiError('Super Accountant could not be reached. Try again in a moment; if it keeps happening, the person who runs it needs to check the server is up.', 'network')
     })
   if (!res.ok) throw await errorFrom(res)
   if (!res.body) return

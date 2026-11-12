@@ -1,6 +1,6 @@
 // What the Bank and Invoices sections say and show, kept apart from the screens so node --test can run them.
 import type { TrialBalanceResult } from './api'
-import type { AccountChoice, BankCheck, Client, InvoiceSummary, Ledger, OpeningBalances, SavedRow, Year } from './clients'
+import type { AccountChoice, BankCheck, Client, InvoiceSummary, Ledger, OpeningBalances, SavedRow, Year, YearSummary } from './clients'
 import { transactionCount } from './clientRules.ts'
 import { leftOut, longDate, money } from './ledger.ts'
 
@@ -8,19 +8,33 @@ import { leftOut, longDate, money } from './ledger.ts'
 export const fullDate = (iso: string | null | undefined): string => (iso ? longDate(iso) : 'No date')
 
 // How the books compare with the latest statement of the year. The difference is the books less the statement.
-export function bankCheckText(c: BankCheck): string {
-  if (c.statement === null || c.difference === null || c.statement_date === null) return 'No statement this year.'
+// lines: how many of the account's statement lines the year holds. With lines and no balance to check, its statements
+// print none (a CSV export without a balance column), which is not the same as having no statement.
+export function bankCheckText(c: BankCheck, lines = 0): string {
+  if (c.statement === null || c.difference === null || c.statement_date === null) {
+    return lines ? 'Its statements print no balance, so the books can\'t be checked against them.' : 'No statement this year.'
+  }
   const on = `the statement of ${fullDate(c.statement_date)}`
   const difference = Number(c.difference)
   if (difference === 0) return `Agrees with ${on}.`
   return `${money(c.difference.replace(/^-/, ''))} ${difference < 0 ? 'less' : 'more'} in the books than ${on}.`
 }
 
+// A balance as a statement prints it, in words: a bank account below nothing is overdrawn, and a card's balance is
+// what is owed on it (in credit when the card company owes the client).
+export function bankBalance(value: string, kind: BankCheck['kind']): string {
+  const amount = Number(value)
+  const size = money(Math.abs(amount).toFixed(2))
+  if (kind === 'credit_card') return amount < 0 ? `${size} in credit` : `${size} owed`
+  return amount < 0 ? `${size} overdrawn` : size
+}
+
 // What the page says when the bank check cannot be worked out because rows need fixing. The API's message lists the
-// problems as "#3: …"; the notice names the first, without the row number.
+// problems, each naming its row, after "before the trial balance:" and apart by "; "; the notice gives the first.
 export function bankCheckNotice(message: string): string {
-  const first = /#\d+:\s*(.+?)(?=\s+#\d+:|$)/.exec(message)?.[1] ?? message
-  return `The bank check needs the trial balance: ${first.charAt(0).toLowerCase()}${first.slice(1)}`
+  const listed = message.split('before the trial balance: ')
+  const first = listed.length > 1 ? listed[listed.length - 1].split('; ')[0] : message
+  return `The bank check needs the trial balance. ${first.charAt(0).toUpperCase()}${first.slice(1)}`
 }
 
 // The account a row with no bank account of its own (a receipt, say) is paid from: the first current account.
@@ -63,17 +77,41 @@ export function openingErrors(o: OpeningBalances): string[] {
   if (debits !== credits) errors.push(`Opening debits ${pounds(debits)} and credits ${pounds(credits)} must be the same.`)
   const balance = (code: string) => o.lines.filter(l => l.code === code).reduce((sum, l) => sum + pence(l.debit) - pence(l.credit), 0)
   const owed = (direction: 'in' | 'out') => o.unpaid.filter(i => i.direction === direction).reduce((sum, i) => sum + pence(i.amount), 0)
-  if (owed('in') !== balance(DEBTORS)) {
-    errors.push(`The unpaid invoices from customers add up to ${pounds(owed('in'))}; Debtors is ${pounds(balance(DEBTORS))}.`)
+  // Fewer is allowed: what is not listed is brought forward as one balance, not itemised.
+  if (owed('in') > balance(DEBTORS)) {
+    errors.push(`The unpaid invoices from customers add up to ${pounds(owed('in'))}, more than Debtors, which is ${pounds(balance(DEBTORS))}.`)
   }
-  if (owed('out') !== -balance(CREDITORS)) {
-    errors.push(`The unpaid bills from suppliers add up to ${pounds(owed('out'))}; Creditors is ${pounds(-balance(CREDITORS))}.`)
+  if (owed('out') > -balance(CREDITORS)) {
+    errors.push(`The unpaid bills from suppliers add up to ${pounds(owed('out'))}, more than Creditors, which is ${pounds(-balance(CREDITORS))}.`)
   }
   return errors
 }
 
-export const closeQuestion = (year: Year): string =>
-  `Close the year to ${longDate(year.end)}? Its figures are locked and carried into the next year. You can reopen it later.`
+// What an accountant would settle before locking a year, in words: rows still to review, rows with no date, money
+// left in Suspense, a bank account that doesn't agree with its statement, and statements the books don't have.
+// Closing is still allowed; nothing here is carried forward silently.
+export function closeWarnings(summary: Pick<YearSummary, 'to_review' | 'bank' | 'missing_paperwork'> | null,
+                              result: TrialBalanceResult | null, rows: { date: string | null }[]): string[] {
+  const found: string[] = []
+  const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
+  if (summary?.to_review) found.push(`${count(summary.to_review, 'row is', 'rows are')} still to review.`)
+  const undated = rows.filter(row => !row.date).length
+  if (undated) found.push(`${count(undated, 'row has', 'rows have')} no date.`)
+  const suspense = result?.lines.find(line => line.code === '9998')
+  const held = suspense ? Number(suspense.debit) - Number(suspense.credit) : 0
+  if (held) found.push(`${money(Math.abs(held).toFixed(2))} is in Suspense, and will be carried into the next year.`)
+  for (const check of summary?.bank ?? []) {
+    if (check.difference && Number(check.difference) !== 0) {
+      found.push(`${check.name} is ${money(Math.abs(Number(check.difference)).toFixed(2))} away from its statement.`)
+    }
+  }
+  for (const missing of summary?.missing_paperwork ?? []) found.push(missing)
+  return found
+}
+
+export const closeQuestion = (year: Year, warnings: string[] = []): string =>
+  (warnings.length ? `Before you close:\n${warnings.map(w => `• ${w}`).join('\n')}\n\n` : '')
+  + `Close the year to ${longDate(year.end)}? Its figures are locked and carried into the next year. You can reopen it later.`
 
 export interface TrialRow {
   code: string
@@ -107,3 +145,148 @@ export const openingAccounts = (chart: AccountChoice[], client: Client): Account
   chart.filter(a => ['asset', 'liability', 'equity'].includes(a.type)
     && (!a.code.startsWith('12') || client.bank_accounts.some(b => b.code === a.code)))
     .sort((a, b) => a.code.localeCompare(b.code))
+
+
+// A journal as a person types it: a day, what it is for, the account to debit, the one to credit, and the amount.
+export interface JournalDraft { date: string; description: string; debit: string; credit: string; amount: string }
+
+export function journalErrors(draft: JournalDraft): Partial<Record<keyof JournalDraft, string>> {
+  const errors: Partial<Record<keyof JournalDraft, string>> = {}
+  if (!draft.date) errors.date = 'Enter the date'
+  if (!draft.description.trim()) errors.description = 'Say what the journal is for'
+  if (!draft.debit) errors.debit = 'Choose the account to debit'
+  if (!draft.credit) errors.credit = 'Choose the account to credit'
+  else if (draft.credit === draft.debit) errors.credit = 'Choose a different account from the debit'
+  if (!/^\d+(\.\d{1,2})?$/.test(draft.amount.trim()) || Number(draft.amount) <= 0) errors.amount = 'Enter an amount above zero, like 525.00'
+  return errors
+}
+
+// The row the API books a journal from: money out debits its account and credits its contra account.
+export const journalRow = (draft: JournalDraft) => ({
+  date: draft.date, description: draft.description.trim(), direction: 'out', gross: Number(draft.amount).toFixed(2),
+  vat: null, vat_treatment: null, vat_posted: null, net: null, account_code: draft.debit,
+  contra_account_code: draft.credit, currency: 'GBP', source: 'manual', method: 'user', evidence: null,
+  document_type: 'journal', issues: [],
+})
+
+// One line of a statement: an account, or a total, with its amount in pence as the statement reads it.
+export interface StatementLine { label: string; amount: number; total?: boolean }
+export interface Statements { profitAndLoss: StatementLine[]; balanceSheet: StatementLine[]; agrees: boolean }
+
+// The year's profit and loss account and its closing balance sheet, from the trial balance. Income less cost of
+// sales (the 5000s) is gross profit, less the other costs is the profit or loss. Fixed assets (the accounts below
+// 1000) and current assets, less liabilities, are the net assets, which equal capital and reserves with the year's
+// profit. Suspense is listed on the side its balance is on. agrees: the balance sheet balances.
+export function statements(rows: TrialRow[]): Statements {
+  const used = rows.filter(r => r.closing !== 0)
+  const line = (r: TrialRow, sign: 1 | -1): StatementLine => ({ label: `${r.code} ${r.name}`, amount: sign * r.closing })
+  const sum = (lines: StatementLine[]) => lines.reduce((total, l) => total + l.amount, 0)
+  const block = (title: string, lines: StatementLine[]): StatementLine[] =>
+    (lines.length ? [...lines, { label: title, amount: sum(lines), total: true }] : [])
+
+  const income = used.filter(r => r.type === 'income').map(r => line(r, -1))
+  const costOfSales = used.filter(r => r.type === 'expense' && r.code.startsWith('5')).map(r => line(r, 1))
+  const overheads = used.filter(r => r.type === 'expense' && !r.code.startsWith('5')).map(r => line(r, 1))
+  const profit = sum(income) - sum(costOfSales) - sum(overheads)
+  const profitAndLoss = [
+    ...block('Total income', income),
+    ...block('Cost of sales', costOfSales),
+    ...(costOfSales.length ? [{ label: 'Gross profit', amount: sum(income) - sum(costOfSales), total: true }] : []),
+    ...block('Overheads', overheads),
+    { label: profit < 0 ? 'Net loss' : 'Net profit', amount: profit, total: true },
+  ]
+
+  const suspense = used.find(r => r.code === '9998')
+  const isAsset = (r: TrialRow) => (r.code === '9998' ? r.closing > 0 : r.type === 'asset')
+  const fixed = used.filter(r => isAsset(r) && r.code < '1000').map(r => line(r, 1))
+  const current = used.filter(r => isAsset(r) && r.code >= '1000').map(r => line(r, 1))
+  const liabilities = used.filter(r => r.type === 'liability' && !(r === suspense && r.closing > 0)).map(r => line(r, -1))
+  const equity = used.filter(r => r.type === 'equity').map(r => line(r, -1))
+  const netAssets = sum(fixed) + sum(current) - sum(liabilities)
+  const capital = sum(equity) + profit
+  const balanceSheet = [
+    ...block('Fixed assets', fixed),
+    ...block('Current assets', current),
+    ...block('Liabilities', liabilities),
+    { label: 'Net assets', amount: netAssets, total: true },
+    ...equity,
+    { label: profit < 0 ? 'Loss for the year' : 'Profit for the year', amount: profit },
+    { label: 'Capital and reserves', amount: capital, total: true },
+  ]
+  return { profitAndLoss, balanceSheet, agrees: netAssets === capital }
+}
+
+// A statement's amount: £1,200.00, or (£300.00) for a negative one; a dash for nothing.
+export const statementAmount = (p: number): string =>
+  (p === 0 ? '—' : p < 0 ? `(${money((Math.abs(p) / 100).toFixed(2))})` : money((p / 100).toFixed(2)))
+
+
+// How long what is still owed on the invoices has been owed, by the invoice's date, at a day (today, or the year's
+// end once it has passed): the totals up to 30 days old, 31 to 60, 61 to 90 and over 90, in pence. A credit note
+// counts against what is owed. An invoice with no date is counted as the oldest.
+export interface Ageing { total: number; upTo30: number; upTo60: number; upTo90: number; over90: number }
+
+export const daysOld = (date: string | null, asAt: string): number | null =>
+  (date ? Math.max(0, Math.round((Date.parse(asAt) - Date.parse(date)) / 86400000)) : null)
+
+export function ageing(invoices: InvoiceSummary[], asAt: string): Ageing {
+  const found: Ageing = { total: 0, upTo30: 0, upTo60: 0, upTo90: 0, over90: 0 }
+  for (const invoice of invoices) {
+    const owed = pence(invoice.owed) * (invoice.credit_note ? -1 : 1)
+    if (!owed) continue
+    const days = daysOld(invoice.date, asAt)
+    found.total += owed
+    found[days === null || days > 90 ? 'over90' : days > 60 ? 'upTo90' : days > 30 ? 'upTo60' : 'upTo30'] += owed
+  }
+  return found
+}
+
+// "£2,400.00 owed at 10 Nov 2026: £2,400.00 over 90 days", leaving out the ages nothing is owed in.
+export function ageingText(a: Ageing, asAt: string): string {
+  if (!a.total) return 'Nothing owed.'
+  const parts = [[a.upTo30, 'up to 30 days'], [a.upTo60, '31 to 60 days'], [a.upTo90, '61 to 90 days'], [a.over90, 'over 90 days']]
+    .filter(([amount]) => amount).map(([amount, label]) => `${pounds(amount as number)} ${label}`)
+  return `${pounds(a.total)} owed at ${fullDate(asAt)}: ${parts.join(', ')}.`
+}
+
+
+// The periods a year's VAT figures can be worked out for: the whole year, then its four quarters, each three months
+// on from the year's start. (A client's own VAT quarters may be staggered differently; these follow its year.)
+export interface VatPeriod { label: string; start: string; end: string }
+
+export function vatPeriods(year: Year): VatPeriod[] {
+  const iso = (d: Date) => d.toISOString().slice(0, 10)
+  const plusMonths = (from: string, months: number) => {
+    const [y, m, d] = from.split('-').map(Number)
+    return new Date(Date.UTC(y, m - 1 + months, d))
+  }
+  const quarters = [0, 1, 2, 3].map(q => {
+    const start = iso(plusMonths(year.start, q * 3))
+    const next = plusMonths(year.start, (q + 1) * 3)
+    const end = q === 3 ? year.end : iso(new Date(next.getTime() - 86400000))
+    return { label: `${fullDate(start)} to ${fullDate(end)}`, start, end }
+  })
+  return [{ label: `Whole year: ${year.label}`, start: year.start, end: year.end }, ...quarters]
+}
+
+// What each box of the VAT return is, as the return words it.
+export const VAT_BOXES: [keyof Pick<import('./clients').VatFigures, 'box1' | 'box2' | 'box3' | 'box4' | 'box5' | 'box6' | 'box7' | 'box8' | 'box9'>, string][] = [
+  ['box1', 'VAT due on sales and other outputs'],
+  ['box2', 'VAT due on acquisitions of goods into Northern Ireland from the EU'],
+  ['box3', 'Total VAT due (box 1 plus box 2)'],
+  ['box4', 'VAT reclaimed on purchases and other inputs'],
+  ['box5', 'Net VAT to pay, or to reclaim (box 3 less box 4)'],
+  ['box6', 'Total sales and other outputs, excluding VAT'],
+  ['box7', 'Total purchases and other inputs, excluding VAT'],
+  ['box8', 'Goods supplied to the EU from Northern Ireland, excluding VAT'],
+  ['box9', 'Goods acquired from the EU into Northern Ireland, excluding VAT'],
+]
+
+// A box's figure as the return takes it: boxes 6 to 9 in whole pounds, the others in pounds and pence; box 5 says
+// which way it goes.
+export function vatBoxText(box: string, value: string): string {
+  const amount = Number(value)
+  if (['box6', 'box7', 'box8', 'box9'].includes(box)) return `£${Math.round(amount).toLocaleString('en-GB')}`
+  if (box === 'box5') return amount < 0 ? `${money(Math.abs(amount).toFixed(2))} to reclaim` : `${money(value)} to pay`
+  return money(value)
+}

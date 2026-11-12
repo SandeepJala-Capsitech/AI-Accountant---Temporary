@@ -19,7 +19,8 @@ NOT_CONFIGURED = "The accountant chat needs OPENROUTER_API_KEY. Set it in .env."
 
 
 def chat_model(settings: Settings) -> BaseChatModel:
-    """The agent's model, settings.openrouter_model (the one that reads the files), on the reader's route
+    """The agent's model: the one that reads the files (settings.openrouter_model), or OPENROUTER_CHAT_MODEL when
+    that names another, which OpenRouter routes itself. On the reader's route
     (openrouter_route, with require_parameters) and data_collection denied, reasoning at medium effort. Each request
     may take settings.agent_timeout seconds (ChatOpenRouter takes milliseconds); after a 5XX answer or a lost
     connection the OpenRouter SDK tries again with backoff, for up to about five minutes (max_retries=2 gives 150
@@ -27,9 +28,11 @@ def chat_model(settings: Settings) -> BaseChatModel:
     ModelUnavailable when OPENROUTER_API_KEY isn't set."""
     if not settings.openrouter_api_key:
         raise ModelUnavailable(NOT_CONFIGURED)
-    return ChatOpenRouter(model=settings.openrouter_model, api_key=settings.openrouter_api_key,
+    # The hosts and precisions set are the reader's model's: another model for the chat is routed by OpenRouter.
+    own = settings.chat_model_name == settings.openrouter_model
+    route = openrouter_route(settings, require_parameters=True) if own else {"require_parameters": True}
+    return ChatOpenRouter(model=settings.chat_model_name, api_key=settings.openrouter_api_key,
                           base_url=settings.openrouter_base_url, reasoning={"effort": "medium"},
-                          openrouter_provider={**openrouter_route(settings, require_parameters=True),
-                                               "data_collection": "deny"},
+                          openrouter_provider={**route, "data_collection": "deny"},
                           timeout=round(settings.agent_timeout * 1000), max_retries=2,
                           max_tokens=AGENT_MAX_OUTPUT_TOKENS)

@@ -6,7 +6,8 @@ from collections import defaultdict
 from decimal import Decimal
 from typing import Optional, Sequence
 
-from .accounts import BY_CODE, CIS_DEDUCTED, CIS_PAYABLE, PURCHASE_VAT, SALES_VAT, VAT_ACCOUNTS, AccountType
+from .accounts import (BY_CODE, CIS_DEDUCTED, CIS_PAYABLE, PURCHASE_VAT, SALES_VAT, SUSPENSE, VAT_ACCOUNTS,
+                       AccountType)
 from .checks import booked, normalise
 from .errors import InvalidTransactions
 from .matching import match
@@ -37,9 +38,16 @@ def journal_for(tx: Transaction, index: int) -> list[JournalLine]:
                                  description=tx.description, debit=ZERO if out else cis, credit=cis if out else ZERO))
     lines.append(JournalLine(transaction=index, code=tx.contra_account_code, description=tx.description,
                              debit=ZERO if out else tx.gross, credit=tx.gross if out else ZERO))
+    if tx.reverse_vat and tx.paid_against is None:
+        # The reverse charge on a service from abroad: the business owes the VAT its supplier didn't charge, and
+        # reclaims it in the same return.
+        lines += [JournalLine(transaction=index, code=PURCHASE_VAT, description=tx.description, debit=tx.reverse_vat,
+                              credit=ZERO),
+                  JournalLine(transaction=index, code=SALES_VAT, description=tx.description, debit=ZERO,
+                              credit=tx.reverse_vat)]
     debits, credits = sum(l.debit for l in lines), sum(l.credit for l in lines)
     if debits != credits:   # net + vat == gross by construction; this guards the invariant
-        raise AssertionError(f"transaction {index} does not balance: {debits} != {credits}")
+        raise AssertionError(f"{_named(tx)} does not balance: debits £{debits:,.2f}, credits £{credits:,.2f}")
     return lines
 
 
@@ -53,20 +61,31 @@ def _line(code: str, balance: Decimal) -> TrialBalanceLine:
                             debit=balance if balance > 0 else ZERO, credit=-balance if balance < 0 else ZERO)
 
 
+def _named(tx: Transaction) -> str:
+    """A row as a message names it, so a person can find it: what it is, its date and its amount."""
+    what = tx.description.strip() or "A row with no description"
+    what = what if len(what) <= 60 else what[:57].rstrip() + "..."
+    when = f"{tx.date.day} {tx.date:%b %Y}" if tx.date else "no date"
+    return f"{what} ({when}, £{tx.gross:,.2f})"
+
+
 def matched_rows(transactions: list[Transaction], settings: BusinessSettings,
                  read: Optional[list[Optional[Decimal]]] = None, apart: Optional[list[set[int]]] = None, *,
-                 keep: Optional[list[bool]] = None, open_items: Sequence[OpenItem] = ()) -> list[tuple[int, Transaction]]:
+                 keep: Optional[list[bool]] = None, open_items: Sequence[OpenItem] = (),
+                 name_days: Optional[list] = None, skip_errors: bool = False) -> list[tuple[int, Transaction]]:
     """The rows trial_balance posts, each with its place in transactions, matched as it matches them (see there);
-    InvalidTransactions while any of them has an error."""
+    InvalidTransactions while any of them has an error. name_days: each row's file name's day (matching.match)."""
     ready = match([normalise(tx, settings) for tx in transactions], settings, read=read, apart=apart,
-                  open_items=open_items)
+                  open_items=open_items, name_days=name_days)
     posted = [(n, tx) for n, tx in enumerate(ready)   # a quote or the like waits for Include
               if booked(tx) and (keep is None or keep[n])]
-    problems = [f"#{n + 1}: {issue.message}" for n, tx in posted
+    problems = [f"{_named(tx)}: {issue.message}" for n, tx in posted
                 for issue in tx.issues if issue.severity == "error"]
+    if problems and skip_errors:   # shown without them, for a page that says which are left out
+        return [(n, tx) for n, tx in posted if not any(issue.severity == "error" for issue in tx.issues)]
     if problems:
         raise InvalidTransactions(f"{len(problems)} problem(s) must be fixed before the trial balance: "
-                                  + " ".join(problems[:5]), problems=problems)
+                                  + "; ".join(problems[:5]), problems=problems)
     return posted
 
 
@@ -96,8 +115,12 @@ def summarise(journal: list[JournalLine], opening: Optional[dict[str, Decimal]] 
     total_income = sum((l.credit - l.debit for l in lines if l.type == AccountType.INCOME.value), ZERO)
     total_expenses = sum((l.debit - l.credit for l in lines if l.type == AccountType.EXPENSE.value), ZERO)
     net_profit = total_income - total_expenses
-    total_assets = sum((l.debit - l.credit for l in lines if l.type == AccountType.ASSET.value), ZERO)
-    total_liabilities = sum((l.credit - l.debit for l in lines if l.type == AccountType.LIABILITY.value), ZERO)
+    # Suspense is no one's liability: what is held there in debit is counted with the assets until it is cleared,
+    # so it neither shrinks what the business owes nor shows as a debt.
+    held = sum((l.debit - l.credit for l in lines if l.code == SUSPENSE), ZERO)
+    total_assets = sum((l.debit - l.credit for l in lines if l.type == AccountType.ASSET.value), ZERO) + max(held, ZERO)
+    total_liabilities = sum((l.credit - l.debit for l in lines
+                             if l.type == AccountType.LIABILITY.value and l.code != SUSPENSE), ZERO) + max(-held, ZERO)
     return TrialBalance(lines=lines, total_debits=total_debits, total_credits=total_credits,
                         opening=[_line(code, balance) for code, balance in sorted(opening.items(), key=_vat_last)
                                  if balance != 0],

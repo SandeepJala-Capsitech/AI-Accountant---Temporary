@@ -21,7 +21,7 @@ from pydantic_core import to_jsonable_python
 from ledgersync import books, documents, ledger_book, questions
 from ledgersync.blobs import BlobStore
 from ledgersync.checks import booked
-from ledgersync.errors import InvalidInput, NotFound
+from ledgersync.errors import InvalidInput, InvalidTransactions, NotFound
 from ledgersync.evidence_rules import DocumentRule, document_rule
 from ledgersync.accounts import choosable
 from ledgersync.ledger import bank_choices, settings_for
@@ -43,6 +43,7 @@ FAMILIES: dict[str, Family] = {
     "file_date": "date",
     # One purchase recorded twice: by two records, a copy of a document, or lines over a document's total.
     "booked_twice": "duplicate", "duplicate_document": "duplicate", "total_mismatch": "duplicate",
+    "possible_duplicate": "duplicate",
     # One VAT total over items at different rates.
     "mixed_items": "combined_vat", "vat_rate_mismatch": "combined_vat",
     # Two records of one purchase disagree on its amount or its VAT.
@@ -370,8 +371,9 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
                       evidence: Annotated[list[Evidence], BeforeValidator(_evidence_from_json), Field(
                           min_length=1, max_length=3,
                           description="One to three quotes, each exactly as printed in the document with this upload "
-                                      "id: the row's own, that of a record it is matched with, or the bank line "
-                                      "that pays the invoice or receipt being kept. upload_name is "
+                                      "id: the row's own, that of a record it is matched with or named as "
+                                      "source_row_id, or the bank line that pays the invoice or receipt being kept. "
+                                      "For set_date from a file name, quote the file name. upload_name is "
                                       "filled in for you.")],
                       reason: Annotated[str, Field(min_length=1, max_length=600,
                                                    description="Why, in a sentence or two the person will read.")],
@@ -381,7 +383,10 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
         invoice you keep is its payment, not a duplicate: leave it out of drop_row_ids. row_id can be the kept row.
         use_primary: two records disagree; use the better-ranked one. split_vat: one VAT total over items at
         different rates; split the row into parts that add up exactly to it, with VAT at each part's rate matching the
-        VAT printed. set_vat_from_document: the document prints VAT the row doesn't book. The services check the
+        VAT printed. set_vat_from_document: the document prints VAT the row doesn't book. set_date: a row with no date,
+        two dates or another date in its file name; the date from another record of the same purchase
+        (source_row_id), a date printed in the row's document (quote it), or the file name of a row with no date
+        (quote the file name). The services check the
         resolution against the evidence and refuse what it doesn't support, saying
         why. Sent again once applied, it returns the same decision."""
         ctx = runtime.context
@@ -394,7 +399,9 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
         if decision.status == "suggested":
             _step(runtime, f"Row {row_id}: suggested {decision.rule}", "done")
             return _out({"decision_id": decision.id, "status": "suggested", "rule": decision.rule,
-                         "before": decision.before, "after": decision.after})
+                         "before": decision.before, "after": decision.after,
+                         "note": "Suggested only: nothing has changed. A person applies it or leaves it. Say you "
+                                 "suggest it, never that you did it."})
         if decision.status != "applied":
             _step(runtime, f"Didn't change row {row_id}", "failed", decision.reason)
             return {"status": "refused", "why": decision.reason}
@@ -536,15 +543,49 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
         ctx = runtime.context
         _step(runtime, "Checking the posted trial balance…")
         tb = ledger_book.posted_trial_balance(store, records, ctx.client_id, ctx.year_start)
+        # Rows changed since the last posting (an edit on a page, a new upload): the figures a person sees on the
+        # Trial balance page are the books as they stand, so those are given, and said.
+        unposted = ledger_book.unposted_changes(store, records, ctx.client_id, ctx.year_start)
+        now = None
+        if unposted and tb.journal:
+            try:
+                now = books.trial_balance_shown(store, ctx.client_id, ctx.year_start)
+            except InvalidTransactions:
+                now = None
+        shown = now or tb
+        note = (f"{_count(unposted, 'row')} changed since the last posting: these are the books as they stand now, "
+                "as the Trial balance page shows them." if now else
+                None if tb.journal else "Nothing is posted yet for this year: the system posts at the end of the "
+                                        "turn. This isn't a sign the year has no rows; list_rows shows them.")
         result = _kept({
-            "lines": [{"code": l.code, "name": l.name, "debit": l.debit, "credit": l.credit} for l in tb.lines],
-            "total_debits": tb.total_debits, "total_credits": tb.total_credits, "is_balanced": tb.is_balanced,
-            "entries_posted": len(tb.journal),
-            "suspense": [_kept(s.model_dump()) for s in tb.suspense], "problems": tb.problems,
-            "note": None if tb.journal else "Nothing is posted yet for this year: the system posts at the end of the "
-                                            "turn. This isn't a sign the year has no rows; list_rows shows them."})
+            "lines": [{"code": l.code, "name": l.name, "debit": l.debit, "credit": l.credit} for l in shown.lines],
+            "total_debits": shown.total_debits, "total_credits": shown.total_credits,
+            "is_balanced": shown.is_balanced, "entries_posted": len(tb.journal),
+            "suspense": [_kept(s.model_dump()) for s in tb.suspense], "problems": tb.problems, "note": note})
         _step(runtime, "Checked the posted trial balance", "done")
         return _out(result)
 
+    @tool
+    def get_vat_figures(runtime: ToolRuntime[ChatContext],
+                        start: Annotated[Optional[str], Field(description="The first day of the period, YYYY-MM-DD; "
+                                                                          "leave out for the whole year.")] = None,
+                        end: Annotated[Optional[str], Field(description="The last day of the period, YYYY-MM-DD; "
+                                                                        "leave out for the whole year.")] = None
+                        ) -> dict:
+        """The nine VAT return boxes for the client's year, or for a period inside it, exactly as the VAT card on the
+        Trial balance page shows them, with notes on what they leave out. Use it for every VAT box figure; never
+        work a box out from the rows or the trial balance."""
+        ctx = runtime.context
+        _step(runtime, "Working out the VAT figures…")
+        try:
+            figures = books.vat_figures(store, ctx.client_id, ctx.year_start,
+                                        dt.date.fromisoformat(start) if start else None,
+                                        dt.date.fromisoformat(end) if end else None)
+        except (InvalidInput, InvalidTransactions, ValueError) as exc:
+            _step(runtime, "Couldn't work out the VAT figures", "failed", str(exc))
+            return {"status": "refused", "why": getattr(exc, "message", None) or str(exc)}
+        _step(runtime, "Worked out the VAT figures", "done")
+        return _out(figures.model_dump())
+
     return [get_overview, list_issues, list_rows, get_row, list_documents, read_document, resolve_issue, ask_user,
-            close_question, list_questions, list_decisions, list_changes, get_trial_balance]
+            close_question, list_questions, list_decisions, list_changes, get_trial_balance, get_vat_figures]

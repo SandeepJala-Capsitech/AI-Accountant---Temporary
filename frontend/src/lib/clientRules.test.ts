@@ -3,10 +3,10 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Transaction } from './api.ts'
 import type { ClientSummary, SavedRow, Upload } from './clients.ts'
-import type { PickedFile } from './clientRules.ts'
+import type { PickedFile, ReadingFile } from './clientRules.ts'
 import {
-  accountList, bankAccountsLeft, changesOf, clientFormErrors, dayMonth, draftOf, emptyListText, figuresOf, importText, lineTemplate, newRowFrom, requeue,
-  rowEditErrors, sameFileAs, searchClients, showsInvitation, statementText, transactionCount,
+  accountList, bankAccountsLeft, changesOf, clientFormErrors, dayMonth, draftOf, emptyListText, figuresOf, importText, lineTemplate, newRowFrom, paidFromOf, paidFromOptions, requeue,
+  readingLine, rowEditErrors, sameFileAs, searchClients, someFinished, unsent, showsInvitation, statementText, transactionCount,
 } from './clientRules.ts'
 
 const client = (change: Partial<ClientSummary> = {}): ClientSummary => ({
@@ -44,6 +44,10 @@ test('the client dialog needs a company name, a responsible person, a first year
   const fixed = { ...fields, name: 'Cube', contact_name: 'Jenny', contact_email: '', first_year_end: '2026-03-31',
                   bank_accounts: [{ code: '1200', name: 'Current', kind: 'current' as const }] }
   assert.deepEqual(clientFormErrors(fixed), {})
+  // a phone number that isn't one, and a name another client has, are said before saving
+  assert.deepEqual(clientFormErrors({ ...fixed, contact_phone: 'abc' }), { contact_phone: 'Enter a valid phone number' })
+  assert.deepEqual(clientFormErrors({ ...fixed, contact_phone: '+44 (0)7700 900-123' }), {})
+  assert.deepEqual(clientFormErrors(fixed, ['Other Ltd', ' cube ']), { name: 'Another client already has this name' })
   assert.deepEqual(clientFormErrors({ ...fixed, bank_accounts: [] }), { bank_accounts: 'Add at least one bank account' })
   assert.deepEqual(clientFormErrors({ ...fixed, bank_accounts: [...fixed.bank_accounts, { code: '', name: 'current', kind: 'savings' as const }] }),
                    { bank_accounts: 'Two bank accounts are called current: give each its own name' })
@@ -172,9 +176,40 @@ test('the Edit list of accounts is in name order, with a saved account the busin
 test('the import says what it found', () => {
   const j = () => ({ name: 'a.csv', job_id: 'j' })
   assert.equal(importText({ jobs: [j(), j(), j()], skipped: ['a', 'b'], unreadable: ['backup.zip'], refused: [] }),
-    "Reading 3 new files. Skipped 2 already taken in. 1 can't be read: backup.zip.")
+    "Sent 3 new files to be read. Skipped 2 already taken in. 1 can't be read: backup.zip.")
   assert.equal(importText({ jobs: [], skipped: ['a'], unreadable: [], refused: [] }), 'No new files in the folder.')
   assert.equal(importText({ jobs: [j()], skipped: [], unreadable: ['a.zip', 'b.zip'],
                             refused: [{ name: 'big.pdf', message: 'Larger than the 20 MB limit.' }] }),
-    "Reading 1 new file. 2 can't be read: a.zip, b.zip. big.pdf was refused: Larger than the 20 MB limit.")
+    "Sent 1 new file to be read. 2 can't be read: a.zip, b.zip. big.pdf was refused: Larger than the 20 MB limit.")
+})
+
+const reading = (job_id: string, change: Partial<ReadingFile> = {}): ReadingFile =>
+  ({ job_id, name: `${job_id}.jpg`, status: 'running', progress: 'Reading', year_start: '2026-04-01', ...change })
+
+test('the page reloads once a file it saw being read has been saved', () => {
+  assert.equal(someFinished([reading('a'), reading('b')], [reading('b')]), true)
+  assert.equal(someFinished([reading('a')], [reading('a'), reading('c')]), false)
+  assert.equal(someFinished([], []), false)
+})
+
+test('a file still being read says how far it got, or that it is waiting its turn', () => {
+  assert.equal(readingLine(reading('a', { progress: 'Reading page 1 of 2' })), 'Reading page 1 of 2')
+  assert.equal(readingLine(reading('a', { status: 'queued', progress: 'Queued' })), 'Waiting its turn')
+})
+
+test('leaving the page warns only while files are still to be sent', () => {
+  const item = (status: PickedFile['status']) => ({ id: 1, file: {} as File, hash: null, status, detail: '' })
+  assert.equal(unsent([item('waiting')]), true)
+  assert.equal(unsent([item('sending')]), true)
+  assert.equal(unsent([item('reading'), item('done'), item('skipped')]), false)
+})
+
+test('a receipt can be paid from any of the client\'s accounts, the owner or staff', () => {
+  const accounts = [{ code: '1200', name: 'NatWest current', kind: 'current' }, { code: '1240', name: 'Amex', kind: 'credit_card' }]
+  assert.deepEqual(paidFromOptions({ business_type: 'limited_company', bank_accounts: accounts } as never).map(a => a.code),
+                   ['1200', '1240', '2250', '2110'])
+  assert.deepEqual(paidFromOptions({ business_type: 'sole_trader', bank_accounts: accounts } as never).map(a => a.code),
+                   ['1200', '1240', '3010', '2110'])
+  assert.equal(paidFromOf({ bank_account: null } as never, { bank_accounts: accounts } as never), '1200')
+  assert.equal(paidFromOf({ bank_account: '2250' } as never, { bank_accounts: accounts } as never), '2250')
 })

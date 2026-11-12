@@ -9,7 +9,7 @@ import { postedTrialBalance } from '@/lib/api'
 import { changeClient, getSummary, type ClientFields, type YearSummary } from '@/lib/clients'
 import { BUSINESS_TYPES, transactionCount } from '@/lib/clientRules'
 import { money, postedLedgerNote } from '@/lib/ledger'
-import { bankCheckText, fullDate } from '@/lib/sections'
+import { bankCheckText, fullDate, linesFor } from '@/lib/sections'
 import { newestFirst, listReviews, overviewReviewLine, unseenChanges } from '@/lib/reviews'
 import { sectionHref } from '@/lib/years'
 
@@ -63,6 +63,10 @@ export default function OverviewSection() {
     ['Email', client.contact_email || '—'],
     ['Phone', client.contact_phone || '—'],
     ['VAT', client.vat_registered ? 'Registered' : 'Not registered'],
+    ['Company number', client.company_number || '—'],
+    ['UTR', client.utr || '—'],
+    ['VAT number', client.vat_number || '—'],
+    ['PAYE reference', client.paye_reference || '—'],
     ['First year end', fullDate(client.first_year_end)],
     ['Bank accounts', client.bank_accounts.map(a => a.name).join(', ') || '—'],
     ['Folder', client.folder || '—'],
@@ -100,7 +104,7 @@ export default function OverviewSection() {
         {error && <div className="notice notice-error">{error}</div>}
         {!summary && !error && <p className="muted">Loading the summary…</p>}
         {needYou > 0 && (
-          <p><Link href={attentionHref(client.id)} className="link-btn">{needYou} {needYou === 1 ? 'thing needs' : 'things need'} you</Link></p>
+          <p><Link href={attentionHref(client.id)} className="link-btn">{needYou} {needYou === 1 ? 'question is' : 'questions are'} waiting for your answer</Link></p>
         )}
         {reviewLine && <p><Link href={sectionHref(client.id, year.start, 'ai-review')} className="link-btn">{reviewLine}</Link></p>}
         {summary?.missing_paperwork?.length ? (
@@ -132,7 +136,7 @@ export default function OverviewSection() {
             {summary.bank.map(check => (
               <div key={check.code}>
                 <dt>{check.name}</dt>
-                <dd>{bankCheckText(check)} {link('bank', 'Bank')}</dd>
+                <dd>{bankCheckText(check, linesFor(ledger, check.code).length)} {link('bank', 'Bank')}</dd>
               </div>
             ))}
             <div>

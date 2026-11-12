@@ -10,9 +10,10 @@ export const BUSINESS_TYPES: Record<BusinessType, string> = {
 
 export const DOCUMENT_TYPES: Record<string, string> = {
   receipt: 'Receipt', invoice: 'Invoice', expense_claim: 'Expense claim', statement: 'Bank statement line',
-  agent_statement: "Agent's statement", payroll: 'Payroll report',
+  agent_statement: "Agent's statement", payroll: 'Payroll report', journal: 'Journal',
   quote: 'Quote', pro_forma: 'Pro forma invoice', purchase_order: 'Purchase order',
-  remittance_advice: 'Remittance advice', supplier_statement: "Supplier's statement", other: 'Other document',
+  remittance_advice: 'Remittance advice', supplier_statement: "Supplier's statement",
+  finance_agreement: 'Finance or loan agreement', other: 'Other document',
 }
 
 // "6 Oct", from an ISO date or time.
@@ -50,12 +51,21 @@ const BANK_LIMITS: Record<BankAccountKind, number> = { current: 3, savings: 2, c
 export const bankAccountsLeft = (accounts: BankAccount[], kind: BankAccountKind) =>
   BANK_LIMITS[kind] - accounts.filter(a => a.kind === kind).length
 
-export type ClientErrors = Partial<Record<'name' | 'contact_name' | 'contact_email' | 'first_year_end' | 'bank_accounts', string>>
+export type ClientErrors = Partial<Record<'name' | 'contact_name' | 'contact_email' | 'contact_phone' | 'first_year_end' | 'bank_accounts', string>>
 
 // What the client dialog says before saving; the API checks the same.
-export function clientFormErrors(fields: ClientFields): ClientErrors {
+// taken: the names of the other clients, so two are not given the same one by mistake.
+export function clientFormErrors(fields: ClientFields, taken: string[] = []): ClientErrors {
   const errors: ClientErrors = {}
   if (!fields.name.trim()) errors.name = 'Enter the company name'
+  else if (taken.some(name => name.trim().toLowerCase() === fields.name.trim().toLowerCase())) {
+    errors.name = 'Another client already has this name'
+  }
+  // A phone number is digits, with spaces, brackets, dashes and a leading + allowed: seven digits or more.
+  const phone = fields.contact_phone.trim()
+  if (phone && (!/^\+?[\d\s()-]+$/.test(phone) || phone.replace(/\D/g, '').length < 7)) {
+    errors.contact_phone = 'Enter a valid phone number'
+  }
   if (!fields.contact_name.trim()) errors.contact_name = 'Enter the responsible person'
   if (fields.contact_email.trim() && !fields.contact_email.includes('@')) errors.contact_email = 'Enter a valid email'
   if (!fields.first_year_end) errors.first_year_end = "Enter the client's first year end"
@@ -83,8 +93,8 @@ export function figuresOf(rows: SavedRow[]) {
 export const sameFileAs = (hash: string | null, uploads: Upload[]) =>
   (hash ? uploads.find(upload => upload.sha256 === hash) : undefined)
 
-// A file picked for upload, and how far it got.
-export type FileStatus = 'waiting' | 'reading' | 'done' | 'failed' | 'skipped' | 'cancelled'
+// A file picked for upload, and how far it got: waiting to be sent, being sent, sent and being read, and so on.
+export type FileStatus = 'waiting' | 'sending' | 'reading' | 'done' | 'failed' | 'skipped' | 'cancelled'
 
 export interface PickedFile {
   id: number
@@ -92,7 +102,28 @@ export interface PickedFile {
   hash: string | null      // fingerprint of the file's content (null if the browser cannot hash)
   status: FileStatus
   detail: string
+  jobId?: string           // the API's job reading it, once it has been sent
 }
+
+// Whether files are still to be sent to the API: leaving the page now would lose them. Once sent, a file is read and
+// saved by the API whatever the page does.
+export const unsent = (items: PickedFile[]) => items.some(item => item.status === 'waiting' || item.status === 'sending')
+
+// A file the API is reading for the client now, as GET /api/clients/{id}/reading lists it.
+export interface ReadingFile {
+  job_id: string
+  name: string
+  status: 'queued' | 'running'
+  progress: string
+  year_start: string | null
+}
+
+// Whether a file listed as being read before is no longer: it has been saved (or failed), so the year is fetched again.
+export const someFinished = (before: ReadingFile[], now: ReadingFile[]) =>
+  before.some(file => !now.some(next => next.job_id === file.job_id))
+
+// How far a file being read has got.
+export const readingLine = (file: ReadingFile) => (file.status === 'queued' ? 'Waiting its turn' : file.progress || 'Reading…')
 
 // How many transactions an upload holds or a file gave: "1 transaction", "12 transactions".
 export const transactionCount = (n: number) => `${n} transaction${n === 1 ? '' : 's'}`
@@ -126,8 +157,31 @@ export function draftOf(row: Transaction): EditDraft {
   return {
     date: row.date ?? '', description: row.description, counterparty: row.counterparty ?? '',
     direction: row.direction, gross: row.gross, vat: row.vat ?? '', account_code: row.account_code,
-    document_type: row.document_type ?? 'receipt',
+    document_type: row.document_type ?? 'receipt', vat_treatment: row.vat_treatment ?? '',
   }
+}
+
+// How VAT applies to a row, as a person can say it. '' leaves it to the document and the account.
+export const VAT_TREATMENTS: Record<string, string> = {
+  '': 'As the document shows', standard: 'Standard rate (20%)', reduced: 'Reduced rate (5%)', zero: 'Zero-rated',
+  exempt: 'Exempt', outside_scope: 'Outside the scope (reverse charge, overseas)',
+}
+
+// What can have paid a receipt (or taken its money in): each of the client's accounts by its name, then whoever paid
+// it themselves: the owner (the Director's Loan Account in a company, Capital Introduced otherwise) or staff to repay.
+export function paidFromOptions(client: Pick<ClientFields, 'business_type' | 'bank_accounts'>): { code: string; name: string }[] {
+  const company = client.business_type === 'limited_company'
+  return [
+    ...client.bank_accounts.map(a => ({ code: a.code ?? '', name: a.name })).filter(a => a.code),
+    company ? { code: '2250', name: "The director's own money or card" } : { code: '3010', name: "The owner's own money or card" },
+    { code: '2110', name: 'Staff, to be repaid' },
+  ]
+}
+
+// The account a saved receipt is paid from now: the one a person chose, else the client's main (first current) account.
+export function paidFromOf(row: Transaction, client: Pick<ClientFields, 'bank_accounts'>): string {
+  const main = client.bank_accounts.find(a => a.kind === 'current') ?? client.bank_accounts[0]
+  return row.bank_account ?? main?.code ?? ''
 }
 
 // The form for a row a person adds: blank, or a line of an existing document (a claim, an invoice) that joins it,
@@ -148,7 +202,7 @@ export function newRowFrom(draft: EditDraft, template: Transaction): Transaction
   return {
     date: text(draft.date), description: draft.description.trim(), counterparty: text(draft.counterparty),
     direction: draft.direction, gross: draft.gross.trim(), vat: text(draft.vat), account_code: draft.account_code,
-    document_type: draft.document_type, ...(joins ? { document_ref: template.document_ref } : {}),
+    document_type: draft.document_type, ...(draft.vat_treatment ? { vat_treatment: draft.vat_treatment } : {}), ...(joins ? { document_ref: template.document_ref } : {}),
   } as unknown as Transaction
 }
 
@@ -175,7 +229,7 @@ export function changesOf(row: Transaction, draft: EditDraft): RowChange {
     const was = before[field].trim()
     const sameAmount = (field === 'gross' || field === 'vat') && value !== '' && was !== '' && Number(value) === Number(was)
     if (value === was || sameAmount) continue
-    change[field] = value === '' && (field === 'date' || field === 'vat' || field === 'counterparty') ? null : value
+    change[field] = value === '' && (field === 'date' || field === 'vat' || field === 'counterparty' || field === 'vat_treatment') ? null : value
   }
   return change
 }
@@ -197,7 +251,7 @@ export function importText(result: FolderImportResult): string {
   if (!jobs.length && !unreadable.length && !refused.length) return 'No new files in the folder.'
   const files = (n: number) => `${n} new file${n === 1 ? '' : 's'}`
   return [
-    jobs.length ? `Reading ${files(jobs.length)}.` : '',
+    jobs.length ? `Sent ${files(jobs.length)} to be read.` : '',
     skipped.length ? `Skipped ${skipped.length} already taken in.` : '',
     unreadable.length ? `${unreadable.length} can't be read: ${unreadable.join(', ')}.` : '',
     ...refused.map(r => `${r.name} was refused: ${r.message}`),

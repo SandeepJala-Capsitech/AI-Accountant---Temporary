@@ -17,7 +17,7 @@ from ledgersync.errors import InvalidInput
 from job_scoring import net_by_account
 from ledgersync.models import ClientFields, ClosedYear, Evidence, Issue, Transaction
 from ledgersync.records import AgentRecords
-from ledgersync.resolutions import (KeepOne, SplitPart, SplitVat, UsePrimary, VatFromDocument, record_automatic,
+from ledgersync.resolutions import (KeepOne, SetDate, SplitPart, SplitVat, UsePrimary, VatFromDocument, record_automatic,
                                     resolve, set_date)
 
 pytestmark = pytest.mark.mongo
@@ -326,6 +326,21 @@ def test_keep_one_refuses_to_drop_the_bank_line_that_pays_the_receipt_kept(mongo
     assert f"Row {staples.bank}, the bank line, pays the receipt kept" in decision.reason
     assert not saved(mongo_store, staples.id, staples.bank).excluded
     assert not saved(mongo_store, staples.id, staples.sheet).excluded
+
+
+def test_keep_one_refuses_a_payroll_line_and_the_bank_line_that_pays_it(mongo_store, records, pages, nb):
+    # Kestrel's review dropped the January salary payments as copies of the payroll lines: the bank fell £4,750.00
+    # short of its statement and the wages owed were never cleared.
+    day = dt.date(2026, 10, 30)
+    [pay] = add(mongo_store, nb.id, pages, "payroll-october.txt", "J Kestrel net pay 2,400.00",
+                row(date=day, description="J Kestrel net pay", counterparty="J Kestrel", gross=Decimal("2400.00"),
+                    account_code="7001", document_type="payroll", owed_to="net_pay"), kind="text")
+    line, statement = bank_line(nb, mongo_store, pages, "2400.00", day, who="J Kestrel")
+    keep = KeepOne(action="keep_one", keep_row_id=pay, drop_row_ids=[line])
+    decision = call(mongo_store, records, pages, nb, line, keep, "J Kestrel net pay 2,400.00",
+                    upload=nb.upload("payroll-october.txt"))
+    assert decision.status == "refused" and "not a duplicate" in decision.reason and "Keep both" in decision.reason
+    assert not saved(mongo_store, nb.id, line).excluded
 
 
 def test_keep_one_refuses_to_drop_a_bank_line_already_paying_the_invoice_kept(mongo_store, records, pages, nb):
@@ -730,3 +745,123 @@ def test_use_primary_never_lets_a_receipt_replace_a_bank_line_of_another_amount(
     assert decision.reason == ("The bank paid £86.40 and the receipt reads £72.00: what left the bank stays as the "
                                "bank shows it, so the receipt can't replace the bank line.")
     assert not saved(mongo_store, nb.id, line).excluded
+
+
+# ─── set_date (R1 from another record, the file name or the document) ──────────
+
+CLAIM = """Expenses: Matt Barnes
+03/09/2026  EE Mobile Phone Bill  27.50
+04/09/2026  EE Mobile Phone Bill  27.50"""
+
+
+@pytest.fixture
+def ee(mongo_store, pages, nb):
+    """An undated EE bill of £27.50 whose file name holds no day, and an expenses sheet with two EE lines of £27.50 (3
+    and 4 Sep), so matching can't tell which line the bill dates from."""
+    [bill] = add(mongo_store, nb.id, pages, "ee-bill.jpg", "EE Limited\nMonthly charges\nTotal £27.50",
+                 row(date=None, description="EE monthly charges", counterparty="EE Limited", gross=Decimal("27.50"),
+                     account_code="7502", document_type="invoice"))
+    third, fourth = add(mongo_store, nb.id, pages, "matt.xlsx", CLAIM, *[
+        row(date=dt.date(2026, 9, day), description="EE Mobile Phone Bill", counterparty="Matt Barnes",
+            gross=Decimal("27.50"), account_code="7502", document_type="expense_claim", document_ref="matt")
+        for day in (3, 4)], kind="table")
+    return SimpleNamespace(bill=bill, third=third, fourth=fourth)
+
+
+def dated(day: int, source=None) -> SetDate:
+    return SetDate(action="set_date", date=dt.date(2026, 9, day), source_row_id=source)
+
+
+def test_an_undated_bill_takes_the_date_of_another_record_of_the_same_purchase(mongo_store, records, pages, nb, ee):
+    assert any(i.code == "date_missing" for i in shown(mongo_store, nb.id, ee.bill).issues)
+    applied = call(mongo_store, records, pages, nb, ee.bill, dated(4, ee.fourth), "04/09/2026 EE Mobile Phone Bill",
+                   upload=nb.upload("matt.xlsx"))
+    assert (applied.status, applied.rule) == ("applied", "R1 Date from another record")
+    assert applied.after == {str(ee.bill): {"date": "2026-09-04"}}
+    assert saved(mongo_store, nb.id, ee.bill).date == dt.date(2026, 9, 4)
+
+
+def test_a_date_from_a_record_of_another_amount_or_another_day_is_refused(mongo_store, records, pages, nb, ee):
+    wrong_day = call(mongo_store, records, pages, nb, ee.bill, dated(5, ee.fourth), "04/09/2026 EE Mobile Phone Bill",
+                     upload=nb.upload("matt.xlsx"))
+    other_amount = call(mongo_store, records, pages, nb, ee.bill, dated(10, nb.receipt), "COSTCO WHOLESALE")
+    assert wrong_day.status == other_amount.status == "refused"
+    assert saved(mongo_store, nb.id, ee.bill).date is None
+
+
+def test_an_undated_document_takes_the_date_in_its_file_name(mongo_store, records, pages, nb):
+    # 5 Sep: no claim line that day, so the rules leave the date to the AI, which may take it from the name.
+    name = "EE-2026-09-05_00_00_00.jpg"
+    [bill] = add(mongo_store, nb.id, pages, name, "EE Limited\nMonthly charges\nTotal £31.00",
+                 row(date=None, description="EE monthly charges", counterparty="EE Limited", gross=Decimal("31.00"),
+                     account_code="7502", document_type="invoice"))
+    refused = call(mongo_store, records, pages, nb, bill, dated(3), name, upload=nb.upload(name))
+    assert refused.status == "refused"
+    applied = call(mongo_store, records, pages, nb, bill, dated(5), name, upload=nb.upload(name))
+    assert applied.status == "applied" and saved(mongo_store, nb.id, bill).date == dt.date(2026, 9, 5)
+
+
+def test_an_undated_row_takes_a_date_printed_in_its_document(mongo_store, records, pages, nb):
+    [bill] = add(mongo_store, nb.id, pages, "hotel.pdf", "Fawsley Hall\nInvoice date 15/09/2026\nTotal £2,308.50",
+                 row(date=None, description="Rooms", counterparty="Fawsley Hall", gross=Decimal("2308.50"),
+                     account_code="7402", document_type="invoice"))
+    cite = dict(upload=nb.upload("hotel.pdf"))
+    refused = call(mongo_store, records, pages, nb, bill, dated(15), "Total £2,308.50", **cite)
+    assert refused.status == "refused"
+    applied = call(mongo_store, records, pages, nb, bill, dated(15), "Invoice date 15/09/2026", **cite)
+    assert applied.status == "applied" and saved(mongo_store, nb.id, bill).date == dt.date(2026, 9, 15)
+
+
+def test_a_row_with_no_question_about_its_date_keeps_it(mongo_store, records, pages, nb):
+    refused = call(mongo_store, records, pages, nb, nb.receipt, dated(9), "COSTCO WHOLESALE")
+    assert refused.status == "refused" and "date" in refused.reason
+    assert saved(mongo_store, nb.id, nb.receipt).date == dt.date(2026, 10, 7)
+
+
+def test_a_date_read_from_a_receipt_is_not_replaced_by_an_expenses_sheets(mongo_store, records, pages, nb):
+    [receipt] = add(mongo_store, nb.id, pages, "staples.txt", "STAPLES 01/10/2026 Total 19.99", row(
+        date=dt.date(2026, 10, 1), description="Staples", counterparty="Staples", gross=Decimal("19.99"),
+        account_code="7504"))
+    [line] = add(mongo_store, nb.id, pages, "sept.xlsx", "20/10/2026 Staples 19.99", row(
+        date=dt.date(2026, 10, 20), description="Staples", counterparty="Priya Shah", gross=Decimal("19.99"),
+        account_code="7504", document_type="expense_claim", document_ref="sept"), kind="table")
+    assert any(i.code == "date_conflict" for i in shown(mongo_store, nb.id, receipt).issues)
+    refused = call(mongo_store, records, pages, nb, receipt,
+                   SetDate(action="set_date", date=dt.date(2026, 10, 20), source_row_id=line), "20/10/2026 Staples",
+                   upload=nb.upload("sept.xlsx"))
+    assert refused.status == "refused" and saved(mongo_store, nb.id, receipt).date == dt.date(2026, 10, 1)
+    applied = call(mongo_store, records, pages, nb, line,
+                   SetDate(action="set_date", date=dt.date(2026, 10, 1), source_row_id=receipt), "STAPLES 01/10/2026",
+                   upload=nb.upload("staples.txt"))
+    assert applied.status == "applied" and saved(mongo_store, nb.id, line).date == dt.date(2026, 10, 1)
+
+
+def test_keep_one_keeps_a_revised_invoice_and_drops_the_one_it_replaces(mongo_store, records, pages, nb):
+    # The same invoice number at another total: the books say so on the later one, which lets R2 keep it alone.
+    revised_text = "ASHDOWN SUPPLIES LTD\nTAX INVOICE A-551 (REVISED - replaces the invoice A-551 dated 10 May 2026)\nTotal 240.00"
+    bill = dict(counterparty="Ashdown Supplies Ltd", document_type="invoice", document_number="A-551", account_code="5000")
+    [original] = add(mongo_store, nb.id, pages, "a551.txt", "TAX INVOICE A-551\nTotal 360.00", row(
+        **bill, date=dt.date(2026, 5, 10), description="Plasterboard x 60", gross=Decimal("360.00"),
+        document_total=Decimal("360.00")))
+    [revised] = add(mongo_store, nb.id, pages, "a551-revised.txt", revised_text, row(
+        **bill, date=dt.date(2026, 5, 12), description="Plasterboard x 40", gross=Decimal("240.00"),
+        document_total=Decimal("240.00")))
+    decision = call(mongo_store, records, pages, nb, revised,
+                    KeepOne(action="keep_one", keep_row_id=revised, drop_row_ids=[original]),
+                    "REVISED - replaces the invoice A-551", upload=nb.upload("a551-revised.txt"))
+    assert (decision.status, decision.rule) == ("applied", "R2 Duplicate: kept the invoice")
+    assert saved(mongo_store, nb.id, original).excluded and not saved(mongo_store, nb.id, revised).excluded
+
+
+def test_the_date_a_document_prints_settles_another_date_in_its_file_name(mongo_store, records, pages, nb):
+    # The rent invoice printed 1 Sep; its file name held another day. The AI "set" the date it already had, which
+    # changed nothing and left the question open.
+    name = "rent-2026-09-19.pdf"
+    [bill] = add(mongo_store, nb.id, pages, name, "Parkside Estates\nInvoice date 01/09/2026\nTotal £900.00",
+                 row(date=dt.date(2026, 9, 1), description="Rent", counterparty="Parkside Estates",
+                     gross=Decimal("900.00"), account_code="7100", document_type="invoice"))
+    asked = lambda: [i.code for r in books.all_rows(mongo_store, nb.id) if r.id == bill for i in r.issues]
+    assert "file_date" in asked()
+    applied = call(mongo_store, records, pages, nb, bill, dated(1), "Invoice date 01/09/2026", upload=nb.upload(name))
+    assert applied.status == "applied" and "file_date" not in asked()
+    assert saved(mongo_store, nb.id, bill).date == dt.date(2026, 9, 1)

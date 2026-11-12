@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import io
 import re
+from decimal import Decimal
 from typing import Optional, Union
 
 from openpyxl import Workbook
@@ -37,6 +38,8 @@ def workbook(ledger: Ledger, balance: Union[TrialBalance, list[str]], day: dt.da
     book = Workbook()
     _trial_balance(book.active, ledger, balance, day)
     _transactions(book.create_sheet("Transactions"), ledger)
+    if not isinstance(balance, list):   # the statements are worked from the trial balance: none while it is stopped
+        _statements(book, ledger, balance)
     out = io.BytesIO()
     book.save(out)
     return out.getvalue()
@@ -63,7 +66,7 @@ def _widths(sheet, widths) -> None:
 
 def _trial_balance(sheet, ledger: Ledger, balance, day: dt.date) -> None:
     sheet.title = "Trial balance"
-    _title(sheet, f"{ledger.client.name} — trial balance — {day.day} {day:%b %Y}")
+    _title(sheet, f"{ledger.client.name} — trial balance — {ledger.year.label}, as at {day.day} {day:%b %Y}")
     if isinstance(balance, list):
         _append(sheet, ["The trial balance can't be produced yet:"])
         for problem in balance:
@@ -78,6 +81,60 @@ def _trial_balance(sheet, ledger: Ledger, balance, day: dt.date) -> None:
             cell.number_format = MONEY
     sheet.freeze_panes = "A3"
     _widths(sheet, (8, 34, 14, 14))
+
+
+def _statements(book, ledger: Ledger, balance: TrialBalance) -> None:
+    """A "Profit and loss" sheet and a "Balance sheet" sheet, from the trial balance, as the Trial balance page lays
+    them out: income less cost of sales (the 5000s) and overheads; fixed assets (below 1000) and current assets less
+    liabilities, equal to capital and reserves with the year's profit. Suspense is on the side its balance is on."""
+    def net(line) -> Decimal:
+        return line.debit - line.credit
+
+    def block(sheet, title: str, lines, sign: int) -> Decimal:
+        total = Decimal("0.00")
+        for line in lines:
+            _append(sheet, [line.code, line.name, sign * net(line)])
+            total += sign * net(line)
+        if lines:
+            _append(sheet, [None, title, total])
+            sheet.cell(row=sheet.max_row, column=2).font = Font(bold=True)
+        return total
+
+    def finish(sheet) -> None:
+        for row in sheet.iter_rows(min_row=2, min_col=3, max_col=3):
+            row[0].number_format = MONEY
+        _widths(sheet, (8, 40, 16))
+
+    def total_row(sheet, title: str, amount: Decimal) -> None:
+        _append(sheet, [None, title, amount])
+        sheet.cell(row=sheet.max_row, column=2).font = Font(bold=True)
+
+    used = [line for line in balance.lines if net(line) != 0]
+    pl = book.create_sheet("Profit and loss")
+    _title(pl, f"{ledger.client.name} — profit and loss — {ledger.year.label}")
+    income = block(pl, "Total income", [l for l in used if l.type == "income"], -1)
+    cost_of_sales = [l for l in used if l.type == "expense" and l.code.startswith("5")]
+    direct = block(pl, "Cost of sales", cost_of_sales, 1)
+    if cost_of_sales:
+        total_row(pl, "Gross profit", income - direct)
+    overheads = block(pl, "Overheads", [l for l in used if l.type == "expense" and not l.code.startswith("5")], 1)
+    profit = income - direct - overheads
+    total_row(pl, "Net loss" if profit < 0 else "Net profit", profit)
+    finish(pl)
+
+    def is_asset(line) -> bool:
+        return net(line) > 0 if line.code == "9998" else line.type == "asset"
+
+    bs = book.create_sheet("Balance sheet")
+    _title(bs, f"{ledger.client.name} — balance sheet — {ledger.year.label}")
+    fixed = block(bs, "Fixed assets", [l for l in used if is_asset(l) and l.code < "1000"], 1)
+    current = block(bs, "Current assets", [l for l in used if is_asset(l) and l.code >= "1000"], 1)
+    owed = block(bs, "Liabilities", [l for l in used if l.type == "liability" and not is_asset(l)], -1)
+    total_row(bs, "Net assets", fixed + current - owed)
+    equity = block(bs, "Capital brought forward and paid in or out", [l for l in used if l.type == "equity"], -1)
+    _append(bs, [None, "Loss for the year" if profit < 0 else "Profit for the year", profit])
+    total_row(bs, "Capital and reserves", equity + profit)
+    finish(bs)
 
 
 def _transactions(sheet, ledger: Ledger) -> None:

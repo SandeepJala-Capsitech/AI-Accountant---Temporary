@@ -62,12 +62,12 @@ menu of six sections, all for the year picked.
 
 | Section | What it shows |
 |---|---|
-| Overview | The client's details (editable), whether the year is open or closed, and a summary: rows to review, what is unpaid on sales and purchases, whether each bank account agrees with its statements, whether the trial balance balances. The first year's opening balances are entered here. |
+| Overview | The client's details (editable), whether the year is open or closed, and a summary: rows to review, what is unpaid on sales and purchases, whether each bank account agrees with its statements, whether the trial balance balances. |
 | Documents | Upload files or import them from the client's folder; every file of the year with its status (reading, read, failed, or "Doesn't add up" for a statement that doesn't reach its printed balances); download an original. |
 | Bank | One tab for each bank account and card, with its lines for the year, its balance in the books beside the balance its statements print, and the difference. |
 | Invoices | **Sales** (invoices the client sent) and **Purchases** (bills from suppliers): the total, what has been paid, what is still owed, and the bank lines that paid it. An invoice paid in a later year shows as paid there. The site doesn't create invoices; they come from the client's files. |
 | Transactions | Every row of the year: edit, link, include, unlink, mark "Not the same", add and remove rows. |
-| Trial balance | The year's trial balance with its summary figures, the Excel export, and Close year / Reopen year. |
+| Trial balance | The year's trial balance with its summary figures, a profit and loss account and balance sheet worked from it, Add journal, the Excel export, and Close year / Reopen year. The first year's opening balances are entered here. |
 
 Rows belong to the year of their **date**: a file whose rows fall in two years puts each row in its own year. A row
 with no date waits in the year the file was added to and is flagged. A row dated before the first year starts is not

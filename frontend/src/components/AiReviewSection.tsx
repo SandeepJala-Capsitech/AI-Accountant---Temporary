@@ -7,7 +7,8 @@ import QuestionCard from '@/components/chat/QuestionCard'
 import { useClientYear } from '@/components/ClientYearContext'
 import { effectLine, type AnswerResult, type Decision } from '@/lib/chat'
 import {
-  applySuggestion, clientAnswerer, isReversed, listReviews, markReviewsSeen, newestFirst, runTitle, runWhen, undoDecision,
+  applySuggestion, clientAnswerer, isReversed, listReviews, markReviewsSeen, newestFirst, runSaid, runTitle, runWhen,
+  undoDecision,
   type ReviewDetail,
 } from '@/lib/reviews'
 
@@ -15,6 +16,9 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
 // What the background AI review did after the client's books changed: each run, newest first, with the changes it
 // made (Undo), the ones it only suggests (Apply) and the questions it asks. Opening the section marks them seen.
+const refusedLine = (n: number) =>
+  `${n} other change${n === 1 ? '' : 's'} the AI tried ${n === 1 ? 'was' : 'were'} stopped by the checks and not made.`
+
 export default function AiReviewSection() {
   const { client, year, reload } = useClientYear()
   const router = useRouter()
@@ -59,6 +63,23 @@ export default function AiReviewSection() {
     }
   }
 
+  // Every suggestion of a run still waiting, applied one after another; one the checks refuse says why and the
+  // rest go on.
+  const applyAll = async (waiting: Decision[]) => {
+    setWorking('all')
+    for (const d of waiting) {
+      setProblems(p => ({ ...p, [d.id]: '' }))
+      try {
+        await applySuggestion(client.id, d.id)
+      } catch (e) {
+        setProblems(p => ({ ...p, [d.id]: message(e) }))
+      }
+    }
+    await load()
+    await reload()
+    setWorking('')
+  }
+
   const answered = async (a: AnswerResult) => {
     const line = effectLine(a)
     if (line) setEffects(e => ({ ...e, [a.question.id]: line }))
@@ -70,10 +91,29 @@ export default function AiReviewSection() {
 
   const body = (run: ReviewDetail) => (
     <>
-      {run.decisions.length === 0 && run.questions.length === 0 && <p className="muted">Nothing to change.</p>}
-      {run.decisions.length > 0 && (
+      {run.status !== 'failed' && <p className="muted">{runSaid(run)}</p>}
+      {/* A change the checks refused was never made, and its reason is written for the AI to try again: only how
+          many there were is said. */}
+      {run.decisions.some(d => d.status === 'refused') && (
+        <p className="muted small">
+          {refusedLine(run.decisions.filter(d => d.status === 'refused').length)}
+        </p>
+      )}
+      {run.decisions.some(d => d.status !== 'refused') && (
         <div className="decisions">
-          {run.decisions.map(d => {
+          {(() => {
+            const waiting = run.decisions.filter(d => d.status === 'suggested' && !run.applied[d.id])
+            return waiting.length > 1 && (
+              <div className="question-row">
+                <button type="button" className="btn btn-small btn-primary"
+                        disabled={!!working || client.archived || year.closed} onClick={() => applyAll(waiting)}>
+                  {working === 'all' ? 'Applying…' : `Apply all ${waiting.length}`}
+                </button>
+                <span className="muted small">These are suggestions: nothing has changed yet.</span>
+              </div>
+            )
+          })()}
+          {run.decisions.filter(d => d.status !== 'refused').map(d => {
             const suggestion = d.status === 'suggested'
             const applied = suggestion && !!run.applied[d.id]
             const reversed = isReversed(run, d.id) || undone.has(d.id)
@@ -82,7 +122,7 @@ export default function AiReviewSection() {
                 <ul className="decisions"><DecisionLine decision={d} /></ul>
                 <div className="question-row">
                   {suggestion && !applied && (
-                    <button type="button" className="btn btn-small" disabled={working === d.id || client.archived || year.closed}
+                    <button type="button" className="btn btn-small" disabled={!!working || client.archived || year.closed}
                             onClick={() => change(d, 'apply')}>Apply</button>
                   )}
                   {suggestion && applied && <span className="muted small">Applied</span>}

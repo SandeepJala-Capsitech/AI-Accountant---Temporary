@@ -12,7 +12,7 @@ ENV_NAMES = (
     "LEDGERSYNC_HOST", "LEDGERSYNC_PORT", "LEDGERSYNC_RELOAD", "LEDGERSYNC_WARMUP", "LEDGERSYNC_CORS_ORIGINS",
     "LEDGERSYNC_MAX_UPLOAD_MB", "LEDGERSYNC_MAX_PDF_PAGES", "LEDGERSYNC_MAX_PARALLEL_JOBS", "LEDGERSYNC_LOG_LEVEL",
     "LEDGERSYNC_BUSINESS_NAME",
-    "OPENROUTER_API_KEY", "OPENROUTER_MODEL", "OPENROUTER_BASE_URL", "OPENROUTER_MAX_OUTPUT_TOKENS",
+    "OPENROUTER_API_KEY", "OPENROUTER_MODEL", "OPENROUTER_CHAT_MODEL", "OPENROUTER_BASE_URL", "OPENROUTER_MAX_OUTPUT_TOKENS",
     "OPENROUTER_PROVIDERS", "OPENROUTER_QUANTIZATIONS",
     "GROQ_API_KEY", "GROQ_MODEL", "GROQ_BASE_URL", "GROQ_TIMEOUT", "GROQ_MAX_OUTPUT_TOKENS",
     "GROQ_REASONING_EFFORT", "GROQ_MAX_IMAGES",
@@ -72,6 +72,9 @@ class Settings:
     # chat (it calls tools), and the chat always runs on `openrouter_model` through OpenRouter. The keys live in .env.
     openrouter_api_key: str = field(default="", repr=False)   # never printed or logged
     openrouter_model: str = "qwen/qwen3.8-27b"                # the model Groq serves, under the same name
+    # Another OpenRouter model for the accountant chat and the background review, which reason and call tools, than
+    # the one that reads the files. Empty (the default): openrouter_model does both.
+    openrouter_chat_model: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_max_output_tokens: int = 32768
     openrouter_providers: tuple[str, ...] = ("deepinfra/bf16",)
@@ -114,6 +117,11 @@ class Settings:
         return self.openrouter_model if self.openrouter_api_key else self.groq_model
 
     @property
+    def chat_model_name(self) -> str:
+        """The model the accountant chat and the background review run on, through OpenRouter."""
+        return self.openrouter_chat_model or self.openrouter_model
+
+    @property
     def base_url(self) -> str:
         return self.openrouter_base_url if self.openrouter_api_key else self.groq_base_url
 
@@ -142,6 +150,7 @@ class Settings:
             log_level=env.get("LEDGERSYNC_LOG_LEVEL", d.log_level).upper(),
             openrouter_api_key=env.get("OPENROUTER_API_KEY", "").strip(),
             openrouter_model=env.get("OPENROUTER_MODEL", d.openrouter_model).strip(),
+            openrouter_chat_model=env.get("OPENROUTER_CHAT_MODEL", d.openrouter_chat_model).strip(),
             openrouter_base_url=env.get("OPENROUTER_BASE_URL", d.openrouter_base_url).strip().rstrip("/"),
             openrouter_max_output_tokens=_number(env, "OPENROUTER_MAX_OUTPUT_TOKENS", d.openrouter_max_output_tokens),
             openrouter_providers=_names(env.get("OPENROUTER_PROVIDERS"), d.openrouter_providers),

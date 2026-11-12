@@ -2,8 +2,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Transaction } from './api.ts'
-import { possibleDuplicates } from './duplicates.ts'
-import { aboutAnotherRow, accountName, apartChange, apartStatus, canBeApart, checkHover, issueHeading, issueTitle, kindOf, needsReview, paymentRowOf, postedLedgerNote,
+import { aboutAnotherRow, acceptChange, accountName, apartChange, apartStatus, canBeAccepted, canBeApart, checkHover, issueHeading, issueTitle, kindOf, needsReview, postedLedgerNote,
          reviewSummary, rowStatus, showLabel, takesLines, totalsOf } from './ledger.ts'
 
 // A transaction as the API returns it (an unpaid rent bill), with what a test needs changed.
@@ -124,7 +123,7 @@ test('a card payment its receipt records is booked once, from the receipt', () =
   assert.equal(kindOf(card), 'not booked')
   assert.deepEqual(rowStatus(card), [{ text: "Booked from the receipt: McDonald's (£21.35, 22 Feb)",
                                        actions: [{ label: 'Unlink', change: { link: [] } }] }])
-  assert.deepEqual(rowStatus(receipt).map(s => s.text), ['Paid by card: bank line on 23 Feb'])
+  assert.deepEqual(rowStatus(receipt).map(s => s.text), ['Paid from the bank: line on 23 Feb'])
   assert.deepEqual(totalsOf([receipt, card]).map(t => [t.label, t.gross]), [['Paid out (bank)', '21.35']])
 })
 
@@ -237,6 +236,13 @@ test('the Account column shows the account name only, never its code', () => {
   assert.equal(accountName(tx({ account_code: '7402', account_name: 'Hotels' })), 'Hotels')
   assert.equal(accountName(tx({ paid_against: '2100', paid_against_name: 'Creditors' })), 'Creditors')
   assert.equal(accountName(tx({ account_code: '9999', account_name: null })), 'Unknown account')   // not in the chart
+  // what the books hold now: a row waiting for its document is in Suspense, and a line its receipt books posts nothing
+  const held = [{ code: 'needs_document', severity: 'warning' as const, message: 'Held in Suspense: needs its receipt or invoice.' }]
+  assert.equal(accountName(tx({ account_code: '7500', account_name: 'Printing', issues: held })), 'Suspense, then Printing')
+  assert.equal(accountName(tx({ account_code: '9998', account_name: 'Suspense', issues: held })), 'Suspense')
+  assert.equal(accountName(tx({ account_code: '9998', account_name: 'Suspense',
+                                recorded_by: { ref: 'r', amount: '58.00', date: null, description: 'Costco', kind: 'receipt' } })),
+               'Booked from its document')
 })
 
 test('VAT a receipt shows only in its prices is booked with one click once the VAT invoice is in', () => {
@@ -259,19 +265,10 @@ test('issues are named, and the review summary counts each kind once per row', (
   assert.deepEqual([issueHeading('total_mismatch'), issueHeading('amount_conflict')],
                    ["Total doesn't add up.", 'Which amount?'])
   for (const code of ['vat_worked_out', 'not_vat_invoice', 'date_conflict', 'file_date', 'date_from_claim',
-                      'date_from_bank', 'booked_twice', 'amount_conflict', 'no_payroll', 'wages_from_bank', 'payroll_owed_to', 'vat_not_booked', 'needs_document', 'total_worked_out', 'cis_deducted', 'payout_report', 'personal', 'subtotal_only']) assert.notEqual(issueTitle(code), 'Check this', code)
+                      'date_from_bank', 'booked_twice', 'amount_conflict', 'claimed_less', 'no_payroll', 'wages_from_bank', 'payroll_owed_to', 'vat_not_booked', 'needs_document', 'total_worked_out', 'cis_deducted', 'payout_report', 'personal', 'subtotal_only']) assert.notEqual(issueTitle(code), 'Check this', code)
   assert.deepEqual(reviewSummary([[missing, missing], [missing], [note], []]), [
     { code: 'total_mismatch', title: "Total doesn't add up", severity: 'warning', rows: 2 },
   ])
-})
-
-test("a receipt already on an expense claim is not a duplicate of the claim's other lines", () => {
-  // The 11 Sep Amazon receipt is on Jenny's claim; it was flagged as repeating the 8 Sep line of the same item.
-  const earlier = { ...tx({ document_type: 'expense_claim', document_ref: 'claim', gross: '17.99', date: '2026-09-08' }), upload_id: 1 }
-  const receipt = { ...tx({ document_type: 'receipt', document_ref: 'r', gross: '17.99', date: '2026-09-11', owed: null,
-                            claimed_in: { ref: 'claim', amount: '17.99', date: '2026-09-11', description: 'claim' } }),
-                    upload_id: 2 }
-  assert.deepEqual(possibleDuplicates([paymentRowOf(earlier), paymentRowOf(receipt)]), [null, null])
 })
 
 test('a row left out of the books or replaced by a split is not in the totals', () => {
@@ -285,17 +282,6 @@ test('a row left out of the books or replaced by a split is not in the totals', 
     // A copy of a bill left out is not owed a second time.
     assert.deepEqual(totalsOf([bill, { ...bill, document_ref: 'copy', ...out }]).map(t => [t.count, t.gross, t.stillOwed]),
                      [[1, '12000.00', '12000.00']])
-  }
-})
-
-test('a row left out of the books or replaced by a split is no longer a possible duplicate', () => {
-  // The agent kept the receipt and left out the sheet line it repeated, but both rows still said Possible duplicate.
-  const receipt = { ...tx({ document_type: 'receipt', document_ref: 'r', gross: '42.00' }), upload_id: 1, id: 1 }
-  const sheet = { ...tx({ document_type: 'receipt', document_ref: 's', gross: '42.00' }), upload_id: 2, id: 2 }
-  assert.deepEqual(possibleDuplicates([paymentRowOf(receipt), paymentRowOf(sheet)]), [null, 0])
-  for (const out of [{ excluded: true }, { superseded_by: 'decision' }]) {
-    assert.deepEqual(possibleDuplicates([paymentRowOf(receipt), paymentRowOf({ ...sheet, ...out })]), [null, null])
-    assert.deepEqual(possibleDuplicates([paymentRowOf({ ...receipt, ...out }), paymentRowOf(sheet)]), [null, null])
   }
 })
 
@@ -315,4 +301,23 @@ test('a row left out of the books or replaced by a split needs no review, whatev
   const duplicate = [{ code: 'possible_duplicate', severity: 'warning' as const, message: 'Same amount' }]
   assert.deepEqual([needsReview(tx(), duplicate), needsReview(tx({ excluded: true }), duplicate)], [true, false])
   assert.equal(needsReview(tx({ issues: [{ code: 'unusual_direction', severity: 'info', message: 'A refund?' }] })), false)
+})
+
+test('a purchase booked without its receipt says why, with a way to hold it for the receipt again', () => {
+  const booked = tx({ document_type: 'statement', without_document: 'Receipt lost',
+                      issues: [{ code: 'booked_without_document', severity: 'info', message: 'Booked without a receipt: Receipt lost; no VAT reclaimed.' }] })
+  const [line] = rowStatus(booked).filter(s => s.text.startsWith('Booked without a receipt'))
+  assert.equal(line.text, 'Booked without a receipt: Receipt lost. No VAT reclaimed')
+  assert.deepEqual(line.actions, [{ label: 'Hold for the receipt instead', change: { without_document: null } }])
+  // A reason the rules don't need (the row books anyway) shows nothing.
+  assert.deepEqual(rowStatus(tx({ document_type: 'statement', without_document: 'Lost' }))
+    .filter(s => s.text.startsWith('Booked without')), [])
+})
+
+test("a judgement warning can be marked as fine, and a hard error can't", () => {
+  assert.equal(canBeAccepted('no_vat_number'), true)
+  assert.equal(canBeAccepted('addressed_to'), true)
+  assert.equal(canBeAccepted('vat_arithmetic'), false)
+  assert.deepEqual(acceptChange(tx({ accepted: ['small_asset'] }), 'meal_check'), { accepted: ['small_asset', 'meal_check'] })
+  assert.equal(issueTitle('no_vat_number'), 'No VAT number on the invoice')
 })

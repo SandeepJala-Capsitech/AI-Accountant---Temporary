@@ -27,6 +27,7 @@ export interface Transaction {
   net: string | null            // set by the API: gross minus vat_posted
   account_code: string
   account_name?: string | null
+  contra_account_name?: string | null   // the name of the other side: a journal's credit account
   contra_account_code: string | null
   bank_account?: string | null      // a bank line: the account or card its statement is for
   currency: string
@@ -60,6 +61,9 @@ export interface Transaction {
                                      // card payment) when it agrees on all but the date (Use)
   amount_found?: string | null       // set by the API: that record's amount, when the two agree on the shop and the day (Use)
   apart_from?: number[]              // rows a person said are not the same as this one, by row id (Not the same)
+  accepted?: string[]                // warnings a person said are fine, by code (It's fine)
+  reverse_charge?: boolean           // a service from abroad with no VAT charged: the VAT is due and reclaimed
+  without_document?: string | null   // a person booked it without its receipt or invoice, for this reason
   excluded?: boolean                 // a decision left it out of the books
   superseded_by?: string | null      // the decision that replaced it with other rows
   decision_ids?: string[]            // the decisions that changed it
@@ -92,6 +96,7 @@ export interface TrialBalanceResult {
   net_profit?: string
   total_assets?: string
   total_liabilities?: string
+  left_out?: string[]             // rows with a problem to fix, left out of these figures, each named in words
 }
 
 export interface Health {
@@ -124,7 +129,7 @@ export class ApiError extends Error {
 
 const POLL_INTERVAL_MS = 1_000
 const MAX_POLL_FAILURES = 10 // ~10 s: long enough for the API to restart
-const API_DOWN = 'The Super Accountant API is not running or failed. Check that `python server.py` is running and see its log.'
+const API_DOWN = 'Super Accountant could not be reached. Try again in a moment; if it keeps happening, the person who runs it needs to check the server is up.'
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -135,7 +140,7 @@ export async function request<T>(path: string, init: RequestInit = {}, timeoutMs
     .catch(() => {
       throw controller.signal.aborted
         ? new ApiError('The Super Accountant API did not respond in time.', 'timeout')
-        : new ApiError('Cannot reach the Super Accountant API. Is `python server.py` running?', 'network')
+        : new ApiError('Super Accountant could not be reached. Try again in a moment; if it keeps happening, the person who runs it needs to check the server is up.', 'network')
     })
     .finally(() => clearTimeout(timer))
   if (!res.ok) throw await errorFrom(res)
@@ -192,10 +197,16 @@ export async function analyze(
   onProgress: (progress: string) => void,
   isCancelled: () => boolean,
 ): Promise<AnalyzeResult> {
+  return waitForJob(await startAnalysis(formData), onProgress, isCancelled)
+}
+
+// Sends an input to be analysed and returns its job's id at once: the API reads it and, for a client, saves its rows
+// whatever the page does next, so a refresh after this loses nothing.
+export async function startAnalysis(formData: FormData): Promise<string> {
   // The API takes analyses only with this header, which a form on another web site can't send.
   const init = { method: 'POST', body: formData, headers: { 'X-LedgerSync': '1' } }
   const { job_id } = await request<{ job_id: string }>('/api/analyze', init, 120_000)
-  return waitForJob(job_id, onProgress, isCancelled)
+  return job_id
 }
 
 // Polls a job (one analyze started, or one an import from the client's folder started) until it finishes.

@@ -31,6 +31,9 @@ _A, _L, _E, _I, _X = (AccountType.ASSET, AccountType.LIABILITY, AccountType.EQUI
                       AccountType.INCOME, AccountType.EXPENSE)
 
 CHART: tuple[Account, ...] = (
+    Account("0020", "Plant and Machinery", _A, V.STANDARD, "Machinery, tools and heavy equipment kept for over a year."),
+    Account("0021", "Plant and Machinery Depreciation", _A, V.OUTSIDE_SCOPE,
+            "Plant and machinery's value used up over the years (accumulated depreciation)."),
     Account("0030", "Office Equipment", _A, V.STANDARD, "Computers, printers and other equipment kept for over a year."),
     Account("0031", "Office Equipment Depreciation", _A, V.OUTSIDE_SCOPE,
             "Office equipment's value used up over the years (accumulated depreciation)."),
@@ -45,6 +48,7 @@ CHART: tuple[Account, ...] = (
     Account("0055", "Vans", _A, V.STANDARD, "Vans and other commercial vehicles bought for the business."),
     Account("0056", "Vans Depreciation", _A, V.OUTSIDE_SCOPE,
             "Vans' value used up over the years (accumulated depreciation)."),
+    Account("1001", "Stock", _A, V.OUTSIDE_SCOPE, "Goods held for sale and work in progress, as counted at the year end."),
     Account("1100", "Debtors", _A, V.OUTSIDE_SCOPE, "Money customers owe for invoices the business has sent and not yet been paid."),
     Account("1103", "Prepayments", _A, V.OUTSIDE_SCOPE, "Costs paid in advance that belong to a later period."),
     Account("1104", "CIS Deducted", _A, V.OUTSIDE_SCOPE,
@@ -63,6 +67,7 @@ CHART: tuple[Account, ...] = (
     Account("1250", "Payment Processor Clearing", _A, V.OUTSIDE_SCOPE,
             "Payouts from Stripe, PayPal, Square and the like, until their payout report books the sales and fees."),
     Account("2100", "Creditors", _L, V.OUTSIDE_SCOPE, "Money the business owes suppliers for bills it has received and not yet paid."),
+    Account("2105", "Deferred Income", _L, V.OUTSIDE_SCOPE, "Income received or invoiced for work to be done in a later period."),
     Account("2109", "Accruals", _L, V.OUTSIDE_SCOPE, "Costs for the period that have not been billed or paid yet."),
     Account("2110", "Expenses Owed to Staff", _L, V.OUTSIDE_SCOPE, "Expense claims approved for staff and not yet reimbursed."),
     Account("2200", "Sales VAT", _L, V.OUTSIDE_SCOPE, "VAT charged to customers."),
@@ -79,6 +84,8 @@ CHART: tuple[Account, ...] = (
     Account("2320", "Corporation Tax", _L, V.OUTSIDE_SCOPE,
             "Corporation tax owed to, or paid to, HMRC. Limited companies only."),
     Account("2300", "Loans", _L, V.OUTSIDE_SCOPE, "Money borrowed on a business loan, or repaid (not the interest)."),
+    Account("2310", "Hire Purchase", _L, V.OUTSIDE_SCOPE,
+            "What is owed on hire purchase or finance lease agreements, and the repayments (not the interest)."),
     Account("3000", "Ordinary Shares", _E, V.OUTSIDE_SCOPE,
             "Money shareholders paid in for shares in the company. Limited companies only."),
     Account("3010", "Capital Introduced", _E, V.OUTSIDE_SCOPE, "Money the owners put into the business."),
@@ -90,10 +97,13 @@ CHART: tuple[Account, ...] = (
             "Dividends paid out to the company's shareholders. Limited companies only."),
     Account("3260", "Drawings", _E, V.OUTSIDE_SCOPE, "Money the owner takes out for personal use."),
     Account("4000", "Sales", _I, V.STANDARD, "Money from customers for the business's goods or services."),
-    Account("4900", "Other Income", _I, V.STANDARD, "Income that is not from sales, such as bank interest received."),
+    Account("4900", "Other Income", _I, V.STANDARD, "Income that is not from sales, rent or bank interest."),
+    Account("4902", "Bank Interest Received", _I, V.EXEMPT, "Interest the bank pays on the business's accounts."),
     Account("4904", "Rent Income", _I, V.EXEMPT,
             "Rent from tenants of property the business lets, paid directly or through a letting agent."),
     Account("5000", "Purchases", _X, V.STANDARD, "Goods bought to resell or to make products that are sold; not things the business uses."),
+    Account("5002", "Subcontractor Costs", _X, V.STANDARD,
+            "Subcontractors paid to do work the business sells on to its customers."),
     Account("6201", "Advertising and Marketing", _X, V.STANDARD,
             "Advertising, marketing, promotions, online ads and sponsorship."),
     Account("7000", "Gross Wages", _X, V.OUTSIDE_SCOPE, "Salaries and wages paid to employees."),
@@ -106,7 +116,10 @@ CHART: tuple[Account, ...] = (
     Account("7103", "Business Rates", _X, V.OUTSIDE_SCOPE, "Business rates paid to the local council."),
     Account("7200", "Electricity", _X, V.STANDARD, "Electricity for the premises."),
     Account("7201", "Gas", _X, V.STANDARD, "Gas for the premises."),
+    Account("7202", "Water", _X, V.STANDARD, "Water and sewerage charges for the premises."),
     Account("7300", "Fuel and Oil", _X, V.STANDARD, "Fuel for business vehicles."),
+    Account("7301", "Vehicle Repairs and Servicing", _X, V.STANDARD, "Servicing, MOTs, tyres and repairs for business vehicles."),
+    Account("7303", "Vehicle Insurance", _X, V.EXEMPT, "Insurance for business vehicles."),
     Account("7302", "Vehicle Licences", _X, V.OUTSIDE_SCOPE, "Vehicle tax for business vehicles."),
     Account("7400", "Travel", _X, V.STANDARD, "Fares and parking for work travel; rail, bus and air fares are zero-rated."),
     Account("7402", "Hotels", _X, V.STANDARD, "Places to stay when travelling for work."),
@@ -126,7 +139,10 @@ CHART: tuple[Account, ...] = (
     Account("7801", "Cleaning", _X, V.STANDARD, "Cleaning services and supplies for the premises."),
     Account("7900", "Bank Interest Paid", _X, V.EXEMPT, "Interest charged on overdrafts or loans."),
     Account("7901", "Bank Charges", _X, V.EXEMPT, "Bank account fees and card processing fees."),
+    Account("7905", "Exchange Differences", _X, V.OUTSIDE_SCOPE,
+            "Gains and losses from exchange rates when an amount in another currency is paid."),
     Account("8000", "Depreciation", _X, V.OUTSIDE_SCOPE, "The cost of equipment and vehicles used up in the year."),
+    Account("8100", "Bad Debts", _X, V.OUTSIDE_SCOPE, "Money customers owe that will not be paid, written off."),
     Account("8200", "Donations", _X, V.OUTSIDE_SCOPE, "Gifts to charities."),
     Account("8250", "Fines and Penalties", _X, V.OUTSIDE_SCOPE,
             "Parking, speeding and other fines and penalties; not tax-deductible."),
@@ -134,6 +150,8 @@ CHART: tuple[Account, ...] = (
     Account("8203", "Training", _X, V.STANDARD, "Courses and professional development."),
     Account("8204", "Insurance", _X, V.EXEMPT, "Business insurance premiums."),
     Account("8205", "Refreshments", _X, V.ZERO, "Tea, coffee, milk, snacks and groceries for the workplace, such as from a supermarket."),
+    Account("8206", "Staff Welfare", _X, V.STANDARD, "Staff events, gifts, eye tests and other costs of looking after staff."),
+    Account("8207", "Sundry Expenses", _X, V.STANDARD, "Small business costs that fit no other account."),
     Account("8800", "Corporation Tax Charge", _X, V.OUTSIDE_SCOPE,
             "The year's corporation tax as a cost. Limited companies only."),
     Account("9998", "Suspense", _L, V.OUTSIDE_SCOPE, "Anything that cannot be placed yet; a person will check it."),
@@ -148,12 +166,21 @@ NET_WAGES, PAYE, PENSION = "2220", "2210", "2230"
 WAGES = frozenset({"7000", "7001"})   # Gross Wages, Directors' Salaries: booked from the payroll report
 VAT_LIABILITY = "2202"
 CIS_DEDUCTED, CIS_PAYABLE = "1104", "2215"
+LOANS = "2300"
 CLEARING = "1250"   # a payment processor's payouts, until its payout report books what they are made of   # the Construction Industry Scheme's tax, withheld from the business or by it
 HOTELS = "7402"
 # The bank accounts and cards a client may have, in the order they are added. Only a client's own are offered.
 BANK_SLOTS: dict[str, tuple[str, ...]] = {"current": ("1200", "1201", "1202"), "savings": ("1210", "1211"),
                                           "credit_card": ("1240", "1241"), "petty_cash": ("1230",)}
 ALL_BANK_CODES = frozenset(code for codes in BANK_SLOTS.values() for code in codes)
+CARDS = frozenset(BANK_SLOTS["credit_card"])
+
+
+def pays_cards(own: tuple[str, ...], besides: Optional[str] = None) -> Optional[str]:
+    """Of a client's own accounts, the one its card is paid off from: its first current account, or failing that its
+    first account that is neither a card nor `besides`. None when it has no such account."""
+    return next((c for c in own if c in BANK_SLOTS["current"] and c != besides),
+                next((c for c in own if c not in CARDS and c != besides), None))
 # The VAT accounts, which the trial balance lists last, after every other account.
 VAT_ACCOUNTS = frozenset({SALES_VAT, PURCHASE_VAT, VAT_LIABILITY})
 # Picked by the ledger, never chosen for a row: the VAT control accounts (the ledger splits VAT itself), the
@@ -161,7 +188,8 @@ VAT_ACCOUNTS = frozenset({SALES_VAT, PURCHASE_VAT, VAT_LIABILITY})
 # accruals, prepayments, the tax charge and where profit closes). The bank accounts, 1200 too, are the other side of
 # each posting; a row is coded to one only as a transfer from another of the client's own (see choosable).
 _LEDGER_ONLY = frozenset({SALES_VAT, PURCHASE_VAT, DEBTORS, CREDITORS, STAFF_EXPENSES, CIS_DEDUCTED, CIS_PAYABLE,
-                          "0031", "0041", "0051", "0056", "1103", "2109", OWNERS_CAPITAL, RETAINED, "8000", "8800"})
+                          "0021", "0031", "0041", "0051", "0056", "1001", "1103", "2105", "2109", OWNERS_CAPITAL,
+                          RETAINED, "7905", "8000", "8100", "8800"})
 # Accounts that exist for a limited company only, and those that exist for everyone else.
 _COMPANY_ONLY = frozenset({DIRECTORS_LOAN, "2320", SHARES, DIVIDENDS, "7001", "8800"})
 _NOT_COMPANY = frozenset({CAPITAL, DRAWINGS})

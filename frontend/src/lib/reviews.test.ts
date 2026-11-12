@@ -1,7 +1,7 @@
 // Run with: npm test.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { isReversed, newestFirst, overviewReviewLine, runTitle, unseenChanges, type ReviewDetail } from './reviews.ts'
+import { isReversed, newestFirst, overviewReviewLine, runSaid, runTitle, unseenChanges, type ReviewDetail } from './reviews.ts'
 import type { Decision, Question } from './chat.ts'
 
 const decision = (id: string, status: Decision['status']): Decision => ({
@@ -32,6 +32,12 @@ test('runTitle: omits zero parts', () => {
 
 test('runTitle: nothing to change', () => {
   assert.equal(runTitle(run(), now), 'Today 10:42, after 3 files were added: Nothing to change.')
+})
+
+test('a review still running does not say there is nothing to change', () => {
+  const running = run({ status: 'running' })
+  assert.equal(runTitle(running, now), 'Today 10:42, after 3 files were added')
+  assert.equal(runSaid(running), 'Looking through the books now.')
 })
 
 test('runTitle: suggest mode says suggested', () => {
@@ -67,4 +73,10 @@ test('unseenChanges counts applied and suggested changes of unseen done runs, no
 test('newestFirst orders by start', () => {
   const order = newestFirst([run({ id: 'old', started_at: '2026-11-01T10:00:00' }), run({ id: 'new', started_at: '2026-11-04T10:00:00' })])
   assert.deepEqual(order.map(r => r.id), ['new', 'old'])
+})
+
+test('a run says in its own words what it did, or why it changed nothing', () => {
+  assert.equal(runSaid(run({ summary: 'Rows 135 and 136 have no date and no record gives one: asked.' })),
+               'Rows 135 and 136 have no date and no record gives one: asked.')
+  assert.equal(runSaid(run()), 'Nothing to change.')
 })

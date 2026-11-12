@@ -5,12 +5,16 @@ trial balance."""
 from __future__ import annotations
 
 import datetime as dt
+import re
+from decimal import Decimal
 from pathlib import Path
 from typing import Iterable, Optional
 from weakref import WeakKeyDictionary
 
-from .accounts import BANK_SLOTS, choosable
-from .checks import long_date
+from .accounts import (BANK_SLOTS, BY_CODE, CAPITAL, CARDS, DIRECTORS_LOAN, STAFF_EXPENSES, SUSPENSE, AccountType,
+                       choosable, pays_cards)
+from .checks import ACCEPTABLE, long_date
+from .payees import card_payment
 from .errors import ClientArchived, InvalidInput, NotFound, YearClosed
 from .models import (BankAccount, BusinessSettings, Client, ClientFields, ClientPatch, ClientSummary, Ledger,
                      ManualUpload, RowPatch, Transaction)
@@ -30,6 +34,7 @@ def settings_for(client: Client) -> BusinessSettings:
     codes = bank_codes(client)
     default = next((a.code for a in client.bank_accounts if a.kind == "current"), codes[0])
     return BusinessSettings(business_name=client.name, vat_registered=client.vat_registered,
+                            vat_from=client.vat_from if client.vat_registered else None,
                             business_type=client.business_type, bank_accounts=codes, bank_account=default,
                             books_start=year_bounds(client.first_year_end, 0)[0])
 
@@ -52,6 +57,12 @@ def _choosable_codes(client: Client) -> set[str]:
 def check_bank_account(client: Client, code: str) -> None:
     if code not in bank_codes(client):
         raise InvalidInput(f"Choose one of {client.name}'s bank accounts.")
+
+
+def paid_personally(client: Client) -> tuple[str, ...]:
+    """The accounts for a receipt someone paid themselves: the owner (the director's loan in a company, capital paid
+    in otherwise), or staff who are to be repaid."""
+    return (DIRECTORS_LOAN if client.business_type == "limited_company" else CAPITAL, STAFF_EXPENSES)
 
 
 def require_active(client: Client) -> None:
@@ -113,6 +124,35 @@ def check_client(fields: ClientFields) -> None:
             raise InvalidInput(f"You can add up to {len(codes)} {_KIND_NAMES[kind]} accounts.")
 
 
+# How each of a client's references is written, spaces aside, and what to say when one isn't.
+_REFERENCE_FORMS = {
+    "company_number": (re.compile(r"^(\d{8}|[A-Z]{2}\d{6}|[A-Z]\d{7})$"),
+                       "A company number has 8 characters, such as 01234567 or SC123456."),
+    "utr": (re.compile(r"^\d{10}$"), "A UTR has 10 digits."),
+    "vat_number": (re.compile(r"^(GB|XI)?(\d{9}|\d{12})$"), "A VAT number has 9 digits, such as GB 123 4567 89."),
+    "paye_reference": (re.compile(r"^\d{3}/[A-Z0-9]{1,10}$"), "A PAYE reference looks like 123/AB456."),
+}
+YEAR_END_BACK, YEAR_END_AHEAD = 10, 2   # years before and after today a first year end may be
+MOST = Decimal("1000000000")            # an amount of a billion pounds or more is a slip of the keys
+AHEAD = dt.timedelta(days=366)          # a row typed in is dated within a year from today
+
+
+def check_references(fields: ClientFields) -> None:
+    """Each reference that is filled in is written as HMRC or Companies House writes it."""
+    for field, (form, message) in _REFERENCE_FORMS.items():
+        value = "".join(str(getattr(fields, field) or "").split()).upper()
+        if value and not form.match(value):
+            raise InvalidInput(message)
+
+
+def check_year_end(day: dt.date, today: Optional[dt.date] = None) -> None:
+    """A first year end within a few years of today: 1990, or 2062, is a slip, and would open years of empty books."""
+    today = today or dt.date.today()
+    if not today.year - YEAR_END_BACK <= day.year <= today.year + YEAR_END_AHEAD:
+        raise InvalidInput(f"Enter a first year end between {today.year - YEAR_END_BACK} and "
+                           f"{today.year + YEAR_END_AHEAD}.")
+
+
 def check_folder(folder: str) -> None:
     """A folder that is set is one on this computer. Checked when a folder is set, not on every edit: a folder that
     has since gone doesn't stop the client's other edits."""
@@ -150,8 +190,19 @@ def _accounts_in_use(store: MongoStore, client: Client) -> list[BankAccount]:
     return [a for a in client.bank_accounts if a.code in used]
 
 
+def _check_name_free(store: MongoStore, name: str, besides: Optional[int] = None) -> None:
+    """Two clients that are not archived can't share a name: their books would be told apart only by guesswork."""
+    wanted = " ".join(name.lower().split())
+    for other in store.list_clients():
+        if other.id != besides and not other.archived and " ".join(other.name.lower().split()) == wanted:
+            raise InvalidInput(f"Another client is already called {other.name}.")
+
+
 def add_client(store: MongoStore, fields: ClientFields) -> Client:
     check_client(fields)
+    check_year_end(fields.first_year_end)
+    check_references(fields)
+    _check_name_free(store, fields.name)
     check_folder(fields.folder)
     return store.create_client(fields.model_copy(update={"bank_accounts": assign_codes(fields.bank_accounts, [])}))
 
@@ -164,13 +215,32 @@ def change_client(store: MongoStore, client_id: int, patch: ClientPatch) -> Clie
     changes = {k: v for k, v in sent.items() if k != "archived" and v is not None}
     if client.closed_years and changes.get("first_year_end", client.first_year_end) != client.first_year_end:
         raise InvalidInput("The year end can't change once a year is closed.")
+    if changes.get("first_year_end", client.first_year_end) != client.first_year_end and not client.archived:
+        check_year_end(changes["first_year_end"])
+        # Rows of the books now that the new first year would start after: they would drop out, into the opening
+        # balances, with nothing said.
+        was, start = year_bounds(client.first_year_end, 0)[0], year_bounds(changes["first_year_end"], 0)[0]
+        dropped = sum(1 for row in store.rows(client_id) if row.tx.date and was <= row.tx.date < start)
+        if dropped:
+            raise InvalidInput(f"{dropped} row{'' if dropped == 1 else 's'} of the books "
+                               f"{'is' if dropped == 1 else 'are'} dated before {long_date(start)}, when the first year "
+                               "would then start, and would drop out of them. Choose an earlier year end, or remove "
+                               "those rows first.")
+    if not client.archived and any(field in changes for field in _REFERENCE_FORMS):
+        check_references(ClientFields(**{**client.model_dump(include=set(ClientFields.model_fields)), **changes}))
     for field, what in (("vat_registered", "VAT registration"), ("business_type", "business type")):
         if client.closed_years and changes.get(field, getattr(client, field)) != getattr(client, field):
             raise YearClosed(f"Reopen the closed years to change the client's {what}: it changes how they were "
                              "booked.")
+    if "vat_from" in sent and sent["vat_from"] != client.vat_from and client.closed_years and min(
+            sent["vat_from"] or dt.date.min, client.vat_from or dt.date.min) <= client.closed_years[-1].end:
+        raise YearClosed("Reopen the closed years to change when the VAT registration started: it changes how they "
+                         "were booked.")
     if changes and not client.archived:
         merged = ClientFields(**{**client.model_dump(include=set(ClientFields.model_fields)), **changes})
         check_client(merged)
+        if "name" in changes:
+            _check_name_free(store, merged.name, besides=client_id)
         if "folder" in changes:
             check_folder(merged.folder)
         if "bank_accounts" in changes:
@@ -178,6 +248,8 @@ def change_client(store: MongoStore, client_id: int, patch: ClientPatch) -> Clie
         changes = {k: getattr(merged, k) for k in changes}
     if sent.get("archived") is not None:
         changes["archived"] = sent["archived"]
+    if "vat_from" in sent and sent["vat_from"] is None:
+        changes["vat_from"] = None   # cleared
     return store.update_client(client_id, changes)
 
 
@@ -233,7 +305,8 @@ def summaries(store: MongoStore, archived: bool = False, records=None) -> list[C
 
 # A field sent as null that can't be left empty, and what to tell the person.
 _NEEDED = {"direction": "Choose money in or out.", "gross": "Enter the amount.", "account_code": "Choose an account.",
-           "document_type": "Choose a document type.", "include": "Tick or untick Include."}
+           "document_type": "Choose a document type.", "include": "Tick or untick Include.",
+           "reverse_charge": "Tick or untick Reverse charge.", "accepted": "Say which warnings are fine."}
 
 
 def _check_edit(patch: RowPatch, sent: set[str], tx: Transaction, client: Client) -> None:
@@ -242,15 +315,41 @@ def _check_edit(patch: RowPatch, sent: set[str], tx: Transaction, client: Client
             raise InvalidInput(message)
     if "description" in sent and not patch.description:
         raise InvalidInput("Enter a description.")
+    if "without_document" in sent and patch.without_document is not None and not (
+            0 < len(patch.without_document) <= 300):
+        raise InvalidInput("Say why it is booked without its receipt or invoice, in up to 300 characters.")
     if "link" in sent and (patch.document_type if "document_type" in sent else tx.document_type) not in (
             "statement", "agent_statement"):
         raise InvalidInput("Only a bank line, or an item of an agent's statement, can be linked to documents.")
     if "account_code" in sent and patch.account_code not in _choosable_codes(client):
         raise InvalidInput(f"This account can't be chosen for {client.name}.")
+    if tx.document_type == "journal" and sent - {"date", "description", "gross"}:
+        raise InvalidInput("Only a journal's date, description and amount can be changed. Remove it and enter it "
+                           "again to change its accounts.")
+    if "document_type" in sent and patch.document_type == "journal":
+        raise InvalidInput("Add a journal from the Trial balance page.")
+    if "bank_account" in sent:
+        kind = patch.document_type if "document_type" in sent else tx.document_type
+        if kind != "receipt":
+            raise InvalidInput("Only a receipt says what paid it: a bank line is on its statement's account, and an "
+                               "invoice is owed until a bank line pays it.")
+        if patch.bank_account is not None and patch.bank_account not in (*bank_codes(client), *paid_personally(client)):
+            raise InvalidInput(f"Choose one of {client.name}'s bank accounts, or who paid it themselves.")
+    if "reverse_charge" in sent and patch.reverse_charge and (
+            patch.document_type if "document_type" in sent else tx.document_type) not in ("receipt", "invoice"):
+        raise InvalidInput("The reverse charge is set on the supplier's invoice or receipt, not on the bank line.")
+    if "accepted" in sent and not set(patch.accepted) <= ACCEPTABLE:
+        raise InvalidInput("Only a warning that is a matter of judgement can be marked as fine.")
+    if "currency" in sent and patch.currency != "GBP":
+        raise InvalidInput("An amount can only be converted to pounds.")
     gross = patch.gross if "gross" in sent else tx.gross
     vat = patch.vat if "vat" in sent else tx.vat
     if gross <= 0:
         raise InvalidInput("The amount must be above zero.")
+    if gross >= MOST:
+        raise InvalidInput("That amount is too large: check it.")
+    if "date" in sent and patch.date is not None and patch.date > dt.date.today() + AHEAD:
+        raise InvalidInput("That date is more than a year ahead: check the year.")
     if vat is not None and vat < 0:
         raise InvalidInput("VAT can't be negative.")
     if vat is not None and vat >= gross:
@@ -290,7 +389,20 @@ def add_manual(store: MongoStore, client_id: int, upload: ManualUpload) -> Ledge
     if not upload.transactions:
         raise InvalidInput("Add at least one row.")
     # As in an edit: only an account of the chart this kind of business uses, so a row can always be booked.
-    if any(tx.account_code not in _choosable_codes(client) for tx in upload.transactions):
+    journals = [tx for tx in upload.transactions if tx.document_type == "journal"]
+    for tx in journals:   # between any two accounts of the chart, on a day, for an amount
+        if tx.account_code not in BY_CODE or tx.contra_account_code not in BY_CODE:
+            raise InvalidInput("Choose the account to debit and the account to credit.")
+        if tx.account_code == tx.contra_account_code:
+            raise InvalidInput("A journal debits one account and credits another.")
+        if tx.date is None or tx.gross <= 0:
+            raise InvalidInput("A journal needs a date and an amount above zero.")
+    if any(tx.gross >= MOST for tx in upload.transactions):
+        raise InvalidInput("That amount is too large: check it.")
+    if any(tx.date is not None and tx.date > dt.date.today() + AHEAD for tx in upload.transactions):
+        raise InvalidInput("That date is more than a year ahead: check the year.")
+    if any(tx.account_code not in _choosable_codes(client) for tx in upload.transactions
+           if tx.document_type != "journal"):
         raise InvalidInput(f"This account can't be chosen for {client.name}.")
     if any(tx.bank_account is not None and tx.bank_account not in bank_codes(client) for tx in upload.transactions):
         raise InvalidInput(f"Choose one of {client.name}'s bank accounts.")
@@ -300,7 +412,9 @@ def add_manual(store: MongoStore, client_id: int, upload: ManualUpload) -> Ledge
     # A dated row goes by its date; an undated one waits in the year it was added to (today's, when none is said).
     ensure_open(client, [tx.date for tx in upload.transactions], upload.year_start or dt.date.today())
     # Only a decision of the agent excludes or supersedes a row, so a row sent by hand arrives without those marks.
-    fresh = [tx.model_copy(update={"excluded": False, "superseded_by": None, "decision_ids": []})
+    fresh = [tx.model_copy(update={"excluded": False, "superseded_by": None, "decision_ids": [],
+                                   **({"vat": None, "vat_treatment": None, "bank_account": None}
+                                      if tx.document_type == "journal" else {})})
              for tx in upload.transactions]
     added = store.add_upload(client_id, upload.name.strip() or "Manual entry", upload.kind, fresh,
                              year_start=upload.year_start)
@@ -318,7 +432,20 @@ def set_upload_bank(store: MongoStore, client_id: int, upload_id: int, bank_acco
     require_active(client)
     check_bank_account(client, bank_account)
     _ensure_upload_open(store, client, upload_id)
+    lines = [r for r in store.rows(client_id) if r.upload_id == upload_id and r.tx.document_type == "statement"]
+    was = next((r.tx.bank_account for r in lines if r.tx.bank_account), None)
     store.set_upload_bank(client_id, upload_id, bank_account)
+    if bank_account in CARDS:
+        # Read as another account's statement, a payment to the card looked like money from a customer. On the card
+        # it is the card paid off: a transfer from the account the statement was on, or the one cards are paid from.
+        codes = bank_codes(client)
+        paid_from = was if was and was not in CARDS and was != bank_account else pays_cards(codes, bank_account)
+        for r in lines:
+            account = BY_CODE.get(r.tx.account_code)
+            loose = r.tx.account_code == SUSPENSE or (account is not None and account.type == AccountType.INCOME)
+            if (paid_from and r.original is None and r.tx.direction.value == "in" and loose
+                    and card_payment(r.tx.counterparty, r.tx.description)):
+                store.patch_row(client_id, r.id, {"account_code": paid_from})
     return _books().ledger_of(store, client_id, _year_of(store, client, upload_id=upload_id))
 
 

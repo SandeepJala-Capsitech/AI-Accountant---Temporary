@@ -441,6 +441,31 @@ def test_a_payment_processors_payout_goes_to_clearing_not_sales():
     assert t.account_code == "1250"
 
 
+CARD_PAID = dict(ROW, description="PAYMENT RECEIVED - THANK YOU", amount=850.00, direction="in",
+                 account="4000 Sales", document_type="statement", counterparty="PAYMENT RECEIVED - THANK YOU")
+ON_CARD = BusinessSettings(bank_account="1240", bank_accounts=("1200", "1210", "1240"))
+
+
+def test_a_payment_to_a_card_is_a_transfer_from_the_bank_not_a_sale():
+    # Kestrel's Amex statement: the £850 paid to the card was booked as a sale, and again from the bank line.
+    [paid] = to_transactions([CARD_PAID], source="table", settings=ON_CARD)
+    assert (paid.account_code, issues_of(paid)) == ("1200", [])
+    # A refund from a shop is not worded as a payment: left as read, and said to be neither a sale nor a payment.
+    [refund] = to_transactions([dict(CARD_PAID, description="DELL UK REFUND", counterparty="DELL UK")],
+                               source="table", settings=ON_CARD)
+    assert refund.account_code == "4000"
+    [on_card] = match([refund.model_copy(update={"bank_account": "1240"})], ON_CARD)
+    assert "card_credit" in [code for code, _ in issues_of(checked_again(on_card))]
+    # The same words on a current account's statement are a customer's payment.
+    [sale] = to_transactions([CARD_PAID], source="table", settings=BusinessSettings())
+    assert sale.account_code == "4000"
+
+
+def checked_again(t):
+    from ledgersync.checks import normalise
+    return normalise(t, ON_CARD)
+
+
 @pytest.mark.parametrize("change", [{"direction": "out", "amount": -20.0, "account": "7504 Office Stationery"},
                                     {"counterparty": "Fenwick Builders Ltd", "description": "Fenwick Builders, AJ-2041"}])
 def test_money_paid_out_through_a_processor_or_a_customers_payment_is_left_as_read(change):
@@ -482,3 +507,98 @@ def test_a_rows_vat_that_is_its_share_of_a_printed_vat_total_is_kept():
     texts = to_transactions(rows, source="pdf", settings=BusinessSettings(), text="Paper 50.00\nCalls 25.00\nVAT 15.00\n"
                                                                                   "Total 90.00")
     assert [t.vat for t in texts] == [Decimal("10.00"), Decimal("5.00")]
+
+
+APPLE = dict(ROW, description="MacBook Pro", amount=2400.0, vat=400.0, account="0030 Office Equipment",
+             document_type="receipt", counterparty="Apple Retail UK Limited", document_total=2400.0)
+
+
+def test_a_receipt_that_calls_itself_a_vat_invoice_is_an_invoice():
+    # Kestrel's Apple "Receipt / VAT Invoice" was held in Suspense and asked for again as "the full VAT invoice".
+    [t] = to_transactions([APPLE], source="text", settings=BusinessSettings(),
+                          text="Apple Retail UK Limited\nReceipt / VAT Invoice R123\nTotal £2,400.00 VAT 400.00")
+    assert t.document_type == "invoice"
+    [kept] = to_transactions([APPLE], source="text", settings=BusinessSettings(),
+                             text="Card receipt\nTHIS IS NOT A VAT INVOICE\nTotal £2,400.00 VAT 400.00")
+    assert kept.document_type == "receipt"
+    [plain] = to_transactions([APPLE], source="text", settings=BusinessSettings(), text="Till receipt Total £2,400.00 400.00")
+    assert plain.document_type == "receipt"
+
+
+SOLE = BusinessSettings(business_type="sole_trader", vat_registered=False)
+COMPANY = BusinessSettings(business_type="limited_company")
+
+
+def bank_out(description, account, **kw):
+    return dict(ROW, description=description, counterparty=description, amount=-850.0, account=account,
+                document_type="statement", **kw)
+
+
+def test_the_owners_own_bills_go_to_the_owner_not_to_loans_or_suspense():
+    # Hollis Plumbing: the mortgage went to Loans and the Self Assessment payment to Suspense, asking for a VAT invoice.
+    mortgage, tax = to_transactions([bank_out("NATIONWIDE MORTGAGE", "2300 Loans"),
+                                     bank_out("HMRC SELF ASSESSMENT 1234567890K", "9998 Suspense")],
+                                    source="table", settings=SOLE)
+    assert (mortgage.account_code, tax.account_code) == ("3260", "3260")
+    assert "personal" in [code for code, _ in issues_of(tax)] and "account_unclear" not in [c for c, _ in issues_of(tax)]
+    # A company may have a mortgage of its own; its director's Self Assessment is still the director's.
+    mortgage, tax = to_transactions([bank_out("NATIONWIDE MORTGAGE", "2300 Loans"),
+                                     bank_out("HMRC SELF ASSESSMENT 1234567890K", "9998 Suspense")],
+                                    source="table", settings=COMPANY)
+    assert (mortgage.account_code, tax.account_code) == ("2300", "2250")
+
+
+def test_a_payment_on_account_is_held_on_the_customer_not_booked_as_a_sale():
+    # Kestrel: "Orbit Media Ltd, payment on account" £1,000 went straight to Sales with no invoice.
+    paid = dict(ROW, description="Orbit Media Ltd, payment on account", counterparty="Orbit Media Ltd", amount=1000.0,
+                direction="in", account="4000 Sales", document_type="statement")
+    [t] = to_transactions([paid], source="table", settings=BusinessSettings())
+    assert t.account_code == "1100" and ("on_account", "info") in issues_of(t)
+    [sale] = to_transactions([dict(paid, description="Orbit Media Ltd KD-101")], source="table", settings=BusinessSettings())
+    assert sale.account_code == "4000"
+
+
+def test_a_persons_payroll_lines_that_add_up_to_no_printed_gross_are_flagged():
+    # Kestrel's January payroll: the totals agreed, but £35 had moved from one person to the other.
+    def line(who, amount, owed_to):
+        return payroll_row(description=f"{who} {owed_to}", counterparty=who, amount=amount, owed_to=owed_to, account="7000")
+    text = "J Kestrel gross 3,000.00  A Patel gross 3,000.00  Total 6,000.00"
+    rows = [line("J Kestrel", 2400.0, "net_pay"), line("J Kestrel", 560.0, "paye_ni"), line("J Kestrel", 75.0, "pension"),
+            line("A Patel", 2350.0, "net_pay"), line("A Patel", 575.0, "paye_ni"), line("A Patel", 75.0, "pension")]
+    read = to_transactions(rows, source="text", settings=BusinessSettings(), text=text)
+    flagged = [t.counterparty for t in read if any(i.code == "payroll_person" for i in t.issues)]
+    assert flagged == ["J Kestrel"]      # 3,035.00 is nobody's gross; A Patel's 3,000.00 is printed
+
+
+OKAFOR = dict(ROW, direction="out", document_type="invoice", counterparty="D Okafor Bricklaying", document_number="17",
+              document_total=1000.0, document_net=1200.0, not_vat_invoice=True, cis_deducted=200.0)
+OKAFOR_TEXT = ("Labour 1,000.00\nMaterials 200.00\nInvoice total 1,200.00\n"
+               "Less CIS deduction at 20% on labour only (200.00)\nAmount payable 1,000.00")
+
+
+def test_one_cis_deduction_on_an_invoice_of_two_lines_is_booked_once():
+    # The reader took the deduction off the labour line and repeated the figure on both lines.
+    labour, materials = to_transactions([
+        dict(OKAFOR, description="Labour", amount=800.0, account="5002 Subcontractor Costs"),
+        dict(OKAFOR, description="Materials", amount=200.0, account="5000 Purchases")],
+        source="text", settings=BusinessSettings(), text=OKAFOR_TEXT)
+    assert (labour.gross, labour.cis_deducted, labour.net) == (Decimal("800.00"), Decimal("200.00"), Decimal("1000.00"))
+    assert (materials.gross, materials.cis_deducted, materials.net) == (Decimal("200.00"), None, Decimal("200.00"))
+
+
+def test_lines_read_before_the_cis_deduction_come_to_the_amount_due():
+    labour, materials = to_transactions([
+        dict(OKAFOR, description="Materials", amount=200.0, account="5000 Purchases"),
+        dict(OKAFOR, description="Labour", amount=1000.0, account="5002 Subcontractor Costs")][::-1],
+        source="text", settings=BusinessSettings(), text=OKAFOR_TEXT)
+    assert (labour.gross, labour.cis_deducted, labour.net) == (Decimal("800.00"), Decimal("200.00"), Decimal("1000.00"))
+    assert (materials.gross, materials.cis_deducted) == (Decimal("200.00"), None)
+
+
+def test_a_line_of_a_longer_invoice_is_not_given_a_cis_deduction_from_its_text():
+    # Only an invoice of one row can have its deduction worked out from the printed net: a line's own gap means nothing.
+    labour, materials = to_transactions([
+        dict(OKAFOR, description="Labour", amount=800.0, account="5002 Subcontractor Costs", cis_deducted=200.0),
+        dict(OKAFOR, description="Materials", amount=200.0, account="5000 Purchases", cis_deducted=None)],
+        source="text", settings=BusinessSettings(), text=OKAFOR_TEXT)
+    assert (labour.cis_deducted, materials.cis_deducted) == (Decimal("200.00"), None)

@@ -1,6 +1,7 @@
 // Calls for clients and their saved ledgers (design of 2026-10-06). Paths go through the Next rewrite,
 // like every other call in api.ts.
 import { request, type Settlement, type Transaction, type TrialBalanceResult } from './api'
+import type { ReadingFile } from './clientRules'
 
 export type BusinessType = 'limited_company' | 'sole_trader' | 'partnership' | 'llp'
 
@@ -21,10 +22,16 @@ export interface ClientFields {
   contact_email: string
   contact_phone: string
   vat_registered: boolean
+  vat_from?: string | null   // the day the VAT registration started; '' or null: registered throughout
   first_year_end: string     // the end of the first year the books are kept for: "2026-03-31"
   bank_accounts: BankAccount[]
   folder: string             // where the client's files are on the computer the site runs on; '' for none
   ai_review?: AiReviewMode   // what the background review may do; automatic when not given
+  // The client's references, as its papers print them; '' when not known.
+  company_number?: string
+  utr?: string
+  vat_number?: string
+  paye_reference?: string
 }
 
 export interface ClosedYear {
@@ -68,13 +75,13 @@ export interface Upload {
 }
 
 export type EditableField =
-  'date' | 'description' | 'counterparty' | 'direction' | 'gross' | 'vat' | 'account_code' | 'document_type'
+  'date' | 'description' | 'counterparty' | 'direction' | 'gross' | 'vat' | 'account_code' | 'document_type' | 'vat_treatment'
 
 export interface SavedRow extends Transaction {
   id: number
   upload_id: number
   edited: boolean
-  original: Partial<Record<EditableField, string | null>> | null   // what was read, once a person edits
+  original: Partial<Record<EditableField | 'currency', string | null>> | null   // what was read, once a person edits
 }
 
 export interface Year {
@@ -99,7 +106,12 @@ export type RowChange = Partial<Record<EditableField, string | null>> & {
   link?: string[] | null
   include?: boolean
   apart_from?: number[]
+  without_document?: string | null   // book it without its receipt or invoice, for this reason; null: hold it again
   revert?: boolean
+  currency?: string                  // 'GBP': the amount, read in another currency, is now in pounds
+  bank_account?: string | null       // what paid a receipt: one of the client's accounts, or who paid it themselves
+  accepted?: string[]                // the warnings a person said are fine, by code
+  reverse_charge?: boolean           // a service from abroad with no VAT charged
 }
 
 // Money is a string everywhere below, like the rest of the API.
@@ -134,6 +146,7 @@ export interface InvoiceSummary {
   owed: string               // still owed after every payment matched to it, in any year
   paid_by: Settlement[]
   brought_forward: boolean   // dated before the year and still owed when it started
+  credit_note?: boolean      // the money goes the other way: its amounts are shown as minus
 }
 
 // A bank account's balance in the books against its latest statement of the year, both as the statement prints it.
@@ -145,6 +158,7 @@ export interface BankCheck {
   statement: string | null
   statement_date: string | null
   difference: string | null  // books less statement
+  left_out?: number          // rows with a problem to fix, which the books figure is worked out without
 }
 
 export interface YearSummary {
@@ -182,7 +196,17 @@ const inYear = (id: number, start: string) => `/api/clients/${id}/years/${start}
 export const getYears = (id: number) => request<Year[]>(`/api/clients/${id}/years`)
 export const getYearLedger = (id: number, start: string) => request<Ledger>(`${inYear(id, start)}/ledger`)
 export const getYearTrialBalance = (id: number, start: string) =>
-  request<TrialBalanceResult>(`${inYear(id, start)}/trial-balance`)
+  request<TrialBalanceResult>(`${inYear(id, start)}/trial-balance?shown=true`)
+// The nine boxes of a VAT return for a period of a year, as a guide: money as strings, like the rest of the API.
+export interface VatFigures {
+  start: string
+  end: string
+  box1: string; box2: string; box3: string; box4: string; box5: string
+  box6: string; box7: string; box8: string; box9: string
+  notes: string[]
+}
+export const getVatFigures = (id: number, start: string, from: string, to: string) =>
+  request<VatFigures>(`${inYear(id, start)}/vat?period_start=${from}&period_end=${to}`)
 export const getInvoices = (id: number, start: string) => request<InvoiceSummary[]>(`${inYear(id, start)}/invoices`)
 export const getBankChecks = (id: number, start: string) => request<BankCheck[]>(`${inYear(id, start)}/bank`)
 export const getSummary = (id: number, start: string) => request<YearSummary>(`${inYear(id, start)}/summary`)
@@ -212,9 +236,9 @@ export const setUploadBank = (id: number, uploadId: number, code: string) =>
 export const changeRow = (id: number, rowId: number, change: RowChange) =>
   request<Ledger>(`/api/clients/${id}/rows/${rowId}`, send('PATCH', change))
 // Rows a person types in, added to the year start names: a row without a date waits in that year.
-export const addManualRows = (id: number, transactions: Transaction[], yearStart: string) =>
+export const addManualRows = (id: number, transactions: Transaction[], yearStart: string, name = 'Manual entry') =>
   request<Ledger>(`/api/clients/${id}/uploads`,
-                  send('POST', { name: 'Manual entry', kind: 'manual', transactions, year_start: yearStart }))
+                  send('POST', { name, kind: 'manual', transactions, year_start: yearStart }))
 export const removeRow = (id: number, rowId: number) =>
   request<Ledger>(`/api/clients/${id}/rows/${rowId}`, { method: 'DELETE' })
 export const removeUpload = (id: number, uploadId: number) =>
@@ -223,3 +247,6 @@ export const removeUpload = (id: number, uploadId: number) =>
 export const listAccounts = (clientId: number) => request<AccountChoice[]>(`/api/accounts?client_id=${clientId}`)
 // The whole chart, with the accounts a row is never coded to (Debtors, Creditors, the reserves) that opening balances use.
 export const listChart = () => request<AccountChoice[]>('/api/accounts')
+
+// The files the API is reading for the client now, after a refresh as well: the page lists them until each is saved.
+export const getReading = (clientId: number) => request<ReadingFile[]>(`/api/clients/${clientId}/reading`)

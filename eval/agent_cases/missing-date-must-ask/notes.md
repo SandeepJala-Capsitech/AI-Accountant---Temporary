@@ -25,8 +25,9 @@ asking nothing.
 ## Conventions
 
 - A bank line posts against 1200 with no VAT.
-- A receipt with no card payment is booked against 1200 too: the app treats a receipt as paid when it is
-  issued.
+- A receipt is booked as paid from 1200 when it is issued. Once it has a date and the statement has lines either
+  side of that day with no payment of it, the bank did not pay it (it was cash): it is kept off the bank, in 9998
+  Suspense, with a note, until a person says what paid it.
 - Under £50 no document is needed. With no VAT shown, none is reclaimed.
 
 ## Rows and their double entry
@@ -35,7 +36,7 @@ asking nothing.
 |---|---|---|---|---|---|---|---|---|
 | B1 | 03/10/2026 | Barclays | BT GROUP PLC | 42.00 | none | under £50, no document needed | 7502 42.00 | 1200 42.00 |
 | B2 | 30/10/2026 | Barclays | BARCLAYS ACCOUNT FEE | 8.50 | none | under £50 | 7901 8.50 | 1200 8.50 |
-| T1 | **none**, then 08/10/2026 from the answer | Taxi receipt | Leeds City Cabs taxi, Leeds Station to Kirkstall | 18.00 | none | receipt under £50 with no VAT: book the gross | 7400 18.00 | 1200 18.00 |
+| T1 | **none**, then 08/10/2026 from the answer | Taxi receipt | Leeds City Cabs taxi, Leeds Station to Kirkstall | 18.00 | none | receipt under £50 with no VAT: book the gross | 7400 18.00 | 9998 18.00 |
 
 T1 is booked while undated. It waits in the year it was added to (1 Apr 2026), so the trial balance is the same
 before and after the answer. Only its date changes.
@@ -59,7 +60,8 @@ can't apply. The answer makes one decision:
 
 | Account | Debits | Credits | Net |
 |---|---|---|---|
-| 1200 Bank Current Account | | 42.00 + 8.50 + 18.00 = 68.50 | **-68.50** |
+| 1200 Bank Current Account | | 42.00 + 8.50 = 50.50 | **-50.50** |
+| 9998 Suspense | | 18.00 (the cash taxi, until someone says what paid it) | **-18.00** |
 | 7400 Travel | 18.00 | | **18.00** |
 | 7502 Telephone and Internet | 42.00 | | **42.00** |
 | 7901 Bank Charges | 8.50 | | **8.50** |

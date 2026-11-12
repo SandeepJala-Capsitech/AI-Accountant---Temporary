@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react'
 import { useClientYear } from '@/components/ClientYearContext'
 import { getBankChecks, type BankCheck } from '@/lib/clients'
 import { accountName, leftOut, money } from '@/lib/ledger'
-import { bankCheckNotice, bankCheckText, defaultBank, fullDate, linesCount, linesFor } from '@/lib/sections'
+import { bankBalance, bankCheckNotice, bankCheckText, defaultBank, fullDate, linesCount, linesFor } from '@/lib/sections'
 import { sectionHref } from '@/lib/years'
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
@@ -62,11 +62,17 @@ export default function BankSection() {
         {check && (
           <div className={`notice ${Number(check.difference ?? 0) === 0 && check.statement !== null ? 'notice-info' : 'notice-warn'}`}>
             <span>
-              {bankCheckText(check)}
+              {bankCheckText(check, lines.length)}
               {check.statement !== null && (
-                <span className="muted"> In the books {money(check.books)}; on the statement {money(check.statement)}.</span>
+                <span className="muted"> In the books {bankBalance(check.books, check.kind)}; on the statement {bankBalance(check.statement, check.kind)}.</span>
               )}
             </span>
+          </div>
+        )}
+        {!!check?.left_out && (
+          <div className="notice notice-warn">
+            {check.left_out} row{check.left_out === 1 ? '' : 's'} of the year with a problem to fix
+            {check.left_out === 1 ? ' is' : ' are'} left out of the books figure. Fix {check.left_out === 1 ? 'it' : 'them'} in Transactions.
           </div>
         )}
         {!lines.length ? <p className="muted">No lines on this account in this year.</p> : (

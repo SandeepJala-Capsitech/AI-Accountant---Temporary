@@ -18,7 +18,8 @@ export interface ReviewRun {
   to_seq: number
   decision_ids: string[]
   question_ids: string[]
-  looked_at: string[]
+  looked_at: number[]
+  issues_seen?: string[]    // the issues it was shown, as "row:code:digest" keys
   summary: string
   error: string
   seen: boolean
@@ -84,8 +85,14 @@ export function runTitle(run: ReviewDetail, now: Date = new Date()): string {
     asked ? `asked ${asked}` : '',
   ].filter(Boolean)
   const head = [runWhen(run.started_at, now), run.trigger_summary].filter(Boolean).join(', ')
+  // A review still running has not yet found nothing: it says what it has done so far, or only when it started.
+  if (!parts.length && run.status === 'running') return head
   return `${head}: ${parts.length ? parts.join(', ') : 'Nothing to change.'}`
 }
+
+// What the run said it did, or why it changed nothing, in its own words; "Nothing to change." when it said nothing.
+export const runSaid = (run: ReviewDetail): string =>
+  run.summary.trim() || (run.status === 'running' ? 'Looking through the books now.' : 'Nothing to change.')
 
 // The Overview's line about the last run; null when the client has had none.
 export function overviewReviewLine(lastRunAt: string | null, unseen: number): string | null {

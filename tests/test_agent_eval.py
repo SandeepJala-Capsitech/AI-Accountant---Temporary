@@ -194,8 +194,9 @@ def _store_rows(mongo_store, *rows):
     import datetime as dt
     from ledgersync import ledger
     from ledgersync.models import ClientFields, Transaction
-    client = ledger.add_client(mongo_store, ClientFields.model_validate(json.loads(
-        (ROOT / "eval" / "agent_cases" / "clean-month" / "client.json").read_text())))
+    fields = json.loads((ROOT / "eval" / "agent_cases" / "clean-month" / "client.json").read_text())
+    fields["name"] = f'{fields["name"]} {len(mongo_store.list_clients()) + 1}'   # two clients can't share a name
+    client = ledger.add_client(mongo_store, ClientFields.model_validate(fields))
     mongo_store.add_upload(client.id, "x.csv", "table", [Transaction.model_validate(r) for r in rows],
                            year_start=dt.date(2026, 4, 1))
     return client.id

@@ -112,6 +112,31 @@ def test_a_years_invoices_bank_checks_and_summary_are_served(api):
         assert client.get(f"/api/clients/{cid}/years/2020-04-01/{view}").status_code == 404
 
 
+def test_an_amount_in_another_currency_is_converted_by_an_edit_and_revert_puts_it_back(api):
+    client = api()
+    cid = add(client)["id"]
+    manual(client, cid, {**BILL, "gross": "500.00", "currency": "USD", "document_total": "500.00"})
+    year = f"/api/clients/{cid}/years/{YEAR}"
+    [read] = client.get(f"{year}/ledger").json()["transactions"]
+    assert [i["code"] for i in read["issues"]] == ["non_gbp_currency"]
+    # the trial balance still shows, without the row, and says it is left out; so does the bank check
+    assert client.get(f"{year}/trial-balance").status_code == 422
+    blocked = client.get(f"{year}/trial-balance?shown=true")
+    assert blocked.status_code == 200 and (blocked.json()["lines"], len(blocked.json()["left_out"])) == ([], 1)
+    assert "Read as USD 500.00" in blocked.json()["left_out"][0]
+    assert [c["left_out"] for c in client.get(f"{year}/bank").json()] == [1]
+    refused = client.patch(f"/api/clients/{cid}/rows/{read['id']}", json={"currency": "EUR"})
+    assert (refused.status_code, refused.json()["detail"]["message"]) == (
+        422, "An amount can only be converted to pounds.")
+    [row] = client.patch(f"/api/clients/{cid}/rows/{read['id']}",
+                         json={"gross": "396.42", "currency": "GBP"}).json()["transactions"]
+    assert (row["gross"], row["currency"], row["issues"], row["original"]["currency"]) == ("396.42", "GBP", [], "USD")
+    fixed = client.get(f"{year}/trial-balance?shown=true")
+    assert fixed.status_code == 200 and fixed.json()["left_out"] == [] and fixed.json()["lines"]
+    [back] = client.patch(f"/api/clients/{cid}/rows/{read['id']}", json={"revert": True}).json()["transactions"]
+    assert (back["gross"], back["currency"], back["document_total"]) == ("500.00", "USD", "500.00")
+
+
 def test_links_and_edits_rematch_the_ledger_and_revert_undoes_an_edit(api):
     client = api()
     cid = add(client)["id"]
@@ -382,7 +407,7 @@ def test_a_client_is_saved_with_its_bank_accounts_and_cards(api):
     added = add(client, bank_accounts=TWO_ACCOUNTS)
     assert [(a["code"], a["name"], a["kind"]) for a in added["bank_accounts"]] == [
         ("1200", "Barclays current", "current"), ("1240", "Amex card", "credit_card")]
-    assert add(client)["bank_accounts"] == [{"code": "1200", "name": "Bank current account", "kind": "current"}]
+    assert add(client, name="Second Cube Ltd")["bank_accounts"] == [{"code": "1200", "name": "Bank current account", "kind": "current"}]
     codes = {a["code"] for a in client.get(f"/api/accounts?client_id={added['id']}").json()}
     assert {"1200", "1240"} <= codes and "1241" not in codes
 
@@ -416,6 +441,21 @@ def test_a_statement_sent_with_its_account_is_saved_on_it_and_can_be_moved(api):
     assert "1200 Bank Current Account" in model.calls[0]["messages"][0]["content"]   # paying the card off
     moved = client.patch(f"/api/clients/{cid}/uploads/{upload['id']}", json={"bank_account": "1200"}).json()
     assert (moved["uploads"][0]["bank_account"], moved["transactions"][0]["contra_account_code"]) == ("1200", "1200")
+
+
+def test_a_card_statement_read_on_the_bank_account_is_put_right_when_it_is_moved_to_the_card(api):
+    paid = {"description": "PAYMENT RECEIVED - THANK YOU", "date": "2026-09-06", "amount": 850.0, "direction": "in",
+            "account": "4000 Sales", "vat": None, "currency": "GBP", "document_type": "statement",
+            "counterparty": "PAYMENT RECEIVED - THANK YOU"}
+    client = api(FakeModel([json.dumps({"transactions": [paid]})]))
+    cid = client_with_two_accounts(client)
+    job = client.post("/api/analyze", data={"client_id": str(cid), "text": "Amex lines", "bank_account": "1200"}).json()
+    assert finish(client, job["job_id"])["status"] == "succeeded"
+    ledger = client.get(f"/api/clients/{cid}/years/{YEAR}/ledger").json()
+    assert ledger["transactions"][0]["account_code"] == "4000"
+    moved = client.patch(f"/api/clients/{cid}/uploads/{ledger['uploads'][0]['id']}", json={"bank_account": "1240"}).json()
+    [line] = moved["transactions"]
+    assert (line["bank_account"], line["account_code"], line["issues"]) == ("1240", "1200", [])
 
 
 def test_a_bank_account_the_client_does_not_have_is_refused(api):
@@ -548,10 +588,10 @@ def test_import_without_a_folder_is_refused(api):
 def test_a_folder_that_is_set_must_exist(api, tmp_path):
     client = api()
     assert add(client, folder=str(tmp_path))["folder"] == str(tmp_path)
-    missing = client.post("/api/clients", json={**CUBE, "folder": str(tmp_path / "nope")})
+    missing = client.post("/api/clients", json={**CUBE, "name": "Folder Cube Ltd", "folder": str(tmp_path / "nope")})
     assert (missing.status_code, missing.json()["detail"]["message"]) == (
         422, "That folder doesn't exist on this computer.")
-    cid = add(client)["id"]
+    cid = add(client, name="Third Cube Ltd")["id"]
     assert client.patch(f"/api/clients/{cid}", json={"folder": str(tmp_path)}).json()["folder"] == str(tmp_path)
     assert client.patch(f"/api/clients/{cid}", json={"folder": ""}).json()["folder"] == ""
 
@@ -632,3 +672,74 @@ def test_a_file_is_read_again_after_its_job_failed(api, tmp_path):
     assert finish(client, first["job_id"])["status"] == "failed"
     [again] = import_folder(client, cid).json()["jobs"]    # nothing was saved, and nothing is still reading it
     assert finish(client, again["job_id"])["status"] == "succeeded"
+
+
+def upload_file(client, cid, data=BT_CSV, name="bt.csv"):
+    return client.post("/api/analyze", data={"client_id": str(cid), "year_start": YEAR},
+                       files={"file": (name, data, "text/csv")})
+
+
+def test_a_file_already_saved_for_the_client_is_refused_whatever_its_name(api):
+    client = api(FakeModel([transactions_json(ROW)]))
+    cid = add(client)["id"]
+    assert finish(client, upload_file(client, cid).json()["job_id"])["status"] == "succeeded"
+    resp = upload_file(client, cid, name="bt (copy).csv")
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "same_file"
+    assert "bt.csv" in resp.json()["detail"]["message"]
+    assert len(client.get(f"/api/clients/{cid}/years/{YEAR}/ledger").json()["uploads"]) == 1
+
+
+def test_a_file_still_being_read_for_the_client_is_refused(api):
+    gate = threading.Event()
+    client = api(GatedModel([transactions_json(ROW)], gate))
+    cid = add(client)["id"]
+    try:
+        first = upload_file(client, cid).json()
+        resp = upload_file(client, cid, name="again.csv")
+        assert resp.status_code == 409 and "still being read" in resp.json()["detail"]["message"]
+    finally:
+        gate.set()
+    assert finish(client, first["job_id"])["status"] == "succeeded"
+
+
+def test_the_files_being_read_for_a_client_are_listed_until_they_are_saved(api):
+    gate = threading.Event()
+    client = api(GatedModel([transactions_json(ROW)], gate))
+    cid = add(client)["id"]
+    try:
+        job_id = upload_file(client, cid).json()["job_id"]
+        [reading] = client.get(f"/api/clients/{cid}/reading").json()
+        assert (reading["job_id"], reading["name"], reading["year_start"]) == (job_id, "bt.csv", YEAR)
+        assert reading["status"] in ("queued", "running")
+    finally:
+        gate.set()
+    finish(client, job_id)
+    assert client.get(f"/api/clients/{cid}/reading").json() == []
+
+
+def test_a_receipt_the_statement_does_not_show_is_parked_until_a_person_says_who_paid(api):
+    client = api()
+    cid = add(client)["id"]
+    line = {**LINE, "counterparty": "NATWEST", "description": "Charges", "account_code": "7901", "gross": "14.50"}
+    tv = {"direction": "out", "gross": "499.00", "account_code": "0030", "date": "2026-05-16", "description": "TV",
+          "document_type": "receipt", "counterparty": "Currys", "document_ref": "tv"}
+    manual(client, cid, {**line, "date": "2026-05-11", "document_ref": "a"},
+           {**line, "date": "2026-05-22", "document_ref": "b"}, tv)
+    rows = client.get(f"/api/clients/{cid}/years/{YEAR}/ledger").json()["transactions"]
+    parked = next(r for r in rows if r["document_type"] == "receipt")
+    assert parked["contra_account_code"] == "9998" and [i["code"] for i in parked["issues"]] == [
+        "needs_document", "not_on_statement"] or [i["code"] for i in parked["issues"]] == ["not_on_statement",
+                                                                                         "needs_document"]
+    bank = next(c for c in client.get(f"/api/clients/{cid}/years/{YEAR}/bank").json() if c["code"] == "1200")
+    assert bank["books"] == "-29.00"           # only the two bank lines: the receipt is not on the bank
+
+    refused = client.patch(f"/api/clients/{cid}/rows/{parked['id']}", json={"bank_account": "7400"})
+    assert (refused.status_code, refused.json()["detail"]["message"]) == (
+        422, "Choose one of Business Cube Ltd's bank accounts, or who paid it themselves.")
+    on_a_line = client.patch(f"/api/clients/{cid}/rows/{rows[0]['id']}", json={"bank_account": "2250"})
+    assert on_a_line.status_code == 422 and on_a_line.json()["detail"]["message"].startswith("Only a receipt says")
+
+    said = client.patch(f"/api/clients/{cid}/rows/{parked['id']}", json={"bank_account": "2250"}).json()
+    paid = next(r for r in said["transactions"] if r["id"] == parked["id"])
+    assert paid["contra_account_code"] == "2250" and "not_on_statement" not in [i["code"] for i in paid["issues"]]

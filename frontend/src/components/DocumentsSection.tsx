@@ -13,7 +13,7 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 // A client's year: adding documents (upload, paste, by hand, or from the client's folder) and the files it holds.
 // A closed year or an archived client shows the files only.
 export default function DocumentsSection() {
-  const { client, year, ledger, reload } = useClientYear()
+  const { client, year, ledger, reload, reading, checkReading } = useClientYear()
   const { ask, dialog: confirmDialog } = useConfirm()
   const [error, setError] = useState('')
   const readOnly = year.closed || client.archived
@@ -35,7 +35,8 @@ export default function DocumentsSection() {
       {error && <div className="notice notice-error">{error}</div>}
       {!readOnly && (
         <AddDocuments clientId={client.id} yearStart={year.start} bankAccounts={client.bank_accounts}
-                      folder={client.folder} uploads={ledger.uploads} onSaved={reload} />
+                      company={client.business_type === 'limited_company'} folder={client.folder} uploads={ledger.uploads} reading={reading} onSaved={reload}
+                      onSent={checkReading} />
       )}
       <UploadsList uploads={ledger.uploads} bankAccounts={client.bank_accounts} readOnly={readOnly}
                    onRemove={remove} onBank={(upload, code) => act(() => setUploadBank(client.id, upload.id, code))} />

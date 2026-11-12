@@ -40,7 +40,8 @@ def test_a_model_may_choose_any_account_but_the_control_accounts():
     # closes, and the CIS tax withheld on an invoice (from the invoice's CIS deduction). The bank, 1200, is offered
     # only to a client with another account, for a transfer between them.
     ledger_only = {"2200", "2201", "1100", "2100", "2110", "0031", "0041", "0051", "0056", "1103", "2109",
-                   "3100", "3200", "8000", "8800", "1104", "2215"}
+                   "3100", "3200", "8000", "8800", "1104", "2215",
+                   "0021", "1001", "2105", "7905", "8100"}   # stock, deferred income, bad debts: journals only
     assert {a.code for a in model_accounts()} == set(BY_CODE) - ledger_only
     # Without a business type (an analysis with no client) a company's own accounts are left out, and so are
     # the bank accounts and cards beyond the first.

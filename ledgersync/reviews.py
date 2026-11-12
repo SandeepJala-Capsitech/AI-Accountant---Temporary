@@ -7,13 +7,14 @@ follows."""
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import logging
 import threading
 from typing import TYPE_CHECKING, Callable, Optional
 
 from . import books, upkeep
 from .agent.run import stream_turn
-from .agent.tools import ChatContext, _to_look_at
+from .agent.tools import ChatContext, _to_look_at, family_of
 from .errors import NotFound
 from .models import Change, ChangeDraft, ReviewRun
 from .records import AgentRecords
@@ -25,10 +26,23 @@ if TYPE_CHECKING:   # chat.py imports upkeep, which imports this module
 logger = logging.getLogger(__name__)
 
 RETRY_AFTER = dt.timedelta(minutes=10)
+RETRY_SOON = dt.timedelta(minutes=1)   # after the database didn't answer for a few seconds
+SOON_TEXT = " The review will try again in a minute."
+# Said, once, to a run whose answer ran out of length while it thought: in the same conversation, so what it read stays.
+NUDGE = ("Your last answer was cut off while you were thinking, before you did anything. Don't read more: settle each "
+         "issue listed with resolve_issue now, or say in one line why it can't be settled.")
+# The kinds of issue the AI has an action for (R1 set_date, R2 keep_one, R4 use_primary, R3 split_vat, R5 VAT from the
+# document): only these start a run. A missing document, payroll or payout report is asked of the person by the rules.
+AI_FAMILIES = {"date": ("date to settle", "dates to settle"),
+               "duplicate": ("possible duplicate", "possible duplicates"),
+               "conflict": ("disagreement between records", "disagreements between records"),
+               "combined_vat": ("mixed-VAT row", "mixed-VAT rows"),
+               "missing_vat": ("row with VAT not booked", "rows with VAT not booked")}
 TICK_SECONDS = 2.0
 LIMITED_NOTE = "AI review paused for today: limit reached"
 NOTHING = "Nothing to change."
-MAX_UNREVIEWED = 100   # rows a run's message names as not yet reviewed
+MAX_UNREVIEWED = 40   # issues a run's message names as not yet reviewed; the rest wait for the next run
+MAX_UPLOAD_ROWS = 30   # rows a new file's line names
 _DETAILS = ("vat_registered", "business_type", "first_year_end", "bank_accounts")
 _NO_REVIEW = ("year_closed", "decision_applied", "question_closed")
 
@@ -105,16 +119,51 @@ def trigger_summary(changes: list[Change]) -> str:
     return "after " + " and ".join(phrases) if phrases else "after a change"
 
 
-def _message(changes: list[Change], unreviewed: list[int], first: bool, summary: str) -> str:
+def issue_keys(row, held=None) -> list[tuple[str, str]]:
+    """The row's issues the AI has an action for (AI_FAMILIES), each with its key, "row:code:digest": the same issue on
+    the same row keeps its key, so a review isn't shown it twice; a new issue, or one whose message changed, gets a new
+    key. held is accepted for the callers' sake: a missing document is the person's to send, not the AI's."""
+    return [(f"{row.id}:{i.code}:{hashlib.sha1(i.message.encode()).hexdigest()[:8]}", f"{i.code}: {i.message}")
+            for i in row.issues if i.severity != "info" and family_of(i.code) in AI_FAMILIES]
+
+
+def issue_summary(codes: list[str]) -> str:
+    """"for 2 dates to settle and 1 possible duplicate": what a run looks at, by kind."""
+    counts: dict[str, int] = {}
+    for code in codes:
+        family = family_of(code)
+        counts[family] = counts.get(family, 0) + 1
+    kinds = [_plural(n, *AI_FAMILIES[family]) for family, n in counts.items()]
+    return "for " + (", ".join(kinds[:-1]) + " and " + kinds[-1] if len(kinds) > 1 else kinds[0])
+
+
+def _describe(row) -> str:
+    when = row.date.isoformat() if row.date else "no date"
+    return f"{row.description[:60]}, £{row.gross} {row.direction.value}, {when}"
+
+
+def _message(changes: list[Change], unreviewed: list[tuple[object, str]], first: bool, summary: str,
+             upload_rows: dict[int, list[int]], more: int, suggest: bool = False) -> str:
     lines = [f"Background review {summary}. These changes were made by people or imports since the last review:"]
     for c in changes:
-        lines.append(f"- {c.summary}" + (f" (rows {', '.join(map(str, c.row_ids))})" if c.row_ids else ""))
+        rows = c.row_ids or upload_rows.get(c.upload_id or -1, [])[:MAX_UPLOAD_ROWS]
+        lines.append(f"- {c.summary}" + (f" (rows {', '.join(map(str, rows))})" if rows else ""))
     if unreviewed:
-        lines.append("Not yet reviewed: rows " + ", ".join(map(str, unreviewed)))
+        lines.append("Issues no review has looked at yet:")
+        for row, said in unreviewed:
+            lines.append(f"- Row {row.id} ({_describe(row)}) {said}")
+        if more:
+            lines.append(f"- and {more} more: list_issues shows them all.")
     if first:
         lines.append("First review of this year: look at everything.")
-    lines.append("Resolve what the evidence supports, ask the person about what it doesn't, and finish with one line "
-                 "saying what you did.")
+    if suggest:
+        lines.append("This client is on suggest-only: your resolutions are kept as suggestions and change nothing "
+                     "until a person applies them. Suggest what the evidence supports, ask the person about what it "
+                     "doesn't, and finish with one line saying what you suggest and that it waits for them. Never say "
+                     "you made a change.")
+    else:
+        lines.append("Settle each issue the evidence supports, ask the person about what it doesn't, and finish with "
+                     "one line saying what you did, or why nothing could be settled.")
     return "\n".join(lines)
 
 
@@ -162,20 +211,27 @@ def run(chat: "Chat", client_id: int, *, now: dt.datetime) -> list[ReviewRun]:
 
     needing = [c for c in new if triggers(c)]
     failed = False
+    left_over: list[str] = []   # the years whose run had more issues than it could show: they run again at once
     for year in years:
         changes = [c for c in needing if c.year_start in (year, None)]
-        if not changes:
+        if not changes and year.isoformat() not in state.left_over:
             continue
-        runs.append(_review_year(chat, client_id, year, changes, state.last_seq, to_seq, mode, now))
-        if runs[-1].status == "failed":
+        done = _review_year(chat, client_id, year, changes, state.last_seq, to_seq, mode, now, left_over)
+        if done is None:
+            continue
+        runs.append(done)
+        if done.status == "failed":
             failed = True
             break
 
     if failed:
-        records.patch_review_state(client_id, running=False, retry_at=_iso(now + RETRY_AFTER))
+        wait = RETRY_SOON if (runs[-1].error or "").endswith(SOON_TEXT) else RETRY_AFTER
+        records.patch_review_state(client_id, running=False, retry_at=_iso(now + wait))
         return runs
-    records.patch_review_state(client_id, last_seq=to_seq, running=False, retry_at=None)
-    if not any(triggers(c) for c in records.changes_after(client_id, to_seq)):
+    records.patch_review_state(client_id, last_seq=to_seq, running=False, retry_at=None, left_over=left_over)
+    if left_over:
+        records.patch_review_state(client_id, due_at=_iso(now))
+    elif not any(triggers(c) for c in records.changes_after(client_id, to_seq)):
         records.patch_review_state(client_id, due_at=None)
         # a change recorded between that look and the write above still leaves the client due
         if any(triggers(c) for c in records.changes_after(client_id, to_seq)):
@@ -184,32 +240,61 @@ def run(chat: "Chat", client_id: int, *, now: dt.datetime) -> list[ReviewRun]:
 
 
 def _review_year(chat: "Chat", client_id: int, year: dt.date, changes: list[Change], from_seq: int, to_seq: int,
-                 mode: str, now: dt.datetime) -> ReviewRun:
-    """One run over one year: start it, have the agent review, settle the books and finish the run, once."""
+                 mode: str, now: dt.datetime, left_over: list[str]) -> Optional[ReviewRun]:
+    """One run over one year: start it, have the agent review, settle the books and finish the run, once. The run is
+    pointed at the issues no earlier run was shown (up to MAX_UNREVIEWED; with more, the year goes on left_over and
+    runs again at once), and at the rows a person changed; with neither, the model isn't asked and no run is
+    recorded (None)."""
     records, store = chat.records, chat.store
     touched = sorted({r for c in changes for r in c.row_ids})
     first = not any(r.status in ("done", "failed") for r in records.reviews(client_id, year_start=year, limit=50))
+    seen = records.issues_seen(client_id, year)
+    theirs = records.person_rows(client_id)   # a background review leaves these to the person (R0)
+    new_issues: list[tuple[object, str, str]] = []   # row, key, what it says
+    upload_rows: dict[int, list[int]] = {}
     try:
         built = books.ledger(store, client_id, year)
-        flagged = [row.id for row, _, _ in _to_look_at(built)]
+        for saved in built.transactions:
+            upload_rows.setdefault(saved.upload_id, []).append(saved.id)
+        for row, held, _ in _to_look_at(built):
+            if row.id not in theirs:
+                new_issues += [(row, key, said) for key, said in issue_keys(row, held) if key not in seen]
     except Exception:
         logger.exception("Couldn't list the issues of client %s, year %s", client_id, year)
-        flagged = []
-    seen = records.looked_at(client_id, year)
-    unreviewed = [n for n in flagged if n not in seen and n not in touched][:MAX_UNREVIEWED]
-    summary = trigger_summary(changes)
+    # A person's change matters to the AI only where it may answer a question the AI asked about those rows.
+    asked = {r for q in records.questions(client_id, year, ("open", "waiting")) if q.source == "agent"
+             for r in q.row_ids}
+    questioned = [n for n in touched if n in asked]
+    if not new_issues and not questioned:
+        return None   # nothing the AI can settle: the deterministic step has already settled the books
+    shown, more = new_issues[:MAX_UNREVIEWED], max(0, len(new_issues) - MAX_UNREVIEWED)
+    if more:
+        left_over.append(year.isoformat())
+    looked = sorted({*questioned, *(row.id for row, _, _ in shown)}, key=lambda n: (n not in questioned, n))
+    summary = (issue_summary([key.split(":")[1] for _, key, _ in new_issues]) if new_issues
+               else trigger_summary(changes))
     run = records.start_review(client_id, year, from_seq=from_seq, to_seq=to_seq, trigger_summary=summary,
-                               looked_at=touched + unreviewed)
+                               looked_at=looked, issues_seen=[key for _, key, _ in shown])
     error: Optional[str] = None
     said = ""
     try:
         ctx = ChatContext(client_id, f"review-{run.id}", year, trigger="background",
                           mode="suggest" if mode == "suggest" else "apply", review_id=run.id)
-        for event in stream_turn(chat.agent, ctx, _message(changes, unreviewed, first, summary)):
-            if event.type == "token":
-                said += event.data.get("text", "")
-            elif event.type == "error" and error is None:
-                error = event.data.get("message") or event.data.get("code") or "The review failed."
+        message = _message(changes, [(row, text) for row, _, text in shown], first, summary, upload_rows, more,
+                           suggest=mode == "suggest")
+        for attempt in range(2):   # a run cut off while thinking is nudged once
+            error, code = None, None
+            for event in stream_turn(chat.agent, ctx, message):
+                if event.type == "token":
+                    said += event.data.get("text", "")
+                elif event.type == "error" and error is None:
+                    error = event.data.get("message") or event.data.get("code") or "The review failed."
+                    code = event.data.get("code")
+                    if code == "storage_unavailable":
+                        error += SOON_TEXT
+            if code != "cut_off" or attempt:
+                break
+            message, said = NUDGE, ""
     except Exception as exc:   # noqa: BLE001 - a run that raised is a failed run
         logger.exception("The background review of client %s failed", client_id)
         error = str(exc) or type(exc).__name__
@@ -225,7 +310,7 @@ def _review_year(chat: "Chat", client_id: int, year: dt.date, changes: list[Chan
     if error is not None:
         return records.finish_review(run.id, status="failed", decision_ids=decisions, question_ids=asked, error=error)
     lines = [ln.strip() for ln in said.splitlines() if ln.strip()]
-    text = lines[-1] if lines and (decisions or asked) else NOTHING
+    text = lines[-1] if lines else NOTHING   # its own words: what it did, or why nothing could be settled
     return records.finish_review(run.id, status="done", decision_ids=decisions, question_ids=asked, summary=text)
 
 

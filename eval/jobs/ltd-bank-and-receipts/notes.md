@@ -25,7 +25,8 @@ API, the ledger, the posting code and the extractor were not run to produce or c
 ## Conventions used (from accounts.py and posting.py)
 
 - A bank line posts against 1200 Bank Current Account. A receipt is paid when it is issued, so its other side is
-  1200 Bank too.
+  1200 Bank too, unless the statement has lines either side of its day and no payment of it: then the bank did
+  not pay it, and it waits in 9998 Suspense until a person says what did (the two receipts here).
 - VAT is booked only when the document shows it. It goes to 2201 Purchase VAT on a cost, and the net goes to the
   cost account. A bank line shows no VAT, so it books none.
 - Liability accounts (2202) take no VAT.
@@ -41,8 +42,8 @@ API, the ledger, the posting code and the extractor were not run to produce or c
 | 4 | 18/09/2026 | Barclays | ROYAL MAIL | out | 15.60 | none | 7501 Postage and Carriage | 7501 15.60 | 1200 15.60 |
 | 5 | 22/09/2026 | Barclays | PREMIER INN | out | 89.00 | none | 7402 Hotels | 7402 89.00 | 1200 89.00 |
 | 6 | 27/09/2026 | Barclays | HMRC VAT | out | 1210.33 | none | 2202 VAT Liability | 2202 1210.33 | 1200 1210.33 |
-| 7 | 03/09/2026 | Tesco receipt | Tesco Express (meal deal, coffee, sandwich) | out | 12.50 | none | 7406 Subsistence | 7406 12.50 | 1200 12.50 |
-| 8 | 12/09/2026 | Cafe receipt | The Daily Grind Cafe (flat white, croissant, water) | out | 7.50 | 1.25 | 7406 Subsistence | 7406 6.25; 2201 1.25 | 1200 7.50 |
+| 7 | 03/09/2026 | Tesco receipt | Tesco Express (meal deal, coffee, sandwich) | out | 12.50 | none | 7406 Subsistence | 7406 12.50 | 9998 12.50 |
+| 8 | 12/09/2026 | Cafe receipt | The Daily Grind Cafe (flat white, croissant, water) | out | 7.50 | 1.25 | 7406 Subsistence | 7406 6.25; 2201 1.25 | 9998 7.50 |
 
 Row 8's VAT: £7.50 × 20/120 = £1.25, which is exactly what the receipt prints, so it is booked as shown. The net is
 £7.50 − £1.25 = £6.25.
@@ -54,7 +55,8 @@ against 7.50.
 
 | Account | Debits | Credits | Net (Dr − Cr) |
 |---|---|---|---|
-| 1200 Bank Current Account | 950.00 (row 3) | 45.99 + 32.40 + 15.60 + 89.00 + 1210.33 + 12.50 + 7.50 = 1413.32 | **-463.32** |
+| 1200 Bank Current Account | 950.00 (row 3) | 45.99 + 32.40 + 15.60 + 89.00 + 1210.33 = 1393.32 | **-443.32** |
+| 9998 Suspense | | 12.50 (row 7) + 7.50 (row 8) = 20.00, the receipts the bank did not pay | **-20.00** |
 | 2201 Purchase VAT | 1.25 (row 8) | | **1.25** |
 | 2202 VAT Liability | 1210.33 (row 6) | | **1210.33** |
 | 4000 Sales | | 950.00 (row 3) | **-950.00** |
@@ -64,10 +66,11 @@ against 7.50.
 | 7502 Telephone and Internet | 45.99 (row 1) | | **45.99** |
 | 7504 Office Stationery | 32.40 (row 2) | | **32.40** |
 
-The 1200 credits added step by step: 45.99, then 78.39, 93.99, 182.99, 1393.32, 1405.82 and 1413.32.
+The 1200 credits added step by step: 45.99, then 78.39, 93.99, 182.99 and 1393.32.
 
 Check: the debit nets are 1.25 + 1210.33 + 89.00 + 18.75 + 15.60 + 45.99 + 32.40 = 1413.32. The credit nets are
-463.32 + 950.00 = 1413.32. The expected trial balance sums to zero.
+443.32 + 20.00 + 950.00 = 1413.32. The expected trial balance sums to zero. (In the expected file 9998 is 69.00:
+the hotel's 89.00, held there for its invoice, less this 20.00.)
 
 ## Judgement calls
 
@@ -75,10 +78,10 @@ Check: the debit nets are 1.25 + 1210.33 + 89.00 + 18.75 + 15.60 + 45.99 + 32.40
    line. The Tesco receipt was paid in cash (CASH 20.00, CHANGE 7.50). The cafe's £7.50 card payment is not in the
    Barclays export: there is no £7.50 line, and nothing for £12.50 either. The right result is that each receipt is
    booked on its own and no bank line is paired with it. A receipt linked to a bank line here is wrong.
-2. **Both receipts post against 1200 Bank.** That is the app's convention for a receipt with no matching card
-   payment, and nothing in the documents gives a receipt another side. So 1200 is £20.00 lower than the statement's own
-   movement: 950.00 − 1393.32 = −443.32 on the statement, against −463.32 in the trial balance. A person reviewing
-   might move the cash receipt to 1230 Petty Cash, or both to 2250 Director's Loan Account if the director paid.
+2. **Neither receipt is booked against 1200 Bank.** The statement has lines either side of each receipt's day and
+   no payment of it, so the bank did not pay it. Both wait in 9998 Suspense with a note, and 1200 agrees with the
+   statement's own movement: 950.00 − 1393.32 = −443.32. A person reviewing chooses Paid from on each row: 1230
+   Petty Cash for the cash receipt, or 2250 Director's Loan Account if the director paid.
    That is a person's call, so it is not expected here.
 3. **Tesco: no VAT is booked.** The receipt prints a VAT number but no VAT amount, and VAT is reclaimable only when
    shown. Much of a meal deal is zero-rated anyway. VAT is never added to a document that shows none.

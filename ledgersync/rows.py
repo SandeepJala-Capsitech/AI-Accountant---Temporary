@@ -16,9 +16,11 @@ INPUTS = {"date", "description", "direction", "gross", "vat", "vat_treatment", "
           "document_number", "agent", "owed_to", "document_total", "document_net", "not_vat_invoice", "document_ref",
           "total_worked_out", "cis_deducted",
           "include", "apart_from", "link", "balance", "opening_balance", "closing_balance", "supplier_vat_number",
+          "addressed_to", "reverse_charge", "accepted",
           "excluded", "superseded_by", "decision_ids"}
 # The fields a person can edit; a row's first edit keeps what they held as `original`.
-EDITABLE = ("date", "description", "counterparty", "direction", "gross", "vat", "account_code", "document_type")
+EDITABLE = ("date", "description", "counterparty", "direction", "gross", "vat", "account_code", "document_type",
+            "currency", "vat_treatment", "bank_account", "reverse_charge")
 # Fields of a whole document: a change to one row changes every row with its document_ref. An expense claim's
 # lines are separate expenses, each with its own receipt, so there Include books one line.
 WHOLE_DOCUMENT = {"counterparty", "document_type", "include"}

@@ -10,6 +10,7 @@ from typing import Iterator, Literal, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.errors import GraphRecursionError
+from pymongo.errors import PyMongoError
 
 from ledgersync.errors import LedgerSyncError, ModelUnavailable
 
@@ -52,8 +53,16 @@ def _finished(step: dict, result: ToolMessage) -> dict:
             "reason": str(result.content).removeprefix("Error: ")[:300]}
 
 
+STORAGE_TEXT = "The database didn't answer for a few seconds (it may have been switching servers), so I stopped."
+CUT_TEXT = "My answer ran past its length limit before I did anything, so I stopped."
+
+
 def _failure(exc: Exception) -> ChatEvent:
-    """The error event for a run that raised."""
+    """The error event for a run that raised. The database not answering (Atlas moves its primary now and then, for
+    about ten seconds) is said as such, code storage_unavailable, so a background review tries again soon."""
+    if isinstance(exc, PyMongoError):
+        logger.warning("The agent's run stopped: the database didn't answer: %s", exc)
+        return _error("storage_unavailable", STORAGE_TEXT)
     if isinstance(exc, ModelUnavailable):
         logger.warning("The agent's model is unavailable: %s", exc.message)
         return _error("model_unavailable", exc.message)
@@ -108,6 +117,7 @@ def stream_turn(agent, ctx: ChatContext, text: str, *, message_id: Optional[str]
     steps: dict[str, dict] = {}
     limited = False
     garbled = False   # whether the last model message only had tool calls whose arguments weren't JSON
+    cut = False       # whether the last model message ran out of its length (its thinking can use it all) and did nothing
     reply, last = _Reply(), None   # the reply so far, and the id of the model call it last came from
     try:
         for mode, chunk in agent.stream({"messages": [HumanMessage(content=text, id=message_id)]}, config,
@@ -137,6 +147,8 @@ def stream_turn(agent, ctx: ChatContext, text: str, *, message_id: Optional[str]
                     elif node == "model":
                         for made in (m for m in messages if isinstance(m, AIMessage)):
                             garbled = bool(made.invalid_tool_calls) and not made.tool_calls and not made.text.strip()
+                            cut = (made.response_metadata.get("finish_reason") == "length" and not made.tool_calls
+                                   and not made.text.strip())
                     elif node.startswith(_LIMITS) and any(isinstance(m, AIMessage) for m in messages):
                         limited = True
                     elif node == _STOP:
@@ -148,6 +160,9 @@ def stream_turn(agent, ctx: ChatContext, text: str, *, message_id: Optional[str]
         limited = True
     except Exception as exc:   # noqa: BLE001 - every failure ends the turn with an error event
         yield _failure(exc)
+        return
+    if cut and not limited:
+        yield _error("cut_off", CUT_TEXT)
         return
     if garbled and not reply.sent and not limited:
         yield _error("agent_failed", "My last step came out garbled, so I stopped. Send it again.")

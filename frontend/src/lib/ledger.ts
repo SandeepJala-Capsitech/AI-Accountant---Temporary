@@ -2,7 +2,6 @@
 // description with the choices it offers a person, and the totals. Pure functions, tested in ledger.test.ts.
 import type { Issue, Settlement, Transaction } from './api'
 import type { RowChange } from './clients'
-import type { PaymentRow } from './duplicates'
 
 const fmt = (n: number) =>
   n === 0
@@ -15,6 +14,7 @@ export const money = (value: string | null | undefined) => (value == null ? '—
 export const NOT_TRANSACTIONS: Record<string, string> = {
   quote: 'a quote', pro_forma: 'a pro forma invoice', purchase_order: 'a purchase order',
   remittance_advice: 'a remittance advice', supplier_statement: "a supplier's statement of account",
+  finance_agreement: 'a finance or loan agreement',
   other: 'a document that is not a transaction',
 }
 
@@ -40,17 +40,6 @@ export const leftOut = (tx: Transaction) => !!(tx.excluded || tx.superseded_by)
 export const needsReview = (tx: Transaction, issues: Issue[] = tx.issues) =>
   !leftOut(tx) && issues.some(i => i.severity !== 'info')
 
-// A row as the duplicate check sees it, with what matching already linked it to: what it pays or what paid it, the
-// expense claim it is on, and the receipt or invoice that books it. Linked rows are never each other's duplicates,
-// and a row left out is not booked: it is no one's duplicate any more.
-export const paymentRowOf = (tx: Transaction & { upload_id: number; id?: number }): PaymentRow => ({
-  sourceId: tx.upload_id, gross: tx.gross, direction: tx.direction, date: tx.date,
-  kind: leftOut(tx) ? 'not booked' : kindOf(tx), ref: tx.document_ref,
-  linked: [...(tx.pays ?? []), ...(tx.paid_by ?? []), tx.claimed_in, tx.recorded_by]
-    .filter((s): s is Settlement => !!s).map(s => s.ref),
-  id: tx.id, apart: tx.apart_from ?? [], claim: tx.claimed_in?.ref ?? null,
-})
-
 // The kinds of document whose rows take Add line whether or not they print a total: they often have several lines.
 const SEVERAL_LINES = new Set(['invoice', 'expense_claim', 'agent_statement'])
 
@@ -74,7 +63,7 @@ const shortDate = (iso: string | null) =>
   iso ? new Date(`${iso}T00:00:00`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : 'no date'
 
 const optionLabel = (option: Settlement[]) =>
-  option.map(s => `${s.description} (${money(s.amount)}, ${shortDate(s.date)})`).join(' + ')
+  option.map(s => `${s.description} (${money(s.amount)}${s.date ? `, ${shortDate(s.date)}` : ''})`).join(' + ')
 
 // A button under a row's description: clicking it makes the change, such as a bank line's link (null: match
 // automatically) or the VAT of a receipt, to the row, or to another row (row: its id).
@@ -111,7 +100,15 @@ export function rowStatus(tx: Transaction, find?: (id: number) => Transaction | 
   const dated = tx.date_found ? [{ text: 'Which date is right?',
                                    actions: [{ label: `Use ${longDate(tx.date_found)}`, change: { date: tx.date_found } }] }]
     : []
-  return [...statusLines(tx), ...dated, ...amountChoice(tx, find)]
+  return [...statusLines(tx), ...dated, ...amountChoice(tx, find), ...bookedWithout(tx)]
+}
+
+// A purchase a person booked without the receipt or invoice the rules want: why, and a way to hold it in Suspense for
+// the document again. Only while the rules would otherwise hold it (the API says so with booked_without_document).
+function bookedWithout(tx: Transaction): RowStatus[] {
+  if (!tx.without_document || !tx.issues.some(i => i.code === 'booked_without_document')) return []
+  return [{ text: `Booked without a receipt: ${tx.without_document}. No VAT reclaimed`,
+            actions: [{ label: 'Hold for the receipt instead', change: { without_document: null } }] }]
 }
 
 // Where an amount came from, for a choice between two.
@@ -184,7 +181,7 @@ function statusLines(tx: Transaction): RowStatus[] {
   }
   if (kind === 'bank') return lineStatus(tx)
   const card = type === 'receipt' ? tx.paid_by?.at(-1) : undefined
-  return card ? [{ text: `Paid by card: bank line on ${shortDate(card.date)}`, actions: [] }] : []
+  return card ? [{ text: `Paid from the bank: line on ${shortDate(card.date)}`, actions: [] }] : []
 }
 
 // What a row that moved money pays, or could pay, with Link and Unlink.
@@ -222,8 +219,14 @@ const ISSUE_TITLES: Record<string, string> = {
   statement_gap: "Balance doesn't follow", statement_total: "Statement doesn't add up", mixed_items: 'Mixed items',
   direction_conflict: 'Direction changed', no_payroll: 'No payroll report', wages_from_bank: 'Wages from the bank',
   payroll_owed_to: 'Check the payroll line', sale_without_vat: 'Sale with no VAT', transfer: 'Transfer between accounts',
-  vat_not_booked: 'VAT not booked', needs_document: 'Needs its document', total_worked_out: 'Total not printed',
-  cis_deducted: 'CIS deducted', payout_report: 'Payout report needed', personal: 'Looks personal', subtotal_only: 'Total not printed',
+  no_vat_number: 'No VAT number on the invoice', vat_over_rate: 'VAT above 20%', reverse_charge: 'Reverse charge',
+  before_vat_registration: 'Before VAT registration', small_asset: 'Small for an asset', meal_check: 'Meal: entertaining?',
+  addressed_to: 'Addressed to someone else', refund_of_overpayment: 'Refund of an overpayment',
+  future_date: 'Dated in a later year', journal_note: 'Journal', prepayment: 'Paid ahead?', reversed: 'Reversed',
+  not_on_statement: 'Not on the statement', till_takings: 'Till takings',
+  vat_not_booked: 'VAT not booked', needs_document: 'Needs its document', booked_without_document: 'Booked without a receipt', claimed_less: 'Claimed less than its bill', total_worked_out: 'Total not printed',
+  card_credit: 'Money in on a card', vat_unclaimed: 'VAT not reclaimed', on_account: 'Payment on account',
+  payroll_person: 'Check this person\'s pay', cis_deducted: 'CIS deducted', payout_report: 'Payout report needed', personal: 'Looks personal', subtotal_only: 'Total not printed',
 }
 
 export const issueTitle = (code: string) => ISSUE_TITLES[code] ?? 'Check this'
@@ -234,8 +237,17 @@ export const checkHover = (issues: Issue[]) =>
 
 // The Account column: the account's name, never its code; for a bank line that pays a document, the account it
 // settles. An account not in the chart has no name.
-export const accountName = (tx: Transaction): string =>
-  (tx.paid_against ? tx.paid_against_name : tx.account_name) || 'Unknown account'
+// The account a row is on in the books now: a bank line its receipt or the other side of a transfer books posts
+// nothing itself; a row waiting for its document is in Suspense until it comes, then on its own account.
+export function accountName(tx: Transaction): string {
+  if (tx.document_type === 'journal') {
+    return `Dr ${tx.account_name || tx.account_code}, Cr ${tx.contra_account_name || tx.contra_account_code || 'unknown'}`
+  }
+  if (tx.recorded_by) return 'Booked from its document'
+  const own = (tx.paid_against ? tx.paid_against_name : tx.account_name) || 'Unknown account'
+  const held = tx.issues?.some(i => i.code === 'needs_document') && tx.account_code !== '9998'
+  return held ? `Suspense, then ${own}` : own
+}
 
 // The title as the start of the message: a sentence, unless it is a question already.
 export const issueHeading = (code: string) => {
@@ -253,6 +265,13 @@ export const showLabel = (code: string) => (code === 'total_mismatch' ? 'Show it
 // The issues where two records may be one, which a person can answer Not the same.
 const MAY_BE_ONE = new Set(['possible_duplicate', 'date_conflict', 'amount_conflict'])
 export const canBeApart = (code: string) => MAY_BE_ONE.has(code)
+
+// Warnings that are a matter of judgement, which a person who has looked can answer It's fine (checks.ACCEPTABLE).
+const ACCEPTABLE = new Set(['no_vat_number', 'vat_over_rate', 'small_asset', 'meal_check', 'addressed_to', 'future_date',
+                            'file_date'])
+export const canBeAccepted = (code: string) => ACCEPTABLE.has(code)
+export const acceptChange = (tx: Transaction, code: string): RowChange =>
+  ({ accepted: [...new Set([...(tx.accepted ?? []), code])] })
 
 // Not the same: the row is kept apart from the rows the issue was about, as well as any it already was.
 export const apartChange = (tx: Transaction, related: number[]): RowChange =>

@@ -8,7 +8,7 @@ from helpers import add_rows, net, row
 
 from ledgersync import books, ledger_book, questions
 from ledgersync.errors import InvalidInput, NotFound
-from ledgersync.questions import DateAnswer, NoDocumentAnswer, NotSureAnswer
+from ledgersync.questions import DateAnswer, NoDocumentAnswer, NotSureAnswer, WithoutDocumentAnswer
 from ledgersync.records import AgentRecords
 
 pytestmark = pytest.mark.mongo
@@ -424,3 +424,27 @@ def test_a_payment_of_paye_with_no_payroll_report_asks_for_it(store, records, ac
     assert q.why == ("£612.40 paid to HMRC PAYE on 25 Oct 2025, and no payroll report books the wages it is for.")
     left = answer(store, records, acme, q, NoDocumentAnswer(kind="no_document"))
     assert [(x.id, x.status) for x in left] == [(q.id, "waiting")]
+
+
+def test_a_person_can_book_a_purchase_without_the_document_it_needs(store, records, acme):
+    add_rows(store, acme, travel_line(), year_start=YEAR_1)
+    [q] = refresh(store, records, acme)
+    left = answer(store, records, acme, q, WithoutDocumentAnswer(kind="without_document",
+                                                                  reason="Tickets bought online; no invoice"))
+    assert left == []
+    closed = records.question(q.id)
+    assert (closed.status, closed.answer) == ("resolved", "Booked without a receipt: Tickets bought online; no invoice")
+    assert row_named(store, acme, "TRAINLINE").tx.without_document == "Tickets bought online; no invoice"
+    tb = ledger_book.posted_trial_balance(store, records, acme, YEAR_1)
+    assert net(tb, "9998") == D("0.00") and net(tb, "7400") == D("240.00") and tb.suspense == []
+    assert refresh(store, records, acme) == []   # it stays closed
+
+
+def test_booking_without_a_document_needs_a_reason_and_a_document_question(store, records, acme):
+    add_rows(store, acme, travel_line(), undated_taxi(), year_start=YEAR_1)
+    by_kind = {q.kind: q for q in refresh(store, records, acme)}
+    with pytest.raises(InvalidInput):
+        answer(store, records, acme, by_kind["receipt_or_invoice"],
+               WithoutDocumentAnswer(kind="without_document", reason="  "))
+    with pytest.raises(InvalidInput):
+        answer(store, records, acme, by_kind["date"], WithoutDocumentAnswer(kind="without_document", reason="Lost"))

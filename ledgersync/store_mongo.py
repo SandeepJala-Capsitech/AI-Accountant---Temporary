@@ -26,7 +26,10 @@ logger = logging.getLogger(__name__)
 _PATCH_TRIES = 5
 
 _CLIENT_FIELDS = ("name", "business_type", "contact_name", "contact_email", "contact_phone", "vat_registered",
-                  "bank_accounts", "first_year_end", "folder", "ai_review")
+                  "vat_from",
+                  "bank_accounts", "first_year_end", "folder", "ai_review", "company_number", "utr", "vat_number",
+                  "paye_reference")
+_REFERENCES = ("company_number", "utr", "vat_number", "paye_reference")
 _CLIENT_PROJECTION = {
     "id": 1,
     "name": 1,
@@ -35,10 +38,15 @@ _CLIENT_PROJECTION = {
     "contact_email": 1,
     "contact_phone": 1,
     "vat_registered": 1,
+    "vat_from": 1,
     "bank_accounts": 1,
     "first_year_end": 1,
     "folder": 1,
     "ai_review": 1,
+    "company_number": 1,
+    "utr": 1,
+    "vat_number": 1,
+    "paye_reference": 1,
     "closed_years": 1,
     "archived_at": 1,
     "created_at": 1,
@@ -68,8 +76,10 @@ def _client(doc: dict, earliest: Optional[dt.date] = None) -> Client:
         contact_email=doc.get("contact_email", ""),
         contact_phone=doc.get("contact_phone", ""),
         vat_registered=bool(doc.get("vat_registered", True)),
+        vat_from=_date(doc.get("vat_from")),
         folder=doc.get("folder", ""),
         ai_review=doc.get("ai_review", "automatic"),
+        **{field: doc.get(field, "") for field in _REFERENCES},
         **({"bank_accounts": doc["bank_accounts"]} if doc.get("bank_accounts") else {}),
         closed_years=[ClosedYear.model_validate(y) for y in doc.get("closed_years") or []],
         archived=doc.get("archived_at") is not None,
@@ -91,7 +101,7 @@ def _new_client(uri: str, max_pool: int) -> MongoClient:
         maxPoolSize=max_pool,
         minPoolSize=0,
         maxIdleTimeMS=60000,
-        serverSelectionTimeoutMS=5000,
+        serverSelectionTimeoutMS=15000,   # Atlas takes up to about 12 s to choose a new primary
         connectTimeoutMS=10000,
         socketTimeoutMS=20000,
     )
@@ -167,10 +177,12 @@ class MongoStore:
             "contact_email": fields.contact_email,
             "contact_phone": fields.contact_phone,
             "vat_registered": bool(fields.vat_registered),
+            "vat_from": fields.vat_from.isoformat() if fields.vat_from else None,
             "bank_accounts": _stored_accounts(fields.bank_accounts),
             "first_year_end": fields.first_year_end.isoformat() if fields.first_year_end else None,
             "folder": fields.folder,
             "ai_review": fields.ai_review,
+            **{field: getattr(fields, field) for field in _REFERENCES},
             "opening": OpeningBalances().model_dump(mode="json"),
             "closed_years": [],
             "archived_at": None,
@@ -211,6 +223,8 @@ class MongoStore:
         if "bank_accounts" in set_dict:
             set_dict["bank_accounts"] = _stored_accounts(
                 [BankAccount.model_validate(a) for a in set_dict["bank_accounts"]])
+        if "vat_from" in changes and changes["vat_from"] is None and not client.archived:
+            set_dict["vat_from"] = None   # cleared: registered throughout
         archived = changes.get("archived")
         if archived is not None and archived != client.archived:
             set_dict["archived_at"] = now if archived else None
@@ -443,6 +457,7 @@ class MongoStore:
             data = dict(r["data"])
             original = data.pop("original", None)
             data.pop("original_issues", None)
+            data.pop("original_printed", None)
             if data.get("document_total") is None:
                 old = [OLD_TOTAL.search(i.get("message", "")) for i in data.get("issues", []) if i.get("code") == "total_mismatch"]
                 if old and old[0]:
@@ -580,6 +595,9 @@ class MongoStore:
         claim_line = target["data"].get("document_type") == "expense_claim"
         whole = WHOLE_DOCUMENT - {"include"} if claim_line else WHOLE_DOCUMENT
 
+        # An amount converted from another currency: the totals its document prints are in that currency, so they
+        # are set aside on every row of the document (and come back on revert) rather than checked against pounds.
+        converted = "currency" in changes and changes["currency"] != target["data"].get("currency")
         modified = False
         for r in rows:
             rid = r["id"]
@@ -588,6 +606,9 @@ class MongoStore:
                 continue
 
             if revert:
+                if "original_printed" in r_data:
+                    r_data.update(r_data.pop("original_printed"))
+                    modified = True
                 if "original" not in r_data:
                     continue
                 r_data.update(r_data.pop("original"))
@@ -595,6 +616,11 @@ class MongoStore:
                 modified = True
             else:
                 change = changes if rid == row_id else {k: v for k, v in changes.items() if k in whole}
+                if converted and "original_printed" not in r_data and (
+                        r_data.get("document_total") is not None or r_data.get("document_net") is not None):
+                    r_data["original_printed"] = {k: r_data.get(k) for k in ("document_total", "document_net")}
+                    r_data.update(document_total=None, document_net=None)
+                    modified = True
                 if not change:
                     continue
                 if "original" not in r_data and any(k in EDITABLE and r_data.get(k) != v for k, v in change.items()):

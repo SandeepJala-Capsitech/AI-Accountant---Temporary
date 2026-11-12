@@ -11,13 +11,14 @@ from decimal import Decimal
 from itertools import combinations
 from typing import Optional, Sequence
 
-from .accounts import BY_CODE, CLEARING, CREDITORS, DEBTORS, STAFF_EXPENSES, AccountType
-from .checks import MATCHING_ISSUES, PAYROLL_OWED, booked, issue, long_date, reclaims_vat
+from .accounts import BY_CODE, CLEARING, CREDITORS, DEBTORS, DIRECTORS_LOAN, STAFF_EXPENSES, SUSPENSE, AccountType
+from .checks import MATCHING_ISSUES, PAYROLL_OWED, booked, issue, long_date, reclaims_vat, registered_on
 from .models import BusinessSettings, Direction, Issue, OpenItem, Settlement, Transaction
 from .payees import processor
 from .money import PENNY, ZERO, VatTreatment
 
 WINDOW = dt.timedelta(days=31)   # a payment may be suggested for a document dated within 31 days of it
+NEAR_PAYMENT = dt.timedelta(days=7)   # a payment of a document's exact amount this soon after it, to a like name
 PART_WINDOW = dt.timedelta(days=120)  # a part payment, an overpayment or a set of documents: at most 120 days after
 CARD_DAYS = dt.timedelta(days=3)  # a card payment reaches the bank within a few days of its receipt
 TRANSFER_DAYS = dt.timedelta(days=3)  # money moved between two of the client's accounts arrives within a few days
@@ -26,14 +27,17 @@ MAX_SET = 5                      # one payment clears at most five documents fro
 
 # Words that say nothing about who a business is: legal forms and small linking words, bank-statement
 # noise (payment types and their short codes), generic trade words, and place and national words.
-_IGNORED = {"ltd", "limited", "plc", "llp", "co", "the", "and", "for", "of", "to", "at", "in", "on",
+# Legal forms other countries use: never part of who was paid ("Amazon Web Services EMEA SARL").
+_FOREIGN_LEGAL = {"sarl", "gmbh", "inc", "llc", "corp", "bv", "nv", "sa", "sas", "srl", "ag", "ab", "aps", "oy",
+                  "pty", "pte", "kg", "spa", "emea"}
+_IGNORED = _FOREIGN_LEGAL | {"ltd", "limited", "plc", "llp", "co", "the", "and", "for", "of", "to", "at", "in", "on",
             "bank", "payment", "payments", "fin", "card", "dd", "so", "bacs", "fps", "ref", "direct", "debit",
             "credit", "faster", "standing", "order", "transfer", "tfr", "deb", "vis", "pos", "bgc", "chq", "atm",
             "int", "services", "solutions", "group", "online", "international", "holdings", "company", "trading",
             "uk", "gb", "london", "british", "national", "royal", "england", "scotland", "wales"}
 
 
-_LEGAL = {"ltd", "limited", "plc", "llp", "co", "the"}   # what initials leave out
+_LEGAL = {"ltd", "limited", "plc", "llp", "co", "the"} | _FOREIGN_LEGAL   # what initials leave out
 
 
 def _initials(name: Optional[str]) -> str:
@@ -54,8 +58,11 @@ def _words(name: Optional[str]) -> list[str]:
 
 
 def _abbreviates(short: str, long: str) -> bool:
-    """'mgmt' abbreviates 'management': three letters or more, the same first letter, the rest in order."""
+    """'mgmt' abbreviates 'management': three letters or more, the same first letter, the rest in order, and either
+    the start of the word ('pri', 'print') or ending as it ends. So 'sarl' does not abbreviate 'starling'."""
     if not 3 <= len(short) < len(long) or short[0] != long[0]:
+        return False
+    if not long.startswith(short) and short[-1] != long[-1]:
         return False
     letters = iter(long)
     return all(ch in letters for ch in short)
@@ -106,9 +113,16 @@ def _inside(short: list[str], long: list[str]) -> bool:
         found = [w for w in long if _same_word(word, w)]
         if found:
             distinctive = distinctive or word not in _GENERIC
-        elif not (len(word) == 1 and any(w[0] == word for w in long)):
-            return False
+        elif not (len(word) == 1 and any(w[0] == word for w in long if w not in short)):
+            return False   # an initial stands for a word the short name doesn't spell out: M for Matt, not for Marlow
     return distinctive
+
+
+def _share_a_name(a: Optional[str], b: Optional[str]) -> bool:
+    """Whether two names share a word of four letters or more that is a name, not a trade word many businesses
+    share: Google in "Google Workspace Ireland" and "Google Cloud EMEA Limited", but not Print in "Acme Print" and
+    "Brightline Print"."""
+    return any(len(w) >= 4 and w not in _GENERIC for w in set(_words(a)) & set(_words(b)))
 
 
 def same_payee(a: Optional[str], b: Optional[str]) -> bool:
@@ -185,14 +199,16 @@ def _gbp(amount: Decimal) -> str:
 
 
 def match(rows: list[Transaction], settings: BusinessSettings, read: Optional[list[Optional[Decimal]]] = None,
-          apart: Optional[list[set[int]]] = None, open_items: Sequence[OpenItem] = ()) -> list[Transaction]:
+          apart: Optional[list[set[int]]] = None, open_items: Sequence[OpenItem] = (),
+          name_days: Optional[list[Optional[dt.date]]] = None) -> list[Transaction]:
     """The rows as match_documents matches them."""
-    return match_documents(rows, settings, read, apart, open_items)[0]
+    return match_documents(rows, settings, read, apart, open_items, name_days=name_days)[0]
 
 
 def match_documents(rows: list[Transaction], settings: BusinessSettings,
                     read: Optional[list[Optional[Decimal]]] = None, apart: Optional[list[set[int]]] = None,
-                    open_items: Sequence[OpenItem] = (), left_out: Optional[dict[str, dict[str, Decimal]]] = None
+                    open_items: Sequence[OpenItem] = (), left_out: Optional[dict[str, dict[str, Decimal]]] = None,
+                    name_days: Optional[list[Optional[dt.date]]] = None
                     ) -> tuple[list[Transaction], dict[str, DocumentStatus]]:
     """Which documents each bank line pays and what is still owed on each document, for transactions
     checks.normalise has already prepared. Lines a person linked go first; then lines that pay exactly what
@@ -204,13 +220,16 @@ def match_documents(rows: list[Transaction], settings: BusinessSettings,
     the client's first year started, which a bank line pays as it pays an invoice uploaded. Also each document's
     status, by its ref, brought-forward ones ("ob-{id}") among them. A row a decision left out of the books (excluded,
     or replaced by a split) is matched as if it were not there; left_out, for each document, is what its excluded
-    rows amounted to in each direction, so the total printed on the document is not said to be short of them."""
+    rows amounted to in each direction, so the total printed on the document is not said to be short of them.
+    name_days: for each row, the day its upload's file name holds (an expense app's export names the day), or None."""
     read = read or [None] * len(rows)
     apart = apart or [set() for _ in rows]
+    name_days = name_days or [None] * len(rows)
     if any(tx.excluded or tx.superseded_by for tx in rows):
-        return _without_left_out(rows, settings, read, apart, open_items)
-    rows = _checked_totals(_with_claims(_without_copies([_cleared(tx) for tx in rows]), settings, apart), read,
-                           left_out or {})
+        return _without_left_out(rows, settings, read, apart, open_items, name_days)
+    rows = _checked_totals(_with_claims(_without_copies([_cleared(tx) for tx in rows]), settings, apart, name_days),
+                           read, left_out or {})
+    rows = _with_till_takings(rows, settings)
     documents = {**_brought_forward(open_items), **_documents(rows)}
     changes: list[dict] = [{} for _ in rows]
     # Both sides of a transfer between the client's own accounts are the transfer's, never a payment of a document.
@@ -244,18 +263,23 @@ def match_documents(rows: list[Transaction], settings: BusinessSettings,
     statement_lines = [n for n in lines if rows[n].document_type == "statement"]
     _pair_receipts(rows, changes, statement_lines, apart)
     _paid_again(rows, changes, statement_lines, apart)
+    _off_statement(rows, changes, settings)
+    _refunds(rows, changes, documents, statement_lines)
+    _reversals(rows, changes, statement_lines)
+    _settled_since(changes, documents)
     for doc in documents.values():
         for n in doc.rows:
             changes[n].update(owed=doc.open, document_direction=Direction(doc.direction), paid_by=list(doc.paid_by))
     matched = [tx.model_copy(update=change) if change else tx for tx, change in zip(rows, changes)]
-    matched = [_with_payout_report(_with_sale_without_vat(tx, settings)) for tx in matched]
+    matched = [_with_addressee(_with_payout_report(_with_sale_without_vat(tx, settings)), settings)
+               for tx in matched]
     statuses = {ref: DocumentStatus(open=doc.open, paid_by=list(doc.paid_by)) for ref, doc in documents.items()}
     return _without_payroll(matched), statuses
 
 
 def _without_left_out(rows: list[Transaction], settings: BusinessSettings, read: list[Optional[Decimal]],
-                      apart: list[set[int]], open_items: Sequence[OpenItem]) -> tuple[list[Transaction],
-                                                                                    dict[str, DocumentStatus]]:
+                      apart: list[set[int]], open_items: Sequence[OpenItem],
+                      name_days: list[Optional[dt.date]]) -> tuple[list[Transaction], dict[str, DocumentStatus]]:
     """match_documents on the rows a decision didn't leave out, put back in place among the left-out ones, which
     keep no outputs of a match. The places that matching's issues name are mapped back to places in all the rows."""
     kept = [n for n, tx in enumerate(rows) if not (tx.excluded or tx.superseded_by)]
@@ -269,7 +293,7 @@ def _without_left_out(rows: list[Transaction], settings: BusinessSettings, read:
             by_direction[tx.direction.value] = by_direction.get(tx.direction.value, ZERO) + tx.gross
     matched, statuses = match_documents([rows[n] for n in kept], settings, [read[n] for n in kept],
                                         [{place[m] for m in apart[n] if m in place} for n in kept], open_items,
-                                        left_out)
+                                        left_out, name_days=[name_days[n] for n in kept])
     result = [_cleared(tx) for tx in rows]
     for n, tx in zip(kept, matched):
         result[n] = tx.model_copy(update={"issues": [
@@ -278,17 +302,165 @@ def _without_left_out(rows: list[Transaction], settings: BusinessSettings, read:
     return result, statuses
 
 
+_TAKINGS = re.compile(r"\btakings\b|\bz[- ]?read", re.IGNORECASE)
+_CASH_BANKED = re.compile(r"\bcash (paid in|banked|deposit\w*|lodg\w*)|\bpaid in at (a |the )?branch|\bcounter credit|"
+                          r"\bcash paid\b.*\bbranch", re.IGNORECASE)
+TILL = "1230"                      # where takings sit between the till and the bank
+TILL_WINDOW = dt.timedelta(days=31)
+
+
+def _with_till_takings(rows: list[Transaction], settings: BusinessSettings) -> list[Transaction]:
+    """For a business that sends its till summaries (Z-readings): those are its sales, cash and card together, and
+    the money is in the till, not yet in the bank. So the takings are booked into the till account; and what then
+    moves that money is not a second sale. A card processor's report of the sales it collected, and cash paid in at
+    the bank, within a month of a till summary, take the money out of the till instead of adding to Sales. A line of
+    the summary that only notes cash banked is that movement too. Without a till summary nothing changes."""
+    def income(tx: Transaction) -> bool:
+        account = BY_CODE.get(tx.account_code)
+        return account is not None and account.type == AccountType.INCOME
+
+    def words(tx: Transaction) -> str:
+        return f"{tx.description} {tx.counterparty or ''}"
+
+    takings = [tx for tx in rows if tx.document_type == "receipt" and tx.direction == Direction.IN and tx.date
+               and booked(tx) and income(tx) and _TAKINGS.search(words(tx))]
+    if not takings:
+        return rows
+
+    def near(tx: Transaction) -> bool:
+        return tx.date is not None and any(abs(tx.date - t.date) <= TILL_WINDOW for t in takings)
+
+    result = []
+    for tx in rows:
+        money_in = tx.direction == Direction.IN and booked(tx)
+        if any(tx is t for t in takings):
+            if tx.bank_account is None:   # unless a person said where the money went
+                tx = tx.model_copy(update={"contra_account_code": TILL, "issues": tx.issues + [issue(
+                    "till_takings", "Till takings: booked into the till (Petty Cash), not the bank. The card payouts "
+                                    "and the cash banked then move the money to the bank.", "info")]})
+        elif tx.vat_treatment is not None:
+            pass   # a person chose how VAT applies to it: a sale of its own, outside the till summaries
+        elif money_in and tx.document_type == "agent_statement" and income(tx) and near(tx):
+            tx = tx.model_copy(update={"account_code": TILL, "issues": tx.issues + [issue(
+                "till_takings", "The till summaries already book these takings as sales: this is the card money "
+                                "leaving the till for the processor, not a second sale. If these sales are not in "
+                                "the till summaries, edit the row and choose its VAT treatment.", "info")]})
+        elif (money_in and tx.document_type == "statement" and (income(tx) or tx.account_code == SUSPENSE)
+              and near(tx) and _CASH_BANKED.search(words(tx))):
+            tx = tx.model_copy(update={"account_code": TILL, "issues": [
+                *(i for i in tx.issues if i.code != "account_unclear"),
+                issue("till_takings", "Cash banked from the till: the till summaries already book it as sales, so "
+                                      "this moves it from the till to the bank. If it is another sale, edit the row "
+                                      "and choose its VAT treatment.", "info")]})
+        elif (money_in and tx.document_type == "receipt" and tx.account_code in settings.bank_accounts
+              and tx.account_code != TILL and near(tx) and _CASH_BANKED.search(words(tx))):
+            # The summary's own note of the cash banked: the same movement, which its bank line pairs with.
+            tx = tx.model_copy(update={"account_code": TILL, "issues": [
+                *(i for i in tx.issues if i.code != "same_account"),
+                issue("till_takings", "Cash banked from the till, as the till summary notes it.", "info")]})
+        result.append(tx)
+    return result
+
+
 def _with_sale_without_vat(tx: Transaction, settings: BusinessSettings) -> Transaction:
     """A VAT-registered client's bank line left unpaired, booked to an income account usually charged VAT, with no VAT
     shown and no rate a person chose: the sale may need its invoice, or a rate."""
     account = BY_CODE.get(tx.account_code)
-    if (settings.vat_registered and tx.document_type == "statement" and tx.direction == Direction.IN
+    if (registered_on(settings, tx.date) and tx.document_type == "statement" and tx.direction == Direction.IN
             and account is not None and account.type == AccountType.INCOME and account.vat == VatTreatment.STANDARD
             and tx.vat is None and tx.vat_treatment is None and not tx.pays and tx.recorded_by is None
             and booked(tx) and booked_line(tx)):
         return tx.model_copy(update={"issues": tx.issues + [issue(
             "sale_without_vat", "A sale with no VAT shown: book it from its invoice, or choose its VAT rate.")]})
     return tx
+
+
+def _with_addressee(tx: Transaction, settings: BusinessSettings) -> Transaction:
+    """A company's purchase whose receipt or invoice is addressed to someone else (the director at home): it may be
+    their own spending, so a person says. Not for a sole trader or a partnership, whose papers name the owner."""
+    name, to = settings.business_name, tx.addressed_to
+    if (settings.business_type != "limited_company" or not name or not to or tx.direction != Direction.OUT
+            or tx.document_type not in ("receipt", "invoice") or tx.account_code == DIRECTORS_LOAN
+            or "addressed_to" in tx.accepted or not booked(tx)
+            or same_payee(to, name) or _named_in(name, to)):
+        return tx
+    return tx.model_copy(update={"issues": tx.issues + [issue(
+        "addressed_to", f"Addressed to {to}, not {name}. If it is their own spending, recode it to Director's Loan "
+                        "Account; if the business bought it, say it is fine.")]})
+
+
+def _refunds(rows: list[Transaction], changes: list[dict], documents: dict[str, _Document], lines: list[int]) -> None:
+    """A bank line going the other way from a document overpaid by exactly its amount, to or from the same person, is
+    the overpayment refunded: it posts against the account holding what is owed, not as a sale or a cost, and nothing
+    is owed either way."""
+    for n in lines:
+        line, change = rows[n], changes[n]
+        if (change.get("pays") or change.get("paid_against") or change.get("recorded_by") or line.link is not None
+                or not line.counterparty or line.date is None):
+            continue
+        over = [d for d in documents.values() if d.open == -line.gross and d.direction != line.direction.value
+                and d.date is not None and d.date <= line.date and same_payee(line.counterparty, d.counterparty)]
+        if len(over) != 1:
+            continue
+        doc = over[0]
+        doc.open = ZERO
+        doc.paid_by.append(Settlement(ref=line.document_ref or f"row-{n}", amount=-line.gross, date=line.date,
+                                      description=line.description, kind=line.document_type))
+        kept = [i for i in change.get("issues", line.issues) if i.code != "unusual_direction"]
+        change.update(paid_against=doc.account, vat_posted=ZERO, net=line.gross, candidates=[], issues=kept + [issue(
+            "refund_of_overpayment", f"Refunds the {_gbp(line.gross)} overpaid on {doc.description}: taken off "
+                                     f"{BY_CODE[doc.account].name}, not booked as a sale or a cost.", "info")])
+
+
+RETURNED = dt.timedelta(days=14)   # a payment returned unpaid comes back within days
+
+
+def _reversals(rows: list[Transaction], changes: list[dict], lines: list[int]) -> None:
+    """A bank line in, on a cost account, for exactly what an earlier line to the same payee paid out of the same
+    account in the two weeks before (a direct debit returned unpaid, a payment refunded whole): the two cancel, so
+    the payment needs no receipt and the cost is nil. Neither line pays or is recorded by a document."""
+    def free(n: int) -> bool:
+        change = changes[n]
+        return not (change.get("pays") or change.get("paid_against") or change.get("recorded_by")
+                    or rows[n].link is not None or rows[n].date is None)
+
+    used: set[int] = set()
+    for n in lines:
+        back = rows[n]
+        account = BY_CODE.get(back.account_code)
+        if (back.document_type != "statement" or back.direction != Direction.IN or account is None
+                or account.type != AccountType.EXPENSE or not free(n)):
+            continue
+        paid = [k for k in lines if k not in used and free(k) and rows[k].document_type == "statement"
+                and rows[k].direction == Direction.OUT and rows[k].gross == back.gross
+                and rows[k].account_code == back.account_code
+                and rows[k].contra_account_code == back.contra_account_code
+                and back.date - RETURNED <= rows[k].date <= back.date
+                and names_match(rows[k].counterparty, back.counterparty)]
+        if not paid:
+            continue
+        k = max(paid, key=lambda k: (rows[k].date, k))
+        used.add(k)
+        changes[k]["issues"] = changes[k].get("issues", rows[k].issues) + [issue(
+            "reversed", f"Came back on {long_date(back.date)}: the two lines cancel, so no receipt or invoice is "
+                        "needed for this one.", "info", related=[n])]
+        changes[n]["issues"] = [i for i in changes[n].get("issues", back.issues) if i.code != "unusual_direction"] + [
+            issue("reversed", f"Reverses the payment of {long_date(rows[k].date)}: the two lines cancel.", "info",
+                  related=[k])]
+
+
+def _settled_since(changes: list[dict], documents: dict[str, _Document]) -> None:
+    """A part payment whose document has since been paid in full, or an overpayment since refunded, is no longer a
+    warning: the line says what it was, as a note."""
+    for change in changes:
+        found, pays = change.get("issues"), change.get("pays")
+        if not found or not pays or any(p.ref not in documents or documents[p.ref].open != ZERO for p in pays):
+            continue
+        change["issues"] = [
+            issue("part_payment", i.message.split(";")[0] + "; the rest has been paid since.", "info")
+            if i.code == "part_payment" else
+            issue("overpayment", i.message.split(" over")[0] + " over; it has been refunded since.", "info")
+            if i.code == "overpayment" else i for i in found]
 
 
 def _with_payout_report(tx: Transaction) -> Transaction:
@@ -306,8 +478,9 @@ def _with_payout_report(tx: Transaction) -> Transaction:
 
 def booked_line(tx: Transaction) -> bool:
     """A bank line or an agent's item that moves money in the books: not one dated before the client's first year,
-    which the opening balances already hold, unless a person ticked Include."""
-    return tx.include or not tx.in_opening
+    which the opening balances already hold, nor a line another statement already has (the statements overlap),
+    unless a person ticked Include."""
+    return tx.include or not (tx.in_opening or tx.copy_of is not None)
 
 
 def _pair_transfers(rows: list[Transaction], settings: BusinessSettings, changes: list[dict],
@@ -499,6 +672,37 @@ def _paid_again(rows: list[Transaction], changes: list[dict], lines: list[int], 
             change["issues"] = change.get("issues", line.issues) + [twice]
 
 
+COVERED = dt.timedelta(days=35)   # a statement with a line this close either side of a day covers that day
+
+
+def _off_statement(rows: list[Transaction], changes: list[dict], settings: BusinessSettings) -> None:
+    """A receipt is booked as paid from (or into) a bank account or card. When that account's statement has lines
+    either side of the receipt's day and none of them is its payment, the account did not pay it: the director's
+    own card did, or cash. So it is kept off the bank, in Suspense, and says so, until a person says what paid it
+    (Paid from, on the row). With no statement around its day nothing shows either way, and it stays on the bank."""
+    days: dict[str, list[dt.date]] = {}
+    for tx in rows:
+        if tx.document_type == "statement" and tx.date and not tx.in_opening:
+            days.setdefault(tx.contra_account_code, []).append(tx.date)
+    for r, tx in enumerate(rows):
+        change = changes[r]
+        contra = change.get("contra_account_code", tx.contra_account_code)
+        if (tx.document_type != "receipt" or tx.date is None or not booked(tx) or tx.claimed_in is not None
+                or change.get("paid_by") or change.get("recorded_by") or change.get("date_found")
+                or contra not in settings.bank_accounts or contra not in days):
+            continue
+        before = any(tx.date - COVERED <= day <= tx.date for day in days[contra])
+        after = any(tx.date + CARD_DAYS <= day <= tx.date + COVERED for day in days[contra])
+        if not (before and after):
+            continue
+        out = tx.direction == Direction.OUT
+        said = issue("not_on_statement", (
+            f"Not on the {BY_CODE[contra].name} statement, which has lines either side of {long_date(tx.date)}: that "
+            f"account did not {'pay' if out else 'receive'} it. Kept off the bank, in Suspense, until you say what "
+            f"{'paid it' if out else 'it was paid into'}: Edit the row and choose {'Paid from' if out else 'Paid into'}."))
+        change.update(contra_account_code=SUSPENSE, issues=[*change.get("issues", tx.issues), said])
+
+
 def _record(rows: list[Transaction], changes: list[dict], n: int, receipt: _Document) -> None:
     """Bank line n is the card payment the receipt records: the receipt is booked, paid by it, and the line is not.
     The receipt is paid from the line's account or card, which may not be the default bank."""
@@ -523,12 +727,14 @@ def _documents(rows: list[Transaction]) -> dict[str, _Document]:
     """The open documents: booked invoices, claims and included documents. A claim still asks for the lines its
     receipts book; an invoice on a claim is owed to the claimant, on the claim, not to its supplier. A payroll
     report is not one: what it owes is on 2220, 2210 and 2230, which the bank payments clear."""
-    return _grouped(rows, lambda tx: tx.document_type not in ("receipt", "statement", "payroll")
+    return _grouped(rows, lambda tx: tx.document_type not in ("receipt", "statement", "payroll", "journal")
                     and tx.claimed_in is None
+                    and tx.currency == "GBP"   # nothing in pounds pays an amount in another currency: convert it first
                     and (booked(tx) or (tx.document_type == "expense_claim" and tx.recorded_by is not None)))
 
 
-def _with_claims(rows: list[Transaction], settings: BusinessSettings, apart: list[set[int]]) -> list[Transaction]:
+def _with_claims(rows: list[Transaction], settings: BusinessSettings, apart: list[set[int]],
+                 name_days: Optional[list[Optional[dt.date]]] = None) -> list[Transaction]:
     """The rows, each expense claim line that a receipt or invoice also records marked as recorded by it: the same
     amount, the same way and dated within a few days, the nearest document first and one the line names before any
     other. The document is booked, since it shows the VAT that can be reclaimed, and is owed to the
@@ -594,6 +800,20 @@ def _with_claims(rows: list[Transaction], settings: BusinessSettings, apart: lis
         for _, _, n, ref, document in pairs:
             if n not in paired_lines and ref not in paired_documents:
                 pair(n, document)
+    # An undated document whose file name holds a day pairs with the one open claim line of its amount and way on that
+    # day, whatever the names say: the claimant's line and the file name agree on the day. Not when two such documents
+    # share the day and amount, which would leave the line's document a guess.
+    name_days = name_days or [None] * len(rows)
+    for document in documents:
+        day = name_days[document.rows[0]]
+        if document.date is not None or day is None or document.ref in paired_documents:
+            continue
+        fits = [n for n in lines if n not in paired_lines and rows[n].date == day and rows[n].gross == document.total
+                and rows[n].direction.value == document.direction and not kept_apart(n, document)]
+        rivals = [d for d in documents if d.ref != document.ref and d.ref not in paired_documents and d.date is None
+                  and name_days[d.rows[0]] == day and d.total == document.total]
+        if len(fits) == 1 and not rivals:
+            pair(fits[0], document, dated=day)
     # What is left: a document and a claim line that agree on all but the date, and only with each other. A document
     # without a date takes the line's; with another date, one of them was misread or mistyped, so both ask, and they
     # stay apart until a person says which date is right.
@@ -640,6 +860,21 @@ def _with_claims(rows: list[Transaction], settings: BusinessSettings, apart: lis
                           description=line.description, kind="expense_claim")
         for r in document.rows:
             marked[r] = marked[r].model_copy(update={"recorded_by": held})
+        if line.document_ref in confirmed and document.total >= line.gross:
+            # The claimant claimed less than the bill, and the claim's printed total confirms the line: the company owes
+            # what was claimed, so that is booked, the bill backs it (documented_by), and no one is asked.
+            short = _gbp(document.total - line.gross)
+            marked[n] = marked[n].model_copy(update={
+                "documented_by": document.settlement(document.total),
+                "issues": marked[n].issues + [issue("claimed_less", (
+                    f"Claimed {_gbp(line.gross)}; its {kind} is {_gbp(document.total)}. The claim's total confirms "
+                    f"{_gbp(line.gross)}, so that is booked and the {kind} backs it: {short} not claimed."), "info",
+                    related=document.rows)]})
+            first = document.rows[0]
+            marked[first] = marked[first].model_copy(update={"issues": marked[first].issues + [issue("claimed_less", (
+                f"Booked as claimed: {_gbp(line.gross)} of its {_gbp(document.total)}, which the claim's total "
+                f"confirms ({short} not claimed)."), "info", related=[n])]})
+            continue
         total = (f" The claim's total confirms {_gbp(line.gross)}; {_gbp(document.total)} puts it "
                  f"{_gbp(abs(document.total - line.gross))} out." if line.document_ref in confirmed else "")
         ask("amount_conflict", "amount_found", n, document, line.gross, document.total,
@@ -777,6 +1012,62 @@ def _without_copies(rows: list[Transaction]) -> list[Transaction]:
         for n in doc.rows:
             marked[n] = rows[n].model_copy(update={"copy_of": original.settlement(original.total),
                                                    "issues": rows[n].issues + [found]})
+    return _without_repeated_lines(_without_unnumbered_copies(marked))
+
+
+def _without_repeated_lines(rows: list[Transaction]) -> list[Transaction]:
+    """The rows, each bank line that repeats an earlier one marked as its copy: the same account, day, amount and way,
+    and the same running balance after it. One statement can't print that twice (a line moves the balance), so the
+    line is on two statements whose periods overlap, or one statement was added twice. A copy is not booked unless a
+    person ticks Include. Lines printed without a balance are left to the possible-duplicate check."""
+    seen: dict[tuple, int] = {}
+    marked = list(rows)
+    for n, tx in enumerate(rows):
+        if tx.document_type != "statement" or tx.date is None or tx.balance is None or tx.in_opening:
+            continue
+        first = seen.setdefault((tx.contra_account_code, tx.date, tx.direction, tx.gross, tx.balance), n)
+        if first == n or tx.include:
+            continue
+        original = rows[first]
+        found = issue("duplicate_document", f"Same line as one on another statement of this account "
+                                            f"({long_date(tx.date)}, £{tx.gross:,.2f}, same balance after it): the "
+                                            "statements overlap. Not booked; tick Include if it's another.", "info")
+        marked[n] = tx.model_copy(update={
+            "copy_of": Settlement(ref=original.document_ref or f"row-{first}", amount=original.gross,
+                                  date=original.date, description=original.description, kind="statement"),
+            "issues": tx.issues + [found]})
+    return marked
+
+
+def _lines(doc: _Document, rows: list[Transaction]) -> list[tuple]:
+    return sorted((rows[n].date or dt.date.min, rows[n].gross, rows[n].direction.value) for n in doc.rows)
+
+
+def _without_unnumbered_copies(rows: list[Transaction]) -> list[Transaction]:
+    """The rows, each document of several lines and no number that repeats an earlier one line for line marked as
+    its copy: the same kind, counterparty, way and total, and the same amount on the same day on every line, such as
+    an expenses sheet uploaded again. One receipt like another is left alone: two coffees of one price on one day are
+    often two coffees, which the possible-duplicate check asks about. A copy is not booked unless a person ticks
+    Include."""
+    several = [d for d in _grouped(rows, lambda tx: tx.document_type in _NUMBERED and not _number(tx)
+                                   and tx.copy_of is None).values() if len(d.rows) > 1]
+    originals: list[_Document] = []
+    marked = list(rows)
+    for doc in sorted(several, key=lambda d: d.rows[0]):   # the one read first is the original
+        first = rows[doc.rows[0]]
+        original = next((o for o in originals if rows[o.rows[0]].document_type == first.document_type
+                         and o.direction == doc.direction and o.total == doc.total
+                         and names_match(o.counterparty, doc.counterparty)
+                         and _lines(o, rows) == _lines(doc, rows)), None)
+        if original is None:
+            originals.append(doc)
+            continue
+        kind = _NUMBERED[first.document_type]
+        found = issue("duplicate_document", f"Same {kind} as {original.label()}, read again: the same "
+                                            f"{len(doc.rows)} lines. Not booked; tick Include if it's another.", "info")
+        for n in doc.rows:
+            marked[n] = rows[n].model_copy(update={"copy_of": original.settlement(original.total),
+                                                   "issues": rows[n].issues + [found]})
     return marked
 
 
@@ -869,16 +1160,38 @@ def _outcome(line: Transaction, documents: dict[str, _Document]) -> tuple[str, l
     documents it concerns, and why a suggestion or open_document was not a match."""
     kind, options = _decide(line, [d for d in documents.values() if _could_pay(line, d)])
     why = "the names do not match"
-    if kind == "none":
+    account = BY_CODE.get(line.account_code)
+    owed_elsewhere = account is not None and line.account_code != SUSPENSE and account.type in (
+        AccountType.LIABILITY, AccountType.EQUITY)   # tax, wages, a loan, the owner: never a supplier's bill
+    if (kind == "pay" and owed_elsewhere and line.account_code != CREDITORS
+            and sum((d.open for d in options[0]), ZERO) != line.gross):
+        # A dividend, wages or a loan repayment to someone with a small bill open is not a part payment or an
+        # overpayment of that bill: only its exact amount pays it, and anything else is for a person to link.
+        kind, options, why = "open_document", [[d] for d in options[0]], (
+            f"the amount differs and the line is on {account.name}")
+    if kind == "none" and not owed_elsewhere:
         early = [d for d in documents.values() if _paid_before(line, d) and d.open == line.gross]
         if early:
             kind, options, why = "suggest", [[d] for d in early], "the payment is dated before the document"
     if kind == "none":     # never silent: someone this line is paid to or from has an open document
         open_documents = [d for d in documents.values() if _another(line, d) and line.date and line.counterparty
                           and names_match(line.counterparty, d.counterparty)]
+        if owed_elsewhere and line.account_code != CREDITORS:
+            # Wages to S Marlow are not M Marlow's mileage claim: a line on tax, wages or a loan is only offered a
+            # document of its amount, or one surely from the same person.
+            open_documents = [d for d in open_documents if d.open == line.gross
+                              or same_payee(line.counterparty, d.counterparty)]
         if open_documents:
             kind, options = "open_document", [[d] for d in open_documents]
             why = _why_not_matched(line, open_documents)
+    if kind == "none":     # a balance brought forward without its invoices: early payments may be of it
+        rest = [d for d in documents.values() if d.ref.startswith("ob-rest-") and _another(line, d) and line.date
+                and d.date and line.date <= d.date + PART_WINDOW and line.gross <= d.open
+                and BY_CODE.get(line.account_code) is not None
+                and BY_CODE[line.account_code].type in (AccountType.INCOME, AccountType.EXPENSE)]
+        if rest:
+            kind, options = "open_document", [[d] for d in rest]
+            why = "its invoices were not listed in the opening balances"
     return kind, options, why
 
 
@@ -926,6 +1239,11 @@ def _decide(line: Transaction, docs: list[_Document]) -> tuple[str, list[list[_D
     if named:      # a part payment or an overpayment, when only one document can be meant
         return ("pay", [named]) if len(named) == 1 else ("choose", [[d] for d in named])
     same_amount = [d for d in docs if d.open == line.gross]
+    # One document for exactly this amount, dated in the week before, whose name shares a name (not just a trade
+    # word) with the line's ("Google Workspace Ireland", "Google Cloud EMEA Limited"): amount, day and name agree.
+    if (len(same_amount) == 1 and line.date <= same_amount[0].date + NEAR_PAYMENT
+            and _share_a_name(line.counterparty, same_amount[0].counterparty)):
+        return "pay", [same_amount]
     return ("suggest", [[d] for d in same_amount]) if same_amount else ("none", [])
 
 

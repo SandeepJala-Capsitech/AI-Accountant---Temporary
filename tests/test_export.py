@@ -40,7 +40,8 @@ def test_the_workbook_has_the_trial_balance_and_the_transactions(store):
     store.add_upload(client.id, "BT-0905.pdf", "pdf", [receipt()])
     tb, txs, name = sheets(store, client.id)
     assert name == "Business Cube Ltd 2026-10-06.xlsx"
-    assert tb["A1"].value == "Business Cube Ltd — trial balance — 6 Oct 2026"
+    title = tb["A1"].value   # the year the figures are for, and the day they were worked out
+    assert title.startswith("Business Cube Ltd — trial balance — Year to ") and title.endswith(", as at 6 Oct 2026")
     assert [[c.value for c in row] for row in tb.iter_rows(min_row=2)] == [
         ["Code", "Account", "Debit", "Credit"], ["1200", "Bank Current Account", 0, 72],
         ["7502", "Telephone and Internet", 60, 0], ["2201", "Purchase VAT", 12, 0], [None, "Totals", 72, 72]]
@@ -58,8 +59,8 @@ def test_while_rows_need_fixing_the_trial_balance_sheet_says_what(store):
     client = store.create_client(CUBE)
     store.add_upload(client.id, "a.pdf", "pdf", [receipt(account_code="9999")])
     tb, _, _ = sheets(store, client.id)
-    assert (tb["A2"].value, tb["A3"].value) == ("The trial balance can't be produced yet:",
-                                                "#1: This account isn't in the chart.")
+    assert tb["A2"].value == "The trial balance can't be produced yet:"
+    assert tb["A3"].value.endswith("): This account isn't in the chart.")   # after the row's name, date and amount
 
 
 def test_an_edited_row_says_so(store):
@@ -98,3 +99,15 @@ def test_document_text_never_becomes_a_formula_or_breaks_the_export(store):
     assert (txs["B3"].value, txs["B3"].data_type) == ('=HYPERLINK("http://example.invalid","x")', "s")
     assert txs["B4"].value == "Paperand toner"
     assert (tb["A1"].data_type, txs["A1"].data_type, txs["N3"].data_type) == ("s", "s", "s")
+
+
+def test_the_workbook_has_a_profit_and_loss_and_a_balance_sheet_that_balance(store):
+    client = store.create_client(CUBE)
+    store.add_upload(client.id, "BT-0905.pdf", "pdf", [receipt()])
+    content, _ = books.export(store, client.id, YEAR, DAY)
+    book = load_workbook(io.BytesIO(content))
+    assert book.sheetnames == ["Trial balance", "Transactions", "Profit and loss", "Balance sheet"]
+    pl = {row[1]: row[2] for row in book["Profit and loss"].iter_rows(min_row=2, values_only=True)}
+    bs = {row[1]: row[2] for row in book["Balance sheet"].iter_rows(min_row=2, values_only=True)}
+    assert pl["Net loss"] < 0 and pl["Net loss"] == bs["Loss for the year"]
+    assert bs["Net assets"] == bs["Capital and reserves"]

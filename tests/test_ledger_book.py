@@ -170,7 +170,7 @@ def test_no_vat_leg_for_a_client_not_vat_registered(store, records, acme, monkey
 
 def test_rows_that_need_fixing_post_nothing(store, records, acme_with_a_non_gbp_row):
     result = ledger_book.post(store, records, acme_with_a_non_gbp_row, YEAR_1)
-    assert result.batch_id is None and result.problems and result.problems[0].startswith("#1:")
+    assert result.batch_id is None and result.problems and "Read as USD 50.00" in result.problems[0]
     assert counts(records) == (0, 0)
 
 

@@ -200,3 +200,71 @@ def test_a_held_unclear_line_posts_to_suspense_and_the_bank():
     tx = parked("50.00")
     lines = journal_with_rule(tx, 0, document_rule(tx, SETTINGS))
     assert [(l.code, l.debit, l.credit) for l in lines] == [("9998", D("50.00"), 0), ("1200", 0, D("50.00"))]
+
+
+def test_a_purchase_a_person_books_without_its_document_is_booked_with_no_vat():
+    held = statement_line("120.00")
+    assert verdict(document_rule(held, SETTINGS)) == ("hold", False, "receipt_or_invoice")
+    booked = held.model_copy(update={"without_document": "Receipt lost; client confirms hand tools"})
+    rule = document_rule(booked, SETTINGS)
+    assert verdict(rule) == ("book", False, None)
+    assert "Receipt lost; client confirms hand tools" in rule.reason and "no VAT reclaimed" in rule.reason
+
+
+def test_a_reason_on_a_row_the_rules_book_anyway_changes_nothing():
+    small = statement_line("12.00").model_copy(update={"without_document": "Lost"})
+    assert document_rule(small, SETTINGS) == document_rule(statement_line("12.00"), SETTINGS)
+
+
+def test_a_claim_line_its_bill_backs_is_booked_with_its_vat_kept_in_the_cost():
+    from ledgersync.models import Settlement
+    line = ready(document_type="expense_claim", gross=D("120.00"), account_code="7400")
+    assert verdict(document_rule(line, SETTINGS)) == ("hold", False, "receipt_or_invoice")
+    backed = line.model_copy(update={"documented_by": Settlement(ref="bill", amount=D("130.00"), kind="invoice")})
+    assert verdict(document_rule(backed, SETTINGS)) == ("book", False, None)
+
+
+def test_a_subcontractors_bill_that_is_not_a_vat_invoice_keeps_its_cis_and_balances():
+    tx = ready(document_type="invoice", gross=D("800.00"), account_code="5002", not_vat_invoice=True,
+               cis_deducted=D("200.00"))
+    lines = journal_with_rule(tx, 0, document_rule(tx, SETTINGS))
+    assert [(l.code, l.debit, l.credit) for l in lines] == [
+        ("5002", D("1000.00"), 0), ("2215", 0, D("200.00")), ("2100", 0, D("800.00"))]
+
+
+def test_a_payment_worded_as_a_deposit_pays_its_invoice_and_is_not_held():
+    # "Southern Van Centre, deposit on van" was matched to the van's invoice as a part payment, then held in
+    # Suspense for "the full VAT invoice" that was already there.
+    from ledgersync.checks import normalise
+    from ledgersync.matching import match
+    from ledgersync.models import BusinessSettings
+    settings = BusinessSettings()
+    van = Transaction(document_type="invoice", direction="out", gross="21600.00", vat="3600.00", account_code="0055",
+                      date="2026-04-02", counterparty="Southern Van Centre Ltd", document_ref="van",
+                      description="Ford Transit Custom", supplier_vat_number="GB1")
+    def deposit(words):
+        return Transaction(document_type="statement", direction="out", gross="3600.00", account_code="0055",
+                           date="2026-04-03", counterparty="Southern Van Centre", document_ref="line", description=words)
+    for words, action in (("Southern Van Centre, deposit on van", "book"), ("Southern Van Centre", "hold")):
+        _, line = match([normalise(t, settings) for t in (van, deposit(words))], settings)
+        assert line.paid_against == "2100" and document_rule(line, settings).action == action
+
+
+def _line(kind, account, gross, description="x", **kw):
+    from ledgersync.checks import normalise
+    from ledgersync.models import BusinessSettings
+    return normalise(Transaction(document_type=kind, direction="out", gross=gross, account_code=account,
+                                 date="2026-06-10", description=description, **kw), BusinessSettings())
+
+
+def test_a_mileage_claim_is_its_own_record():
+    # "Business mileage in own car, 320 miles @ 45p" was held in Suspense for a receipt that can't exist.
+    rule = document_rule(_line("expense_claim", "7400", "144.00", "Business mileage in own car, 320 miles @ 45p"), SETTINGS)
+    assert (rule.action, rule.reclaim_vat) == ("book", False)
+    assert document_rule(_line("expense_claim", "7400", "144.00", "Train to Leeds"), SETTINGS).action == "hold"
+
+
+def test_business_rates_are_never_asked_for_a_vat_invoice():
+    rates = document_rule(_line("statement", "7103", "310.00", "Rushmoor BC, business rates"), SETTINGS)
+    assert (rates.action, rates.needs) == ("hold", "receipt_or_invoice")
+    assert document_rule(_line("statement", "7500", "310.00"), SETTINGS).needs == "vat_invoice"

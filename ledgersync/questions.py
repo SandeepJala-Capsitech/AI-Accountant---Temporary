@@ -13,13 +13,13 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from . import books, ledger_book
+from . import books, ledger, ledger_book
 from .checks import booked, long_date
 from .errors import InvalidInput, NotFound
 from .evidence_rules import document_rule
 from .ledger import settings_for
 from .models import (ChangeDraft, Decision, DecisionDraft, Evidence, Ledger, PostResult, Question, QuestionDraft,
-                     Transaction)
+                     RowPatch, Transaction)
 from .money import ZERO
 from .payees import processor
 from .records import AgentRecords
@@ -46,7 +46,15 @@ class NotSureAnswer(BaseModel):
     kind: Literal["not_sure"]
 
 
-Answer = Annotated[Union[DateAnswer, NoDocumentAnswer, NotSureAnswer], Field(discriminator="kind")]
+class WithoutDocumentAnswer(BaseModel):
+    """Book the purchase without the receipt or invoice it needs: no VAT reclaimed. Only a person answers so."""
+    kind: Literal["without_document"]
+    reason: str
+
+
+Answer = Annotated[Union[DateAnswer, NoDocumentAnswer, NotSureAnswer, WithoutDocumentAnswer],
+                   Field(discriminator="kind")]
+BOOKED_WITHOUT = "Booked without a receipt: "
 
 
 class Answered(NamedTuple):
@@ -102,7 +110,8 @@ def _wanted(store: MongoStore, client_id: int,
         rule = document_rule(tx, settings)
         if rule.action == "hold" and rule.needs:
             when = f" on {long_date(tx.date)}" if tx.date else ""
-            want(tx, rule.needs, _ASKS[rule.needs],
+            asks = _ASKS[rule.needs] if settings.vat_registered else _ASKS["receipt_or_invoice"]
+            want(tx, rule.needs, asks,
                  f"{_gbp(tx.gross)} to {tx.counterparty or tx.description}{when}. {_OVER[rule.needs]}, so I need it. "
                  "Held in Suspense as Documentation required until then.")
     return wanted, built
@@ -124,6 +133,8 @@ def _settled_by(store: MongoStore, client_id: int, q: Question) -> Optional[str]
     tx = next((t for t in rows if t.id == q.row_ids[0]), None)
     if tx is None:
         return None
+    if tx.without_document:
+        return f"{BOOKED_WITHOUT}{tx.without_document}"
     ref = (tx.pays[0].ref if tx.pays else tx.recorded_by.ref if tx.recorded_by else
            tx.documented_by.ref if tx.documented_by else None)
     paid = next((t for t in rows if ref and t.document_ref == ref), None)
@@ -196,6 +207,16 @@ def answer(store: MongoStore, records: AgentRecords, *, client_id: int, thread_i
         decision_ids = [decision.id]
         if decision.year_start not in years:   # the date moved the row to another year
             years.append(decision.year_start)
+    elif isinstance(answer, WithoutDocumentAnswer):
+        reason = answer.reason.strip()
+        if q.kind not in _ASKS or not q.row_ids:
+            raise InvalidInput("Only a purchase waiting for its receipt or invoice can be booked without it.")
+        if not reason:
+            raise InvalidInput("Say why it is booked without its receipt or invoice.")
+        for row_id in q.row_ids:
+            ledger.change_row(store, client_id, row_id, RowPatch(without_document=reason))
+        said = f"{BOOKED_WITHOUT}{reason}"
+        records.set_question(q.id, "resolved", said)
     elif isinstance(answer, NoDocumentAnswer):
         if q.kind not in DOCUMENT_KINDS:
             raise InvalidInput("This question isn't asking for a document.")

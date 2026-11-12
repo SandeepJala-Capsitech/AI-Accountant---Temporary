@@ -75,9 +75,10 @@ def test_cancelling_transactions_leave_no_zero_lines():
 
 
 def test_unknown_account_blocks_the_trial_balance():
-    with pytest.raises(InvalidTransactions, match="#2") as info:
+    with pytest.raises(InvalidTransactions, match="isn't in the chart") as info:
         trial_balance([tx("out", "10.00", "7502"), tx("out", "10.00", "9999")], REGISTERED)
-    assert "#2: This account isn't in the chart." in info.value.message   # the row, not the code
+    # the row is named by what it is, its date and amount, so a person can find it
+    assert "t (1 Sep 2026, £10.00): This account isn't in the chart." in info.value.message
 
 
 def test_trial_balance_always_balances_for_random_ledgers():
@@ -315,3 +316,25 @@ def test_a_cis_sale_says_where_the_tax_went():
         ("cis_deducted", "info", "CIS £600.00 taken off by the customer: booked to CIS Deducted, so the sale is "
                                  "£4,000.00.")]
     assert sale.net == Decimal("4000.00")
+
+
+def test_money_held_in_suspense_is_not_counted_as_a_liability():
+    # Kestrel's £6,721.48 held in Suspense made total liabilities read -£4,590.80.
+    tb = trial_balance([tx("out", "240.00", "9998"), tx("in", "1000.00", "2300")], REGISTERED)
+    assert (tb.total_assets, tb.total_liabilities) == (Decimal("1000.00"), Decimal("1000.00"))   # 760 bank + 240 held
+
+
+def test_a_journal_debits_one_account_and_credits_another_with_no_vat_and_no_document():
+    from ledgersync.evidence_rules import document_rule
+    from ledgersync.checks import normalise as check
+    # Depreciation for the year: Dr 8000 Depreciation, Cr 0031 Office Equipment Depreciation. Nothing touches the bank.
+    entry = tx("out", "525.00", "8000", document_type="journal", contra_account_code="0031")
+    ready = check(entry, REGISTERED)
+    assert (ready.contra_account_code, ready.vat_posted, ready.issues) == ("0031", Decimal("0.00"), [])
+    assert document_rule(ready, REGISTERED).action == "book"   # over £250, and still not held for an invoice
+    tb = trial_balance([entry], REGISTERED)
+    assert {(l.code, l.debit, l.credit) for l in tb.lines} == {("8000", Decimal("525.00"), Decimal("0.00")),
+                                                              ("0031", Decimal("0.00"), Decimal("525.00"))}
+    # An accrual credits Accruals, which the rules otherwise work out afresh: a journal's accounts are kept.
+    accrual = check(tx("out", "300.00", "7601", document_type="journal", contra_account_code="2109"), REGISTERED)
+    assert accrual.contra_account_code == "2109"

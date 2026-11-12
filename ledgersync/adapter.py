@@ -6,11 +6,13 @@ from __future__ import annotations
 import datetime as dt
 import re
 import uuid
+from collections import Counter
 from decimal import Decimal
 from typing import Optional
 
-from .accounts import BY_CODE, CLEARING, DIRECTORS_LOAN, DRAWINGS, SUSPENSE, AccountType
-from .payees import personal, processor
+from .accounts import (BY_CODE, CARDS, CLEARING, DEBTORS, DIRECTORS_LOAN, DRAWINGS, LOANS, SUSPENSE, AccountType,
+                       pays_cards)
+from .payees import card_payment, on_account, personal, processor
 from .checks import OWED_TO, issue, normalise
 from .models import DOCUMENT_TYPES, BusinessSettings, Direction, Transaction
 from .money import VatTreatment, to_money, vat_in_gross
@@ -29,10 +31,37 @@ def parse_date(text) -> Optional[dt.date]:
     return None
 
 
+# VAT number prefixes of suppliers outside the UK: EU member states' (and "EU" for the non-Union scheme).
+_ABROAD = re.compile(r"^(AT|BE|BG|CY|CZ|DE|DK|EE|EL|ES|FI|FR|HR|HU|IE|IT|LT|LU|LV|MT|NL|PL|PT|RO|SE|SI|SK|EU)[0-9A-Z]")
+
+
+def _reverse_charge(row: dict, kind: str, vat) -> bool:
+    """Whether a purchase is a service from abroad the business accounts for the VAT on: an invoice or receipt that
+    charges no VAT, which the reader saw say so, or which prints a VAT number of a supplier outside the UK."""
+    if kind not in ("receipt", "invoice") or vat or str(row.get("direction") or "").strip().lower() == "in":
+        return False
+    said = row.get("reverse_charge")
+    said = said.strip().lower() == "true" if isinstance(said, str) else bool(said)
+    return said or bool(_ABROAD.match(_vat_number(row) or ""))
+
+
 def _document_type(row: dict) -> str:
     """The model's document type; one the ledger does not know is left for a person to check."""
     kind = str(row.get("document_type") or "receipt").strip().lower()
     return kind if kind in DOCUMENT_TYPES else "other"
+
+
+_SAYS_VAT_INVOICE = re.compile(r"\b(?:vat|tax)\s+invoice\b", re.I)
+_SAYS_NOT_ONE = re.compile(r"\bnot\s+an?\s+(?:vat|tax)\s+invoice\b", re.I)
+
+
+def _invoices_as_printed(rows: list[dict], text: str) -> list[dict]:
+    """A document read as a receipt that calls itself a VAT invoice or a tax invoice ("Receipt / VAT Invoice", as a
+    shop prints for a business customer) is an invoice: it reclaims its VAT whatever its size, and is not asked for
+    again. Left as read when it says it is not one."""
+    if not _SAYS_VAT_INVOICE.search(text) or _SAYS_NOT_ONE.search(text):
+        return rows
+    return [dict(row, document_type="invoice") if _document_type(row) == "receipt" else row for row in rows]
 
 
 def _document_key(row: dict) -> Optional[tuple]:
@@ -182,9 +211,37 @@ def _cis(row: dict, gross: Decimal, vat: Optional[Decimal], net: Optional[Decima
     return gap if gap > 0 and gap in printed else None
 
 
+_LABOUR = {"5002", "7602"}   # subcontractors and consultants: the lines a CIS deduction is taken from
+
+
+def _cis_lines(rows: list[dict]) -> dict[int, bool]:
+    """Which rows carry their invoice's CIS deduction, by position, and whether the row's amount still has it in. An
+    invoice of one row carries its own. On an invoice of several rows a reader repeats the one deduction on each: it
+    is kept on one row, the labour line if there is one, and comes off that row when the rows were read before the
+    deduction (they add up to the amount due plus it). Rows read with different deductions keep their own."""
+    by_document: dict[tuple, list[int]] = {}
+    for n, row in enumerate(rows):
+        key = _document_key(row)
+        if key and to_money(row.get("cis_deducted")):
+            by_document.setdefault(key, []).append(n)
+    lines = {}
+    for key, carrying in by_document.items():
+        figures = {abs(to_money(rows[n].get("cis_deducted"))) for n in carrying}
+        if len(carrying) == 1 or len(figures) > 1:
+            lines.update({n: False for n in carrying})
+            continue
+        [cis] = figures
+        whole = [abs(to_money(r.get("amount"))) for r in rows if _document_key(r) == key]
+        total = _printed_total(rows[carrying[0]])
+        labour = [n for n in carrying if str(rows[n].get("account") or "")[:4] in _LABOUR]
+        lines[(labour or carrying)[0]] = total is not None and sum(whole) == total + cis
+    return lines
+
+
 def _recoded(code: str, row: dict, settings: BusinessSettings) -> str:
     """What a bookkeeper recodes on sight. A payment processor's payout on a bank statement goes to Payment Processor
-    Clearing, not to sales: it is sales less the processor's fees and refunds, which its payout report shows. Spending
+    Clearing, not to sales: it is sales less the processor's fees and refunds, which its payout report shows. A credit
+    on a card statement worded as a payment is the card being paid off: a transfer from the client's bank. Spending
     with a consumer service (a streaming subscription) is the owner's: the Director's Loan Account for a company,
     Drawings for anyone else (left as read when the kind of business isn't known)."""
     account = BY_CODE.get(code)
@@ -192,10 +249,19 @@ def _recoded(code: str, row: dict, settings: BusinessSettings) -> str:
         return code
     loose = code == SUSPENSE or account.type in (AccountType.INCOME, AccountType.EXPENSE)
     names = (row.get("counterparty"), row.get("description"))
+    owners = code == LOANS and _document_type(row) == "statement"   # a mortgage payment, read as a loan repayment
+    if (row.get("direction") == "in" and _document_type(row) == "statement" and loose
+            and settings.bank_account in CARDS and card_payment(*names)):
+        # Money in on a card statement, worded as a payment: the card paid off from the bank, never a sale.
+        return pays_cards(settings.bank_accounts, settings.bank_account) or code
     if row.get("direction") == "in" and _document_type(row) == "statement" and loose and processor(*names):
         return CLEARING
-    if (row.get("direction") != "in" and loose and settings.business_type and account.type != AccountType.INCOME
-            and personal(*names)):
+    if (row.get("direction") == "in" and _document_type(row) == "statement" and account.type == AccountType.INCOME
+            and on_account(*names)):
+        # Paid before it was invoiced: held on the customer's account as a credit, not yet a sale.
+        return DEBTORS
+    if (row.get("direction") != "in" and (loose or owners) and settings.business_type
+            and account.type != AccountType.INCOME and personal(*names, business_type=settings.business_type)):
         return DIRECTORS_LOAN if settings.business_type == "limited_company" else DRAWINGS
     return code
 
@@ -208,11 +274,12 @@ def to_transactions(rows: list[dict], source: str, settings: BusinessSettings, o
     result = []
     printed = _numbers_in(text) if text is not None else None
     if text is not None:
-        rows = _only_printed_totals(rows, text)
+        rows = _only_printed_totals(_invoices_as_printed(rows, text), text)
     rows = [dict(row, agent=agent) if _document_type(row) == "agent_statement" else row
             for row in _keep_unsplittable_whole(rows)]
     refs = {key: uuid.uuid4().hex[:12] for key in _documents(rows)}   # one reference per document
-    for row in rows:
+    cis_lines, alone = _cis_lines(rows), Counter(_document_key(row) for row in rows)
+    for position, row in enumerate(rows):
         amount = to_money(row.get("amount"))
         if not amount:
             continue
@@ -240,9 +307,14 @@ def to_transactions(rows: list[dict], source: str, settings: BusinessSettings, o
         kind = _document_type(row)
         statement = kind == "statement"
         gross = abs(amount)
-        cis = _cis(row, gross, vat, net, text, printed)
-        if cis and net is not None and gross == abs(net) + abs(vat or 0):   # read before the deduction: what is due
-            gross -= cis
+        if key is None or alone[key] == 1:
+            cis = _cis(row, gross, vat, net, text, printed)
+            if cis and net is not None and gross == abs(net) + abs(vat or 0):   # read before the deduction: what is due
+                gross -= cis
+        else:   # one line of a longer invoice: only the line chosen to carry the deduction has it
+            cis = _cis(row, gross, vat, net, None, None) if position in cis_lines else None
+            if cis and cis_lines[position] and gross > cis:
+                gross -= cis
         tx = Transaction(date=parse_date(row.get("date")), description=str(row.get("description") or ""),
                          direction=Direction.IN if said_in and amount > 0 else Direction.OUT,
                          gross=gross, vat=abs(vat) if vat is not None else None,   # sign: direction
@@ -251,6 +323,8 @@ def to_transactions(rows: list[dict], source: str, settings: BusinessSettings, o
                          counterparty=str(row.get("counterparty") or "").strip() or None,
                          document_number=None if statement else str(row.get("document_number") or "").strip() or None,
                          supplier_vat_number=None if statement else _vat_number(row),
+                         addressed_to=None if statement else str(row.get("addressed_to") or "").strip() or None,
+                         reverse_charge=_reverse_charge(row, kind, vat),
                          agent=str(row.get("agent") or "").strip() or None,
                          owed_to=row.get("owed_to") if kind == "payroll" and row.get("owed_to") in OWED_TO else None,
                          document_total=_printed_total(row) if key else None,
@@ -262,4 +336,32 @@ def to_transactions(rows: list[dict], source: str, settings: BusinessSettings, o
                          opening_balance=to_money(opening_balance) if statement else None,
                          closing_balance=to_money(closing_balance) if statement else None)
         result.append(normalise(tx, settings))
-    return result
+    return _with_payroll_people(result, printed, settings)
+
+
+_OWN_PAY = {"7000", "7001"}   # an employee's own pay, tax and pension: not the employer's NI or pension
+
+
+def _with_payroll_people(rows: list[Transaction], printed: Optional[set], settings: BusinessSettings) -> list[Transaction]:
+    """A payroll report read from text: each person's net pay, tax and pension lines add up to their gross pay, which
+    the report prints. A person whose lines add up to a figure it doesn't print was read wrong (pay moved between
+    people leaves the totals right), and their first line says so. Checked only when the lines name two people or
+    more and the report's text is to hand."""
+    if printed is None:
+        return rows
+    people: dict[str, list[int]] = {}
+    for n, tx in enumerate(rows):
+        if tx.document_type == "payroll" and tx.account_code in _OWN_PAY and tx.counterparty:
+            people.setdefault(tx.counterparty.strip().lower(), []).append(n)
+    if len(people) < 2:
+        return rows
+    checked = list(rows)
+    for places in people.values():
+        gross = sum((rows[n].gross for n in places), Decimal("0.00"))
+        if gross not in printed:
+            first = rows[places[0]]
+            said = issue("payroll_person", f"{first.counterparty}'s pay, tax and pension lines add up to £{gross:,.2f}, "
+                                           "which the payroll report doesn't print as anyone's gross pay. Check the "
+                                           "amounts against the report: the totals can agree while a person's are wrong.")
+            checked[places[0]] = normalise(first.model_copy(update={"issues": first.issues + [said]}), settings)
+    return checked

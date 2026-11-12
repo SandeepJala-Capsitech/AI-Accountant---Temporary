@@ -221,7 +221,7 @@ def test_trial_balance_balances_with_bank_and_vat_legs(make_client):
 def test_trial_balance_rejects_unpostable_rows_with_422(make_client):
     resp = make_client().post("/api/trial-balance", json={"transactions": [BT, {**BT, "account_code": "9999"}]})
     assert resp.status_code == 422 and resp.json()["detail"]["code"] == "transactions_need_fixing"
-    assert "#2" in resp.json()["detail"]["message"]
+    assert "): This account isn't in the chart." in resp.json()["detail"]["message"]   # the row is named
 
 
 def test_non_vat_registered_business_gets_gross_postings(make_client):

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { ApiError } from './api.ts'
 import {
   agentDecisions, answerQuestion, attentionHref, changedFields, effectLine, fileStatus, formatMoney, groupThreads, hasResult, looksLikeStatement, parseEvents,
-  questionControl, questionState, shouldPoll, readStatus, ruleBadge, retryFiles, shownAccounts, streamMessage, suspenseLabel, uploadForQuestion,
+  canBookWithout, questionControl, questionState, shouldPoll, readStatus, ruleBadge, retryFiles, shownAccounts, streamMessage, suspenseLabel, uploadForQuestion,
   withQuestion,
   type AnswerResult, type ChatEvent, type ChatThread, type Decision, type PostResult, type PostedTrialBalance, type Question,
 } from './chat.ts'
@@ -274,4 +274,13 @@ test('agentDecisions leaves out a person\'s decisions, and says when none are lo
   assert.deepEqual(agentDecisions(['a', 'u', 'r'], loaded)?.map(d => d.id), ['a', 'r'])
   assert.deepEqual(agentDecisions(['u'], loaded), [])
   assert.equal(agentDecisions(['x'], loaded), null)
+})
+
+test('a purchase waiting for its receipt or invoice can be booked without it; a report cannot', () => {
+  assert.equal(canBookWithout(question('receipt_or_invoice')), true)
+  assert.equal(canBookWithout(question('vat_invoice')), true)
+  assert.equal(canBookWithout(question('payout_report')), false)
+  assert.equal(canBookWithout(question('date')), false)
+  assert.equal(questionState({ ...question('receipt_or_invoice'), status: 'resolved',
+                               answer: 'Booked without a receipt: Lost' }), 'Booked without a receipt: Lost')
 })

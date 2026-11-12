@@ -187,7 +187,7 @@ R5 can come in either order.
 | O9 | 26/10 | XERO UK | 36.00 | under £50 | 8201 36.00 | 1200 36.00 |
 | O10 | 30/10 | BARCLAYS ACCOUNT FEE | 8.50 | under £50 | 7901 8.50 | 1200 8.50 |
 | O11 | 16/10 | Mileage - client visit York (sheet) | 22.50 | sheet line under £50: book, no VAT | 7400 22.50 | 2110 22.50 |
-| O12 | none | Leeds City Cabs taxi (receipt, cash) | 18.00 | under £50, no VAT shown | 7400 18.00 | 1200 18.00 |
+| O12 | none | Leeds City Cabs taxi (receipt, cash) | 18.00 | under £50, no VAT shown | 7400 18.00 | 1200 18.00 (9998 once it is dated: the bank did not pay it) |
 
 These rows are not booked:
 - the Costco receipt row (superseded by R3);
@@ -249,7 +249,8 @@ Nothing else is asked.
 - September moves +2,400.00 − 206.44 = +2,193.56.
 - October moves +3,600.00 − (42.00 + 30.22 + 6.50 + 400.00 + 58.00 + 240.00 + 36.00 + 8.50) = +3,600.00 − 821.22 =
   +2,778.78.
-- From 12,450.00, the bank's own figure is 17,422.34. The books are £18.00 lower, the cash taxi (judgement 2).
+- From 12,450.00, the bank's own figure is 17,422.34. Before the answers the books are £18.00 lower: the cash
+  taxi has no date yet and is booked against 1200. Once it is dated, the books agree (judgement 2).
 
 **Check:**
 - The debit nets are 3,200.00 + 17,404.34 + 32.11 + 45.92 + 80.00 + 84.00 + 75.13 + 17.00 + 72.00 + 22.00 + 240.00
@@ -339,8 +340,9 @@ unchanged at **21,272.50**. It balances. Nothing is left in Suspense, and no que
    - Had Priya paid them, the sheet lines would be what she is owed, and excluding them would be wrong.
    - The bank statement shows both payments, so the sheet is a log of office spending, not a claim for them.
    - The mileage line is a genuine claim: no bank line pays it, and it stays owed on 2110 (−22.50).
-2. **The cash taxi is booked against 1200, as the app books any receipt.** So 1200 is £18.00 below the statements.
-   A person might move it to 1230 Petty Cash or 2250. Not expected here.
+2. **The cash taxi is kept off the bank once it has a date.** The statement has lines either side of 8 Oct and no
+   £18.00, so 1200 did not pay it: it waits in 9998 Suspense (−18.00) with a note, and 1200 agrees with the
+   statements. A person then chooses Paid from on the row (the director, or petty cash). Not expected here.
 3. **Money in pays the opening invoices.** BRIGHTWELL £3,600.00 and HARBOUR & LANE £2,400.00 each pay their
    brought-forward invoice exactly. So Debtors clears to nil, and no `sale_without_vat` warning is raised (a
    paying line has no sale of its own).

@@ -32,7 +32,7 @@ from ledgersync.matching import match
 from ledgersync.models import (AnalysisResult, BankCheck, BusinessSettings, BusinessType, ChangeDraft, ChatThread,
                                Client,
                                ClientFields, ClientPatch, ClientSummary, Decision, FolderImport, InvoiceSummary, Ledger,
-                               LedgerRequest, ManualUpload, OpeningBalances, PostedTrialBalance, Question, ReviewDetail, RowPatch,
+                               LedgerRequest, ManualUpload, VatFigures, OpeningBalances, PostedTrialBalance, Question, ReviewDetail, RowPatch,
                                TransactionList, TrialBalance, UploadPatch, Year, YearSummary)
 from ledgersync.questions import Answer
 from ledgersync.store_mongo import MongoStore
@@ -94,6 +94,25 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
     async def ledgersync_error(request: Request, exc: LedgerSyncError):
         return JSONResponse(status_code=exc.status_code,
                             content={"detail": {"code": exc.code, "message": exc.message}})
+
+    @app.exception_handler(Exception)
+    async def unexpected(request: Request, exc: Exception):
+        """A fault here that nothing else names: said as one, in JSON, so the page doesn't take it for the API being
+        down. What went wrong is in the log."""
+        logging.getLogger("ledgersync").exception("Unexpected error on %s %s", request.method, request.url.path)
+        return JSONResponse(status_code=500, content={"detail": {
+            "code": "server_error",
+            "message": "Something went wrong working this out. Nothing was changed. The server's log has the details."}})
+
+    @app.exception_handler(AssertionError)
+    async def row_cannot_post(request: Request, exc: AssertionError):
+        """A row the books can't post (its debits and credits differ) is a fault here, not the API being down: the
+        page names the row, which a person can delete or edit to get the books back."""
+        logging.getLogger("ledgersync").error("A row could not be posted: %s", exc)
+        return JSONResponse(status_code=500, content={"detail": {
+            "code": "row_cannot_post",
+            "message": f"One row can't be posted, so these figures can't be worked out. {exc}. "
+                       "Delete or edit that row in Transactions."}})
 
     # ─── Health ────────────────────────────────────────────────────────────────
 
@@ -183,7 +202,39 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         return result
 
     reading: Counter = Counter()   # (client id, sha256) of each file a job is reading for a client, once per job
+    reading_jobs: dict[str, dict] = {}   # job id: the client, name and year of each file being read for a client
     reading_lock = threading.Lock()
+
+    def refuse_saved(client_id: int, name: str, sha256: str) -> None:
+        """Refuses (SameFile) a file already saved for the client: read again, its rows would be booked twice."""
+        saved = next((u for u in store.uploads(client_id) if sha256 and u["sha256"] == sha256), None)
+        if saved is not None:
+            day = dt.datetime.fromisoformat(saved["created_at"])
+            raise SameFile(f"Skipped {name}: same file as {saved['name']}, uploaded {day.day} {day:%b}, so its "
+                           "rows are already in the books.")
+
+    def being_read(client_id: int) -> list[dict]:
+        """The files jobs are reading for the client now, the oldest first: each one's job, name, year and how far it
+        got. A page opened again after a refresh shows them and reloads as each is saved."""
+        with reading_lock:
+            found = [dict(job_id=job_id, **info) for job_id, info in reading_jobs.items()
+                     if info["client_id"] == client_id]
+        listed, ended = [], []
+        for item in found:
+            try:
+                job = jobs.get(item["job_id"])
+            except LedgerSyncError:   # expired
+                ended.append(item["job_id"])
+                continue
+            if job.status in ("queued", "running"):
+                listed.append({"job_id": job.id, "name": item["name"], "status": job.status, "progress": job.progress,
+                               "year_start": item["year_start"]})
+            else:
+                ended.append(job.id)
+        with reading_lock:
+            for job_id in ended:
+                reading_jobs.pop(job_id, None)
+        return listed
 
     def files_being_read(client_id: int) -> bool:
         """Whether a job is reading a file for the client: its review waits."""
@@ -197,11 +248,15 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         once, a file a job is already reading for the client is not queued again: returns None."""
         key = (client.id, sha256) if client is not None and sha256 else None
 
+        submitted: list[str] = []   # the job's id, once it has one
+
         def release():
             with reading_lock:
                 reading[key] -= 1
                 if not reading[key]:
                     del reading[key]
+                for job_id in submitted:
+                    reading_jobs.pop(job_id, None)
 
         if key is not None:
             with reading_lock:
@@ -216,7 +271,13 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         try:
             if sha256:
                 blobs.put(data, name=name, content_type=content_type)
-            return jobs.submit(work, on_finish=release if key is not None else None)
+            job = jobs.submit(work, on_finish=release if key is not None else None)
+            if key is not None:   # a job that ended meanwhile is left out of being_read, and dropped there
+                with reading_lock:
+                    submitted.append(job.id)
+                    reading_jobs[job.id] = {"client_id": client.id, "name": name,
+                                            "year_start": year_start.isoformat() if year_start else None}
+            return job
         except BaseException:
             if key is not None:
                 release()
@@ -252,10 +313,20 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
             item = intake.from_text(text, settings.max_upload_bytes)
         else:
             raise UnreadableFile("Provide text or a file to analyse.")
+        if client is not None:   # read again, its rows would be booked twice
+            refuse_saved(client.id, name, sha256)
         model_client.ensure_available()   # fail fast with 503 instead of queueing doomed work
         job = submit_analysis(item, client, name, sha256, content_type, data, year_start,
-                              bank_account or None)
+                              bank_account or None, once=True)
+        if job is None:
+            raise SameFile(f"Skipped {name}: the same file is still being read for this client.")
         return {"job_id": job.id, "status": job.status}
+
+    @app.get("/api/clients/{client_id}/reading")
+    def files_reading(client_id: int):
+        """The files being read for the client now (see being_read)."""
+        store.get_client(client_id)
+        return being_read(client_id)
 
     @app.get("/api/jobs/{job_id}")
     def get_job(job_id: str):
@@ -331,8 +402,16 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         return books.ledger(store, client_id, start)
 
     @app.get("/api/clients/{client_id}/years/{start}/trial-balance", response_model=TrialBalance)
-    def year_trial_balance(client_id: int, start: dt.date):
-        return books.trial_balance(store, client_id, start)
+    def year_trial_balance(client_id: int, start: dt.date, shown: bool = False):
+        """shown: for a page. While rows need fixing, the figures without them and which are left out, instead of
+        the 422 a caller that needs every row in (the bank check, the evals) gets."""
+        return (books.trial_balance_shown if shown else books.trial_balance)(store, client_id, start)
+
+    @app.get("/api/clients/{client_id}/years/{start}/vat", response_model=VatFigures)
+    def year_vat(client_id: int, start: dt.date, period_start: Optional[dt.date] = None,
+                 period_end: Optional[dt.date] = None):
+        """The VAT return boxes for a period of the year, as a guide (books.vat_figures)."""
+        return books.vat_figures(store, client_id, start, period_start, period_end)
 
     @app.get("/api/clients/{client_id}/years/{start}/invoices", response_model=list[InvoiceSummary])
     def year_invoices(client_id: int, start: dt.date):
@@ -393,8 +472,10 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
                 refused.append({"name": name, "message": e.message})
                 continue
             content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+            # Each file goes on the account or card its name points at; the one chosen for the import otherwise.
+            account = folder.account_for(name, client.bank_accounts, body.bank_account or None)
             job = submit_analysis(item, client, name, sha256, content_type, data, body.year_start,
-                                  body.bank_account or None, once=True, actor="import")
+                                  account, once=True, actor="import")
             if job is None:   # another import, or an upload, is reading it now
                 skipped.append(name)
                 continue
@@ -421,7 +502,11 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         result = ledger.change_row(store, client_id, row_id, patch)
         kind = ("row_reverted" if patch.revert else "row_linked" if "link" in sent else
                 "row_included" if "include" in sent else "rows_apart" if "apart_from" in sent else "row_edited")
-        changed(client_id, kind, f"Row {row_id} changed: {', '.join(sent)}", row_ids=[row_id], before=before,
+        said = f"Row {row_id} changed: {', '.join(sent)}"
+        if sent == ["without_document"]:
+            said = (f"Row {row_id} booked without a receipt: {patch.without_document}" if patch.without_document
+                    else f"Row {row_id} held in Suspense for its receipt or invoice again")
+        changed(client_id, kind, said, row_ids=[row_id], before=before,
                 after=patch.model_dump(mode="json", include=values), year_start=result.year.start)
         return result
 
@@ -500,18 +585,14 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         data = intake.read_limited(io.BytesIO(file.data), settings.max_upload_bytes)
         item = intake.load_upload(file.name, data, settings.max_pdf_pages)
         sha256 = hashlib.sha256(data).hexdigest()
-        saved = next((u for u in store.uploads(client.id) if u["sha256"] == sha256), None)
-        if saved is not None:
-            day = dt.datetime.fromisoformat(saved["created_at"])
-            raise SameFile(f"Skipped {file.name}: same file as {saved['name']}, uploaded {day.day} {day:%b}, so its "
-                           "rows are already in the books.")
+        refuse_saved(client.id, file.name, sha256)
         model_client.ensure_available()
         bank = file.bank_account or ledger.settings_for(client).bank_account
         job = submit_analysis(item, client, file.name, sha256, file.content_type, data, year_start, bank, once=True,
                               settle=False,   # the chat's turn settles once its files are read
                               in_chat=True)   # and a file read in a chat is reviewed by that chat, not in the background
         if job is None:
-            raise SameFile(f"Skipped {file.name}: the same file is being read already.")
+            raise SameFile(f"Skipped {file.name}: the same file is still being read for this client.")
         return job
 
     chat = Chat(settings, store, blobs, read=read_chat_file, vision=model_client, model=chat_model)

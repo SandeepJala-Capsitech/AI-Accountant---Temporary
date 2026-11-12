@@ -3,11 +3,13 @@ should look at. Issues never change amounts; error-level issues block the trial 
 from __future__ import annotations
 
 import datetime as dt
+import re
 from decimal import Decimal
 from typing import Optional, Sequence
 
-from .accounts import (BY_CODE, CAPITAL, CREDITORS, DEBTORS, DIRECTORS_LOAN, DIVIDENDS, DRAWINGS, HOTELS, SHARES,
-                       NET_WAGES, PAYE, PENSION, STAFF_EXPENSES, WAGES, Account, AccountType)
+from .accounts import (BY_CODE, CARDS, CAPITAL, CREDITORS, DEBTORS, DIRECTORS_LOAN, DIVIDENDS, DRAWINGS, HOTELS, SHARES,
+                       NET_WAGES, PAYE, PENSION, PURCHASE_VAT, SALES_VAT, STAFF_EXPENSES, SUSPENSE, WAGES, Account,
+                       AccountType)
 from .models import NOT_TRANSACTIONS, BusinessSettings, Direction, Issue, Transaction
 from .money import PENNY, ZERO, VatTreatment, vat_in_gross
 from .payees import personal
@@ -18,7 +20,8 @@ MATCHING_ISSUES = {"choose_payment", "part_payment", "overpayment", "possible_pa
                    "mixed_link", "duplicate_document", "total_mismatch", "claim_vat", "vat_worked_out",
                    "not_vat_invoice", "date_conflict", "date_from_claim", "date_from_bank", "booked_twice",
                    "amount_conflict", "open_document", "no_payroll", "transfer", "sale_without_vat",
-                   "payout_report", "subtotal_only"}
+                   "payout_report", "subtotal_only", "claimed_less", "not_on_statement", "till_takings",
+                   "addressed_to", "refund_of_overpayment", "reversed"}
 # Issues statements.check_statement adds to bank lines, and file_dates.check_file_date to a document; derived too,
 # so checking again replaces them.
 STATEMENT_ISSUES = {"statement_gap", "statement_total", "file_date"}
@@ -26,7 +29,20 @@ _DERIVED = {"unknown_account", "same_account", "non_gbp_currency", "vat_not_appl
             "vat_arithmetic", "vat_rate_mismatch", "date_missing", "date_out_of_period", "unusual_direction",
             "not_booked", "vat_blocked", "director_loan", "wages_from_bank",
             "payroll_owed_to", "before_first_year", "vat_not_booked", "needs_document", "total_worked_out",
-            "cis_deducted", "personal"} | MATCHING_ISSUES | STATEMENT_ISSUES
+            "cis_deducted", "personal", "possible_duplicate", "booked_without_document", "card_credit", "vat_unclaimed",
+            "on_account", "no_vat_number", "vat_over_rate", "reverse_charge", "before_vat_registration", "small_asset",
+            "meal_check", "future_date", "journal_note", "prepayment"} | MATCHING_ISSUES | STATEMENT_ISSUES
+# Warnings that are a matter of judgement: a person who has looked can say one is fine (Transaction.accepted), and it
+# is not raised on that row again.
+ACCEPTABLE = frozenset({"no_vat_number", "vat_over_rate", "small_asset", "meal_check", "addressed_to", "future_date",
+                        "file_date"})
+# Words that say a cost was paid for time ahead, and the accounts whose bills usually are (insurance).
+_AHEAD = re.compile(r"\b(annual|yearly|12[- ]months?|per annum|in advance|quarter(ly)? rent)\b", re.IGNORECASE)
+_PAID_AHEAD = frozenset({"8204", "7303"})
+PREPAYMENT_FROM = Decimal("300.00")   # an insurance bill from this much is asked about
+SMALL_ASSET = Decimal("100.00")   # equipment costing less is usually written off as a cost, not kept as an asset
+MEAL_CHECK = Decimal("50.00")     # a meal from this much is asked about: with guests it is entertainment
+SUBSISTENCE, ENTERTAINMENT = "7406", "7403"
 
 
 def issue(code: str, message: str, severity: str = "warning", related: Sequence[int] = ()) -> Issue:
@@ -46,6 +62,7 @@ def is_derived(found: Issue) -> bool:
 _NOT_TRANSACTION_NAMES = {
     "quote": "a quote", "pro_forma": "a pro forma invoice", "purchase_order": "a purchase order",
     "remittance_advice": "a remittance advice", "supplier_statement": "a supplier's statement of account",
+    "finance_agreement": "a finance or loan agreement",
     "other": "a document that is not a transaction",
 }
 
@@ -87,11 +104,17 @@ def other_side(tx: Transaction, settings: BusinessSettings) -> str:
     return tx.bank_account or settings.bank_account
 
 
+def registered_on(settings: BusinessSettings, day: Optional[dt.date]) -> bool:
+    """Whether the business was VAT registered on the day: registered, and the day not before its registration
+    started (vat_from). A row with no date goes by the registration alone."""
+    return settings.vat_registered and not (settings.vat_from and day and day < settings.vat_from)
+
+
 def reclaims_vat(tx: Transaction, settings: BusinessSettings) -> bool:
-    """Whether VAT on the row is booked when it is shown, as normalise books it: the business is VAT registered,
-    VAT applies to the account, and on a cost it can be reclaimed (not on business entertainment or a car)."""
+    """Whether VAT on the row is booked when it is shown, as normalise books it: the business is VAT registered on
+    its day, VAT applies to the account, and on a cost it can be reclaimed (not on business entertainment or a car)."""
     account = BY_CODE.get(tx.account_code)
-    return (settings.vat_registered and account is not None and account.type not in _NO_VAT
+    return (registered_on(settings, tx.date) and account is not None and account.type not in _NO_VAT
             and (account.reclaim_vat or tx.direction == Direction.IN))
 
 
@@ -151,6 +174,10 @@ def _vat_not_booked(tx: Transaction, settings: BusinessSettings) -> Optional[Iss
     return issue("vat_not_booked", f"The {kind} shows £{shown:,.2f} VAT; none is booked.")
 
 
+_TREATMENT_WORDS = {VatTreatment.ZERO: "zero-rated", VatTreatment.EXEMPT: "exempt",
+                    VatTreatment.OUTSIDE_SCOPE: "outside the scope of VAT"}
+
+
 def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
     kept = [i for i in tx.issues if i.code not in _DERIVED]   # re-validating must not duplicate
     issues: list[Issue] = []
@@ -158,11 +185,15 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
     # The client's banks and the accounts for what is owed are worked out afresh on every pass, so a row whose
     # account, document type or bank account changes moves with it; any other account sent in is kept.
     worked_out = {None, settings.bank_account, *settings.bank_accounts, DEBTORS, CREDITORS, STAFF_EXPENSES}
+    if tx.document_type == "receipt":
+        worked_out.add(SUSPENSE)   # where matching parks a receipt its bank's statement doesn't show: looked at again
     # A payroll row is held on 2220, 2210 or 2230 until the bank pays it, by what it is owed to, whatever contra was
     # saved; with no owed_to the account guesses, and says so on every pass.
     payroll = tx.document_type == "payroll"
     payroll_default = payroll and tx.owed_to is None
-    contra = (other_side(tx, settings) if payroll or tx.contra_account_code in worked_out
+    journal = tx.document_type == "journal"   # both its accounts are the person's, whatever they are
+    contra = (tx.contra_account_code if journal else
+              other_side(tx, settings) if payroll or tx.contra_account_code in worked_out
               else tx.contra_account_code)
     if payroll_default:
         issues.append(issue("payroll_owed_to", f"Check what this payroll line is owed to: booked to "
@@ -174,7 +205,10 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
     if contra == tx.account_code:
         issues.append(issue("same_account", "Posts to and from the same account.", "error"))
     if tx.currency != "GBP":
-        issues.append(issue("non_gbp_currency", f"Convert {tx.currency} to GBP.", "error"))
+        issues.append(issue("non_gbp_currency", f"Read as {tx.currency} {tx.gross:,.2f}. Edit the row and enter the "
+                                                "amount in pounds, as the bank or card statement shows it. On goods "
+                                                "from abroad the VAT is import VAT, on the import VAT statement and "
+                                                "not on this invoice.", "error"))
 
     # Works from the inputs every time (vat as shown, vat_treatment as chosen) and never writes
     # them back, so a re-coded or corrected row gets its VAT worked out afresh.
@@ -184,7 +218,13 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
     # The reading's own warning that the document's items were kept as one row: said once, with what its VAT says.
     mixed = any(i.code == "mixed_items" for i in kept)
     untaxed: Optional[tuple[Decimal, Decimal]] = None
-    if not settings.vat_registered:
+    registered = registered_on(settings, tx.date)
+    if not registered or journal:
+        if vat and settings.vat_registered and not journal:
+            issues.append(issue("before_vat_registration", (
+                f"Dated before the VAT registration started on {long_date(settings.vat_from)}: its £{vat:,.2f} VAT is "
+                "not booked. VAT on goods still held, and on services of the six months before, can be reclaimed on "
+                "the first return: add it by journal if so."), "info"))
         posted = ZERO
     elif account is not None and account.type in _NO_VAT:
         if vat:
@@ -196,6 +236,12 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
             issues.append(issue("vat_blocked", f"VAT £{vat} on {account.name} can't be reclaimed: kept in the cost.",
                                 "info"))
         posted = ZERO
+    elif tx.vat_treatment in (VatTreatment.ZERO, VatTreatment.EXEMPT, VatTreatment.OUTSIDE_SCOPE):
+        # A person said no VAT applies (zero-rated, exempt, or outside the scope, as a reverse charge is): none booked.
+        if vat:
+            issues.append(issue("vat_not_applicable", f"Marked {_TREATMENT_WORDS[tx.vat_treatment]}: the £{vat} VAT "
+                                                      "shown is not booked.", "info"))
+        posted = ZERO
     elif vat is None and tx.vat_treatment is None:
         posted = ZERO   # VAT is reclaimable only when charged: none shown, none booked
         missed = _vat_not_booked(tx, settings)
@@ -205,9 +251,15 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
         posted = vat_in_gross(tx.gross, treatment)
         if posted > 0:
             issues.append(issue("vat_estimated", f"£{posted} estimated at the {treatment.value} rate. Check the invoice."))
+    elif most_vat(tx.gross) < vat <= tx.gross / 5:
+        # More than 20% of the net paid, yet no more than a fifth of what was paid: a voucher or a promotion taken off
+        # after the VAT. The VAT the document shows is the VAT charged, so it is booked, and said.
+        issues.append(issue("vat_over_rate", f"VAT £{vat:,.2f} is more than 20% of the £{tx.gross - vat:,.2f} left of "
+                                              f"£{tx.gross:,.2f}: a voucher or promotion taken off after VAT? Booked "
+                                              "as the document shows it. Check it against the document."))
     elif vat < 0 or vat >= tx.gross or vat > most_vat(tx.gross):
-        issues.append(issue("vat_arithmetic", f"VAT £{vat} is impossible on £{tx.gross}; at 20% it would be "
-                                               f"£{vat_in_gross(tx.gross, VatTreatment.STANDARD)}.", "error"))
+        issues.append(issue("vat_arithmetic", f"VAT £{vat:,.2f} is impossible on £{tx.gross:,.2f}; at 20% it would be "
+                                               f"£{vat_in_gross(tx.gross, VatTreatment.STANDARD):,.2f}.", "error"))
         posted = None
     elif (treatment in (VatTreatment.STANDARD, VatTreatment.REDUCED) and vat != 0   # 0.00: none charged
           and all(abs(vat - vat_in_gross(tx.gross, rate)) > Decimal("0.02")    # 5% is charged on energy too
@@ -215,7 +267,8 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
         untaxed = _untaxed_part(vat, tx.gross) if treatment == VatTreatment.STANDARD else None
         if not mixed:
             issues.append(issue("vat_rate_mismatch", (
-                f"£{vat} is 20% VAT on £{untaxed[0]}; £{untaxed[1]} has no VAT (a tip or service charge?)." if untaxed
+                f"£{vat} is 20% VAT on £{untaxed[0]}; £{untaxed[1]} has no VAT (zero-rated or exempt items, a tip or a "
+                "service charge?)." if untaxed
                 else f"£{vat} isn't {treatment.value}-rate VAT on £{tx.gross}."), "info"))
     if mixed:
         kept = [i for i in kept if i.code != "mixed_items"]
@@ -227,7 +280,7 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
 
     in_opening = bool(settings.books_start and tx.date and tx.date < settings.books_start)
     if tx.date is None:
-        issues.append(issue("date_missing", "No date. Add one."))
+        issues.append(issue("date_missing", "This row has no date: add one, so it can be placed in a year."))
     elif in_opening:
         if not tx.include:
             issues.append(issue("before_first_year", "Dated before the first year: already in the opening balances, "
@@ -235,10 +288,17 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
     elif ((settings.period_start and tx.date < settings.period_start)
           or (settings.period_end and tx.date > settings.period_end)):
         issues.append(issue("date_out_of_period", f"{tx.date} is outside the accounting period."))
-    if account is not None and tx.direction == Direction.IN and account.type == AccountType.EXPENSE:
-        issues.append(issue("unusual_direction", f"Money in on {account.name}: a refund?", "info"))
-    if account is not None and tx.direction == Direction.OUT and account.type == AccountType.INCOME:
-        issues.append(issue("unusual_direction", f"Money out on {account.name}: a customer refund?", "info"))
+    document = tx.document_type == "invoice"
+    if journal:
+        pass   # a journal's sides are debit and credit, not money in or out
+    elif account is not None and tx.direction == Direction.IN and account.type == AccountType.EXPENSE:
+        issues.append(issue("unusual_direction", (
+            f"A supplier's credit note: it takes the amount off {account.name}. Check that is the account its "
+            "invoice is on." if document else f"Money in on {account.name}: a refund?"), "info"))
+    if not journal and account is not None and tx.direction == Direction.OUT and account.type == AccountType.INCOME:
+        issues.append(issue("unusual_direction", (
+            f"A credit note to a customer: it takes the amount off {account.name}." if document
+            else f"Money out on {account.name}: a customer refund?"), "info"))
     if settings.business_type == "limited_company" and account is not None and tx.account_code in (CAPITAL, DRAWINGS):
         issues.append(issue("director_loan", f"Use Director's Loan Account, not {account.name}, for a limited "
                                              "company."))
@@ -246,15 +306,77 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
           and tx.account_code in (DIRECTORS_LOAN, SHARES, DIVIDENDS)):
         issues.append(issue("director_loan", f"{account.name} is for companies only. Use Drawings or "
                                              "Capital Introduced."))
-    service = personal(tx.counterparty, tx.description) if tx.account_code in (DIRECTORS_LOAN, DRAWINGS) else None
+    service = (personal(tx.counterparty, tx.description, business_type=settings.business_type)
+               if tx.account_code in (DIRECTORS_LOAN, DRAWINGS) else None)
     if service and tx.direction == Direction.OUT and account is not None:
         issues.append(issue("personal", f"{service} looks like personal spending: booked to the {account.name}. "
                                         "Recode it if it was for the business.", "info"))
+    if (tx.document_type == "statement" and tx.direction == Direction.IN and tx.bank_account in CARDS
+            and account is not None and account.type == AccountType.INCOME):
+        issues.append(issue("card_credit", f"Money in on a card is a payment to the card or a refund, not a sale: "
+                                           f"booked to {account.name}. Recode it to the bank account that paid the "
+                                           "card, or to the cost refunded."))
+    if tx.document_type == "statement" and tx.direction == Direction.IN and tx.account_code == DEBTORS and not tx.pays:
+        issues.append(issue("on_account", "A payment on account: held on Debtors as a credit to the customer until its "
+                                          "invoice is added. Link it to the invoice then, or recode it to Sales if "
+                                          "there will be none.", "info"))
     if tx.document_type == "statement" and tx.account_code in WAGES:
         issues.append(issue("wages_from_bank", "Book wages from the payroll report: code net pay to 2220 Net Wages."))
     if tx.document_type in NOT_TRANSACTIONS and not tx.include:   # copies and card payments: matching says so
-        issues.append(issue("not_booked", f"Looks like {_NOT_TRANSACTION_NAMES[tx.document_type]}: not booked. "
-                                          "Tick Include to book it.", "info"))
+        issues.append(issue("not_booked", (
+            "A finance or loan agreement: not booked. The money it lent and its repayments are booked from the bank "
+            "lines, on the loan or hire purchase account; add what it financed, and its interest, by journal."
+            if tx.document_type == "finance_agreement" else
+            f"Looks like {_NOT_TRANSACTION_NAMES[tx.document_type]}: not booked. Tick Include to book it."), "info"))
+    purchase = (not journal and tx.direction == Direction.OUT and tx.document_type in ("receipt", "invoice")
+                and account is not None)
+    if (purchase and tx.document_type == "invoice" and posted and tx.supplier_vat_number is None
+            and tx.method != "user" and not tx.not_vat_invoice and tx.vat_treatment is None):
+        issues.append(issue("no_vat_number", f"No VAT registration number was read on this invoice, and without one "
+                                             f"it is not a valid VAT invoice: check it before the £{posted:,.2f} VAT "
+                                             "is reclaimed. If it shows none, set its VAT to none in Edit, or ask the "
+                                             "supplier for a VAT invoice."))
+    reverse: Optional[Decimal] = None
+    if tx.reverse_charge and purchase and registered and account.type not in _NO_VAT:
+        if posted:
+            issues.append(issue("reverse_charge", f"Marked as a reverse charge, but the document charges £{posted:,.2f} "
+                                                  "VAT: booked as charged. Untick Reverse charge in Edit, or take the "
+                                                  "VAT off the row."))
+        elif posted is not None and account.reclaim_vat and tx.vat_treatment not in (
+                VatTreatment.ZERO, VatTreatment.EXEMPT) and account.vat == VatTreatment.STANDARD:
+            reverse = (tx.gross / 5).quantize(PENNY)
+            issues.append(issue("reverse_charge", f"Reverse charge: a service from abroad with no VAT charged. "
+                                                  f"£{reverse:,.2f} VAT is added to box 1 and reclaimed in box 4, so "
+                                                  "nothing is paid. If these are goods, untick Reverse charge in "
+                                                  "Edit: import VAT is on the import VAT statement.", "info"))
+    if (purchase and account.type == AccountType.ASSET and account.code.startswith("00")
+            and account.vat != VatTreatment.OUTSIDE_SCOPE and tx.gross < SMALL_ASSET
+            and (tx.document_total is None or tx.document_total < SMALL_ASSET)):
+        issues.append(issue("small_asset", f"£{tx.gross:,.2f} is small to keep as {account.name}: an item under "
+                                           f"£{SMALL_ASSET:,.0f} is usually written off as a cost. Recode it to the "
+                                           "cost account of its kind, unless it is part of a bigger purchase."))
+    if (tx.account_code == SUBSISTENCE and not journal and tx.direction == Direction.OUT and tx.gross >= MEAL_CHECK
+            and tx.document_type in ("receipt", "invoice", "expense_claim")):
+        issues.append(issue("meal_check", f"A meal of £{tx.gross:,.2f} on Subsistence: with clients or other guests it "
+                                          "is entertainment, and its VAT can't be reclaimed. Recode it to "
+                                          "Entertainment if so."))
+    if journal:   # a journal is the person's own entry: it books, and says what it leaves out of step
+        sides = {tx.account_code, contra}
+        if sides & set(settings.bank_accounts):
+            issues.append(issue("journal_note", "A journal on a bank account: the bank only agrees with its statement "
+                                                "if no statement line shows the same money.", "info"))
+        if sides & {SALES_VAT, PURCHASE_VAT}:
+            issues.append(issue("journal_note", "A journal on a VAT account is not in the VAT figures, which are "
+                                                "worked from documents: adjust the return for it by hand.", "info"))
+        if sides & {DEBTORS, CREDITORS}:
+            issues.append(issue("journal_note", "A journal on Debtors or Creditors is not on the Invoices page, so "
+                                                "the account and the unpaid list differ by it.", "info"))
+    elif (tx.direction == Direction.OUT and account is not None and account.type == AccountType.EXPENSE
+          and tx.document_type in ("receipt", "invoice") and settings.period_end is not None
+          and (_AHEAD.search(tx.description) or (tx.account_code in _PAID_AHEAD and tx.gross >= PREPAYMENT_FROM))):
+        issues.append(issue("prepayment", f"May cover time after the year end ({long_date(settings.period_end)}): if "
+                                          "so, carry that part forward with a journal to 1103 Prepayments.", "info"))
+    issues = [i for i in issues if i.code not in tx.accepted]
     net = tx.gross - posted if posted is not None else None
     cis = tx.cis_deducted if tx.cis_deducted and tx.document_type != "statement" else None
     if cis is not None and net is not None:
@@ -263,5 +385,6 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
             f"CIS £{cis:,.2f} taken off by the customer: booked to CIS Deducted, so the sale is £{net:,.2f}."
             if tx.direction == Direction.IN else
             f"CIS £{cis:,.2f} taken off for HMRC: booked to CIS Payable, so the cost is £{net:,.2f}."), "info"))
-    return tx.model_copy(update={"vat_posted": posted, "net": net, "contra_account_code": contra,
+    return tx.model_copy(update={"vat_posted": posted, "net": net, "reverse_vat": reverse,
+                                 "contra_account_code": contra,
                                  "in_opening": in_opening, "issues": kept + issues})

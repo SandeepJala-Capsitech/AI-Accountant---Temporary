@@ -168,3 +168,11 @@ def test_review_settings_read_from_env():
     s = Settings.from_env({"LEDGERSYNC_REVIEW_WAIT": "5", "LEDGERSYNC_REVIEW_DAILY_LIMIT": "3"})
     assert (s.review_wait_seconds, s.review_daily_limit) == (5, 3)
     assert {"LEDGERSYNC_REVIEW_WAIT", "LEDGERSYNC_REVIEW_DAILY_LIMIT"} <= set(ENV_NAMES)
+
+
+def test_the_chat_can_run_on_another_model_than_the_one_that_reads_the_files():
+    base = {"OPENROUTER_API_KEY": "sk-or-test", "OPENROUTER_MODEL": "reader/model"}
+    assert Settings.from_env(base).chat_model_name == "reader/model"
+    split = Settings.from_env({**base, "OPENROUTER_CHAT_MODEL": " stronger/model "})
+    assert (split.model, split.chat_model_name) == ("reader/model", "stronger/model")
+    assert "OPENROUTER_CHAT_MODEL" in ENV_NAMES

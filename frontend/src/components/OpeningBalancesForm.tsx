@@ -131,7 +131,8 @@ export default function OpeningBalancesForm({ client, readOnly, onSaved }: {
       {!readOnly && <button type="button" className="btn btn-small add-btn" onClick={addLine}>Add account</button>}
 
       <h3>Unpaid invoices</h3>
-      <p className="muted small">Invoices from customers add up to Debtors; bills from suppliers add up to Creditors.</p>
+      <p className="muted small">List the invoices behind Debtors and Creditors so payments can clear each. Any you leave out are brought
+        forward as one balance, &ldquo;Not itemised&rdquo;, which a payment can still be linked to.</p>
       {!items.length && <p className="muted">No unpaid invoices.</p>}
       <div className="opening-rows">
         {items.map((x, i) => (

@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from . import books
 from .accounts import BY_CODE, AccountType, choosable
 from .checks import long_date
+from .file_dates import date_in_name
 from .errors import InvalidInput, LedgerSyncError, NotFound
 from .ledger import bank_choices, ensure_open, require_active
 from .matching import CARD_DAYS, names_match, same_payee
@@ -66,10 +67,16 @@ class VatFromDocument(BaseModel):
     vat: Decimal
 
 
-Resolution = Annotated[Union[KeepOne, UsePrimary, SplitVat, VatFromDocument], Field(discriminator="action")]
+class SetDate(BaseModel):
+    action: Literal["set_date"]
+    date: dt.date
+    source_row_id: Optional[int] = None   # another record of the same purchase that gives the date, if one does
+
+
+Resolution = Annotated[Union[KeepOne, UsePrimary, SplitVat, VatFromDocument, SetDate], Field(discriminator="action")]
 
 # Issues that say two rows are one transaction recorded twice, and the matches that pair such rows.
-_DUPLICATE_ISSUES = {"duplicate_document", "booked_twice", "total_mismatch", "date_conflict"}
+_DUPLICATE_ISSUES = {"duplicate_document", "booked_twice", "total_mismatch", "date_conflict", "possible_duplicate"}
 # Rows a bank line can't pay: a bank line that disagrees with a receipt is left out, the receipt booking the payment;
 # any other row it disagrees with it is linked to and pays (a payroll report's is refused: see _use_primary).
 _UNPAYABLE = {"receipt", "statement", "payroll"}
@@ -205,6 +212,10 @@ def _keep_one(rows: dict[int, SavedRow], row_id: int, r: KeepOne, **_) -> _Chang
                            "links them, and they differ in amount, counterparty or date.")
         if _rank(drop) > _rank(keep):
             raise _Refused(f"Row {drop.id}, a {_kind(drop)}, ranks above the {_kind(keep)} kept.")
+        if "statement" in (drop.document_type, keep.document_type) and "payroll" in (drop.document_type,
+                                                                                    keep.document_type):
+            raise _Refused(f"Rows {keep.id} and {drop.id} are a payroll report's line and the bank line that pays it, "
+                           "not a duplicate: the report books the wages owed and the bank line clears them. Keep both.")
         if (drop.document_type == "statement" and keep.document_type in ("receipt", "invoice")
                 and drop.id in {line.id for line in _paying_lines(rows, keep)}):
             raise _Refused(f"Row {drop.id}, the bank line, pays the {_kind(keep)} kept: it is its payment, not a "
@@ -297,16 +308,102 @@ def _vat_from_document(rows: dict[int, SavedRow], row_id: int, r: VatFromDocumen
     return _Change(rule="R5 VAT from the document", touched=[row_id], patches={row_id: {"vat": f"{r.vat:.2f}"}})
 
 
+# The issues that ask about a row's date: none read, two records disagree, or the file name says another.
+_DATE_ISSUES = {"date_missing", "date_conflict", "file_date"}
+_MONTHS = {m: n for n, m in enumerate(("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov",
+                                       "dec"), 1)}
+_DAY_FIRST = re.compile(r"(?<!\d)(\d{1,2})[/.-](\d{1,2})[/.-](\d{4}|\d{2})(?!\d)")
+_YEAR_FIRST = re.compile(r"(?<!\d)(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)")
+_IN_WORDS = re.compile(r"(?<!\d)(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]{3})[a-z]*\.?,?\s+(\d{4})(?!\d)", re.I)
+_WORDS_FIRST = re.compile(r"\b([a-z]{3})[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})(?!\d)", re.I)
+
+
+def _dates_in(text: str) -> set[dt.date]:
+    """The dates written in a piece of text: 15/09/2026 (UK, day first), 2026-09-15, 15 Sep 2026 or Sep 15, 2026."""
+    found = set()
+
+    def add(year: int, month: int, day: int) -> None:
+        try:
+            found.add(dt.date(year + 2000 if year < 100 else year, month, day))
+        except ValueError:
+            pass
+
+    for d, m, y in _DAY_FIRST.findall(text):
+        add(int(y), int(m), int(d))
+    for y, m, d in _YEAR_FIRST.findall(text):
+        add(int(y), int(m), int(d))
+    for d, m, y in _IN_WORDS.findall(text):
+        if m.lower() in _MONTHS:
+            add(int(y), _MONTHS[m.lower()], int(d))
+    for m, d, y in _WORDS_FIRST.findall(text):
+        if m.lower() in _MONTHS:
+            add(int(y), _MONTHS[m.lower()], int(d))
+    return found
+
+
+def _names_file(e: Evidence, uploads: dict[int, str]) -> bool:
+    """Whether the evidence quotes its upload's file name, which a date can be taken from (R1)."""
+    return _normalised(e.quote) == _normalised(uploads.get(e.upload_id, "")) != ""
+
+
+def _date_from_record(rows: dict[int, SavedRow], row_id: int, r: SetDate, *, b, evidence, **_) -> _Change:
+    """R1: a date for a row the books ask about (no date, two dates, or another in the file name), given by one of:
+    another record of the same purchase (source_row_id: another upload's row still in the books, the same way, for
+    the row's amount or its document's total, dated that day, and not a lesser record than the row when the row has
+    a date of its own: an expenses sheet's date never replaces a receipt's); the file name, when the row has no date of its own
+    (a name can carry the day a document was scanned, so it never replaces a date read); or a quote from the row's
+    own document that shows the date."""
+    row = rows[row_id]
+    _usable(row)
+    if not any(i.code in _DATE_ISSUES for i in row.issues):
+        raise _Refused(f"Nothing asks about row {row_id}'s date ({long_date(row.date) if row.date else 'none'}): "
+                       "it keeps it.")
+    uploads = {u["id"]: u["name"] for u in b.uploads}
+    day = long_date(r.date)
+    if r.source_row_id is not None:
+        source = rows.get(r.source_row_id)
+        if source is None or source.id == row_id or source.upload_id == row.upload_id:
+            raise _Refused(f"Row {r.source_row_id} isn't another record: name a row from another document.")
+        if source.excluded or source.superseded_by:
+            raise _Refused(f"Row {source.id} is out of the books.")
+        amounts = {row.gross, *([row.document_total] if row.document_total is not None else [])}
+        if source.direction != row.direction or source.gross not in amounts:
+            raise _Refused(f"Row {source.id} is £{source.gross} {source.direction.value}; row {row_id} is "
+                           f"£{row.gross} {row.direction.value}: not a record of the same purchase.")
+        if source.date != r.date:
+            raise _Refused(f"Row {source.id} is dated {long_date(source.date) if source.date else 'nothing'}, not "
+                           f"{day}.")
+        if row.date is not None and _rank(source) < _rank(row):
+            raise _Refused(f"Row {row_id}'s {_kind(row)} prints its own date ({long_date(row.date)}); a {_kind(source)}"
+                           " doesn't replace it. Quote the date from the document, or ask.")
+    elif row.date is None and date_in_name(uploads.get(row.upload_id, "")) == r.date and any(
+            _names_file(e, uploads) and e.upload_id == row.upload_id for e in evidence):
+        pass
+    elif not any(e.upload_id == row.upload_id and r.date in _dates_in(e.quote) for e in evidence):
+        raise _Refused(f"Nothing cited shows {day}: name another record of the same purchase dated then "
+                       "(source_row_id), quote the date from the row's document, or, for a row with no date, quote "
+                       "its file name when the name holds that date.")
+    if row.date == r.date:   # the date read stands: only a file name's other date is settled by saying so
+        if not any(i.code == "file_date" for i in row.issues):
+            raise _Refused(f"Row {row_id} is already dated {day}: that changes nothing.")
+        return _Change(rule="R1 Date from another record", touched=[row_id],
+                       patches={row_id: {"accepted": sorted({*row.accepted, "file_date"})}})
+    return _Change(rule="R1 Date from another record", touched=[row_id],
+                   patches={row_id: {"date": r.date.isoformat()}})
+
+
 _ACTIONS = {"keep_one": _keep_one, "use_primary": _use_primary, "split_vat": _split_vat,
-            "set_vat_from_document": _vat_from_document}
+            "set_vat_from_document": _vat_from_document, "set_date": _date_from_record}
 _RULES = {"keep_one": "R2 Duplicate", "use_primary": "R4 Conflict", "split_vat": "R3 Mixed VAT",
-          "set_vat_from_document": "R5 VAT from the document"}
+          "set_vat_from_document": "R5 VAT from the document", "set_date": "R1 Date from another record"}
 
 
 def _named(row_id: int, resolution) -> list[int]:
     """The rows a resolution names, the row it was asked about among them."""
     extra = {"keep_one": lambda r: [r.keep_row_id, *r.drop_row_ids],
-             "use_primary": lambda r: [r.primary_row_id, r.other_row_id]}.get(resolution.action, lambda r: [])
+             "use_primary": lambda r: [r.primary_row_id, r.other_row_id],
+             "set_date": lambda r: [] if r.source_row_id is None else [r.source_row_id]}.get(resolution.action,
+                                                                                            lambda r: [])
     return sorted({row_id, *extra(resolution)})
 
 
@@ -503,9 +600,11 @@ def resolve(store: MongoStore, records: AgentRecords, *, client_id: int, thread_
             extra = {line.upload_id for line in _paying_lines(rows, rows[kept])}
         else:
             extra = set()
-        if (why := check_quotes(b, rows, named, evidence, lambda n: [text(n)], extra=extra)) is not None:
+        # A date can come from the row's file name (R1), which isn't in its text: that quote is checked by the rule.
+        quoted = [e for e in evidence if not (resolution.action == "set_date" and _names_file(e, uploads))]
+        if (why := check_quotes(b, rows, named, quoted, lambda n: [text(n)], extra=extra)) is not None:
             raise _Refused(why)
-        change = _ACTIONS[resolution.action](rows, row_id, resolution, b=b, text=text)
+        change = _ACTIONS[resolution.action](rows, row_id, resolution, b=b, text=text, evidence=evidence)
     except _Refused as refused:
         return _record(records, key, draft, status="refused", reason=str(refused))
     if suggest:

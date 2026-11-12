@@ -97,7 +97,7 @@ def test_a_batch_of_uploads_causes_one_run_after_the_last_is_read(make, staples)
     assert h.worker.tick(secs(31)) == [] and h.model.seen == []   # due, but a file is still being read
     h.busy.clear()
     [run] = h.worker.tick(secs(32))
-    assert run.status == "done" and run.trigger_summary == "after 3 files were added"
+    assert run.status == "done" and run.trigger_summary == "for 1 possible duplicate"
     assert h.worker.tick(secs(60)) == []
     assert len(h.model.seen) == 1
 
@@ -180,7 +180,7 @@ def test_a_failed_run_is_recorded_and_retried_later(make, staples):
     assert dt.datetime.fromisoformat(state.retry_at) == secs(21) + dt.timedelta(minutes=10)
     assert h.worker.tick(secs(300)) == []
     [again] = h.worker.tick(secs(21 + 601))
-    assert again.status == "done" and again.summary == "Nothing to change."
+    assert again.status == "done" and again.summary == "Looked again."
     state = h.records.review_state(staples)
     assert (state.due_at, state.retry_at) == (None, None) and state.last_seq > 0
 
@@ -217,9 +217,14 @@ def test_the_agents_own_changes_cause_no_further_run(make, mongo_store, staples)
     assert len(h.records.reviews(staples)) == 1
 
 
-def test_a_change_during_a_run_causes_exactly_one_more_run(make, staples):
-    def mid_run(messages):
-        h.change(staples, secs(30), kind="row_edited", row_ids=[1], after={"account": "7400"})
+def test_a_change_during_a_run_causes_exactly_one_more_run(make, mongo_store, staples):
+    from decimal import Decimal
+    from helpers import row
+
+    def mid_run(messages):   # an undated receipt arrives while the first run thinks: a new issue the AI can settle
+        upload = mongo_store.add_upload(staples, "taxi.jpg", "image", [row(date=None, description="Taxi",
+                                                                           gross=Decimal("18.00"))], year_start=YEAR)
+        h.change(staples, secs(30), summary="taxi.jpg read: 1 row", upload_id=upload)
         return say("First look done.")
 
     h = make(mid_run, say("Second look done."))
@@ -232,7 +237,7 @@ def test_a_change_during_a_run_causes_exactly_one_more_run(make, staples):
     assert state.due_at is not None and state.running is False and state.last_seq < max(
         c.seq for c in h.records.changes(staples))
     [second] = h.worker.tick(secs(60))
-    assert second.trigger_summary == "after 1 row was changed"
+    assert second.trigger_summary == "for 1 date to settle"
     assert h.worker.tick(secs(100)) == []
     assert h.records.review_state(staples).due_at is None
 
@@ -244,29 +249,60 @@ def test_a_name_change_causes_no_run_and_a_vat_change_does(make, staples):
     assert h.worker.tick(secs(100)) == []
 
     h.change(staples, secs(100), kind="client_changed", after={"vat_registered": False}, year_start=None)
-    [run] = h.worker.tick(secs(121))
-    assert run.trigger_summary == "after the client's details changed"
+    [run] = h.worker.tick(secs(121))   # the VAT change makes the client due; the run is named for its issues
+    assert run.trigger_summary == "for 1 possible duplicate"
 
 
-def test_a_later_run_is_pointed_at_issues_no_run_has_looked_at(make, mongo_store, staples):
-    flagged = [row.id for row, _, _ in _to_look_at(books.ledger(mongo_store, staples, YEAR))]
+def test_a_run_names_each_issue_no_run_has_looked_at(make, mongo_store, staples):
+    flagged = _to_look_at(books.ledger(mongo_store, staples, YEAR))
     assert flagged
-    earlier = AgentRecords(mongo_store.db).start_review(staples, YEAR, from_seq=0, to_seq=1, trigger_summary="x")
-    AgentRecords(mongo_store.db).finish_review(earlier.id, status="done", summary="Looked.")   # looked at no row
     h = make(say("Looked."), say("Looked again."))
     h.change(staples, T)
 
     [run] = h.worker.tick(secs(21))
 
     text = h.model.seen[0][-1].content
-    assert f"Not yet reviewed: rows {', '.join(map(str, flagged))}" in text and "First review of this year" not in text
-    assert run.looked_at == flagged and h.records.looked_at(staples, YEAR) == set(flagged)
+    assert "Issues no review has looked at yet:" in text
+    settleable = [(row, reviews.issue_keys(row)) for row, _, _ in flagged]
+    for row, keys in settleable:   # only what the AI has an action for; a missing document is the person's to send
+        assert (f"- Row {row.id} " in text) == bool(keys)
+        assert all(said.split(": ", 1)[1] in text for _, said in keys)
+    assert run.looked_at == [row.id for row, keys in settleable if keys]
+    assert h.records.issues_seen(staples, YEAR) == set(run.issues_seen) != set()
 
-    h.change(staples, secs(100), kind="row_edited", row_ids=[flagged[0]], after={"account": "7400"})
-    [second] = h.worker.tick(secs(121))
+    # A person's change brings no new issue the AI can settle, and the AI leaves a person's rows to them: no run.
+    h.change(staples, secs(100), kind="row_edited", row_ids=[flagged[0][0].id], after={"description": "x", "date": "y"})
+    assert h.worker.tick(secs(121)) == [] and len(h.model.seen) == 1
+
+
+def test_a_change_that_brings_no_new_issue_and_touches_no_row_causes_no_run(make, mongo_store, staples):
+    h = make(say("Looked."), say("Should not be asked."))
+    h.change(staples, T)
+    [first] = h.worker.tick(secs(21))
+
+    h.change(staples, secs(100), summary="another.pdf read: 1 row")   # an upload that adds no issue
+    assert h.worker.tick(secs(121)) == []
+    assert len(h.model.seen) == 1 and h.records.reviews(staples, year_start=YEAR) == [first]
+    assert h.records.review_state(staples).due_at is None
+
+
+def test_an_issue_that_pops_up_later_is_reviewed_and_only_it(make, mongo_store, staples):
+    from decimal import Decimal
+    from helpers import row
+    h = make(say("Looked."), say("Looked at the new one."))
+    h.change(staples, T)
+    h.worker.tick(secs(21))
+    before = h.records.issues_seen(staples, YEAR)
+
+    upload = mongo_store.add_upload(staples, "taxi.jpg", "image", [row(date=None, description="Taxi", gross=Decimal("18.00"))], year_start=YEAR)
+    [taxi] = [r.id for r in mongo_store.rows(staples) if r.upload_id == upload]
+    h.change(staples, secs(100), summary="taxi.jpg read: 1 row", upload_id=upload)
+    [run] = h.worker.tick(secs(121))
+
     text = h.model.seen[1][-1].content
-    assert "Not yet reviewed" not in text and f"(rows {flagged[0]})" in text
-    assert second.looked_at == [flagged[0]]
+    assert f"- Row {taxi} " in text and "has no date" in text
+    assert all(f"- Row {k.split(':')[0]} " not in text for k in before)
+    assert run.summary == "Looked at the new one."
 
 
 def test_the_first_review_of_a_year_says_to_look_at_everything(make, staples):
@@ -276,11 +312,12 @@ def test_the_first_review_of_a_year_says_to_look_at_everything(make, staples):
     assert "First review of this year: look at everything." in h.model.seen[0][-1].content
 
 
-def test_a_run_with_nothing_to_do_says_so(make, staples):
-    h = make(say("All in order."))
+def test_a_run_that_changes_nothing_says_why_in_its_own_words(make, staples):
+    h = make(say("Looked at everything.\nAll in order: the receipts match the bank."))
     h.change(staples, T)
     [run] = h.worker.tick(secs(21))
-    assert (run.status, run.summary, run.decision_ids, run.question_ids) == ("done", "Nothing to change.", [], [])
+    assert (run.status, run.decision_ids, run.question_ids) == ("done", [], [])
+    assert run.summary == "All in order: the receipts match the bank."
 
 
 def first_row(h, client_id: int) -> int:
@@ -348,3 +385,76 @@ def test_one_bad_state_does_not_stop_the_tick(make, staples):
     h.records.patch_review_state(4242, due_at="not a time")
     h.change(staples, T)
     assert len(h.worker.tick(secs(21))) == 1
+
+
+def test_issues_over_the_limit_of_one_run_get_a_run_of_their_own(make, monkeypatch, mongo_store, staples):
+    from decimal import Decimal
+    from helpers import row
+    mongo_store.add_upload(staples, "taxi.jpg", "image", [row(date=None, description="Taxi", gross=Decimal("18.00"))],
+                           year_start=YEAR)   # an undated receipt: a second issue the AI can settle
+    monkeypatch.setattr(reviews, "MAX_UNREVIEWED", 1)
+    h = make(say("Looked at one."), say("Looked at the next."))
+    h.change(staples, T)
+    [first] = h.worker.tick(secs(21))
+    assert len(first.issues_seen) == 1 and "more: list_issues shows them all" in h.model.seen[0][-1].content
+    assert h.records.review_state(staples).due_at is not None   # the rest are due at once, with no new change
+    [second] = h.worker.tick(secs(23))
+    assert second.issues_seen and set(second.issues_seen).isdisjoint(first.issues_seen)
+
+
+def test_issues_the_ai_has_no_action_for_cause_no_run(make, mongo_store, records):
+    # A bank payment of £120 with no receipt: the rules ask the person for it; the AI can't settle it.
+    from decimal import Decimal
+    from helpers import row
+    from ledgersync.models import ClientFields
+    client_id = mongo_store.create_client(ClientFields(name="Held Ltd", business_type="limited_company",
+                                                       contact_name="Sam", vat_registered=True,
+                                                       first_year_end=dt.date(2027, 3, 31))).id
+    mongo_store.add_upload(client_id, "bank.csv", "table", [row(
+        date=dt.date(2026, 9, 20), description="SCREWFIX", gross=Decimal("120.00"), account_code="7600",
+        document_type="statement")], year_start=YEAR)
+    h = make(say("Should not be asked."))
+    h.change(client_id, T, summary="bank.csv read: 1 row")
+    assert h.worker.tick(secs(21)) == [] and h.model.seen == []
+    assert h.records.review_state(client_id).due_at is None
+
+
+def test_a_run_is_named_for_the_issues_it_looks_at(make, staples):
+    h = make(say("Looked."))
+    h.change(staples, T)
+    [run] = h.worker.tick(secs(21))
+    assert run.trigger_summary == "for 1 possible duplicate"
+
+
+def test_a_database_that_was_switching_servers_is_tried_again_within_a_minute(make, monkeypatch, staples):
+    from pymongo.errors import ServerSelectionTimeoutError
+
+    def blip(*args, **kwargs):   # as the agent's checkpoint write failed while Atlas chose a new primary
+        raise ServerSelectionTimeoutError("No primary available for writes")
+        yield
+
+    h = make(say("Looked again."))
+    monkeypatch.setattr(h.chat, "_agent", type("Agent", (), {"stream": staticmethod(blip)})())
+    h.change(staples, T)
+    [failed] = h.worker.tick(secs(21))
+    assert failed.status == "failed" and "database" in failed.error and "try again" in failed.error
+    assert dt.datetime.fromisoformat(h.records.review_state(staples).retry_at) == secs(21) + dt.timedelta(minutes=1)
+
+
+def test_a_review_cut_off_while_thinking_is_asked_once_to_act_on_what_it_read(make, staples):
+    from langchain_core.messages import AIMessage
+    cut = AIMessage(content="", response_metadata={"finish_reason": "length"})
+    h = make(cut, say("Settled what I could."))
+    h.change(staples, T)
+    [run] = h.worker.tick(secs(21))
+    assert (run.status, run.summary) == ("done", "Settled what I could.")
+    assert "cut off" in h.model.seen[1][-1].content
+
+
+def test_a_review_cut_off_twice_fails(make, staples):
+    from langchain_core.messages import AIMessage
+    cut = AIMessage(content="", response_metadata={"finish_reason": "length"})
+    h = make(cut, cut)
+    h.change(staples, T)
+    [run] = h.worker.tick(secs(21))
+    assert run.status == "failed" and "length limit" in run.error and len(h.model.seen) == 2

@@ -167,7 +167,8 @@ export default function ClientsPage() {
           </div>
         </>
       )}
-      {editing && <ClientDialog client={editing.client} onCancel={() => setEditing(null)} onSave={save} />}
+      {editing && <ClientDialog client={editing.client}
+                                taken={(clients ?? []).filter(c => c.id !== editing.client?.id).map(c => c.name)} onCancel={() => setEditing(null)} onSave={save} />}
       {confirmDialog}
     </>
   )

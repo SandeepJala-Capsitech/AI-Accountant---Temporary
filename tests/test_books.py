@@ -44,10 +44,11 @@ def test_a_payment_in_year_one_clears_an_unpaid_bill_brought_forward(store, acme
 def test_opening_balances_must_balance_and_agree_with_the_unpaid_invoices(store, acme):
     with pytest.raises(InvalidInput, match="must be the same"):
         books.set_opening(store, acme, OpeningBalances(lines=[OpeningLine(code="1200", debit=D("10.00"))]))
-    with pytest.raises(InvalidInput, match="Debtors is £300.00"):
+    # the invoices listed can be fewer than Debtors (the rest is brought forward not itemised), never more
+    with pytest.raises(InvalidInput, match="more than Debtors, which is £300.00"):
         books.set_opening(store, acme, OpeningBalances(
             lines=[OpeningLine(code="1100", debit=D("300.00")), OpeningLine(code="3000", credit=D("300.00"))],
-            unpaid=[OpenItem(id="1", direction="in", counterparty="Bright Cafe", amount=D("200.00"))]))
+            unpaid=[OpenItem(id="1", direction="in", counterparty="Bright Cafe", amount=D("400.00"))]))
 
 
 def test_a_statement_across_the_year_end_is_split_but_checked_whole(store, acme):
@@ -169,10 +170,16 @@ def test_the_first_year_opens_with_last_years_retained_earnings(store, acme):
     assert tb.is_balanced
 
 
-def test_unpaid_bills_must_make_up_creditors(store, acme):
-    with pytest.raises(InvalidInput, match=r"The unpaid bills from suppliers add up to £0\.00; Creditors is £500\.00\."):
-        books.set_opening(store, acme, OpeningBalances(lines=[OpeningLine(code="1200", debit=D("500.00")),
-                                                              OpeningLine(code="2100", credit=D("500.00"))]))
+def test_unpaid_bills_can_be_left_as_a_total_but_never_exceed_creditors(store, acme):
+    # At takeover often only the total is known: it is brought forward as one balance, which the invoices list shows.
+    books.set_opening(store, acme, OpeningBalances(lines=[OpeningLine(code="1200", debit=D("500.00")),
+                                                          OpeningLine(code="2100", credit=D("500.00"))]))
+    [rest] = books.invoices(store, acme, YEAR_1)
+    assert (rest.kind, rest.counterparty, rest.owed, rest.brought_forward) == ("purchase", "Not itemised", D("500.00"), True)
+    with pytest.raises(InvalidInput, match=r"add up to £600\.00, more than Creditors, which is £500\.00\."):
+        books.set_opening(store, acme, OpeningBalances(
+            lines=[OpeningLine(code="1200", debit=D("500.00")), OpeningLine(code="2100", credit=D("500.00"))],
+            unpaid=[OpenItem(id="a", direction="out", counterparty="Acme", amount=D("600.00"))]))
 
 
 # ─── Closing and reopening a year (Task 8) ─────────────────────────────────────
@@ -227,7 +234,7 @@ def test_closing_saves_the_years_balances_and_marks_it_closed(store, acme_with_y
 
 def test_a_year_whose_trial_balance_cant_be_built_isnt_closed(store, acme):
     add_rows(store, acme, row(date=date(2025, 6, 1), gross=D("50.00"), account_code="9999"))
-    with pytest.raises(InvalidInput, match="The trial balance must balance before the year is closed."):
+    with pytest.raises(InvalidInput, match="1 row of the year has a problem to fix before it can be closed: x"):
         books.close(store, acme, YEAR_1)
     assert store.get_client(acme).closed_years == []
 
@@ -324,7 +331,7 @@ def test_the_bank_check_compares_the_books_with_the_statement(store, acme_with_s
 
 def test_a_blocked_trial_balance_shows_in_the_summary(store, acme_with_a_non_gbp_row):
     s = books.summary(store, acme_with_a_non_gbp_row, date(2025,4,1))
-    assert s.trial_balance == "blocked" and "Convert" in s.problems[0]
+    assert s.trial_balance == "blocked" and "enter the amount in pounds" in s.problems[0]
 
 
 def test_a_sale_part_paid_in_the_year_shows_what_is_paid_and_owed(store, acme):
@@ -386,10 +393,10 @@ def test_the_summary_counts_the_rows_to_review_and_checks_the_banks(store, acme_
     assert not s.year.closed
 
 
-def test_a_blocked_year_has_no_bank_checks_and_the_bank_route_refuses(store, acme_with_a_non_gbp_row):
-    assert books.summary(store, acme_with_a_non_gbp_row, YEAR_1).bank == []
-    with pytest.raises(InvalidTransactions):
-        books.bank_checks(store, acme_with_a_non_gbp_row, YEAR_1)
+def test_a_blocked_year_still_has_bank_checks_which_say_a_row_is_left_out(store, acme_with_a_non_gbp_row):
+    [in_summary] = books.summary(store, acme_with_a_non_gbp_row, YEAR_1).bank
+    [check] = books.bank_checks(store, acme_with_a_non_gbp_row, YEAR_1)
+    assert in_summary == check and (check.books, check.left_out) == (D("0.00"), 1)
 
 
 def test_an_unknown_year_is_not_found_for_each_view(store, acme):
@@ -588,3 +595,152 @@ def test_a_directors_loan_owed_to_the_director_needs_no_pointer(store, acme):
     add_rows(store, acme, row(date=date(2025, 10, 9), direction="in", gross=D("500.00"), account_code="2250",
                               document_type="statement", counterparty="P ASHDOWN"))
     assert books.summary(store, acme, YEAR_1).pointers == []
+
+
+def test_the_same_payment_from_two_uploads_says_it_may_be_a_duplicate_where_the_ai_sees_it(store, acme):
+    add_rows(store, acme, row(gross=D("12.88"), description="Chopstix", date=date(2025, 9, 14)))
+    add_rows(store, acme, row(gross=D("12.88"), description="Chopstix again", date=date(2025, 9, 15)))
+    first, second = books.ledger(store, acme, YEAR_1).transactions
+    assert not any(i.code == "possible_duplicate" for i in first.issues)
+    [said] = [i for i in second.issues if i.code == "possible_duplicate"]
+    assert said.severity == "warning" and said.related == [first.id] and '"Chopstix"' in said.message
+
+
+def test_an_undated_bill_takes_the_day_its_file_name_and_its_claim_line_share(store, acme):
+    from ledgersync.models import Transaction
+    sheet = [row(gross=D(g), date=date(2025, 9, d), description="EE, mobile phone bill", counterparty="Matt Barnes",
+                 document_type="expense_claim", document_ref="sheet") for g, d in (("27.50", 3), ("27.50", 4))]
+    add_rows(store, acme, *sheet)
+    upload = store.add_upload(acme, "EE-2025-09-04_00_00_00.jpg", "image", [Transaction(
+        date=None, description="EE monthly charges", direction="out", gross=D("27.50"), account_code="7502",
+        document_type="invoice", counterparty="EE")], year_start=YEAR_1)
+    [bill] = [r for r in books.ledger(store, acme, YEAR_1).transactions if r.upload_id == upload]
+    assert bill.date == date(2025, 9, 4) and bill.claimed_in is not None
+    assert not any(i.code in ("date_missing", "file_date") for i in bill.issues)
+    # The trial balance pairs them alike: the 4 Sep line and its bill count once (£27.50 + £27.50, not £82.50).
+    assert books.trial_balance(store, acme, YEAR_1).total_expenses == D("55.00")
+
+
+def test_two_statements_that_overlap_are_not_a_gap_and_their_shared_line_counts_once(store, acme):
+    add_rows(store, acme, *_october_statement())
+    line = dict(document_type="statement")
+    add_rows(store, acme,
+             row(**line, date=date(2025, 10, 2), direction="in", gross=D("50.00"), account_code="4000",
+                 counterparty="Bright Cafe", balance=D("950.00")),
+             row(**line, date=date(2025, 10, 3), gross=D("20.00"), account_code="7504", counterparty="Paper Shop",
+                 balance=D("930.00")))
+    name = store.get_client(acme).bank_accounts[0].name
+    assert books.summary(store, acme, YEAR_1).missing_paperwork == [
+        f"{name}: no statements for April to September 2025. The statement from 1 Oct 2025 opens at £1,000.00; "
+        "the books have £0.00 then."]
+    [check] = books.bank_checks(store, acme, YEAR_1)
+    assert (check.statement, check.books, check.difference) == (D("930.00"), D("-70.00"), D("-1000.00"))
+    repeated = books.ledger(store, acme, YEAR_1).transactions[2]
+    assert repeated.copy_of is not None and [i.code for i in repeated.issues] == ["duplicate_document"]
+
+
+def test_a_revised_invoice_under_the_old_number_is_said_on_the_later_one(store, acme):
+    bill = dict(document_type="invoice", counterparty="Ashdown Supplies Ltd", document_number="A-551",
+                account_code="5000")
+    add_rows(store, acme, row(**bill, date=date(2025, 5, 10), gross=D("360.00"), document_total=D("360.00"),
+                              description="Plasterboard x 60"))
+    add_rows(store, acme, row(**bill, date=date(2025, 5, 12), gross=D("240.00"), document_total=D("240.00"),
+                              description="Plasterboard x 40"))
+    original, revised = books.ledger(store, acme, YEAR_1).transactions
+    [said] = [i for i in revised.issues if i.code == "possible_duplicate"]
+    assert said.related == [original.id] and said.message == (
+        'Same invoice number (A-551) as "Plasterboard x 60" of 10 May 2025 for £360.00. If this one replaces it, '
+        "leave that one out; if they are two invoices, keep both.")
+    assert not any(i.code == "possible_duplicate" for i in original.issues)
+
+
+
+# ─── UAT round 2, high issues ──────────────────────────────────────────────────
+
+def test_one_problem_row_doesnt_hide_the_bank_check(store, acme_with_a_non_gbp_row):
+    # One row to fix blocked Bank and Overview for the whole client, while the trial balance page still showed.
+    add_rows(store, acme_with_a_non_gbp_row, row(date=date(2025, 6, 2), direction="in", gross=D("400.00"),
+                                                  document_type="statement", account_code="4000"))
+    [check] = books.bank_checks(store, acme_with_a_non_gbp_row, YEAR_1)
+    assert check.books == D("400.00")
+    s = books.summary(store, acme_with_a_non_gbp_row, YEAR_1)
+    assert s.trial_balance == "blocked" and [c.books for c in s.bank] == [D("400.00")]
+
+
+def test_the_vat_figures_include_the_reverse_charge(store, acme):
+    add_rows(store, acme, row(date=date(2025, 6, 1), gross=D("55.20"), account_code="7502", document_type="invoice",
+                              counterparty="Google Cloud EMEA Ltd", document_ref="g", reverse_charge=True))
+    v = books.vat_figures(store, acme, YEAR_1)
+    assert (v.box1, v.box4, v.box5, v.box6, v.box7) == (D("11.04"), D("11.04"), D("0.00"), D("55.20"), D("55.20"))
+    assert any("reverse-charge" in note for note in v.notes)
+
+
+def test_a_client_registered_for_vat_part_way_through_the_year(store, acme):
+    ledger.change_client(store, acme, ClientPatch(vat_from=date(2025, 10, 1)))
+    for day, ref in ((date(2025, 6, 1), "a"), (date(2025, 11, 1), "b")):
+        add_rows(store, acme, row(date=day, direction="in", gross=D("1200.00"), vat=D("200.00"), account_code="4000",
+                                  document_type="invoice", counterparty="Bright Cafe", document_ref=ref))
+    tb = books.trial_balance(store, acme, YEAR_1)
+    assert (net(tb, "4000"), net(tb, "2200")) == (D("-2200.00"), D("-200.00"))
+    v = books.vat_figures(store, acme, YEAR_1)
+    assert (v.box1, v.box6) == (D("200.00"), D("1000.00"))
+    assert store.get_client(ledger.change_client(store, acme, ClientPatch(vat_from=None)).id).vat_from is None
+
+
+def test_a_person_can_say_a_judgement_warning_is_fine(store, acme):
+    add_rows(store, acme, row(date=date(2025, 6, 1), gross=D("9.67"), account_code="0030"))
+    [cable] = books.ledger(store, acme, YEAR_1).transactions
+    assert [i.code for i in cable.issues] == ["small_asset"]
+    [cable] = ledger.change_row(store, acme, cable.id, RowPatch(accepted=["small_asset"])).transactions
+    assert cable.issues == []
+    with pytest.raises(InvalidInput, match="matter of judgement"):
+        ledger.change_row(store, acme, cable.id, RowPatch(accepted=["vat_arithmetic"]))
+
+
+# ─── UAT round 2, medium issues ────────────────────────────────────────────────
+
+def test_a_document_dated_after_this_year_is_asked_about(store, acme):
+    import datetime
+    ahead = date(datetime.date.today().year + 2, 6, 1)
+    add_rows(store, acme, row(date=ahead, gross=D("96.00"), document_type="invoice", document_ref="hss"))
+    cid = acme
+    [future] = [r for y in books.years_of(store, cid, datetime.date.today())
+                for r in books.ledger(store, cid, y.start).transactions]
+    assert [i.code for i in future.issues] == ["future_date"]
+    [fine] = [r for r in ledger.change_row(store, cid, future.id, RowPatch(accepted=["future_date"])).transactions]
+    assert fine.issues == []
+
+
+def test_a_first_year_end_must_be_sensible_and_keep_the_rows(store, acme):
+    with pytest.raises(InvalidInput, match="Enter a first year end between"):
+        ledger.change_client(store, acme, ClientPatch(first_year_end=date(1990, 3, 31)))
+    add_rows(store, acme, row(date=date(2025, 6, 1), gross=D("10.00")))
+    with pytest.raises(InvalidInput, match="1 row of the books is dated before"):
+        ledger.change_client(store, acme, ClientPatch(first_year_end=date(2027, 3, 31)))
+    assert ledger.change_client(store, acme, ClientPatch(first_year_end=date(2025, 12, 31))).first_year_end == date(2025, 12, 31)
+
+
+@pytest.mark.parametrize("change, message", [
+    ({"company_number": "ABC"}, "A company number has 8 characters"),
+    ({"vat_number": "GB 12"}, "A VAT number has 9 digits"),
+    ({"utr": "12345"}, "A UTR has 10 digits"),
+    ({"paye_reference": "abc"}, "A PAYE reference looks like"),
+])
+def test_a_reference_is_written_as_its_issuer_writes_it(store, acme, change, message):
+    with pytest.raises(InvalidInput, match=message):
+        ledger.change_client(store, acme, ClientPatch(**change))
+    good = ClientPatch(company_number="sc123456", vat_number="GB 123 4567 89", utr="1234567890", paye_reference="123/AB456")
+    assert ledger.change_client(store, acme, good).vat_number == "GB 123 4567 89"
+
+
+def test_a_journal_far_ahead_or_for_billions_is_refused(store, acme):
+    import datetime
+    def entry(**kw):
+        fields = dict(date=date(2025, 6, 1), gross=D("100.00"), account_code="8000", contra_account_code="0031",
+                      document_type="journal", description="Depreciation")
+        return ManualUpload(name="Journal", kind="manual", transactions=[row(**{**fields, **kw})])
+    with pytest.raises(InvalidInput, match="more than a year ahead"):
+        ledger.add_manual(store, acme, entry(date=date(datetime.date.today().year + 5, 4, 30)))
+    with pytest.raises(InvalidInput, match="too large"):
+        ledger.add_manual(store, acme, entry(gross=D("99999999999.99")))
+    ledger.add_manual(store, acme, entry())

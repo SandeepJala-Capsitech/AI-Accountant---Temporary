@@ -326,11 +326,12 @@ class AgentRecords:
                 for doc in self.db.review_state.find({"running": True})]
 
     def start_review(self, client_id: int, year_start: dt.date, *, from_seq: int, to_seq: int,
-                     trigger_summary: str, looked_at=()) -> ReviewRun:
-        """Records a run that has started, over the changes after from_seq up to to_seq, pointed at these rows."""
+                     trigger_summary: str, looked_at=(), issues_seen=()) -> ReviewRun:
+        """Records a run that has started, over the changes after from_seq up to to_seq, pointed at these rows and
+        shown these issues."""
         run = ReviewRun(id=uuid4().hex, client_id=client_id, year_start=year_start, status="running",
                         started_at=now_iso(), trigger_summary=trigger_summary, from_seq=from_seq, to_seq=to_seq,
-                        looked_at=list(looked_at))
+                        looked_at=list(looked_at), issues_seen=list(issues_seen))
         self.db.review_runs.insert_one({**run.model_dump(mode="json"), "_id": run.id, "seq": time.time_ns()})
         return run
 
@@ -366,6 +367,14 @@ class AgentRecords:
         for doc in self.db.review_runs.find({"client_id": client_id, "year_start": year_start.isoformat()},
                                             {"looked_at": 1}):
             found.update(doc.get("looked_at") or [])
+        return found
+
+    def issues_seen(self, client_id: int, year_start: dt.date) -> set[str]:
+        """Every issue the year's earlier runs that finished were shown, by key (reviews.issue_keys)."""
+        found: set[str] = set()
+        for doc in self.db.review_runs.find({"client_id": client_id, "year_start": year_start.isoformat(),
+                                             "status": "done"}, {"issues_seen": 1}):
+            found.update(doc.get("issues_seen") or [])
         return found
 
     def mark_reviews_seen(self, client_id: int) -> int:

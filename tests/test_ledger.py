@@ -367,21 +367,22 @@ def test_the_trial_balance_and_the_ledger_match_with_the_same_decisions(store, m
     ledger.change_row(store, client.id, line.id, RowPatch(apart_from=[receipt.id]))
     seen, real_documents, real_match = [], books.match_documents, posting.match
 
-    def spy_documents(rows, settings, read=None, apart=None, open_items=()):
-        seen.append((read, apart))
-        return real_documents(rows, settings, read, apart, open_items)
+    def spy_documents(rows, settings, read=None, apart=None, open_items=(), name_days=None):
+        seen.append((read, apart, name_days))
+        return real_documents(rows, settings, read, apart, open_items, name_days=name_days)
 
-    def spy(rows, settings, read=None, apart=None, open_items=()):
-        seen.append((read, apart))
-        return real_match(rows, settings, read=read, apart=apart, open_items=open_items)
+    def spy(rows, settings, read=None, apart=None, open_items=(), name_days=None):
+        seen.append((read, apart, name_days))
+        return real_match(rows, settings, read=read, apart=apart, open_items=open_items, name_days=name_days)
 
     monkeypatch.setattr(books, "match_documents", spy_documents)
     monkeypatch.setattr(posting, "match", spy)
     books.ledger(store, client.id, YEAR)
     books.trial_balance(store, client.id, YEAR)
-    (built_read, built_apart), (balance_read, balance_apart) = seen
+    (built_read, built_apart, built_days), (balance_read, balance_apart, balance_days) = seen
     assert built_read == [None, Decimal("27.50"), None, None] and built_apart == [set(), set(), {3}, {2}]
-    assert (balance_read, balance_apart) == (built_read, built_apart)
+    assert (balance_read, balance_apart, balance_days) == (built_read, built_apart, built_days)
+    assert built_days is not None and len(built_days) == 4   # the file names' days reach both matches alike
 
 
 def test_an_edited_suspense_row_leaves_to_review(store):

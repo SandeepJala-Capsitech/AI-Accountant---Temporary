@@ -1,7 +1,7 @@
 'use client'
 
 import { useRef, useState } from 'react'
-import { answerQuestion, questionControl, questionState, uploadForQuestion, type Answer, type AnswerResult, type Question } from '@/lib/chat'
+import { answerQuestion, canBookWithout, questionControl, questionState, uploadForQuestion, type Answer, type AnswerResult, type Question } from '@/lib/chat'
 import type { Answerer } from '@/lib/reviews'
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
@@ -20,6 +20,7 @@ export default function QuestionCard({ question, number, threadId, answerer, onA
 }) {
   const [date, setDate] = useState('')
   const [words, setWords] = useState('')
+  const [reason, setReason] = useState<string | null>(null)   // why it is booked without its document, while typed
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
   const fileInput = useRef<HTMLInputElement>(null)
@@ -74,7 +75,26 @@ export default function QuestionCard({ question, number, threadId, answerer, onA
                     onClick={() => fileInput.current?.click()}>📎 Upload</button>
             <button type="button" className="btn btn-small" disabled={!!busy || working}
                     onClick={() => answer({ kind: 'no_document' }, 'Saving…')}>I don&apos;t have it</button>
+            {canBookWithout(question) && reason === null && (
+              <button type="button" className="btn btn-small" disabled={!!busy || working}
+                      title="Book it to its account with no VAT reclaimed, saying why there is no document"
+                      onClick={() => setReason('')}>Book without it</button>
+            )}
           </div>
+        )}
+        {control === 'upload' && reason !== null && (
+          <form className="question-row" onSubmit={e => {
+            e.preventDefault()
+            if (reason.trim()) answer({ kind: 'without_document', reason: reason.trim() }, 'Booking…')
+          }}>
+            <input className="input" value={reason} onChange={e => setReason(e.target.value)} maxLength={300} autoFocus
+                   aria-label="Why there is no document" placeholder="Why there is no document, e.g. receipt lost"
+                   disabled={!!busy || working} />
+            <button type="submit" className="btn btn-primary btn-small" disabled={!reason.trim() || !!busy || working}>
+              Book with no VAT
+            </button>
+            <button type="button" className="btn btn-small" onClick={() => setReason(null)}>Cancel</button>
+          </form>
         )}
         {control === 'text' && (
           <form className="question-row" onSubmit={e => { e.preventDefault(); say() }}>

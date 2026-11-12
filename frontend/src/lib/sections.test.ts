@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import type { BankCheck, Client, InvoiceSummary, Ledger, OpeningBalances, SavedRow, Year } from './clients.ts'
 import type { TrialBalanceResult } from './api.ts'
 import {
-  bankCheckNotice, bankCheckText, closeQuestion, defaultBank, fullDate, linesCount, linesFor, openingAccounts, openingErrors, splitInvoices, trialRows,
+  ageing, ageingText, vatBoxText, vatPeriods, bankBalance, bankCheckNotice, bankCheckText, journalErrors, journalRow, statementAmount, statements, closeQuestion, closeWarnings, defaultBank, fullDate, linesCount, linesFor, openingAccounts, openingErrors, splitInvoices, trialRows,
 } from './sections.ts'
 
 const check = (change: Partial<BankCheck> = {}): BankCheck => ({
@@ -22,6 +22,15 @@ test('the bank check says whether the books agree with the statement', () => {
   assert.equal(bankCheckText(check({ difference: '-25.00', statement_date: '2025-09-30' })), '£25.00 less in the books than the statement of 30 Sep 2025.')
   assert.equal(bankCheckText(check({ difference: '1200.50', statement_date: '2025-09-30' })), '£1,200.50 more in the books than the statement of 30 Sep 2025.')
   assert.equal(bankCheckText(check({ statement: null, difference: null, statement_date: null })), 'No statement this year.')
+  assert.equal(bankCheckText(check({ statement: null, difference: null, statement_date: null }), 9),
+               "Its statements print no balance, so the books can't be checked against them.")
+})
+
+test('an overdrawn account and a card say which way their balance is', () => {
+  assert.equal(bankBalance('-2887.11', 'current'), '£2,887.11 overdrawn')
+  assert.equal(bankBalance('1599.81', 'current'), '£1,599.81')
+  assert.equal(bankBalance('850.00', 'credit_card'), '£850.00 owed')
+  assert.equal(bankBalance('-20.00', 'credit_card'), '£20.00 in credit')
 })
 
 test('invoices split into sales and purchases', () => {
@@ -36,11 +45,11 @@ test('dates are written 30 Sep 2025, and a missing one says so', () => {
 })
 
 test('the notice names the first problem that stops the bank check', () => {
-  assert.equal(bankCheckNotice('2 problem(s) must be fixed before the trial balance: #3: The date is missing. #5: The total is wrong.'),
-               'The bank check needs the trial balance: the date is missing.')
-  assert.equal(bankCheckNotice('Fix the earlier years first: 1 problem(s) must be fixed before the trial balance: #2: Unknown account.'),
-               'The bank check needs the trial balance: unknown account.')
-  assert.equal(bankCheckNotice('Something else went wrong.'), 'The bank check needs the trial balance: something else went wrong.')
+  assert.equal(bankCheckNotice('2 problem(s) must be fixed before the trial balance: BT (1 Sep 2026, £72.00): The date is missing.; Xero (2 Sep 2026, £36.00): The total is wrong.'),
+               'The bank check needs the trial balance. BT (1 Sep 2026, £72.00): The date is missing.')
+  assert.equal(bankCheckNotice('Fix the earlier years first: 1 problem(s) must be fixed before the trial balance: AWS (3 Jan 2026, £500.00): Unknown account.'),
+               'The bank check needs the trial balance. AWS (3 Jan 2026, £500.00): Unknown account.')
+  assert.equal(bankCheckNotice('Something else went wrong.'), 'The bank check needs the trial balance. Something else went wrong.')
 })
 
 const client = (kinds: ('current' | 'savings')[]): Client => ({
@@ -102,18 +111,31 @@ test('the unpaid invoices must make up Debtors and Creditors', () => {
     unpaid: [item('in', '300.00'), item('out', '120.50')], ...o,
   })
   assert.deepEqual(openingErrors(balanced({})), [])
-  assert.deepEqual(openingErrors(balanced({ unpaid: [item('in', '250.00'), item('out', '120.50')] })),
-    ['The unpaid invoices from customers add up to £250.00; Debtors is £300.00.'])
-  assert.deepEqual(openingErrors(balanced({ unpaid: [item('in', '300.00')] })),
-    ['The unpaid bills from suppliers add up to £0.00; Creditors is £120.50.'])
+  // fewer than the balance, or none, is allowed: the rest is brought forward as one balance
+  assert.deepEqual(openingErrors(balanced({ unpaid: [item('in', '250.00'), item('out', '120.50')] })), [])
+  assert.deepEqual(openingErrors(balanced({ unpaid: [] })), [])
   assert.deepEqual(openingErrors(balanced({ unpaid: [item('in', '1300.00'), item('out', '120.50')] })),
-    ['The unpaid invoices from customers add up to £1,300.00; Debtors is £300.00.'])
+    ['The unpaid invoices from customers add up to £1,300.00, more than Debtors, which is £300.00.'])
 })
 
 test('closing a year asks first', () => {
   assert.match(closeQuestion(year('2026-03-31')), /^Close the year to 31 Mar 2026\?/)
   assert.equal(closeQuestion(year('2026-03-31')),
     'Close the year to 31 Mar 2026? Its figures are locked and carried into the next year. You can reopen it later.')
+})
+
+test('closing a year says first what is still unsettled in it', () => {
+  const tb = { lines: [{ code: '9998', name: 'Suspense', type: 'liability', debit: '1624.20', credit: '0.00' }],
+               total_debits: '0', total_credits: '0', is_balanced: true } as TrialBalanceResult
+  const summary = { to_review: 5, bank: [check({ name: 'Lloyds current', difference: '-54.85' }), check()],
+                    missing_paperwork: ['Amex card: no statement for this year yet.'] }
+  const warnings = closeWarnings(summary, tb, [{ date: null }, { date: '2026-03-01' }])
+  assert.deepEqual(warnings, [
+    '5 rows are still to review.', '1 row has no date.',
+    '£1,624.20 is in Suspense, and will be carried into the next year.',
+    'Lloyds current is £54.85 away from its statement.', 'Amex card: no statement for this year yet.'])
+  assert.match(closeQuestion(year('2026-04-05'), warnings), /^Before you close:\n• 5 rows are still to review\.\n/)
+  assert.deepEqual(closeWarnings({ to_review: 0, bank: [check()], missing_paperwork: [] }, null, []), [])
 })
 
 test('the trial balance shows each account opening, moving and closing', () => {
@@ -134,4 +156,57 @@ test('opening balances are offered balance sheet accounts and the client\'s own 
   const chart = [account('7100', 'expense'), account('4000', 'income'), account('3200', 'equity'), account('1100', 'asset'),
                  account('1201', 'asset'), account('1200', 'asset'), account('2100', 'liability')]
   assert.deepEqual(openingAccounts(chart, client(['current'])).map(a => a.code), ['1100', '1200', '2100', '3200'])
+})
+
+
+test('a journal needs a date, two different accounts and an amount, and books as money out between them', () => {
+  const draft = { date: '2027-03-31', description: ' Depreciation for the year ', debit: '8000', credit: '0031', amount: '525' }
+  assert.deepEqual(journalErrors(draft), {})
+  assert.deepEqual(Object.keys(journalErrors({ ...draft, credit: '8000', amount: '-5', date: '' })).sort(), ['amount', 'credit', 'date'])
+  const row = journalRow(draft)
+  assert.deepEqual([row.document_type, row.direction, row.account_code, row.contra_account_code, row.gross, row.description],
+                   ['journal', 'out', '8000', '0031', '525.00', 'Depreciation for the year'])
+})
+
+test('the profit and loss and the balance sheet come from the trial balance, and agree', () => {
+  const r = (code: string, type: string, closing: number) => ({ code, name: `A${code}`, type, opening: 0, movement: closing, closing })
+  // pence, debits positive: equipment 2,000, bank 500 overdrawn, held in Suspense 240, creditors 300, shares 100,
+  // sales 3,000, purchases 1,000, rent 660
+  const made = statements([r('0030', 'asset', 200000), r('1200', 'asset', -50000), r('9998', 'liability', 24000),
+                           r('2100', 'liability', -30000), r('3000', 'equity', -10000), r('4000', 'income', -300000),
+                           r('5000', 'expense', 100000), r('7100', 'expense', 66000)])
+  const of = (lines: { label: string; amount: number }[], label: string) => lines.find(l => l.label === label)?.amount
+  assert.equal(of(made.profitAndLoss, 'Gross profit'), 200000)
+  assert.equal(of(made.profitAndLoss, 'Net profit'), 134000)
+  assert.equal(of(made.balanceSheet, 'Current assets'), -26000)     // the overdraft, and what Suspense holds in debit
+  assert.equal(of(made.balanceSheet, 'Liabilities'), 30000)
+  assert.equal(of(made.balanceSheet, 'Net assets'), 144000)
+  assert.equal(of(made.balanceSheet, 'Capital and reserves'), 144000)
+  assert.ok(made.agrees)
+  assert.deepEqual([statementAmount(134000), statementAmount(-26000), statementAmount(0)], ['£1,340.00', '(£260.00)', '—'])
+})
+
+
+test('what is owed is aged by the invoice date, a credit note counting against it', () => {
+  const owed = (date: string | null, amount: string, credit_note = false): InvoiceSummary =>
+    ({ ...inv('sale'), date, owed: amount, credit_note })
+  const a = ageing([owed('2026-10-20', '100.00'), owed('2026-09-20', '200.00'), owed('2026-06-01', '300.00'),
+                    owed(null, '50.00'), owed('2026-10-25', '20.00', true), owed('2026-10-01', '0.00')], '2026-11-10')
+  assert.deepEqual(a, { total: 63000, upTo30: 8000, upTo60: 20000, upTo90: 0, over90: 35000 })
+  assert.equal(ageingText(a, '2026-11-10'), '£630.00 owed at 10 Nov 2026: £80.00 up to 30 days, £200.00 31 to 60 days, £350.00 over 90 days.')
+  assert.equal(ageingText(ageing([], '2026-11-10'), '2026-11-10'), 'Nothing owed.')
+})
+
+
+test('a year has its whole self and four quarters to work VAT figures for', () => {
+  const periods = vatPeriods({ start: '2026-04-01', end: '2027-03-31', label: 'Year to 31 Mar 2027', closed: false } as Year)
+  assert.deepEqual(periods.map(p => [p.start, p.end]), [
+    ['2026-04-01', '2027-03-31'], ['2026-04-01', '2026-06-30'], ['2026-07-01', '2026-09-30'],
+    ['2026-10-01', '2026-12-31'], ['2027-01-01', '2027-03-31']])
+  assert.equal(periods[3].label, '1 Oct 2026 to 31 Dec 2026')
+  const taxYear = vatPeriods({ start: '2025-04-06', end: '2026-04-05', label: 'Year to 5 Apr 2026', closed: false } as Year)
+  assert.deepEqual(taxYear.slice(1).map(p => [p.start, p.end]), [
+    ['2025-04-06', '2025-07-05'], ['2025-07-06', '2025-10-05'], ['2025-10-06', '2026-01-05'], ['2026-01-06', '2026-04-05']])
+  assert.deepEqual([vatBoxText('box1', '800.00'), vatBoxText('box5', '-12.12'), vatBoxText('box5', '491.67'), vatBoxText('box6', '6500.49')],
+                   ['£800.00', '£12.12 to reclaim', '£491.67 to pay', '£6,500'])
 })

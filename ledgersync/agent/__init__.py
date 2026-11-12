@@ -43,5 +43,5 @@ def build_agent(settings: Settings, deps: AgentDeps, *, model=None, checkpointer
         ToolErrorsAsMessages(),
     ]
     return create_agent(model if model is not None else chat_model(settings),
-                        make_tools(deps, actor=f"agent:{settings.openrouter_model}"), system_prompt=SYSTEM_PROMPT,
+                        make_tools(deps, actor=f"agent:{settings.chat_model_name}"), system_prompt=SYSTEM_PROMPT,
                         middleware=middleware, context_schema=ChatContext, checkpointer=checkpointer)

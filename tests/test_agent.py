@@ -560,7 +560,7 @@ def test_a_row_of_another_client_is_not_found(mongo_store, deps, staples):
     assert result.status == "error" and "not found" in result.content
 
 
-def test_no_tool_can_set_a_date():
+def test_only_a_checked_resolution_can_set_a_date():
     def properties(schema) -> list[tuple[str, dict]]:
         """Every property of the schema and of the schemas it nests, by name."""
         found = []
@@ -576,10 +576,12 @@ def test_no_tool_can_set_a_date():
     tools = make_tools(AgentDeps(store=None, records=None, blobs=None), actor="agent:test")
     assert {t.name for t in tools} == {"get_overview", "list_issues", "list_rows", "get_row", "list_documents", "read_document",
                                        "resolve_issue", "ask_user", "close_question", "list_questions",
-                                       "list_decisions", "list_changes", "get_trial_balance"}
-    for tool in tools:
-        for name, field in properties(tool.tool_call_schema.model_json_schema()):
-            assert "date" not in name and field.get("format") not in ("date", "date-time"), (tool.name, name)
+                                       "list_decisions", "list_changes", "get_trial_balance", "get_vat_figures"}
+    dated = [(tool.name, name) for tool in tools for name, field in properties(tool.tool_call_schema.model_json_schema())
+             if "date" in name or field.get("format") in ("date", "date-time")]
+    # The one date any tool takes is set_date's, which resolutions.resolve checks against another record, the file
+    # name or the document before it changes the row (R1).
+    assert dated == [("resolve_issue", "date")]
 
 
 # ─── Threads ───────────────────────────────────────────────────────────────────
@@ -935,6 +937,22 @@ def test_a_last_step_whose_arguments_are_not_json_ends_with_an_error():
 
 
 
+def test_an_answer_cut_off_at_its_length_limit_ends_with_an_error_not_silence():
+    # The 14:43 review: 6,703 of the 8,192 tokens went on thinking, and the answer came out empty.
+    cut = AIMessage(content="", response_metadata={"finish_reason": "length"})
+    events = list(stream_turn(offline_agent(ScriptedChatModel(replies=[cut])), context(), "Go."))
+
+    assert kinds(events) == ["error"] and events[0].data["code"] == "cut_off"
+
+
+def test_a_storage_failure_says_the_database_did_not_answer():
+    from pymongo.errors import ServerSelectionTimeoutError
+
+    from ledgersync.agent.run import STORAGE_TEXT, _failure
+    event = _failure(ServerSelectionTimeoutError("No primary available for writes"))
+    assert event.data == {"code": "storage_unavailable", "message": STORAGE_TEXT}
+
+
 def test_the_key_is_blanked_in_the_error_a_failing_model_gives(monkeypatch):
     monkeypatch.setattr(model_retry, "time", SimpleNamespace(sleep=lambda seconds: None))
     key = "sk-or-v1-0123456789abcdef"
@@ -946,3 +964,11 @@ def test_the_key_is_blanked_in_the_error_a_failing_model_gives(monkeypatch):
 
     assert error.data["code"] == "model_unavailable"
     assert key not in error.data["message"] and "401 for key *** at the provider" in error.data["message"]
+
+
+def test_the_prompt_carries_the_tax_facts_the_chat_got_wrong():
+    # Asked for the VAT boxes and about s455, the chat invented box meanings, a £10,000 threshold, 32.5% and 30 days.
+    for said in ("Box 4: VAT reclaimed on purchases", "Box 6: total sales and other outputs, excluding VAT",
+                 "nine months and one day", "There is no minimum amount", "33.75%",
+                 "Never give a tax rate, a threshold or a deadline from memory"):
+        assert said in " ".join(SYSTEM_PROMPT.split()), said

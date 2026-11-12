@@ -95,7 +95,8 @@ def test_vat_below_the_rate_says_how_much_of_the_amount_has_none():
     # wagamama: VAT £3.88 on £25.63, as the £2.33 tip has none. "Mixed rates?" left a person guessing.
     [found] = normalise(tx(gross="25.63", vat="3.88", account="7406"), REGISTERED).issues
     assert (found.code, found.severity) == ("vat_rate_mismatch", "info")
-    assert found.message == "£3.88 is 20% VAT on £23.28; £2.35 has no VAT (a tip or service charge?)."
+    assert found.message == ("£3.88 is 20% VAT on £23.28; £2.35 has no VAT (zero-rated or exempt items, a tip or "
+                             "a service charge?).")
 
 
 MIXED = Issue(code="mixed_items", severity="warning", message="This document mixes items of different kinds.")
@@ -506,3 +507,101 @@ def test_spending_that_looks_personal_says_where_it_went():
     assert [(i.code, i.severity, i.message) for i in t.issues] == [
         ("personal", "info", "Netflix looks like personal spending: booked to the Director's Loan Account. Recode it "
                              "if it was for the business.")]
+
+
+def test_a_vat_treatment_a_person_chose_decides_whether_vat_is_booked():
+    from ledgersync.money import VatTreatment
+    # An EU reverse-charge sale and a zero-rated one read alike as "VAT 0.00": the treatment now says which.
+    marked = normalise(tx(gross="120.00", vat="20.00", vat_treatment=VatTreatment.OUTSIDE_SCOPE), REGISTERED)
+    assert (marked.vat_posted, marked.net) == (Decimal("0.00"), Decimal("120.00"))
+    assert ("vat_not_applicable", "info") in codes(marked)
+    zero = normalise(tx(gross="120.00", vat_treatment=VatTreatment.ZERO), REGISTERED)
+    assert (zero.vat_posted, codes(zero)) == (Decimal("0.00"), [])
+    worked_out = normalise(tx(gross="120.00", vat_treatment=VatTreatment.STANDARD), REGISTERED)
+    assert worked_out.vat_posted == Decimal("20.00")
+    # A supplier's credit note says what it is, not "a refund?".
+    note = normalise(tx(direction="in", document_type="invoice"), REGISTERED)
+    assert "credit note" in next(i.message for i in note.issues if i.code == "unusual_direction")
+
+
+# ─── UAT round 2, high issues ──────────────────────────────────────────────────
+
+def test_vat_on_an_invoice_without_a_vat_number_is_warned_about_until_a_person_says():
+    # Dave's Skips charged VAT on an invoice with no VAT registration number: it was reclaimed in silence.
+    skip = tx(gross="300.00", vat="50.00", account="7700", document_type="invoice")
+    assert ("no_vat_number", "warning") in codes(normalise(skip, REGISTERED))
+    assert "no_vat_number" not in dict(codes(normalise(skip.model_copy(update={"supplier_vat_number": "GB123456789"}),
+                                                       REGISTERED)))
+    assert "no_vat_number" not in dict(codes(normalise(skip.model_copy(update={"accepted": ["no_vat_number"]}),
+                                                       REGISTERED)))
+
+
+def test_vat_charged_before_a_voucher_came_off_is_booked_and_said_not_refused():
+    # Amazon: VAT £1.70 on £8.48, then a promotion, £9.67 paid. It was "impossible" and blocked the client's books.
+    t = normalise(tx(gross="9.67", vat="1.70", supplier_vat_number="GB727255821"), REGISTERED)
+    assert (t.vat_posted, t.net) == (Decimal("1.70"), Decimal("7.97"))
+    assert codes(t) == [("vat_over_rate", "warning")]
+    assert ("vat_arithmetic", "error") in codes(normalise(tx(gross="9.67", vat="2.50"), REGISTERED))
+
+
+def test_a_reverse_charge_service_owes_and_reclaims_its_vat():
+    google = tx(gross="55.20", account="7502", document_type="invoice", reverse_charge=True)
+    t = normalise(google, REGISTERED)
+    assert (t.vat_posted, t.net, t.reverse_vat) == (Decimal("0.00"), Decimal("55.20"), Decimal("11.04"))
+    assert codes(t) == [("reverse_charge", "info")]
+    tb = trial_balance([google], REGISTERED)
+    assert (net(tb, "2201"), net(tb, "2200"), net(tb, "7502")) == (Decimal("11.04"), Decimal("-11.04"), Decimal("55.20"))
+    assert normalise(google, NOT_REGISTERED).reverse_vat is None
+
+
+def test_a_row_dated_before_the_vat_registration_books_no_vat():
+    settings = BusinessSettings(vat_from=dt.date(2026, 10, 1))
+    before = normalise(tx(vat="20.00", supplier_vat_number="GB1"), settings)
+    after = normalise(tx(vat="20.00", supplier_vat_number="GB1", date=dt.date(2026, 10, 1)), settings)
+    assert (before.vat_posted, codes(before)) == (Decimal("0.00"), [("before_vat_registration", "info")])
+    assert (after.vat_posted, codes(after)) == (Decimal("20.00"), [])
+
+
+def test_a_cheap_item_on_an_equipment_account_is_asked_about():
+    cable = normalise(tx(gross="9.67", account="0030"), REGISTERED)
+    assert codes(cable) == [("small_asset", "warning")]
+    assert codes(normalise(tx(gross="499.00", account="0030"), REGISTERED)) == []
+    assert codes(normalise(tx(gross="9.67", account="0030", document_total="640.00"), REGISTERED)) == []
+
+
+def test_a_big_meal_on_subsistence_is_asked_about():
+    assert codes(normalise(tx(gross="96.40", account="7406"), REGISTERED)) == [("meal_check", "warning")]
+    assert codes(normalise(tx(gross="12.40", account="7406"), REGISTERED)) == []
+
+
+def test_a_finance_agreement_is_not_booked():
+    hp = normalise(tx(gross="18000.00", account="0055", document_type="finance_agreement"), REGISTERED)
+    assert not booked(hp) and only_issue(hp, "not_booked").message.startswith("A finance or loan agreement")
+
+
+# ─── UAT round 2, medium issues ────────────────────────────────────────────────
+
+def journal(debit, credit, **kw):
+    return tx(account=debit, contra_account_code=credit, document_type="journal", gross="500.00", **kw)
+
+
+def test_a_journal_on_the_bank_the_vat_account_or_debtors_says_what_it_leaves_out_of_step():
+    for debit, credit, word in (("7100", "1200", "bank account"), ("2201", "4000", "VAT figures"),
+                                ("1100", "4000", "Invoices page")):
+        t = normalise(journal(debit, credit), REGISTERED)
+        assert codes(t) == [("journal_note", "info")] and word in t.issues[0].message
+    assert codes(normalise(journal("8000", "0031"), REGISTERED)) == []
+
+
+def test_a_cost_paid_ahead_is_pointed_out_once_the_year_end_is_known():
+    year = BusinessSettings(period_start=dt.date(2026, 4, 1), period_end=dt.date(2027, 3, 31))
+    insurance = tx(gross="1260.00", account="8204", document_type="invoice")
+    assert codes(normalise(insurance, year)) == [("prepayment", "info")]
+    rent = tx(account="7100").model_copy(update={"description": "Rent, quarter in advance"})
+    assert codes(normalise(rent, year)) == [("prepayment", "info")]
+    assert codes(normalise(insurance, REGISTERED)) == [] and codes(normalise(tx(), year)) == []
+
+
+def test_a_mixed_rate_note_doesnt_call_zero_rated_goods_a_tip():
+    t = normalise(tx(gross="236.50", vat="24.00", account="5000", supplier_vat_number="GB1"), REGISTERED)
+    assert "zero-rated or exempt items" in only_issue(t, "vat_rate_mismatch").message

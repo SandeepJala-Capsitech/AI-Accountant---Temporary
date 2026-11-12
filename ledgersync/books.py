@@ -13,17 +13,19 @@ from decimal import Decimal
 from typing import NamedTuple, Optional
 
 from . import years as yr
-from .accounts import BY_CODE, CREDITORS, DEBTORS, DIRECTORS_LOAN, AccountType, reserve_for
-from .checks import booked, issue, long_date, normalise
+from .accounts import (BY_CODE, CREDITORS, DEBTORS, DIRECTORS_LOAN, LOANS, PURCHASE_VAT, SALES_VAT, SUSPENSE,
+                       AccountType, reserve_for)
+from .checks import booked, issue, long_date, normalise, registered_on
+from .duplicates import WINDOW, possible_duplicates, renumbered_invoices
 from .errors import InvalidInput, InvalidTransactions, NotFound
 from .evidence_rules import document_rule, journal_with_rule
 from .export import file_name, workbook
-from .file_dates import check_file_date
+from .file_dates import check_file_date, date_in_name
 from .ledger import ensure_open, needs_review, require_active, settings_for
 from .matching import DocumentStatus, match_documents
-from .models import (BankCheck, BusinessSettings, Client, ClosedYear, InvoiceSummary, Ledger, OpeningBalances, OpenItem,
+from .models import (Direction, VatFigures, BankCheck, BusinessSettings, Client, ClosedYear, InvoiceSummary, Ledger, OpeningBalances, OpenItem,
                      SavedRow, StatementCheck, Transaction, TrialBalance, Upload, Year, YearSummary)
-from .money import ZERO, to_money
+from .money import ZERO, VatTreatment, to_money, vat_in_gross
 from .posting import journal_for, matched_rows, summarise
 from .rows import StoredRow, now_iso
 from .statements import signed, check_statement
@@ -83,6 +85,23 @@ def _typed(opening: OpeningBalances) -> dict[str, Decimal]:
     return {code: balance for code, balance in balances.items() if balance != 0}
 
 
+NOT_ITEMISED = "Not itemised"
+
+
+def not_itemised(opening: OpeningBalances) -> list[OpenItem]:
+    """What Debtors and Creditors open with beyond the unpaid invoices listed: one balance each, brought forward
+    without its invoices, which a payment can still be linked to."""
+    balances = _typed(opening)
+    rest = []
+    for direction, code, sign in ((Direction.IN, DEBTORS, 1), (Direction.OUT, CREDITORS, -1)):
+        listed = sum((item.amount for item in opening.unpaid if item.direction == direction), ZERO)
+        left = sign * balances.get(code, ZERO) - listed
+        if left > 0:
+            rest.append(OpenItem(id=f"rest-{direction.value}", direction=direction, counterparty=NOT_ITEMISED,
+                                 amount=left, number="balance brought forward"))
+    return rest
+
+
 @dataclass
 class _Books:
     """Everything a year's views are worked out from: the client, all its rows and uploads, the year each row is in,
@@ -108,7 +127,7 @@ class _Books:
     def unpaid(self) -> list[OpenItem]:
         """The invoices brought into the first year, dated the day before it starts, as matching dates them."""
         day = self.years[0].start - yr.DAY
-        return [item.model_copy(update={"date": day}) for item in self.opening.unpaid]
+        return [item.model_copy(update={"date": day}) for item in [*self.opening.unpaid, *not_itemised(self.opening)]]
 
     def index(self, year_start: dt.date) -> int:
         n = next((k for k, y in enumerate(self.years) if y.start == year_start), None)
@@ -124,11 +143,11 @@ class _Books:
         return closed is None or closed.rules == DOCUMENT_RULES
 
     def post(self, settings: BusinessSettings, keep: list[bool], opening: dict[str, Decimal], *,
-             rules: bool = True) -> TrialBalance:
+             rules: bool = True, skip_errors: bool = False) -> TrialBalance:
         """The year's trial balance, its rows booked under the document rules as the posted ledger books them (with
         rules False, as a year closed before them is: every row books as posting.journal_for has it)."""
         posted = matched_rows([row.tx for row in self.stored], settings, self.read, self.apart, keep=keep,
-                              open_items=self.unpaid)
+                              open_items=self.unpaid, name_days=_name_days(self), skip_errors=skip_errors)
         return summarise([line for n, tx in posted for line in (
             journal_with_rule(tx, n, document_rule(tx, settings)) if rules else journal_for(tx, n))], opening)
 
@@ -157,7 +176,19 @@ HELD = {"receipt_or_invoice": "Held in Suspense: needs its receipt or invoice.",
 def _matched(b: _Books, settings: BusinessSettings) -> tuple[list[Transaction], dict[str, DocumentStatus]]:
     """All the client's rows matched together with the invoices brought forward, in the order of b.stored, and what
     is still owed on each document, by its ref."""
-    return match_documents([normalise(row.tx, settings) for row in b.stored], settings, b.read, b.apart, b.unpaid)
+    return match_documents([normalise(row.tx, settings) for row in b.stored], settings, b.read, b.apart, b.unpaid,
+                           name_days=_name_days(b))
+
+
+def _name_days(b: _Books) -> list[Optional[dt.date]]:
+    """For each stored row, the day its upload's file name holds when the upload is one receipt or invoice (an expense
+    app's export, a phone's photo), else None: matching pairs an undated one with the one claim line of that day."""
+    names = {u["id"]: u["name"] for u in b.uploads}
+    refs: dict[int, set] = defaultdict(set)
+    for row in b.stored:
+        refs[row.upload_id].add(row.tx.document_ref)
+    return [date_in_name(names.get(row.upload_id, "")) if len(refs[row.upload_id]) == 1
+            and row.tx.document_type in ("receipt", "invoice") else None for row in b.stored]
 
 
 def _saved_rows(b: _Books, n: Optional[int]) -> tuple[list[SavedRow], dict[int, Optional[StatementCheck]]]:
@@ -183,8 +214,51 @@ def _saved_rows(b: _Books, n: Optional[int]) -> tuple[list[SavedRow], dict[int, 
         if booked(tx) and b.rules_apply(b.placed[k]):   # a year closed before the rules holds nothing
             rule = document_rule(tx, settings)
             if rule.action == "hold":
-                ready[k] = tx.model_copy(update={"issues": [*tx.issues, issue("needs_document", HELD[rule.needs],
-                                                                              "warning")]})
+                said = HELD[rule.needs] if settings.vat_registered else HELD["receipt_or_invoice"]
+                if tx.paid_against is not None and tx.pays:   # matched, but to a document for another amount
+                    said = (f"Held in Suspense: matched to \"{tx.pays[-1].description}\", which is for a different "
+                            "amount. Link it to that document if it pays part of it, or upload its own.")
+                ready[k] = tx.model_copy(update={"issues": [*tx.issues, issue("needs_document", said, "warning")]})
+            elif rule.waived:
+                ready[k] = tx.model_copy(update={"issues": [*tx.issues, issue("booked_without_document",
+                                                                              rule.reason, "info")]})
+            elif rule.small and settings.vat_registered and tx.document_type == "statement":
+                # Booked whole from the bank line: said, so VAT a receipt would reclaim is not lost unnoticed.
+                account = BY_CODE.get(tx.account_code)
+                if account is not None and account.vat == VatTreatment.STANDARD and account.reclaim_vat:
+                    most = vat_in_gross(tx.gross, VatTreatment.STANDARD)
+                    ready[k] = tx.model_copy(update={"issues": [*tx.issues, issue(
+                        "vat_unclaimed", f"No VAT reclaimed: booked from the bank line. Add its receipt or invoice to "
+                                         f"reclaim up to £{most:,.2f}.", "info")]})
+    # A document dated after the year that holds today: a later year opens for it, so a person checks the date.
+    this_year = yr.year_index(b.client.first_year_end, dt.date.today()) or 0
+    ahead = b.years[min(this_year, len(b.years) - 1)].end
+    for k, tx in enumerate(ready):
+        if (tx.date is not None and tx.date > ahead and tx.document_type != "journal" and booked(tx)
+                and "future_date" not in tx.accepted):
+            ready[k] = tx.model_copy(update={"issues": [*tx.issues, issue(
+                "future_date", f"Dated {long_date(tx.date)}, after the year to {long_date(ahead)} that today is in: "
+                               "check the date was read right.")]})
+    # The same payment from two uploads: said on the later row, about the earlier one, where the AI sees it too.
+    same = possible_duplicates(ready, uploads=[row.upload_id for row in b.stored], ids=[row.id for row in b.stored])
+    for k, j in enumerate(same):
+        if j is not None:
+            other = ready[j]
+            said = (f'Same amount as "{other.description}" ({names.get(b.stored[j].upload_id, "another upload")}), '
+                    f"within {WINDOW.days} days.")
+            ready[k] = ready[k].model_copy(update={"issues": [*ready[k].issues,
+                                                             issue("possible_duplicate", said, related=[j])]})
+    # An invoice under a number already used, for another total: a revised invoice, or a number misread. Said on the
+    # later one, so a person or the AI keeps one (R2) or says they are two invoices.
+    for k, earlier in enumerate(renumbered_invoices(ready, ids=[row.id for row in b.stored])):
+        if earlier is not None:
+            other = ready[earlier[0]]
+            was = other.document_total or sum((ready[j].gross for j in earlier), ZERO)
+            said = (f"Same invoice number ({ready[k].document_number}) as \"{other.description}\""
+                    f"{f' of {long_date(other.date)}' if other.date else ''} for {_gbp(was)}. If this one replaces "
+                    "it, leave that one out; if they are two invoices, keep both.")
+            ready[k] = ready[k].model_copy(update={"issues": [*ready[k].issues,
+                                                             issue("possible_duplicate", said, related=earlier)]})
     # The rows each issue is about, from their place in the rows matched to their row ids.
     rows = [SavedRow(**{**tx.model_dump(), "issues": [
                          {**i.model_dump(), "related": [b.stored[p].id for p in i.related]} for i in tx.issues]},
@@ -289,6 +363,83 @@ def trial_balance(store: MongoStore, client_id: int, year_start: dt.date) -> Tri
     return _trial_balance(b, b.index(year_start))
 
 
+def trial_balance_shown(store: MongoStore, client_id: int, year_start: dt.date) -> TrialBalance:
+    """The year's trial balance for a page to show. While rows of the year need fixing it is still worked out,
+    without those rows, and says which are left out (left_out), so one bad row does not hide every figure. The year
+    is not ready all the same: trial_balance still refuses, so it can't be closed or its bank checked until they are
+    fixed. A problem in an earlier year stops this one too, as its opening balances come from it."""
+    b = _books(store, client_id)
+    return _shown(b, b.index(year_start))
+
+
+def _shown(b: _Books, n: int) -> TrialBalance:
+    try:
+        return _trial_balance(b, n)
+    except InvalidTransactions as stopped:
+        shown = b.post(b.settings_in(n), keep=[p == n for p in b.placed], opening=_opening(b, n),
+                       rules=b.rules_apply(n), skip_errors=True)
+        return shown.model_copy(update={"left_out": list(stopped.problems)})
+
+
+def vat_figures(store: MongoStore, client_id: int, year_start: dt.date, start: Optional[dt.date] = None,
+                end: Optional[dt.date] = None) -> VatFigures:
+    """The VAT return boxes for a period of the year (the whole year when none is given), from the lines the year's
+    rows post, each by its row's date: the VAT booked to Sales VAT and Purchase VAT, and the net booked to income
+    accounts and to costs and equipment that VAT covers (not wages, rates, fines and the like, which are outside its
+    scope). Journals move no supplies and are left out. It is a guide: no VAT scheme is applied, boxes 2, 8 and 9
+    are not worked out, and a row held in Suspense or left out for a problem is not in it; the notes say so."""
+    b = _books(store, client_id)
+    n = b.index(year_start)
+    year = b.years[n]
+    start, end = start or year.start, end or year.end
+    if not (year.start <= start <= end <= year.end):
+        raise InvalidInput("Choose a period inside this year.")
+    if not b.client.vat_registered:
+        raise InvalidInput(f"{b.client.name} is not registered for VAT.")
+    tb = trial_balance_shown(store, client_id, year_start)
+
+    settings = b.settings
+
+    def covered(line) -> bool:
+        tx = b.stored[line.transaction].tx
+        return (tx.document_type != "journal" and tx.date is not None and start <= tx.date <= end
+                and registered_on(settings, tx.date))
+
+    def on(codes) -> Decimal:
+        return sum((line.debit - line.credit for line in tb.journal if line.code in codes and covered(line)), ZERO)
+
+    sales = {a.code for a in BY_CODE.values() if a.type == AccountType.INCOME and a.vat != VatTreatment.OUTSIDE_SCOPE}
+    costs = {a.code for a in BY_CODE.values() if a.vat != VatTreatment.OUTSIDE_SCOPE
+             and (a.type == AccountType.EXPENSE or (a.type == AccountType.ASSET and a.code < "1000"))}
+    box1, box4 = -on({SALES_VAT}), on({PURCHASE_VAT})
+    held = len({line.transaction for line in tb.journal if line.code == SUSPENSE and covered(line)})
+    notes = ["A guide worked from the rows booked in the period by their dates. No VAT scheme (flat rate, cash "
+             "accounting) is applied, and boxes 2, 8 and 9 are not worked out."]
+    if held:
+        notes.append(f"{held} row{'' if held == 1 else 's'} in the period {'is' if held == 1 else 'are'} held in "
+                     "Suspense for a document, and not in these figures.")
+    # The reverse charge on services from abroad: its VAT is in boxes 1 and 4 already, and its value goes in box 6
+    # as well as box 7.
+    reverse = {line.transaction for line in tb.journal if line.code == SALES_VAT and line.credit and covered(line)
+               and b.stored[line.transaction].tx.reverse_charge
+               and b.stored[line.transaction].tx.direction == Direction.OUT}
+    reverse_net = sum((line.debit - line.credit for line in tb.journal
+                       if line.transaction in reverse and line.code in costs), ZERO)
+    if reverse:
+        charged = sum((line.credit for line in tb.journal if line.transaction in reverse and line.code == SALES_VAT),
+                      ZERO)
+        notes.append(f"Boxes 1 and 4 each include {_gbp(charged)} reverse-charge VAT on {_gbp(reverse_net)} of "
+                     "services from abroad, which is in boxes 6 and 7 too.")
+    if settings.vat_from and start < settings.vat_from:
+        notes.append(f"Registered for VAT from {long_date(settings.vat_from)}: rows dated before it are not in these "
+                     "figures.")
+    if tb.left_out:
+        notes.append(f"{len(tb.left_out)} row{'' if len(tb.left_out) == 1 else 's'} of the year with a problem to fix "
+                     f"{'is' if len(tb.left_out) == 1 else 'are'} left out.")
+    return VatFigures(start=start, end=end, box1=box1, box2=ZERO, box3=box1, box4=box4, box5=box1 - box4,
+                      box6=-on(sales) + reverse_net, box7=on(costs), box8=ZERO, box9=ZERO, notes=notes)
+
+
 def _trial_balance(b: _Books, n: int) -> TrialBalance:
     return b.post(b.settings_in(n), keep=[p == n for p in b.placed], opening=_opening(b, n),
                   rules=b.rules_apply(n))
@@ -300,7 +451,7 @@ def booked_rows(store: MongoStore, client_id: int, year_start: dt.date) -> list[
     b = _books(store, client_id)
     n = b.index(year_start)
     posted = matched_rows([row.tx for row in b.stored], b.settings_in(n), b.read, b.apart,
-                          keep=[p == n for p in b.placed], open_items=b.unpaid)
+                          keep=[p == n for p in b.placed], open_items=b.unpaid, name_days=_name_days(b))
     return [(b.stored[k].id, tx) for k, tx in posted]
 
 
@@ -320,14 +471,14 @@ def _invoices(b: _Books, n: int) -> list[InvoiceSummary]:
             refs[tx.document_ref or f"row-{k}"].append(k)
 
     def summary(ref: str, sale: bool, who: Optional[str], number: Optional[str], day: Optional[dt.date],
-                total: Decimal, here: bool) -> Optional[InvoiceSummary]:
+                total: Decimal, here: bool, credit_note: bool = False) -> Optional[InvoiceSummary]:
         """The invoice if it is dated in the year (here), or was still owed when the year started."""
         status = statuses[ref]
         if not here and total - sum((p.amount for p in status.paid_by if p.date and p.date < start), ZERO) <= 0:
             return None
         return InvoiceSummary(ref=ref, kind="sale" if sale else "purchase", counterparty=who, number=number, date=day,
                               total=total, paid=total - status.open, owed=status.open, paid_by=status.paid_by,
-                              brought_forward=not here)
+                              brought_forward=not here, credit_note=credit_note)
 
     found = []
     for ref, ks in refs.items():
@@ -337,11 +488,13 @@ def _invoices(b: _Books, n: int) -> list[InvoiceSummary]:
         total, day = _total_and_date(rows)
         latest = next((k for k in ks if ready[k].date == day), ks[0])
         if b.placed[latest] <= n:
-            found.append(summary(ref, rows[0].contra_account_code == DEBTORS,
+            sale = rows[0].contra_account_code == DEBTORS
+            way = (rows[0].document_direction or rows[0].direction).value
+            found.append(summary(ref, sale,
                                  next((tx.counterparty for tx in rows if tx.counterparty), None),
                                  next((tx.document_number for tx in rows if tx.document_number), None), day, total,
-                                 b.placed[latest] == n))
-    for item in b.opening.unpaid:
+                                 b.placed[latest] == n, credit_note=way != ("in" if sale else "out")))
+    for item in [*b.opening.unpaid, *not_itemised(b.opening)]:
         found.append(summary(f"ob-{item.id}", item.direction.value == "in", item.counterparty, item.number, item.date,
                              item.amount, False))
     return sorted((i for i in found if i), key=lambda i: (i.date is None, i.date or dt.date.min, i.ref))
@@ -363,6 +516,7 @@ class _Statement(NamedTuple):
     last: dt.date
     opening: Optional[Decimal]
     closing: Optional[Decimal]
+    balances: frozenset = frozenset()   # every balance it shows: its opening, and the running balance after each line
 
 
 def _statements(b: _Books, n: int) -> dict[str, list[_Statement]]:
@@ -385,7 +539,8 @@ def _statements(b: _Books, n: int) -> dict[str, list[_Statement]]:
         closing = closings[-1] if closings else txs[-1].balance
         opening = openings[0] if openings else (txs[0].balance - signed(txs[0], card)
                                                 if txs[0].balance is not None else None)
-        found[account].append(_Statement(upload["id"], txs[0].date, txs[-1].date, opening, closing))
+        shown = frozenset(x for x in (opening, *(tx.balance for tx in txs)) if x is not None)
+        found[account].append(_Statement(upload["id"], txs[0].date, txs[-1].date, opening, closing, shown))
     for account in found:
         found[account].sort(key=lambda s: (s.first, s.upload_id))
     return found
@@ -414,7 +569,8 @@ def _bank_checks(b: _Books, n: int, tb: TrialBalance) -> list[BankCheck]:
         day, printed = (latest.last, latest.closing) if latest else (None, None)
         books = _held(b, tb, account.code, day)
         checks.append(BankCheck(code=account.code, name=account.name, kind=account.kind, books=books, statement=printed,
-                                statement_date=day, difference=None if printed is None else books - printed))
+                                statement_date=day, difference=None if printed is None else books - printed,
+                                left_out=len(tb.left_out)))
     return checks
 
 
@@ -434,17 +590,24 @@ def _pointers(tb: TrialBalance) -> list[str]:
     """What an accountant would want pointed out in the year's figures: a director's loan the director owes (a debit
     balance), which s455 taxes if it is still owed nine months after the year end."""
     owed = sum((line.debit - line.credit for line in tb.lines if line.code == DIRECTORS_LOAN), ZERO)
+    found = []
     if owed > 0:
-        return [f"The Director's Loan Account is overdrawn by {_gbp(owed)} (the director owes the company). If it is "
-                "still owed nine months after the year end, s455 tax is due on it."]
-    return []
+        found.append(f"The Director's Loan Account is overdrawn by {_gbp(owed)} (the director owes the company). If it "
+                     "is still owed nine months after the year end, s455 tax is due on it.")
+    # More paid off a loan than the books say was owed: its opening balance is missing, or the repayments hold
+    # interest that belongs in the costs.
+    loans = sum((line.debit - line.credit for line in tb.lines if line.code == LOANS), ZERO)
+    if loans > 0:
+        found.append(f"Loans is {_gbp(loans)} in debit: more has been repaid than the books show was borrowed. Enter "
+                     "the loan's opening balance, and move the interest in the repayments to Bank Interest Paid.")
+    return found
 
 
 def _missing_paperwork(b: _Books, n: int, tb: TrialBalance) -> list[str]:
     """The statements the year's books need and don't have, for each of the client's bank accounts and cards (petty
     cash has none): an account with no statement in the year; and a break in the chain, where a statement opens at
     another balance than the books held before it (the first) or the one before it closed at, with the months between
-    that no statement covers."""
+    that no statement covers; and, before a statement that prints no balance, the months with no lines at all."""
     statements = _statements(b, n)
     missing = []
     for account in b.client.bank_accounts:
@@ -457,6 +620,15 @@ def _missing_paperwork(b: _Books, n: int, tb: TrialBalance) -> list[str]:
         previous: Optional[_Statement] = None
         for s in mine:
             if s.opening is None:
+                # No balance printed, so nothing can show whether lines are missing before it: the months no
+                # statement covers are said, for a person to judge.
+                since = (previous.last.replace(day=28) + dt.timedelta(days=4) if previous is not None
+                         else b.years[n].start)
+                months = _months(since, s.first)
+                if months:
+                    missing.append(f"{account.name}: no statement lines for {months}. The statement from "
+                                   f"{long_date(s.first)} prints no balance to check, so add those months' "
+                                   "statements if the account was in use.")
                 previous = s
                 continue
             if previous is None:
@@ -468,22 +640,26 @@ def _missing_paperwork(b: _Books, n: int, tb: TrialBalance) -> list[str]:
             else:
                 previous = s
                 continue
-            if s.opening != expected:
+            # A statement that starts inside the one before it opens at a balance that one shows part-way through:
+            # the two overlap, and nothing is missing between them.
+            overlaps = previous is not None and s.first <= previous.last and s.opening in previous.balances
+            if s.opening != expected and not overlaps:
                 gap = f"no statements for {months}" if months else "lines are missing before it"
                 missing.append(f"{account.name}: {gap}. The statement from {long_date(s.first)} opens at "
                                f"{_gbp(s.opening)}; {said.format(x=_gbp(expected))}.")
-            previous = s
+            if previous is None or s.last >= previous.last:   # one wholly inside the last is not the latest
+                previous = s
     return missing
 
 
 def bank_checks(store: MongoStore, client_id: int, year_start: dt.date) -> list[BankCheck]:
     """One check for each of the client's bank accounts: its balance in the books, from the opening balances and the
     year's rows up to the date of its latest statement of the year (the year's end with none), against that
-    statement's closing balance, both as the statement prints it (what a card owes is positive). InvalidTransactions
-    (422) while rows need fixing."""
+    statement's closing balance, both as the statement prints it (what a card owes is positive). While rows of the
+    year need fixing, the books are worked out without them, as the trial balance page shows them."""
     b = _books(store, client_id)
     n = b.index(year_start)
-    return _bank_checks(b, n, _trial_balance(b, n))
+    return _bank_checks(b, n, _shown(b, n))
 
 
 def summary(store: MongoStore, client_id: int, year_start: dt.date) -> YearSummary:
@@ -513,6 +689,11 @@ def summary(store: MongoStore, client_id: int, year_start: dt.date) -> YearSumma
                         f"{_gbp(tb.total_credits)}."]
     except InvalidTransactions as exc:
         problems = exc.problems
+        try:   # the bank and the paperwork still show, worked out without the rows that need fixing
+            tb = _shown(b, n)
+            bank, missing, pointers = _bank_checks(b, n, tb), _missing_paperwork(b, n, tb), _pointers(tb)
+        except InvalidTransactions:   # an earlier year's rows need fixing: nothing to work this one out from
+            pass
     return YearSummary(year=_year_now(b, n), rows=len(rows), to_review=sum(needs_review(r) for r in rows),
                        unpaid_sales=sum((owed_at_end(i) for i in owed if i.kind == "sale"), ZERO),
                        unpaid_purchases=sum((owed_at_end(i) for i in owed if i.kind == "purchase"), ZERO), bank=bank,
@@ -531,8 +712,9 @@ def export(store: MongoStore, client_id: int, year_start: dt.date, day: dt.date)
 
 
 def check_opening(opening: OpeningBalances) -> None:
-    """Opening balances go on balance sheet accounts and balance, and the unpaid invoices make up Debtors and
-    Creditors, so a payment of each can clear it."""
+    """Opening balances go on balance sheet accounts and balance. The unpaid invoices listed are part of Debtors and
+    Creditors, so a payment of each can clear it; they can't add up to more. What is not listed is brought forward
+    as one balance (not_itemised), for when only the total is known."""
     for line in opening.lines:
         account = BY_CODE.get(line.code)
         if account is None:
@@ -556,13 +738,13 @@ def check_opening(opening: OpeningBalances) -> None:
         if item.amount <= 0:
             raise InvalidInput("Enter the amount still owed on each unpaid invoice.")
     balances = _typed(opening)
-    for direction, code, sign, text in (("in", DEBTORS, 1, "The unpaid invoices from customers add up to {x}; "
-                                                         "Debtors is {y}."),
-                                        ("out", CREDITORS, -1, "The unpaid bills from suppliers add up to {x}; "
-                                                               "Creditors is {y}.")):
+    for direction, code, sign, text in (("in", DEBTORS, 1, "The unpaid invoices from customers add up to {x}, "
+                                                         "more than Debtors, which is {y}."),
+                                        ("out", CREDITORS, -1, "The unpaid bills from suppliers add up to {x}, "
+                                                               "more than Creditors, which is {y}.")):
         owed = sum((item.amount for item in opening.unpaid if item.direction.value == direction), ZERO)
         balance = sign * balances.get(code, ZERO)
-        if owed != balance:
+        if owed > balance:   # less is allowed: the rest is brought forward as one balance, not itemised
             raise InvalidInput(text.format(x=_gbp(owed), y=_gbp(balance)))
 
 
@@ -590,9 +772,12 @@ def close(store: MongoStore, client_id: int, year_start: dt.date) -> Client:
         raise InvalidInput(f"Close the year to {long_date(still_open.end)} first.")
     try:
         tb = _trial_balance(b, n)
-    except InvalidTransactions:
-        tb = None
-    if tb is None or not tb.is_balanced:
+    except InvalidTransactions as exc:
+        count = len(exc.problems)
+        raise InvalidInput(f"{count} row{'' if count == 1 else 's'} of the year {'has' if count == 1 else 'have'} a "
+                           f"problem to fix before it can be closed: {exc.problems[0]}"
+                           f"{'' if count == 1 else f' (and {count - 1} more)'}") from exc
+    if not tb.is_balanced:
         raise InvalidInput("The trial balance must balance before the year is closed.")
     return store.close_year(client_id, ClosedYear(start=year.start, end=year.end, closed_at=now_iso(),
                                                   closing=_balances(tb),

@@ -1,32 +1,40 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { analysisForm, analyze, ApiError, getHealth, waitForJob, type Transaction } from '@/lib/api'
+import { analysisForm, analyze, ApiError, getHealth, startAnalysis, waitForJob, type Transaction } from '@/lib/api'
 import { addManualRows, importFolder, type BankAccount, type Upload } from '@/lib/clients'
-import { importText, requeue, sameFileAs, sameFileText, transactionCount, type FileStatus, type PickedFile } from '@/lib/clientRules'
+import { importText, readingLine, requeue, sameFileAs, sameFileText, transactionCount, unsent, type FileStatus, type PickedFile,
+         type ReadingFile } from '@/lib/clientRules'
 import { fingerprint } from '@/lib/duplicates'
 
 const MAX_BATCH_FILES = 20
 
-const MARK: Record<FileStatus, string> = { waiting: '○', reading: '', done: '✓', failed: '✖', skipped: '–', cancelled: '■' }
+const MARK: Record<FileStatus, string> = { waiting: '○', sending: '', reading: '', done: '✓', failed: '✖', skipped: '–', cancelled: '■' }
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
 // Upload, Paste and Add by hand for one year of a client, and Import from folder. Each analysis runs as a job that
 // the API saves to the year when it finishes, so onSaved reloads the year; a row added by hand is saved here, once
 // the model has suggested its account. A statement goes on the account picked in Add to (the client's first by
-// default): the API refuses a statement without one when the client has several.
-export default function AddDocuments({ clientId, yearStart, bankAccounts, folder, uploads, onSaved }: {
+// default): the API refuses a statement without one when the client has several. Picked files are all sent at once,
+// so a refresh or another page loses none once they are sent; reading (the files the API is reading for the client)
+// lists those this page isn't following, such as files sent before a refresh, and onSent has it looked at again.
+export default function AddDocuments({ clientId, yearStart, bankAccounts, company, folder, uploads, reading, onSaved, onSent }: {
   clientId: number
   yearStart: string
   bankAccounts: BankAccount[]
+  company: boolean           // a limited company: the owner's own money is the Director's Loan Account
   folder: string             // the client's folder on this computer; '' when none is set
   uploads: Upload[]
+  reading: ReadingFile[]
   onSaved: () => void
+  onSent: () => void
 }) {
   const [tab, setTab] = useState<'upload' | 'paste' | 'manual'>('upload')
   const [pasteText, setPasteText] = useState('')
-  const [manual, setManual] = useState({ description: '', amount: '', direction: 'out' as 'in' | 'out' })
+  // paidFrom: one of the client's accounts by its code, or 'owner' for the owner's own money ('' : the first account).
+  const [manual, setManual] = useState({ description: '', amount: '', direction: 'out' as 'in' | 'out', date: '',
+                                         paidFrom: '' })
   const [dragOver, setDragOver] = useState(false)
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState('')
@@ -69,43 +77,70 @@ export default function AddDocuments({ clientId, yearStart, bankAccounts, folder
     }
   }
 
-  // Reads the waiting files, up to `parallel` at a time; each is saved to the client as it finishes.
+  // A file the API refused or failed to read: skipped when it is a file the client already has (or is reading), or
+  // cancelled, or failed.
+  const notRead = useCallback((id: number, e: unknown) => {
+    const code = e instanceof ApiError ? e.code : ''
+    const status: FileStatus = code === 'same_file' ? 'skipped' : code === 'cancelled' ? 'cancelled' : 'failed'
+    update(id, { status, detail: message(e) })
+  }, [update])
+
+  // Sends the waiting files one after another, then follows each until it is saved. Once sent, a file is read and
+  // saved by the API whatever this page does; the API reads up to `parallel` at a time and queues the rest.
   const runBatch = async (items: PickedFile[]) => {
     const todo = items.filter(item => item.status === 'waiting')
     if (!todo.length) return
     cancelRef.current = false
     setBusy(true)
     setError('')
-    let next = 0
-    let read = 0
-    const worker = async () => {
-      while (next < todo.length) {
-        const item = todo[next++]
-        if (cancelRef.current) {
-          update(item.id, { status: 'cancelled', detail: 'Not read: cancelled' })
-          continue
-        }
-        update(item.id, { status: 'reading', detail: 'Uploading…' })
-        try {
-          const result = await analyze(analysisForm({ file: item.file }, where), p => update(item.id, { detail: p }),
-                                       () => cancelRef.current)
-          const count = result.transactions.length
-          if (!count) throw new ApiError('No transactions were found in this file.', 'empty')
-          update(item.id, { status: 'done', detail: `${transactionCount(count)} saved` })
-          onSaved()
-        } catch (e) {
-          const cancelled = e instanceof ApiError && e.code === 'cancelled'
-          update(item.id, { status: cancelled ? 'cancelled' : 'failed', detail: message(e) })
-        }
-        read++
-        setProgress(`${read} of ${todo.length} files read, up to ${limits.parallel} at a time`)
+    setProgress(`Sending ${todo.length} file${todo.length === 1 ? '' : 's'}…`)
+    const sent: { item: PickedFile; jobId: string }[] = []
+    for (const item of todo) {
+      if (cancelRef.current) {
+        update(item.id, { status: 'cancelled', detail: 'Not read: cancelled' })
+        continue
+      }
+      update(item.id, { status: 'sending', detail: 'Sending…' })
+      try {
+        const jobId = await startAnalysis(analysisForm({ file: item.file }, where))
+        update(item.id, { status: 'reading', detail: 'Waiting its turn', jobId })
+        sent.push({ item, jobId })
+      } catch (e) {
+        notRead(item.id, e)
       }
     }
-    setProgress(`Reading ${todo.length} file${todo.length === 1 ? '' : 's'}, up to ${limits.parallel} at a time…`)
-    await Promise.all(Array.from({ length: Math.min(limits.parallel, todo.length) }, worker))
+    if (sent.length) onSent()
+    let read = 0
+    setProgress(`Reading ${sent.length} file${sent.length === 1 ? '' : 's'}, up to ${limits.parallel} at a time…`)
+    await Promise.all(sent.map(async ({ item, jobId }) => {
+      try {
+        const result = await waitForJob(jobId, p => update(item.id, { detail: p }), () => cancelRef.current)
+        const count = result.transactions.length
+        if (!count) throw new ApiError('No transactions were found in this file.', 'empty')
+        update(item.id, { status: 'done', detail: `${transactionCount(count)} saved` })
+        onSaved()
+      } catch (e) {
+        notRead(item.id, e)
+      }
+      read++
+      setProgress(`${read} of ${sent.length} files read, up to ${limits.parallel} at a time`)
+    }))
     setBusy(false)
     setProgress('')
   }
+
+  // Leaving while files are still to be sent would lose them; once sent, the API keeps reading them.
+  const leaving = unsent(batch)
+  useEffect(() => {
+    if (!leaving) return
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = '' }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [leaving])
+
+  // The files being read that this page isn't following: sent before a refresh, from another page or another tab.
+  const followed = new Set(batch.map(item => item.jobId).filter(Boolean))
+  const elsewhere = reading.filter(file => !followed.has(file.job_id) && (!file.year_start || file.year_start === yearStart))
 
   const pickFiles = async (files: FileList | null) => {
     const chosen = Array.from(files ?? [])
@@ -143,7 +178,11 @@ export default function AddDocuments({ clientId, yearStart, bankAccounts, folder
   const addByHand = async () => {
     const amount = Math.abs(Number(manual.amount))
     const description = manual.description.trim()
-    if (!description || !Number.isFinite(amount) || amount <= 0) return
+    if (!description || !Number.isFinite(amount) || amount <= 0 || !manual.date) return
+    // Cash and anything else not through the bank is the owner's money: the bank's balance is left as its statement
+    // has it. Otherwise the row moves money on the account chosen.
+    const through = manual.paidFrom || bankAccounts[0]?.code || 'owner'
+    const owner = through === 'owner' ? (company ? '2250' : '3010') : null
     cancelRef.current = false
     setBusy(true)
     setError('')
@@ -153,9 +192,10 @@ export default function AddDocuments({ clientId, yearStart, bankAccounts, folder
       const result = await analyze(analysisForm({ text: `${description} - ${verb} GBP ${amount}` }), setProgress, () => cancelRef.current)
       const suggested = result.transactions[0]
       const row: Transaction = {
-        date: null, description, direction: manual.direction, gross: amount.toFixed(2), vat: null,
+        date: manual.date, description, direction: manual.direction, gross: amount.toFixed(2), vat: null,
         vat_treatment: null, vat_posted: null, net: null, account_code: suggested?.account_code ?? '9998',
-        contra_account_code: null, currency: 'GBP', source: 'manual', method: 'user', evidence: null,
+        contra_account_code: owner, bank_account: owner ? null : through,
+        currency: 'GBP', source: 'manual', method: 'user', evidence: null,
         document_type: 'receipt',
         issues: suggested
           ? suggested.issues.filter(i => i.code === 'account_not_recognised' || i.code === 'account_unclear')
@@ -227,8 +267,10 @@ export default function AddDocuments({ clientId, yearStart, bankAccounts, folder
             </select>
           </label>
         )}
-        <button type="button" className="btn" onClick={importFromFolder} disabled={closed || !folder}>Import from folder</button>
-        {!folder && <span className="muted small">Set the client&apos;s folder in Edit details to import from it.</span>}
+        {tab === 'upload' && (
+          <button type="button" className="btn" onClick={importFromFolder} disabled={closed || !folder}>Import from folder</button>
+        )}
+        {tab === 'upload' && !folder && <span className="muted small">Set the client&apos;s folder in Edit details to import from it.</span>}
       </div>
       {imported && <div className="notice notice-info">{imported}</div>}
       {tab === 'upload' && (
@@ -261,6 +303,11 @@ export default function AddDocuments({ clientId, yearStart, bankAccounts, folder
         <>
           <div className="manual-grid">
             <label className="field">
+              <span>Date</span>
+              <input className="input" type="date" value={manual.date}
+                     onChange={e => setManual(m => ({ ...m, date: e.target.value }))} />
+            </label>
+            <label className="field">
               <span>Description</span>
               <input className="input" value={manual.description} placeholder="Office chair"
                      onChange={e => setManual(m => ({ ...m, description: e.target.value }))} />
@@ -278,10 +325,22 @@ export default function AddDocuments({ clientId, yearStart, bankAccounts, folder
                 <option value="in">Received</option>
               </select>
             </label>
+            <label className="field">
+              <span>{manual.direction === 'in' ? 'Paid into' : 'Paid from'}</span>
+              <select className="input" value={manual.paidFrom || bankAccounts[0]?.code || 'owner'}
+                      onChange={e => setManual(m => ({ ...m, paidFrom: e.target.value }))}>
+                {bankAccounts.map(a => <option key={a.code} value={a.code}>{a.name}</option>)}
+                <option value="owner">{company ? "Director's own money or cash" : "Owner's own money or cash"}</option>
+              </select>
+            </label>
           </div>
+          <p className="muted small">
+            A row on a bank account or card should also be on its statement: add cash and anything paid personally
+            as the {company ? "director's" : "owner's"} own money, so the bank still agrees with its statement.
+          </p>
           <div className="form-actions">
             <button type="button" className="btn btn-primary" onClick={addByHand}
-                    disabled={closed || !manual.description.trim() || !manual.amount}>
+                    disabled={closed || !manual.description.trim() || !(Number(manual.amount) > 0) || !manual.date}>
               Add row
             </button>
           </div>
@@ -301,9 +360,20 @@ export default function AddDocuments({ clientId, yearStart, bankAccounts, folder
         <ul className="batch">
           {batch.map(item => (
             <li key={item.id} className={`batch-${item.status}`}>
-              <span aria-hidden="true">{item.status === 'reading' ? <span className="spinner" /> : MARK[item.status]}</span>
+              <span aria-hidden="true">{item.status === 'reading' || item.status === 'sending' ? <span className="spinner" /> : MARK[item.status]}</span>
               <span className="batch-name" title={item.file.name}>{item.file.name}</span>
               <span className="batch-detail" title={item.detail}>{item.detail}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {elsewhere.length > 0 && (
+        <ul className="batch" aria-label="Files still being read">
+          {elsewhere.map(file => (
+            <li key={file.job_id} className="batch-reading">
+              <span aria-hidden="true"><span className="spinner" /></span>
+              <span className="batch-name" title={file.name}>{file.name}</span>
+              <span className="batch-detail">{readingLine(file)}: saved here when it is read</span>
             </li>
           ))}
         </ul>

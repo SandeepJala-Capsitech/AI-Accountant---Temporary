@@ -6,11 +6,12 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { ClientYearContext, type ClientYear } from '@/components/ClientYearContext'
 import { useConfirm } from '@/components/ConfirmDialog'
 import { ApiError } from '@/lib/api'
-import { changeClient, getYearLedger, getYears, yearExportUrl, type Ledger } from '@/lib/clients'
-import { BUSINESS_TYPES } from '@/lib/clientRules'
+import { changeClient, getReading, getYearLedger, getYears, yearExportUrl, type Ledger } from '@/lib/clients'
+import { BUSINESS_TYPES, someFinished, type ReadingFile } from '@/lib/clientRules'
 import { isSection, SECTIONS, sectionHref, yearOption } from '@/lib/years'
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
+const READING_POLL_MS = 3_000
 
 // A client's year: its name and year picker on top, the side menu of sections on the left and the section in the
 // middle. Loads the year once for all its sections.
@@ -55,9 +56,35 @@ export default function ClientYearLayout({ children }: { children: ReactNode }) 
     reload()
   }, [reload])
 
+  // The files the API is reading for the client, whichever page sent them and across a refresh: looked at when the
+  // year opens and every few seconds while any is being read; the year is fetched again as each one is saved.
+  const [reading, setReading] = useState<ReadingFile[]>([])
+  const [readingTick, setReadingTick] = useState(0)
+  const checkReading = useCallback(() => setReadingTick(n => n + 1), [])
+  const seen = useRef<ReadingFile[]>([])
+  useEffect(() => {
+    if (!Number.isInteger(clientId) || clientId < 1) return
+    let stopped = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const look = async () => {
+      try {
+        const now = await getReading(clientId)
+        if (stopped) return
+        if (someFinished(seen.current, now)) reload()
+        seen.current = now
+        setReading(now)
+        if (now.length) timer = setTimeout(look, READING_POLL_MS)
+      } catch {
+        if (!stopped) timer = setTimeout(look, READING_POLL_MS * 3)   // the API may be restarting
+      }
+    }
+    look()
+    return () => { stopped = true; clearTimeout(timer) }
+  }, [clientId, reload, readingTick])
+
   const value = useMemo<ClientYear | null>(() => ledger && {
-    client: ledger.client, year: ledger.year, years: ledger.years, ledger, reload, error,
-  }, [ledger, reload, error])
+    client: ledger.client, year: ledger.year, years: ledger.years, ledger, reload, error, reading, checkReading,
+  }, [ledger, reload, error, reading, checkReading])
 
   if (missing === 'client') {
     return (

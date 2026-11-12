@@ -6,9 +6,8 @@ import { agentDecisions, changedFields, type Decision } from '@/lib/chat'
 import { useClientYear } from '@/components/ClientYearContext'
 import type { Ledger, RowChange, SavedRow } from '@/lib/clients'
 import { DOCUMENT_TYPES, transactionCount } from '@/lib/clientRules'
-import { DUPLICATE_WINDOW_DAYS, possibleDuplicates } from '@/lib/duplicates'
-import { aboutAnotherRow, accountName, apartChange, apartStatus, canBeApart, checkHover, issueHeading, kindOf, leftOut, money, needsReview,
-         paymentRowOf, reviewSummary, rowStatus, showLabel, takesLines, totalsOf } from '@/lib/ledger'
+import { aboutAnotherRow, acceptChange, accountName, apartChange, apartStatus, canBeAccepted, canBeApart, checkHover, issueHeading, kindOf, leftOut, longDate, money, needsReview,
+         reviewSummary, rowStatus, showLabel, takesLines, totalsOf } from '@/lib/ledger'
 
 const SEVERITY_ORDER = { error: 0, warning: 1, info: 2 } as const
 const MARKS = { error: '✖', warning: '⚠', info: 'ℹ' } as const
@@ -23,9 +22,14 @@ function checkOf(issues: Issue[], left: boolean) {
   return { mark: `${MARKS[worst]} ${issues.length}`, cls, title: checkHover(issues) }
 }
 
+// A row's VAT treatment, when a person chose one, under its VAT.
+const VAT_SHORT: Record<string, string> = { standard: '20%', reduced: '5%', zero: 'Zero-rated', exempt: 'Exempt',
+                                            outside_scope: 'Outside scope' }
+
 const FIELD_NAMES: Record<string, string> = {
   date: 'date', description: 'description', counterparty: 'counterparty', direction: 'in/out', gross: 'amount',
-  vat: 'VAT', account_code: 'account', document_type: 'type',
+  vat: 'VAT', account_code: 'account', document_type: 'type', currency: 'currency',
+  vat_treatment: 'VAT treatment',
 }
 
 // The hover on an edited row: what the model read, where it differs from now.
@@ -39,10 +43,11 @@ function originalText(row: SavedRow): string {
 
 // What is wrong with a row, in words, under its description: errors first, then warnings, then notes. A warning
 // about this row and others offers Show both, and one where two records may be one offers Not the same.
-function IssueList({ issues, onShowBoth, onNotSame }: {
+function IssueList({ issues, onShowBoth, onNotSame, onAccept }: {
   issues: Issue[]
   onShowBoth?: (related: number[]) => void   // each issue shows the rows it is about
   onNotSame?: (related: number[]) => void
+  onAccept?: (code: string) => void          // a warning that is a matter of judgement: the person says it is fine
 }) {
   if (!issues.length) return null
   const sorted = [...issues].sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity])
@@ -60,6 +65,9 @@ function IssueList({ issues, onShowBoth, onNotSame }: {
             )}
             {onNotSame && canBeApart(issue.code) && !!issue.related?.length && (
               <button type="button" className="link-btn" onClick={() => onNotSame(issue.related!)}>Not the same</button>
+            )}
+            {onAccept && issue.severity === 'warning' && canBeAccepted(issue.code) && (
+              <button type="button" className="link-btn" onClick={() => onAccept(issue.code)}>It&apos;s fine</button>
             )}
           </span>
         </li>
@@ -104,6 +112,8 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
   const rows = ledger.transactions
   const [decisions, setDecisions] = useState<Map<string, Decision>>(new Map())
   const [held, setHeld] = useState<Set<number>>(new Set())   // rows waiting in Suspense for a document
+  // The held row being booked without its document, and the reason typed for it; null when none is.
+  const [without, setWithout] = useState<{ row: number; reason: string } | null>(null)
   // The decisions and the posted ledger's held rows are read again whenever the rows are loaded again; a failure
   // leaves the table as it was.
   useEffect(() => {
@@ -122,21 +132,13 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
   }
   const [only, setOnly] = useState<string | null>(null)   // an issue code, 'review' for every flagged row, or all
   const [focus, setFocus] = useState<number[] | null>(null)   // rows shown side by side (Show both), or none
+  const [byDate, setByDate] = useState(true)
   const card = useRef<HTMLElement>(null)
   const uploads = useMemo(() => new Map(ledger.uploads.map(u => [u.id, u.name])), [ledger.uploads])
   const byId = useMemo(() => new Map(rows.map(r => [r.id, r])), [rows])
   const described = useMemo(() => new Map(rows.map(r => [r.id, r.description])), [rows])
-  const issuesOf = useMemo(() => {
-    const duplicateOf = possibleDuplicates(rows.map(paymentRowOf))
-    return rows.map((row, i): Issue[] => {
-      const of = duplicateOf[i]
-      return of === null ? row.issues : [...row.issues, {
-        code: 'possible_duplicate', severity: 'warning', related: [rows[of].id],
-        message: `Same amount as "${rows[of].description}" (${uploads.get(rows[of].upload_id) ?? 'another upload'}), `
-                 + `within ${DUPLICATE_WINDOW_DAYS} days.`,
-      }]
-    })
-  }, [rows, uploads])
+  // The API's issues, a possible duplicate among them (worked out with the books, so the AI sees it too).
+  const issuesOf = useMemo(() => rows.map(row => row.issues), [rows])
   // Rows left out of the books are listed, crossed out, but are never counted or filtered as rows to review.
   const review = useMemo(() => reviewSummary(issuesOf.filter((_, i) => !leftOut(rows[i]))), [rows, issuesOf])
   const flagged = rows.filter((row, i) => needsReview(row, issuesOf[i])).length
@@ -146,7 +148,13 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
     only === null || (only === 'review' ? needsReview(row, issues) : !leftOut(row) && issues.some(i => i.code === only)))
   const filter = only !== null && !shown.length ? null : only   // a filter whose rows are all fixed shows everything
   const together = focus ? all.filter(({ row }) => focus.includes(row.id)) : []
-  const listed = together.length ? together : filter === null ? all : shown
+  const picked = together.length ? together : filter === null ? all : shown
+  // By date, oldest first, undated rows first so they are seen; or as the files were read, each document's rows
+  // together. Rows of one day keep the order they were read in.
+  const listed = byDate
+    ? picked.map((item, n) => ({ item, n })).sort((a, b) =>
+        (a.item.row.date ?? '').localeCompare(b.item.row.date ?? '') || a.n - b.n).map(({ item }) => item)
+    : picked
   const showBoth = (row: SavedRow, related: number[]) => {
     setFocus([row.id, ...related])
     card.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
@@ -157,6 +165,10 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
       <div className="section-head">
         <h2>Transactions</h2>
         <span className="muted small">{transactionCount(rows.length)}</span>
+        <button type="button" className="btn btn-small" onClick={() => setByDate(v => !v)}
+                title={byDate ? 'Listed by date, oldest first' : 'Listed as the files were read'}>
+          {byDate ? 'Order: by date' : 'Order: as read'}
+        </button>
         {!readOnly && onAdd && (
           <button type="button" className="btn btn-small" onClick={() => onAdd(null)}>Add transaction</button>
         )}
@@ -206,14 +218,38 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
               const touched = row.decision_ids?.length ? agentDecisions(row.decision_ids, decisions) : []
               return (
                 <tr key={row.id} className={classes.filter(Boolean).join(' ') || undefined}>
-                  <td className="mono">{row.date ?? '—'}</td>
+                  <td className="mono">{row.date ? longDate(row.date) : '—'}</td>
                   <td>
                     <span style={left ? { textDecoration: 'line-through' } : undefined}>{row.description}</span>
                     {touched === null ? <span className="badge badge-accent">Agent</span>
                       : touched.length > 0 && <AgentBadge decisions={touched} />}
                     {left && <div className="row-status">{row.superseded_by ? 'Replaced' : 'Left out'}
                       {whyLeftOut(row) && `: ${whyLeftOut(row)}`}</div>}
-                    {held.has(row.id) && <div className="row-status"><span className="badge badge-warn">Documentation required</span></div>}
+                    {held.has(row.id) && !row.issues.some(i => i.code === 'booked_without_document') && (
+                      <div className="row-status">
+                        <span className="badge badge-warn">Documentation required</span>
+                        {!readOnly && without?.row !== row.id && (
+                          <button type="button" className="link-btn" title="Book it to its account with no VAT reclaimed"
+                                  onClick={() => setWithout({ row: row.id, reason: '' })}>Book without a receipt</button>
+                        )}
+                      </div>
+                    )}
+                    {without?.row === row.id && (
+                      <form className="row-status without-form" onSubmit={e => {
+                        e.preventDefault()
+                        if (!without.reason.trim()) return
+                        onChange(row.id, { without_document: without.reason.trim() })
+                        setWithout(null)
+                      }}>
+                        <input className="input" value={without.reason} maxLength={300} autoFocus
+                               aria-label="Why there is no receipt or invoice" placeholder="Why there is none, e.g. receipt lost"
+                               onChange={e => setWithout({ row: row.id, reason: e.target.value })} />
+                        <button type="submit" className="btn btn-primary btn-small" disabled={!without.reason.trim()}>
+                          Book with no VAT
+                        </button>
+                        <button type="button" className="btn btn-small" onClick={() => setWithout(null)}>Cancel</button>
+                      </form>
+                    )}
                     {row.edited && <span className="badge badge-muted edited" title={originalText(row)}>Edited</span>}
                     <div className="row-origin" title={origin}>{origin}</div>
                     {[...rowStatus(row, id => byId.get(id)), ...[apartStatus(row, id => described.get(id))].filter(s => s !== null)]
@@ -234,16 +270,20 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
                         ))}
                       </div>
                     )))}
-                    <IssueList issues={issues} onShowBoth={related => showBoth(row, related)}
-                               onNotSame={readOnly ? undefined : related => onChange(row.id, apartChange(row, related))} />
+                    <IssueList issues={issues.filter(i => i.code !== 'booked_without_document')} onShowBoth={related => showBoth(row, related)}
+                               onNotSame={readOnly ? undefined : related => onChange(row.id, apartChange(row, related))}
+                               onAccept={readOnly ? undefined : code => onChange(row.id, acceptChange(row, code))} />
                   </td>
                   <td>
                     <span className={row.direction === 'in' ? 'badge badge-accent' : 'badge badge-muted'}>
-                      {row.direction === 'in' ? 'Money in' : 'Money out'}
+                      {row.document_type === 'journal' ? 'Journal' : row.direction === 'in' ? 'Money in' : 'Money out'}
                     </span>
                   </td>
                   <td className="num">{money(row.gross)}</td>
-                  <td className="num">{money(row.vat_posted)}</td>
+                  <td className="num">
+                    {money(row.vat_posted)}
+                    {row.vat_treatment && <div className="muted small">{VAT_SHORT[row.vat_treatment] ?? row.vat_treatment}</div>}
+                  </td>
                   <td className="num">{money(row.net)}</td>
                   <td>{accountName(row)}</td>
                   <td className={`check ${check.cls}`} title={check.title}>{check.mark}</td>

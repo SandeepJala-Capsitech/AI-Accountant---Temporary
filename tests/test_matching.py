@@ -63,6 +63,8 @@ def test_the_same_payee(a, b):
     ("M BARNES", "Barnes Plumbing"),
     ("Print Ltd", "Brightline Print"),                   # only a trade word
     ("BT", "BT Sport"),                                  # too short to tell
+    ("Starling Bank", "Amazon Web Services EMEA SARL"),  # a legal form is not a name: 'sarl' is not 'starling'
+    ("Starling", "Sarl Trading"),                        # nor does it abbreviate one
     ("", "Brightline Print"),
     (None, "Brightline Print"),
 ])
@@ -88,7 +90,7 @@ from helpers import row as helper_row
 from ledgersync.checks import booked, issue, normalise
 from ledgersync.matching import match
 from ledgersync.models import BusinessSettings, Direction, Transaction
-from ledgersync.posting import trial_balance
+from ledgersync.posting import journal_for, trial_balance
 
 SETTINGS = BusinessSettings()
 
@@ -127,6 +129,18 @@ def test_a_bank_line_pays_the_one_bill_it_matches():
     assert (line.vat_posted, line.net) == (Decimal("0.00"), Decimal("12000.00"))
     assert paid_bill.owed == Decimal("0.00") and [p.ref for p in paid_bill.paid_by] == ["line-1"]
     assert codes(line) == []
+
+
+def test_a_bill_in_another_currency_is_paid_by_nothing_until_it_is_converted():
+    usd = bill(gross="500.00", who="Amazon Web Services EMEA SARL", ref="aws", currency="USD")
+    card = bank(gross="396.42", who="AMAZON WEB SERVICES", ref="card")
+    fee = bank(gross="7.00", date="2026-10-20", who="Starling Bank", ref="fee", account="7901")
+    foreign, card_line, fee_line = matched(usd, card, fee)
+    assert (card_line.pays, fee_line.pays, foreign.paid_by) == ([], [], [])
+    assert "part_payment" not in [c for c, _ in codes(card_line) + codes(fee_line)]
+    converted, card_line, fee_line = matched(usd.model_copy(update={"gross": Decimal("396.42"), "currency": "GBP"}),
+                                             card, fee)
+    assert [p.ref for p in card_line.pays] == ["aws"] and converted.owed == Decimal("0.00") and fee_line.pays == []
 
 
 def test_an_unpaid_bill_is_still_owed():
@@ -299,7 +313,7 @@ def test_two_payments_on_one_day_clear_one_bill_between_them():
                                        bank("610.63", "2025-10-15", "HML PM Ltd", ref="first"),
                                        bank("64.75", "2025-10-15", "HML PM Ltd", ref="second"))
     assert open_bill.owed == Decimal("0.00") and [p.ref for p in second.pays] == ["bill-oct"]
-    assert codes(first) == [("part_payment", "warning")] and codes(second) == []
+    assert codes(first) == [("part_payment", "info")] and codes(second) == []   # a note: the rest was paid
 
 
 def reminder_pair(**reminder):
@@ -338,6 +352,34 @@ def test_the_same_receipt_read_twice_is_booked_once():
                    account="7406", document_number="Chk 3318")
     first, again = matched(row(**receipt, ref="photo"), row(**receipt, ref="photo-again"))
     assert (first.copy_of, again.copy_of.ref) == (None, "photo") and booked(first) and not booked(again)
+
+
+def claim(ref, lines=(("12.88", "2026-09-14"), ("173.75", "2026-09-14"), ("2.70", "2026-09-15"))):
+    """An expenses sheet with no number of its own: one row a line."""
+    total = str(sum(Decimal(g) for g, _ in lines))
+    return [row("expense_claim", "out", gross, date, "Matt Barnes", ref, document_total=total)
+            for gross, date in lines]
+
+
+def test_an_expenses_sheet_read_three_times_is_booked_once():
+    rows = matched(*claim("sheet"), *claim("sheet-2"), *claim("sheet-3"))
+    first, second, third = rows[:3], rows[3:6], rows[6:]
+    assert all(r.copy_of is None and booked(r) for r in first)
+    assert all(r.copy_of.ref == "sheet" and not booked(r) for r in second + third)
+    assert codes(second[0]) == [("duplicate_document", "info")]
+
+
+def test_an_expenses_sheet_with_other_lines_is_another_claim():
+    rows = matched(*claim("sheet"), *claim("later", (("12.88", "2026-09-14"), ("40.00", "2026-09-20"))))
+    assert all(r.copy_of is None and booked(r) for r in rows)
+
+
+def test_one_unnumbered_receipt_like_another_is_not_taken_for_a_copy():
+    # Two coffees of the same price on one day are often two coffees: a person or the AI decides.
+    coffee = dict(kind="receipt", direction="out", gross="3.20", date="2026-09-14", counterparty="Costa",
+                  account="7406")
+    first, second = matched(row(**coffee, ref="a"), row(**coffee, ref="b"))
+    assert first.copy_of is None and second.copy_of is None
 
 
 def test_receipts_with_the_same_number_on_different_days_are_both_booked():
@@ -674,12 +716,26 @@ def test_a_receipt_and_its_claim_line_on_one_day_at_different_amounts_ask_which_
     assert all(f"£{a}" in t.issues[0].message for a in (read, claimed) for t in (line, receipt))
 
 
-def test_a_claim_line_its_claims_total_confirms_says_what_the_bills_amount_would_do_to_it():
-    # Use £30.22 on Matt's EE line put his claim £2.72 over its total without a word: the choice stays, said plainly.
+def test_a_claim_line_its_claims_total_confirms_is_booked_as_claimed_when_its_bill_covers_it():
+    # Matt claimed £27.50 of a £30.22 EE bill, and his claim's printed total adds up with £27.50: the company owes him
+    # what he claimed, so that is booked, the bill backs it, and no one is asked.
     line, bill = matched(claim_line("27.50", "2026-09-03", "EE, mobile phone bill", account="7502", document_total="27.50"),
                          row("invoice", "out", "30.22", "2026-09-03", "EE", "bill", account="7502"))
+    assert (booked(line), booked(bill), bill.recorded_by.ref, line.documented_by.ref) == (True, False, "claim", "bill")
+    assert codes(line) == codes(bill) == [("claimed_less", "info")]
+    assert (line.amount_found, bill.amount_found) == (None, None)
+    assert all(s in line.issues[0].message for s in ("£27.50", "£30.22", "£2.72"))
+
+
+@pytest.mark.parametrize("claimed,total,read", [
+    ("32.00", "32.00", "30.22"),   # claimed more than the bill: the bill doesn't cover it
+    ("27.50", None, "30.22"),      # no total on the claim confirms the line: it may be the misread one
+])
+def test_a_claim_line_its_bill_does_not_cover_or_its_total_does_not_confirm_still_asks(claimed, total, read):
+    line, bill = matched(claim_line(claimed, "2026-09-03", "EE, mobile phone bill", account="7502",
+                                    **({"document_total": total} if total else {})),
+                         row("invoice", "out", read, "2026-09-03", "EE", "bill", account="7502"))
     assert codes(line) == codes(bill) == [("amount_conflict", "warning")]
-    assert all(s in line.issues[0].message for s in ("confirms", "£2.72"))
 
 
 @pytest.mark.parametrize("pair", [
@@ -1149,3 +1205,255 @@ def test_a_bank_line_that_is_not_the_subtotal_plus_vat_is_still_a_conflict():
     receipt, line = match([normalise(t, SETTINGS) for t in (_cut_off_receipt(), _card_line("90.00"))], SETTINGS)
     assert line.documented_by is None
     assert [i.code for i in receipt.issues if i.code == "amount_conflict"] == ["amount_conflict"]
+
+
+def ee_claim():
+    """Matt's expenses sheet: two EE lines of £27.50, on 3 and 4 Sep, and a hotel line its invoice names otherwise."""
+    return [row("expense_claim", "out", gross, date, "Matt Barnes", "sheet", description=what)
+            for gross, date, what in (("27.50", "2026-09-03", "EE, mobile phone bill"),
+                                      ("27.50", "2026-09-04", "EE, mobile phone bill"),
+                                      ("2308.50", "2026-09-15", "Accommodation for October sales kick off"))]
+
+
+def undated_bill(gross, ref, who="EE"):
+    return Transaction(document_type="invoice", direction="out", gross=gross, date=None, counterparty=who,
+                       document_ref=ref, account_code="7502", description=f"{who} bill")
+
+
+def matched_named(rows, named):
+    return match([normalise(t, SETTINGS) for t in rows], SETTINGS, name_days=named)
+
+
+def test_an_undated_bill_pairs_with_the_one_claim_line_of_its_amount_on_its_file_names_day():
+    rows = [*ee_claim(), undated_bill("27.50", "ee-4"), undated_bill("2308.50", "hotel", who=None)]
+    named = [None, None, None, dt.date(2026, 9, 4), dt.date(2026, 9, 15)]
+    third, fourth, hotel_line, bill, hotel = matched_named(rows, named)
+    assert (bill.date, bill.claimed_in.ref, fourth.recorded_by.ref, third.recorded_by) == (
+        dt.date(2026, 9, 4), "sheet", "ee-4", None)
+    assert (hotel.date, hotel_line.recorded_by.ref) == (dt.date(2026, 9, 15), "hotel")
+    assert ("date_from_claim", "info") in codes(bill)
+
+
+def test_a_file_names_day_that_fits_two_lines_or_none_pairs_nothing():
+    rows = [*ee_claim(), undated_bill("27.50", "a"), undated_bill("30.22", "b")]
+    twice = [None, None, None, dt.date(2026, 9, 3), dt.date(2026, 9, 3)]
+    *_, first, other = matched_named([*ee_claim(), undated_bill("27.50", "a"), undated_bill("27.50", "c")], twice)
+    assert first.date is None and other.date is None   # two bills of £27.50 named 3 Sep: which is the line's?
+    *_, wrong_amount = matched_named(rows, [None, None, None, None, dt.date(2026, 9, 3)])
+    assert wrong_amount.date is None and wrong_amount.claimed_in is None
+
+
+def test_a_payment_of_tax_or_to_the_owner_is_not_offered_as_a_suppliers_later_bill():
+    # Kestrel: the director's £1,250.00 Self Assessment payment was offered as the payment of a £1,250.00 furniture
+    # invoice dated eleven days later.
+    later = bill(gross="1250.00", date="2026-10-14", who="Halden Furniture Ltd", ref="hf")
+    tax = bank(gross="1250.00", date="2026-10-03", who="HMRC Self Assessment", ref="sa", account="2250")
+    _, line = matched(later, tax)
+    assert "possible_payment" not in [code for code, _ in codes(line)] and line.candidates == []
+    # A payment to someone else coded as a cost is still offered: it may be that bill, paid before it was dated.
+    _, cost = matched(later, bank(gross="1250.00", date="2026-10-03", who="Card payment", ref="c", account="0040"))
+    assert codes(cost) == [("possible_payment", "warning")]
+
+
+def test_a_dividend_to_the_director_does_not_pay_his_small_expenses_claim():
+    # £8,000 to M Marlow coded to Dividends was matched to his £144 mileage claim as an "overpayment of £7,856".
+    mileage = row("expense_claim", "out", "144.00", "2026-04-30", "Mark Marlow", "claim", account="7400",
+                  document_total="144.00")
+    dividend = bank("8000.00", "2026-07-15", "M Marlow", account="3250", description="M Marlow, dividend")
+    claim_row, line = matched(mileage, dividend)
+    assert line.pays == [] and line.paid_against is None and claim_row.owed == Decimal("144.00")
+    assert codes(line) == [("open_document", "warning")]
+    assert "the amount differs and the line is on Dividends" in line.issues[0].message
+
+
+def test_a_payment_coded_to_the_owner_still_pays_a_claim_of_exactly_its_amount():
+    mileage = row("expense_claim", "out", "144.00", "2026-04-30", "Mark Marlow", "claim", account="7400",
+                  document_total="144.00")
+    refund = bank("144.00", "2026-05-06", "M Marlow", account="2250", description="M Marlow expenses")
+    claim_row, line = matched(mileage, refund)
+    assert [p.amount for p in line.pays] == [Decimal("144.00")] and claim_row.owed == Decimal("0.00")
+
+
+def test_a_line_on_two_overlapping_statements_is_booked_once_and_pays_once():
+    # April to June, then June to July: June's lines are on both, each with the same balance after it.
+    invoice = bill("3600.00", "2026-06-01", "Parkside Estates Ltd", "rent")
+    first = bank("3600.00", "2026-06-01", "PARKSIDE ESTATES", "june-a", balance=Decimal("41439.23"))
+    again = bank("3600.00", "2026-06-01", "PARKSIDE ESTATES", "june-b", balance=Decimal("41439.23"))
+    other = bank("3600.00", "2026-06-01", "PARKSIDE ESTATES", "june-c", balance=Decimal("37839.23"))
+    invoice, first, again, other = matched(invoice, first, again, other)
+    assert first.copy_of is None and [p.amount for p in first.pays] == [Decimal("3600.00")]
+    assert again.copy_of.ref == "june-a" and again.pays == [] and codes(again) == [("duplicate_document", "info")]
+    assert other.copy_of is None          # another balance after it: a second payment that day
+    assert invoice.owed == Decimal("0.00")
+
+
+def test_a_repeated_line_a_person_included_or_one_without_a_balance_is_left_alone():
+    first = bank("14.50", "2026-06-30", "NATWEST", "a", balance=Decimal("100.00"))
+    included = bank("14.50", "2026-06-30", "NATWEST", "b", balance=Decimal("100.00"), include=True)
+    plain = [bank("14.50", "2026-06-30", "NATWEST", ref) for ref in ("c", "d")]
+    assert [t.copy_of for t in matched(first, included, *plain)] == [None, None, None, None]
+
+
+def _fuel(**kw):
+    return row("receipt", "out", "499.00", "2026-05-16", "Currys", "tv", account="0030", **kw)
+
+
+def test_a_receipt_its_banks_statement_does_not_show_is_kept_off_the_bank():
+    # The statement has lines either side of 16 May and no £499.00: the director's own card paid it, not the bank.
+    lines = [bank("14.50", "2026-05-11", "NATWEST CHARGES", "a", account="7901"),
+             bank("86.99", "2026-05-22", "SCREWFIX", "b", account="5000")]
+    receipt, *_ = matched(_fuel(), *lines)
+    assert receipt.contra_account_code == "9998" and codes(receipt) == [("not_on_statement", "warning")]
+    assert receipt.issues[0].message.startswith(
+        "Not on the Bank Current Account statement, which has lines either side of 16 May 2026: that account did "
+        "not pay it. Kept off the bank, in Suspense, until you say what paid it")
+
+
+def test_a_receipt_with_no_statement_around_its_day_or_one_that_shows_it_stays_on_the_bank():
+    before_only = [bank("14.50", "2026-05-11", "NATWEST CHARGES", "a", account="7901")]
+    assert matched(_fuel(), *before_only)[0].contra_account_code == "1200"
+    assert matched(_fuel())[0].contra_account_code == "1200"
+    shown = [bank("14.50", "2026-05-11", "NATWEST CHARGES", "a", account="7901"),
+             bank("499.00", "2026-05-18", "CURRYS", "c", account="0030"),
+             bank("86.99", "2026-05-22", "SCREWFIX", "b", account="5000")]
+    receipt, _, line, _ = matched(_fuel(), *shown)
+    assert receipt.contra_account_code == "1200" and receipt.issues == [] and line.recorded_by is not None
+
+
+def test_a_receipt_someone_paid_themselves_is_not_looked_for_on_the_statement():
+    lines = [bank("14.50", "2026-05-11", "NATWEST CHARGES", "a", account="7901"),
+             bank("86.99", "2026-05-22", "SCREWFIX", "b", account="5000")]
+    receipt, *_ = matched(_fuel(bank_account="2250"), *lines)
+    assert receipt.contra_account_code == "2250" and receipt.issues == []
+
+
+def test_a_receipt_parked_in_suspense_goes_back_to_the_bank_once_nothing_says_otherwise():
+    parked = matched(_fuel(), bank("14.50", "2026-05-11", "NATWEST", "a", account="7901"),
+                     bank("86.99", "2026-05-22", "SCREWFIX", "b", account="5000"))[0]
+    assert parked.contra_account_code == "9998"
+    assert matched(parked)[0].contra_account_code == "1200"
+
+
+def _cafe(**sale):
+    """A week at a cafe: the till summary, SumUp's report of the card sales it collected and its fee, the payout, and
+    the cash paid in at the bank."""
+    return [row("receipt", "in", "4100.00", "2026-04-05", "Rosa's Cafe", "z1", account="4000",
+                description="Weekly takings, cash and card (week ending 5 Apr)"),
+            row("agent_statement", "in", "2860.00", "2026-04-07", "SumUp", "su1", account="4000", agent="SumUp",
+                description="Card sales collected by SumUp", **sale),
+            row("agent_statement", "out", "48.33", "2026-04-07", "SumUp", "su1", account="7901", agent="SumUp",
+                description="SumUp fees"),
+            bank("2811.67", "2026-04-07", "SUMUP PAYMENTS", "payout", direction="in", account="1250"),
+            bank("1000.00", "2026-04-07", "CASH PAID IN BRANCH 0412", "cash", direction="in", account="4000",
+                 description="Cash paid in at branch 0412")]
+
+
+def test_till_takings_are_sales_once_and_card_payouts_and_cash_banked_only_move_the_money():
+    takings, card_sales, fee, payout, cash = matched(*_cafe())
+    assert (takings.account_code, takings.contra_account_code) == ("4000", "1230")   # sales, into the till
+    assert card_sales.account_code == "1230" and fee.account_code == "7901"       # the till's money goes to SumUp
+    assert [p.amount for p in payout.pays] == [Decimal("2811.67")]
+    assert cash.account_code == "1230" and codes(cash) == [("till_takings", "info")]   # not a sale without VAT
+    lines = [l for t in (takings, card_sales, fee, payout, cash) for l in journal_for(t, 0)]
+    balance = lambda code: sum(l.debit - l.credit for l in lines if l.code == code)
+    assert balance("4000") == Decimal("-4100.00")                 # the week's sales, once (VAT aside)
+    assert balance("1230") == Decimal("240.00")                   # the cash still in the till
+    assert balance("1200") == Decimal("3811.67") and balance("1100") == 0 and balance("7901") == Decimal("48.33")
+
+
+def test_without_a_till_summary_a_processors_sales_and_cash_paid_in_are_left_as_they_were():
+    rows = matched(*_cafe()[1:])
+    assert rows[0].account_code == "4000" and rows[3].account_code == "4000"
+    assert ("sale_without_vat", "warning") in codes(rows[3])
+
+
+def test_a_processors_sale_a_person_gave_a_vat_treatment_stays_a_sale():
+    _, card_sales, *_ = matched(*_cafe(vat_treatment="standard"))
+    assert card_sales.account_code == "4000"
+
+
+def test_the_summarys_own_note_of_cash_banked_is_the_same_movement_as_the_bank_line():
+    note = row("receipt", "in", "1000.00", "2026-04-07", "Rosa's Cafe", "z1-note", account="1200",
+               description="Cash banked")
+    takings, _, _, _, cash, noted = matched(*_cafe(), note)
+    assert (noted.account_code, noted.contra_account_code) == ("1230", "1200")
+    assert "same_account" not in [c for c, _ in codes(noted)]
+    assert cash.recorded_by is not None        # the bank line is the note's payment: booked once
+
+
+# ─── UAT round 2, high issues ──────────────────────────────────────────────────
+
+def test_a_refund_of_an_overpayment_clears_the_credit_and_is_not_a_sale():
+    # Hartwell Homes paid £2,500 on a £2,400 invoice and was sent £100 back: the refund went to Sales.
+    invoice = row("invoice", "in", "2400.00", "2026-05-20", "Hartwell Homes Ltd", "inv-1004", account="4000")
+    paid = bank("2500.00", "2026-06-08", "HARTWELL HOMES", "line-1", direction="in", account="4000")
+    refund = bank("100.00", "2026-07-09", "Hartwell Homes", "line-2", account="4000",
+                  description="Hartwell Homes, refund of overpayment")
+    invoice, paid, refund = matched(invoice, paid, refund)
+    assert (refund.paid_against, refund.vat_posted) == ("1100", Decimal("0.00"))
+    assert codes(refund) == [("refund_of_overpayment", "info")]
+    assert invoice.owed == Decimal("0.00") and codes(paid) == [("overpayment", "info")]
+    journal = journal_for(refund, 2)
+    assert [(l.code, l.debit, l.credit) for l in journal] == [("1100", Decimal("100.00"), Decimal("0.00")),
+                                                              ("1200", Decimal("0.00"), Decimal("100.00"))]
+
+
+def test_a_part_payment_is_a_note_once_the_rest_is_paid():
+    # Invoice 1001 was paid in two parts; the first still said "£4,200.00 still owed", and the chat repeated it.
+    invoice = row("invoice", "in", "7200.00", "2026-03-20", "Hartwell Homes Ltd", "inv-1001", account="4000")
+    first = bank("3000.00", "2026-04-01", "HARTWELL HOMES", "line-1", direction="in", account="4000")
+    rest = bank("4200.00", "2026-04-20", "HARTWELL HOMES", "line-2", direction="in", account="4000")
+    invoice, first, rest = matched(invoice, first, rest)
+    assert invoice.owed == Decimal("0.00") and codes(rest) == []
+    assert codes(first) == [("part_payment", "info")]
+    assert first.issues[0].message == "Paid £3,000.00 of £7,200.00; the rest has been paid since."
+    _, alone = matched(row("invoice", "in", "7200.00", "2026-03-20", "Hartwell Homes Ltd", "inv-1001", account="4000"),
+                       bank("3000.00", "2026-04-01", "HARTWELL HOMES", "line-1", direction="in", account="4000"))
+    assert codes(alone) == [("part_payment", "warning")]
+
+
+COMPANY = BusinessSettings(business_name="Marlow Building Services Ltd", business_type="limited_company")
+
+
+def test_a_companys_receipt_addressed_to_someone_else_is_asked_about():
+    # A TV delivered to the director's home went to Office Equipment with its VAT, and no one asked.
+    tv = row("invoice", "out", "200.00", "2026-05-16", "Currys Group Ltd", "tv", account="7504",
+             addressed_to="Mr M Marlow", supplier_vat_number="GB1")
+    flagged, = match([normalise(tv, COMPANY)], COMPANY)
+    assert codes(flagged) == [("addressed_to", "warning")]
+    for change in ({"addressed_to": "Marlow Building Services Limited"}, {"accepted": ["addressed_to"]},
+                   {"account_code": "2250"}):
+        fine, = match([normalise(tv.model_copy(update=change), COMPANY)], COMPANY)
+        assert "addressed_to" not in dict(codes(fine))
+    sole = BusinessSettings(business_name="Rosa's Cafe", business_type="sole_trader")
+    assert "addressed_to" not in dict(codes(match([normalise(tv, sole)], sole)[0]))
+
+
+# ─── UAT round 2, medium issues ────────────────────────────────────────────────
+
+def test_a_direct_debit_returned_unpaid_cancels_the_payment_it_reverses():
+    # British Gas £210 out, back in the next day, then taken again: Gas showed a credit of £210 while both
+    # payments waited in Suspense for a bill.
+    from ledgersync.evidence_rules import document_rule
+    first = bank("210.00", "2026-05-06", "British Gas", "a", account="7201")
+    back = bank("210.00", "2026-05-07", "British Gas", "b", direction="in", account="7201",
+                description="British Gas, unpaid direct debit reversed")
+    again = bank("210.00", "2026-05-12", "British Gas", "c", account="7201")
+    first, back, again = matched(first, back, again)
+    assert codes(first) == codes(back) == [("reversed", "info")] and codes(again) == []
+    assert document_rule(first, SETTINGS).action == "book" and document_rule(again, SETTINGS).action == "hold"
+
+
+def test_a_payment_of_the_exact_amount_days_after_an_invoice_from_a_like_name_pays_it():
+    # "Google Workspace Ireland" on the bank, "Google Cloud EMEA Limited" on the invoice: £55.20, three days apart.
+    invoice = row("invoice", "out", "55.20", "2026-05-31", "Google Cloud EMEA Limited", "g", account="8201")
+    paid, line = matched(invoice, bank("55.20", "2026-06-03", "Google Workspace Ireland", "l", account="8201"))
+    assert paid.owed == Decimal("0.00") and line.paid_against == "2100" and codes(line) == []
+    _, late = matched(invoice, bank("55.20", "2026-06-20", "Google Workspace Ireland", "l", account="8201"))
+    assert late.paid_against is None and codes(late) == [("possible_payment", "warning")]
+
+
+def test_wages_are_not_offered_another_persons_expense_claim():
+    claim = row("expense_claim", "out", "144.00", "2026-04-30", "M Marlow", "claim", account="7400")
+    _, wages = matched(claim, bank("1850.00", "2026-05-01", "S Marlow", "w", account="2220"))
+    assert "open_document" not in dict(codes(wages))

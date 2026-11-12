@@ -185,7 +185,8 @@ def _problems(lines: list[dict], rows: dict[int, Transaction], vat_registered: b
                 problems.append(f"Row {r}: VAT goes only on 2200 or 2201, not {l['code']}.")
             elif not vat_registered:
                 problems.append(f"Row {r}: the client isn't VAT registered, so no VAT goes on {l['code']}.")
-            elif amount > most_vat(tx.gross):
+            elif amount > max(most_vat(tx.gross), tx.gross / 5):   # a fifth: the reverse charge, or VAT charged
+                                                                    # before a voucher came off
                 problems.append(f"Row {r}: VAT of £{amount} is more than a sixth of its £{tx.gross}.")
     debits, credits = sum((l["debit"] for l in lines), ZERO), sum((l["credit"] for l in lines), ZERO)
     if debits != credits:

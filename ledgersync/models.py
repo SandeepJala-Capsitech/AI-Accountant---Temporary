@@ -19,12 +19,16 @@ class Direction(str, Enum):
 
 # The kind of document a row comes from. "agent_statement" is a letting or managing agent's statement: what
 # it collected and paid for the business, and the net it paid over. "payroll" is a payroll report: the wages the
-# business owes for a pay date. The last six are not transactions: a person ticks Include to book one as an
-# invoice. "other" is what the adapter makes of a type it does not know.
-DocumentType = Literal["receipt", "invoice", "expense_claim", "statement", "agent_statement", "payroll", "quote",
-                       "pro_forma", "purchase_order", "remittance_advice", "supplier_statement", "other"]
+# business owes for a pay date. The last seven are not transactions: a person ticks Include to book one as an
+# invoice. "finance_agreement" is a hire purchase, lease or loan agreement, whose money the bank lines show.
+# "other" is what the adapter makes of a type it does not know.
+# "journal" is an entry a person makes between two accounts (depreciation, an accrual, a tax charge): money out
+# debits its account and credits its contra account, with no VAT and no document.
+DocumentType = Literal["receipt", "invoice", "expense_claim", "statement", "agent_statement", "payroll", "journal",
+                       "quote", "pro_forma", "purchase_order", "remittance_advice", "supplier_statement",
+                       "finance_agreement", "other"]
 DOCUMENT_TYPES: tuple[str, ...] = get_args(DocumentType)
-NOT_TRANSACTIONS = frozenset(DOCUMENT_TYPES[6:])
+NOT_TRANSACTIONS = frozenset(DOCUMENT_TYPES[7:])
 
 # The kind of business a client is: a limited company's owners go through 2250 Director's Loan Account,
 # anyone else's through 3260 Drawings and 3010 Capital Introduced.
@@ -59,6 +63,8 @@ class Issue(BaseModel):
 class BusinessSettings(BaseModel):
     business_name: str = ""
     vat_registered: bool = True
+    vat_from: Optional[dt.date] = None             # the day the VAT registration started: a row dated before it
+                                                   # books no VAT; None: registered throughout
     business_type: Optional[BusinessType] = None   # None: not known, as for an analysis without a client
     period_start: Optional[dt.date] = None
     period_end: Optional[dt.date] = None
@@ -97,6 +103,7 @@ class Transaction(BaseModel):
     # Outputs, recomputed by checks.normalise on every pass:
     vat_posted: Optional[Decimal] = None           # the VAT the ledger books (shown, estimated or none)
     net: Optional[Decimal] = None                  # gross minus vat_posted
+    reverse_vat: Optional[Decimal] = None          # reverse-charge VAT the business owes and reclaims on the row
     account_code: str
     contra_account_code: Optional[str] = None      # None = the business's bank account
     bank_account: Optional[str] = None             # an input on a bank line: the account or card its statement is
@@ -130,8 +137,15 @@ class Transaction(BaseModel):
     decision_ids: list[str] = Field(default_factory=list)   # the decisions that changed this row
     supplier_vat_number: Optional[str] = None      # the VAT number printed on its document, which decides whether
                                                    # the VAT on a receipt can be reclaimed
+    addressed_to: Optional[str] = None             # who its receipt or invoice is addressed to, as printed
+    accepted: list[str] = Field(default_factory=list)     # warnings a person looked at and said are fine, by
+                                                   # code (checks.ACCEPTABLE): not raised on the row again
+    reverse_charge: bool = False                   # a service bought from abroad with no VAT charged: the business
+                                                   # accounts for the VAT itself, due and reclaimed (boxes 1 and 4)
     apart_from: list[int] = Field(default_factory=list)   # rows a person said are not the same as this one, by row
                                                    # id (Not the same): never paired with it or asked about
+    without_document: Optional[str] = None         # a person booked it without the receipt or invoice the document
+                                                   # rules want, for this reason: no VAT reclaimed (never the AI)
     link: Optional[list[str]] = None               # a person's decision on a bank line: None automatic,
                                                    # [] not a payment of any document, refs: pays these
     # Inputs too, on a bank statement row: the running balance printed on its line and the statement's
@@ -154,8 +168,9 @@ class Transaction(BaseModel):
     recorded_by: Optional[Settlement] = None       # a bank line or a claim line: the receipt or invoice for the
                                                    # same payment, booked instead; this row is not booked
     claimed_in: Optional[Settlement] = None        # a receipt or invoice on an expense claim: owed to the claimant
-    documented_by: Optional[Settlement] = None     # a bank line whose receipt prints no total (read at its subtotal):
-                                                   # the receipt; the line books the payment, with no VAT
+    documented_by: Optional[Settlement] = None     # the document behind a row that books instead of it, with no
+                                                   # VAT reclaimed: a claim line's bill for more than was claimed,
+                                                   # or a bank line's receipt that prints no total (its subtotal)
     vat_found: Optional[Decimal] = None            # a receipt or invoice on a claim: VAT its prices and the claim agree
                                                    # on, not booked because it says it is not a VAT invoice (Book VAT)
     date_found: Optional[dt.date] = None           # a receipt, or a claim line, whose other record (its claim line,
@@ -172,7 +187,7 @@ class Transaction(BaseModel):
             raise ValueError("gross must be a positive amount; direction says whether money went in or out")
         return money
 
-    @field_validator("vat", "vat_posted", "net", "owed", "balance", "opening_balance", "closing_balance",
+    @field_validator("vat", "vat_posted", "net", "reverse_vat", "owed", "balance", "opening_balance", "closing_balance",
                      "document_total", "document_net", "vat_found", "amount_found", mode="before")
     @classmethod
     def _pennies(cls, value):
@@ -193,6 +208,12 @@ class Transaction(BaseModel):
     @property
     def account_name(self) -> Optional[str]:
         account = BY_CODE.get(self.account_code)
+        return account.name if account else None
+
+    @computed_field
+    @property
+    def contra_account_name(self) -> Optional[str]:
+        account = BY_CODE.get(self.contra_account_code or "")
         return account.name if account else None
 
     @computed_field
@@ -244,6 +265,26 @@ class TrialBalance(BaseModel):
     net_profit: Decimal = ZERO
     total_assets: Decimal = ZERO
     total_liabilities: Decimal = ZERO
+    # The rows left out of these figures because each has a problem to fix, in words: only on the trial balance a
+    # page shows while rows need fixing. Empty when every row is in.
+    left_out: list[str] = Field(default_factory=list)
+
+
+class VatFigures(BaseModel):
+    """The nine boxes of a VAT return for a period, worked from the rows booked in it by their dates: a guide to
+    check, not a return. Boxes 1 to 5 in pounds and pence; 6 to 9 are entered in whole pounds."""
+    start: dt.date
+    end: dt.date
+    box1: Decimal    # VAT due on sales and other outputs
+    box2: Decimal    # VAT due on acquisitions of goods into Northern Ireland from the EU: not worked out, nil
+    box3: Decimal    # total VAT due: box 1 plus box 2
+    box4: Decimal    # VAT reclaimed on purchases and other inputs
+    box5: Decimal    # net VAT: box 3 less box 4 (negative: a repayment)
+    box6: Decimal    # total sales and other outputs, excluding VAT
+    box7: Decimal    # total purchases and other inputs, excluding VAT
+    box8: Decimal    # goods supplied to the EU from Northern Ireland: not worked out, nil
+    box9: Decimal    # goods acquired from the EU into Northern Ireland: not worked out, nil
+    notes: list[str] = Field(default_factory=list)   # what the figures leave out, in words
 
 
 class SuspenseItem(BaseModel):
@@ -285,17 +326,24 @@ class ClientFields(BaseModel):
     contact_email: str = ""
     contact_phone: str = ""
     vat_registered: bool = True
+    vat_from: Optional[dt.date] = None  # the day the VAT registration started; None: registered throughout
     bank_accounts: list[BankAccount] = Field(
         default_factory=lambda: [BankAccount(code=BANK, name="Bank current account", kind="current")])
     folder: str = ""                   # where the client's files are on the computer the site runs on; "" for none
     ai_review: Literal["automatic", "suggest", "off"] = "automatic"   # what the background AI review may do
+    # The client's references, as its papers print them: kept and shown, used by nothing yet.
+    company_number: str = ""           # Companies House number
+    utr: str = ""                      # Unique Taxpayer Reference
+    vat_number: str = ""               # VAT registration number
+    paye_reference: str = ""           # employer's PAYE reference
 
-    @field_validator("name", "contact_name", "contact_email", "contact_phone", "folder", mode="before")
+    @field_validator("name", "contact_name", "contact_email", "contact_phone", "folder", "company_number", "utr",
+                     "vat_number", "paye_reference", mode="before")
     @classmethod
     def _trimmed(cls, value):
         return "" if value is None else str(value).strip()
 
-    @field_validator("first_year_end", mode="before")
+    @field_validator("first_year_end", "vat_from", mode="before")
     @classmethod
     def _empty_date(cls, value):
         return None if value == "" else value
@@ -330,11 +378,21 @@ class ClientPatch(BaseModel):
     contact_email: Optional[str] = None
     contact_phone: Optional[str] = None
     vat_registered: Optional[bool] = None
+    vat_from: Optional[dt.date] = None             # null clears it: registered throughout
     bank_accounts: Optional[list[BankAccount]] = None
     first_year_end: Optional[dt.date] = None
     folder: Optional[str] = None
     ai_review: Optional[Literal["automatic", "suggest", "off"]] = None
+    company_number: Optional[str] = None
+    utr: Optional[str] = None
+    vat_number: Optional[str] = None
+    paye_reference: Optional[str] = None
     archived: Optional[bool] = None
+
+    @field_validator("vat_from", mode="before")
+    @classmethod
+    def _empty_date(cls, value):
+        return None if value == "" else value
 
 
 class FolderImport(BaseModel):
@@ -458,6 +516,7 @@ class InvoiceSummary(BaseModel):
     owed: Decimal
     paid_by: list[Settlement] = Field(default_factory=list)
     brought_forward: bool = False
+    credit_note: bool = False   # the money goes the other way: a supplier's credit to the business, or its own to a customer
 
 
 class BankCheck(BaseModel):
@@ -470,6 +529,7 @@ class BankCheck(BaseModel):
     statement: Optional[Decimal] = None
     statement_date: Optional[dt.date] = None
     difference: Optional[Decimal] = None
+    left_out: int = 0   # rows of the year with a problem to fix, which the books figure is worked out without
 
 
 class YearSummary(BaseModel):
@@ -501,7 +561,24 @@ class RowPatch(BaseModel):
     vat: Optional[Decimal] = None
     account_code: Optional[str] = None
     document_type: Optional[DocumentType] = None
+    # How VAT applies, as a person says: a rate to work VAT out at when none is shown, or zero-rated, exempt or
+    # outside the scope (a reverse charge among them), which book no VAT. null: as the document and account have it.
+    vat_treatment: Optional[VatTreatment] = None
+    # The currency the amount is now in: "GBP" once a person has converted an amount read in another currency.
+    currency: Optional[str] = None
+    without_document: Optional[str] = None   # book it without its receipt or invoice, for this reason; null: hold it
+    # What paid a receipt (or what it was paid into): one of the client's bank accounts or cards, or the owner or
+    # staff who paid it themselves. null: the client's main bank account.
+    bank_account: Optional[str] = None
+    # A service from abroad with no VAT charged, which the business accounts for itself (the reverse charge).
+    reverse_charge: Optional[bool] = None
+    accepted: Optional[list[str]] = None     # the warnings a person said are fine, by code (checks.ACCEPTABLE)
     revert: bool = False
+
+    @field_validator("without_document")
+    @classmethod
+    def _reason(cls, value):
+        return value.strip() if isinstance(value, str) else value
 
     @field_validator("gross", "vat", mode="before")
     @classmethod
@@ -639,6 +716,7 @@ class ReviewRun(BaseModel):
     decision_ids: list[str] = Field(default_factory=list)
     question_ids: list[str] = Field(default_factory=list)
     looked_at: list[int] = Field(default_factory=list)   # the row ids the run was pointed at
+    issues_seen: list[str] = Field(default_factory=list)  # the issues it was shown, as "row:code:digest" keys
     summary: str = ""
     error: Optional[str] = None
     seen: bool = False                         # the person has opened the review's results
@@ -652,6 +730,7 @@ class ReviewState(BaseModel):
     due_at: Optional[str] = None
     running: bool = False
     retry_at: Optional[str] = None
+    left_over: list[str] = Field(default_factory=list)   # years (ISO starts) whose last run had more issues to show
 
 
 class ReviewDetail(ReviewRun):
