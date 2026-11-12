@@ -146,6 +146,15 @@ def same_payee(a: Optional[str], b: Optional[str]) -> bool:
     return _inside(short, long) or (len(short) == len(long) and _inside(long, short))
 
 
+def same_supplier(a: Optional[str], b: Optional[str]) -> bool:
+    """Whether two names are one supplier for comparing how its bills are coded (coding.py): surely the same payee,
+    and neither name has a word more than the other. "Vodafone Ltd" and "VODAFONE UK DD" are one; "Vodafone" and
+    "Vodafone Insurance Services", or "Amazon" and "Amazon Web Services", are kept apart, since a group's businesses
+    sell different things that go to different accounts."""
+    wa, wb = ([w for w in _words(name) if w not in _REFERENCE] for name in (a, b))
+    return len(wa) == len(wb) and same_payee(a, b)
+
+
 @dataclass
 class _Document:
     """An open invoice, claim or included document: the rows that share its document_ref."""
