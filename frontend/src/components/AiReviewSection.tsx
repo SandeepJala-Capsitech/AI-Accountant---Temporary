@@ -27,6 +27,7 @@ export default function AiReviewSection() {
   const router = useRouter()
   const [runs, setRuns] = useState<ReviewDetail[] | null>(null)
   const [suggestions, setSuggestions] = useState<Decision[]>([])   // what waits for the person, the rules' too
+  const [made, setMade] = useState<Decision[]>([])   // changes applied from the problems list on this visit
   const [error, setError] = useState('')
   const [open, setOpen] = useState<Set<string>>(new Set())
   const [working, setWorking] = useState('')
@@ -67,6 +68,9 @@ export default function AiReviewSection() {
       if (what === 'undo') setUndone(u => new Set(u).add(d.id))
       // The checks can refuse a suggestion the books have moved on from: nothing changed, and it says why.
       if (what === 'apply' && made.status === 'refused') setProblems(p => ({ ...p, [d.id]: `Not applied: ${made.reason}` }))
+      // A change applied from the problems list belongs to no review run, so it is kept here to be undone.
+      if (what === 'apply' && made.status === 'applied' && !runs?.some(r => r.decisions.some(x => x.id === d.id))) setMade(m => [...m, made])
+      if (what === 'undo') setMade(m => m.filter(x => x.id !== d.id))
       await load()
       await reload()
     } catch (e) {
@@ -167,7 +171,7 @@ export default function AiReviewSection() {
       <div className="section-head"><h2>AI review</h2></div>
       {error && <div className="notice notice-error">{error}</div>}
       <ProblemsList groups={groups} rowHref={rowHref} canApply={!client.archived && !year.closed} working={working}
-                    refused={problems} onApply={d => change(d, 'apply')} />
+                    refused={problems} onApply={d => change(d, 'apply')} made={made} onUndo={d => change(d, 'undo')} />
       {!runs && !error && <p className="muted">Loading the reviews…</p>}
       {runs && runs.length === 0 && <p className="muted">No review has run on this year yet. One runs after the books change and go quiet.</p>}
       {runs?.map(run => (
