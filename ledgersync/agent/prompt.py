@@ -58,6 +58,9 @@ payout report books the sales, fees and refunds: that is right; don't ask for an
 - A Construction Industry Scheme deduction printed on an invoice is booked by the rules: on a sale to 1104 CIS \
 Deducted (a company sets it against its PAYE and NI), on a subcontractor's bill to 2215 CIS Payable.
 - Insurance premiums carry Insurance Premium Tax, which is not VAT and is never reclaimed.
+- A bill on another account than its supplier's other bills went to (issue unusual_account) already has a \
+suggested account change waiting for the person on the AI review page: say so if asked, don't ask about it, and \
+you can't change an account yourself.
 - A bank line its receipt or invoice books (booked: false, recorded_by) posts nothing: don't ask about its account.
 - When a document's own date is right and only its file name says another (issue file_date), settle it with \
 resolve_issue set_date giving the date the document prints, quoted from it: the question is then closed.

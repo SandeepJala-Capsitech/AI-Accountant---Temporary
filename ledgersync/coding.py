@@ -46,14 +46,18 @@ def usual_accounts(rows: list[Transaction], *, flag: list[bool]) -> list[Optiona
     counted once for each account a document is on, so a bill split over three lines is one bill. flag[k] False: row
     k counts as history but is never flagged (a row of a closed year, or one a person said is right)."""
     suppliers: list[list[int]] = []   # the places of each supplier's rows, the supplier named by its first row
+    named: dict[str, list[int]] = {}  # a name as written to its supplier: most rows repeat a name already placed
     for k, tx in enumerate(rows):
         if not _checked(tx):
             continue
-        group = next((g for g in suppliers if same_supplier(rows[g[0]].counterparty, tx.counterparty)), None)
+        name = tx.counterparty.strip()
+        group = named.get(name)
         if group is None:
-            suppliers.append([k])
-        else:
-            group.append(k)
+            group = next((g for g in suppliers if same_supplier(rows[g[0]].counterparty, name)), None)
+            if group is None:
+                suppliers.append(group := [])
+            named[name] = group
+        group.append(k)
     found: list[Optional[Usual]] = [None] * len(rows)
     for group in suppliers:
         # A document's key: its reference, or the row itself when it has none.
