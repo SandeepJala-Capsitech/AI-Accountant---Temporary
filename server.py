@@ -169,7 +169,8 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
             codes = ledger.bank_codes(client)
             own = bank_account or (codes[0] if len(codes) == 1 else None)
             reader = TransactionExtractor(model_client, business_name=client.name, business_type=client.business_type,
-                                          bank_codes=ledger.bank_choices(client, own or rules.bank_account))
+                                          bank_codes=ledger.bank_choices(client, own or rules.bank_account),
+                                          owners=ledger.owners_of(client))
         extraction = pipeline.analyze(item, reader, ctx)
         # What the file prints, when it has a text layer; an image or a scanned PDF has none to check a total against.
         printed = item.text if item.data is None else pipeline.pdf_text(item.data) if item.kind == "pdf" else None
@@ -344,10 +345,11 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         those a row of that client can be coded to, its own bank accounts and cards among them."""
         if client_id is not None:
             client = store.get_client(client_id)
-            chosen = choosable(client.business_type, ledger.bank_choices(client))
+            chosen = choosable(client.business_type, ledger.bank_choices(client), ledger.owners_of(client))
         else:
             chosen = choosable(business_type) if business_type else accounts.CHART
-        return [{"code": a.code, "name": a.name, "type": a.type.value, "vat": a.vat.value} for a in chosen]
+        return [{"code": a.code, "name": a.name, "type": a.type.value, "vat": a.vat.value, "heading": a.heading.value,
+                 "tax": a.tax.value if a.tax else None, "sa103": a.sa103} for a in chosen]
 
     @app.post("/api/transactions/validate", response_model=TransactionList)
     def validate_transactions(request: LedgerRequest):

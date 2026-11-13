@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Optional, Sequence
 
 from .accounts import (BY_CODE, CIS_DEDUCTED, CIS_PAYABLE, PURCHASE_VAT, SALES_VAT, SUSPENSE, VAT_ACCOUNTS,
-                       AccountType)
+                       AccountType, heading_for)
 from .checks import booked, normalise
 from .errors import InvalidTransactions
 from .matching import match
@@ -57,7 +57,9 @@ def _vat_last(item: tuple[str, Decimal]) -> tuple[bool, str]:
 
 
 def _line(code: str, balance: Decimal) -> TrialBalanceLine:
-    return TrialBalanceLine(code=code, name=BY_CODE[code].name, type=BY_CODE[code].type.value,
+    account = BY_CODE[code]
+    return TrialBalanceLine(code=code, name=account.name, type=account.type.value,
+                            heading=heading_for(code, balance).value, tax=account.tax.value if account.tax else None,
                             debit=balance if balance > 0 else ZERO, credit=-balance if balance < 0 else ZERO)
 
 

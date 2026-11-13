@@ -11,7 +11,7 @@ from decimal import Decimal
 from itertools import combinations
 from typing import Optional, Sequence
 
-from .accounts import BY_CODE, CLEARING, CREDITORS, DEBTORS, DIRECTORS_LOAN, STAFF_EXPENSES, SUSPENSE, AccountType
+from .accounts import BY_CODE, CLEARING, CREDITORS, DEBTORS, DIRECTORS_LOANS, STAFF_EXPENSES, SUSPENSE, AccountType
 from .checks import MATCHING_ISSUES, PAYROLL_OWED, booked, issue, long_date, reclaims_vat, registered_on
 from .models import BusinessSettings, Direction, Issue, OpenItem, Settlement, Transaction
 from .payees import processor
@@ -389,7 +389,7 @@ def _with_addressee(tx: Transaction, settings: BusinessSettings) -> Transaction:
     their own spending, so a person says. Not for a sole trader or a partnership, whose papers name the owner."""
     name, to = settings.business_name, tx.addressed_to
     if (settings.business_type != "limited_company" or not name or not to or tx.direction != Direction.OUT
-            or tx.document_type not in ("receipt", "invoice") or tx.account_code == DIRECTORS_LOAN
+            or tx.document_type not in ("receipt", "invoice") or tx.account_code in DIRECTORS_LOANS
             or "addressed_to" in tx.accepted or not booked(tx)
             or same_payee(to, name) or _named_in(name, to)):
         return tx

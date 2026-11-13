@@ -15,6 +15,13 @@ export interface BankAccount {
 
 export type AiReviewMode = 'automatic' | 'suggest' | 'off'
 
+// One of a company's directors, a partnership's partners or an LLP's members, each with accounts of their own.
+export interface Owner {
+  slot?: number | null       // which of the chart's owners' accounts are theirs (0 to 3); none until the server gives one
+  name: string
+  share?: string | null      // a partner's or member's share of the profit, in percent; '' or none: shared equally
+}
+
 export interface ClientFields {
   name: string
   business_type: BusinessType
@@ -25,6 +32,7 @@ export interface ClientFields {
   vat_from?: string | null   // the day the VAT registration started; '' or null: registered throughout
   first_year_end: string     // the end of the first year the books are kept for: "2026-03-31"
   bank_accounts: BankAccount[]
+  owners?: Owner[]           // its directors, partners or members; none for a sole trader
   folder: string             // where the client's files are on the computer the site runs on; '' for none
   ai_review?: AiReviewMode   // what the background review may do; automatic when not given
   // The client's references, as its papers print them; '' when not known.

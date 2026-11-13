@@ -11,12 +11,12 @@ from pathlib import Path
 from typing import Iterable, Optional
 from weakref import WeakKeyDictionary
 
-from .accounts import (BANK_SLOTS, BY_CODE, CAPITAL, CARDS, DIRECTORS_LOAN, STAFF_EXPENSES, SUSPENSE, AccountType,
-                       choosable, pays_cards)
+from .accounts import (BANK_SLOTS, BY_CODE, CARDS, MAX_OWNERS, OWNER_WORDS, STAFF_EXPENSES, SUSPENSE, AccountType,
+                       Owners, choosable, owner_codes, owner_slots, pays_cards)
 from .checks import ACCEPTABLE, long_date
 from .payees import card_payment
 from .errors import ClientArchived, InvalidInput, NotFound, YearClosed
-from .models import (BankAccount, BusinessSettings, Client, ClientFields, ClientPatch, ClientSummary, Ledger,
+from .models import (BankAccount, BusinessSettings, Client, ClientFields, ClientPatch, ClientSummary, Ledger, Owner,
                      ManualUpload, RowPatch, Transaction)
 from .rows import WHOLE_DOCUMENT, StoredRow
 from .store_mongo import MongoStore
@@ -36,6 +36,7 @@ def settings_for(client: Client) -> BusinessSettings:
     return BusinessSettings(business_name=client.name, vat_registered=client.vat_registered,
                             vat_from=client.vat_from if client.vat_registered else None,
                             business_type=client.business_type, bank_accounts=codes, bank_account=default,
+                            owners=owner_slots_of(client),
                             books_start=year_bounds(client.first_year_end, 0)[0])
 
 
@@ -49,9 +50,18 @@ def bank_choices(client: Client, upload_bank: Optional[str] = None) -> tuple[str
     return tuple(c for c in codes if c != upload_bank)
 
 
+def owners_of(client: Client) -> Owners:
+    """The client's directors, partners or members as accounts.choosable takes them: each one's slot and name."""
+    return tuple((o.slot, o.name) for o in client.owners if o.slot is not None)
+
+
+def owner_slots_of(client: Client) -> tuple[int, ...]:
+    return tuple(slot for slot, _ in owners_of(client))
+
+
 def _choosable_codes(client: Client) -> set[str]:
     """The accounts a row of this client can be coded to."""
-    return {a.code for a in choosable(client.business_type, bank_choices(client))}
+    return {a.code for a in choosable(client.business_type, bank_choices(client), owners_of(client))}
 
 
 def check_bank_account(client: Client, code: str) -> None:
@@ -60,9 +70,10 @@ def check_bank_account(client: Client, code: str) -> None:
 
 
 def paid_personally(client: Client) -> tuple[str, ...]:
-    """The accounts for a receipt someone paid themselves: the owner (the director's loan in a company, capital paid
-    in otherwise), or staff who are to be repaid."""
-    return (DIRECTORS_LOAN if client.business_type == "limited_company" else CAPITAL, STAFF_EXPENSES)
+    """The accounts for a receipt someone paid themselves: an owner (their director's loan in a company, the capital
+    they paid in otherwise), or staff who are to be repaid."""
+    capitals = owner_slots(client.business_type)["capital"]
+    return (*(capitals[n] for n in owner_slots_of(client) or (0,)), STAFF_EXPENSES)
 
 
 def require_active(client: Client) -> None:
@@ -122,6 +133,35 @@ def check_client(fields: ClientFields) -> None:
     for kind, codes in BANK_SLOTS.items():
         if sum(a.kind == kind for a in fields.bank_accounts) > len(codes):
             raise InvalidInput(f"You can add up to {len(codes)} {_KIND_NAMES[kind]} accounts.")
+    check_owners(fields)
+
+
+def check_owners(fields: ClientFields) -> None:
+    """A company lists its directors, a partnership its partners and an LLP its members, up to four, each with a
+    name of their own; a sole trader lists none. Partners' and members' shares of the profit, when given, are given
+    for each of them and add up to 100%."""
+    word = OWNER_WORDS.get(fields.business_type)
+    if word is None:
+        if fields.owners:
+            raise InvalidInput("A sole trader has no directors, partners or members to list.")
+        return
+    if len(fields.owners) > MAX_OWNERS:
+        raise InvalidInput(f"You can list up to {MAX_OWNERS} {word}s.")
+    names: set[str] = set()
+    for owner in fields.owners:
+        if not owner.name:
+            raise InvalidInput(f"Name each {word}.")
+        if owner.name.lower() in names:
+            raise InvalidInput(f"Two {word}s are called {owner.name}: give each their own name.")
+        names.add(owner.name.lower())
+    if fields.business_type == "limited_company":
+        return
+    shares = [owner.share for owner in fields.owners]
+    if any(share is not None for share in shares):
+        if any(share is None or share <= 0 for share in shares):
+            raise InvalidInput(f"Give each {word}'s share of the profit, above 0%.")
+        if sum(shares) != 100:
+            raise InvalidInput(f"The {word}s' shares of the profit add up to {sum(shares):g}%: make them 100%.")
 
 
 # How each of a client's references is written, spaces aside, and what to say when one isn't.
@@ -182,6 +222,35 @@ def assign_codes(accounts: list[BankAccount], kept: list[BankAccount]) -> list[B
     return coded
 
 
+def assign_owners(owners: list[Owner], kept: list[Owner]) -> list[Owner]:
+    """The owners, each without a slot given the next free one; an owner sent with their slot keeps it. kept: the
+    owners whose accounts rows still use, who can't be dropped."""
+    for owner in owners:
+        if owner.slot is not None and not 0 <= owner.slot < MAX_OWNERS:
+            raise InvalidInput(f"{owner.name} has no accounts of their own in the chart.")
+    taken = [o.slot for o in owners if o.slot is not None]
+    if len(taken) != len(set(taken)):
+        raise InvalidInput("Two owners have the same accounts.")
+    for owner in kept:
+        if owner.slot not in taken:
+            raise InvalidInput(f"{owner.name}'s accounts have transactions: move them to another account first.")
+    used, slotted = set(taken), []
+    for owner in owners:
+        if owner.slot is None:
+            free = next(n for n in range(MAX_OWNERS) if n not in used)   # check_owners counted them
+            used.add(free)
+            owner = owner.model_copy(update={"slot": free})
+        slotted.append(owner)
+    return slotted
+
+
+def _owners_in_use(store: MongoStore, client: Client) -> list[Owner]:
+    """The client's owners whose accounts rows are coded to."""
+    used = {row.tx.account_code for row in store.rows(client.id)}
+    return [o for o in client.owners
+            if o.slot is not None and owner_codes(client.business_type, (o.slot,)) & used]
+
+
 def _accounts_in_use(store: MongoStore, client: Client) -> list[BankAccount]:
     """The client's bank accounts that rows are on, or are coded to (a transfer). A row on no account of its own is on
     the default bank."""
@@ -204,7 +273,8 @@ def add_client(store: MongoStore, fields: ClientFields) -> Client:
     check_references(fields)
     _check_name_free(store, fields.name)
     check_folder(fields.folder)
-    return store.create_client(fields.model_copy(update={"bank_accounts": assign_codes(fields.bank_accounts, [])}))
+    return store.create_client(fields.model_copy(update={"bank_accounts": assign_codes(fields.bank_accounts, []),
+                                                         "owners": assign_owners(fields.owners, [])}))
 
 
 def change_client(store: MongoStore, client_id: int, patch: ClientPatch) -> Client:
@@ -245,6 +315,8 @@ def change_client(store: MongoStore, client_id: int, patch: ClientPatch) -> Clie
             check_folder(merged.folder)
         if "bank_accounts" in changes:
             merged.bank_accounts = assign_codes(merged.bank_accounts, _accounts_in_use(store, client))
+        if "owners" in changes:
+            merged.owners = assign_owners(merged.owners, _owners_in_use(store, client))
         changes = {k: getattr(merged, k) for k in changes}
     if sent.get("archived") is not None:
         changes["archived"] = sent["archived"]

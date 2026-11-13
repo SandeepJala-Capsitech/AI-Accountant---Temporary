@@ -188,7 +188,8 @@ BT = {"direction": "out", "gross": "72.00", "account_code": "7502", "date": "202
 
 def test_accounts_are_listed(make_client):
     accounts = make_client().get("/api/accounts").json()
-    assert {"code": "7502", "name": "Telephone and Internet", "type": "expense", "vat": "standard"} in accounts
+    assert {"code": "7502", "name": "Telephone and Internet", "type": "expense", "vat": "standard",
+            "heading": "Administrative expenses", "tax": "check", "sa103": 23} in accounts
 
 
 def test_validate_books_no_vat_when_the_document_shows_none(make_client):

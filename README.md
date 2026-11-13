@@ -54,7 +54,8 @@ Without a key or an internet connection the API answers 503 with how to fix it; 
 The first page, **Clients**, lists the clients with each one's latest year and whether it is open or closed. Add a
 client with its company name, business type (limited company, sole trader, partnership or LLP), its responsible
 person (the client's own contact, with email and phone), whether it is VAT registered, the end of its **first year**
-(for example 31 March 2027), its bank accounts and, if you like, a folder of its files. Archive hides a client and
+(for example 31 March 2027), its bank accounts, its directors, partners or LLP members (up to four, each with a
+profit share for a partnership or LLP; empty shares mean equal shares) and, if you like, a folder of its files. Archive hides a client and
 keeps everything; Restore brings it back.
 
 Open a client to get its own space: a **year picker** beside its name (for example "Year to 31 Mar 2027"), and a side
@@ -98,7 +99,9 @@ year clear those unpaid invoices as they clear an invoice uploaded that year.
 
 Close year, on the Trial balance section, locks a year: no row, opening balance or setting of it can change until it
 is reopened. Closing carries the year forward: balance sheet accounts open the next year as they stand, the year's
-profit or loss goes to retained earnings (owners' capital for a business that isn't a company), and income and cost
+profit or loss goes to retained earnings for a company, to each partner's capital account (3100 to 3103) by their
+share for a partnership or sole trader, and to each member's current account (2260 to 2263, a liability, as the LLP
+SORP's automatic division has it) for an LLP; the shares used are saved with the closed year. Income and cost
 accounts start at zero. A year closes only after the ones before it and only when its trial balance balances; only the latest closed year can be reopened, and a change made after
 reopening flows into the next year's opening balances. While any year is closed, the client's year end, VAT
 registration and business type can't be changed.
@@ -263,11 +266,15 @@ apart for good (with Undo).
   one to see only those rows.
 - A bank statement is checked against the balances it prints. A line the model missed or misread shows
   where the balance breaks, and the upload says "Doesn't add up".
-- Export to Excel downloads the year's trial balance and transactions as one workbook.
+- Export to Excel downloads the year's trial balance and transactions as one workbook. The trial balance sheet
+  gives each account's statement heading, its tax treatment (disallowable, check, not trading income) and its
+  SA103F box; the profit and loss and balance sheet follow the Companies Act headings (tax after profit before tax,
+  creditors due within and after one year apart), as the Trial balance page does.
 - A sale in a VAT-registered business booked from a bank line that shows no VAT is flagged.
 - VAT on client entertainment (7403) and on cars (0050 Cars) is not reclaimed; vans (0055 Vans) are. A
-  limited company's owners use 2250 Director's Loan Account; other businesses use 3260 Drawings and
-  3010 Capital Introduced. Rent from tenants goes to 4904 Rent Income, and cash from a cash machine to 1230
+  limited company's directors each have a Director's Loan Account (2250 to 2253); partners have their own
+  Capital Introduced (3010 to 3013) and Drawings (3260 to 3263); LLP members draw on their current account
+  (2260 to 2263). With several owners, a row booked to the first one's account from a document asks whose it is. Rent from tenants goes to 4904 Rent Income, and cash from a cash machine to 1230
   Petty Cash. VAT at the 5% rate (a small business's energy) and £0.00 VAT are not flagged.
 
 ## The AI model (OpenRouter or Groq)

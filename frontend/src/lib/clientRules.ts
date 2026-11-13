@@ -1,6 +1,6 @@
 // Rules the client pages share, kept apart from the network so node --test can run them.
 import type { Transaction } from './api'
-import type { AccountChoice, BankAccount, BankAccountKind, BusinessType, ClientFields, ClientSummary, EditableField, FolderImportResult, RowChange, SavedRow, StatementCheck,
+import type { AccountChoice, BankAccount, BankAccountKind, BusinessType, ClientFields, ClientSummary, EditableField, FolderImportResult, Owner, RowChange, SavedRow, StatementCheck,
               Upload } from './clients'
 import { money, needsReview, totalsOf } from './ledger.ts'
 
@@ -51,7 +51,33 @@ const BANK_LIMITS: Record<BankAccountKind, number> = { current: 3, savings: 2, c
 export const bankAccountsLeft = (accounts: BankAccount[], kind: BankAccountKind) =>
   BANK_LIMITS[kind] - accounts.filter(a => a.kind === kind).length
 
-export type ClientErrors = Partial<Record<'name' | 'contact_name' | 'contact_email' | 'contact_phone' | 'first_year_end' | 'bank_accounts', string>>
+// What a business's owners are called, by its kind; a sole trader lists none. Up to four, as the chart has accounts for.
+export const OWNER_WORDS: Partial<Record<BusinessType, string>> = { limited_company: 'director', partnership: 'partner', llp: 'member' }
+export const MAX_OWNERS = 4
+
+// What is wrong with a business's owners, as the API says it (ledger.check_owners); '' when nothing is. Partners' and
+// members' shares, when any is given, are given for each of them and add up to 100%.
+export function ownerError(type: BusinessType, owners: Owner[] = []): string {
+  const word = OWNER_WORDS[type]
+  if (!word) return owners.length ? 'A sole trader has no directors, partners or members to list' : ''
+  if (owners.length > MAX_OWNERS) return `You can list up to ${MAX_OWNERS} ${word}s`
+  const names = owners.map(o => o.name.trim().toLowerCase())
+  if (names.some(name => !name)) return `Name each ${word}`
+  const twice = names.findIndex((name, i) => names.indexOf(name) !== i)
+  if (twice >= 0) return `Two ${word}s are called ${owners[twice].name.trim()}: give each their own name`
+  if (type === 'limited_company') return ''
+  const shares = owners.map(o => (o.share ?? '').toString().trim())
+  if (shares.every(share => !share)) return ''
+  if (shares.some(share => !share || !(Number(share) > 0))) return `Give each ${word}'s share of the profit, above 0%`
+  const total = shares.reduce((sum, share) => sum + Number(share), 0)
+  return Math.abs(total - 100) > 1e-9 ? `The ${word}s' shares of the profit add up to ${total}%: make them 100%` : ''
+}
+
+// The owners as the API takes them: none for a sole trader, and each share sent as a number or none.
+export const ownersToSend = (type: BusinessType, owners: Owner[] = []): Owner[] =>
+  (OWNER_WORDS[type] ? owners.map(o => ({ ...o, name: o.name.trim(), share: (o.share ?? '').toString().trim() || null })) : [])
+
+export type ClientErrors = Partial<Record<'name' | 'contact_name' | 'contact_email' | 'contact_phone' | 'first_year_end' | 'bank_accounts' | 'owners', string>>
 
 // What the client dialog says before saving; the API checks the same.
 // taken: the names of the other clients, so two are not given the same one by mistake.
@@ -74,6 +100,8 @@ export function clientFormErrors(fields: ClientFields, taken: string[] = []): Cl
   if (!fields.bank_accounts.length) errors.bank_accounts = 'Add at least one bank account'
   else if (names.some(name => !name)) errors.bank_accounts = 'Name each bank account'
   else if (twice >= 0) errors.bank_accounts = `Two bank accounts are called ${fields.bank_accounts[twice].name.trim()}: give each its own name`
+  const owners = ownerError(fields.business_type, fields.owners)
+  if (owners && OWNER_WORDS[fields.business_type]) errors.owners = owners
   return errors
 }
 
@@ -168,12 +196,16 @@ export const VAT_TREATMENTS: Record<string, string> = {
 }
 
 // What can have paid a receipt (or taken its money in): each of the client's accounts by its name, then whoever paid
-// it themselves: the owner (the Director's Loan Account in a company, Capital Introduced otherwise) or staff to repay.
-export function paidFromOptions(client: Pick<ClientFields, 'business_type' | 'bank_accounts'>): { code: string; name: string }[] {
+// it themselves: an owner (their Director's Loan Account in a company, their Capital Introduced otherwise), each by
+// name when they are listed, or staff to repay.
+export function paidFromOptions(client: Pick<ClientFields, 'business_type' | 'bank_accounts' | 'owners'>): { code: string; name: string }[] {
   const company = client.business_type === 'limited_company'
+  const code = (slot: number) => `${company ? 225 : 301}${slot}`
+  const listed = (client.owners ?? []).filter(o => o.slot !== null && o.slot !== undefined)
   return [
     ...client.bank_accounts.map(a => ({ code: a.code ?? '', name: a.name })).filter(a => a.code),
-    company ? { code: '2250', name: "The director's own money or card" } : { code: '3010', name: "The owner's own money or card" },
+    ...(listed.length ? listed.map(o => ({ code: code(o.slot as number), name: `${o.name}'s own money or card` }))
+      : [company ? { code: '2250', name: "The director's own money or card" } : { code: '3010', name: "The owner's own money or card" }]),
     { code: '2110', name: 'Staff, to be repaid' },
   ]
 }

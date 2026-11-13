@@ -156,9 +156,10 @@ class TransactionExtractor:
     ModelUnavailable / ModelTimeout instead of plausible-looking wrong numbers."""
 
     def __init__(self, client, business_name: str = "", business_type: Optional[str] = None,
-                 bank_codes: tuple[str, ...] = ()):
+                 bank_codes: tuple[str, ...] = (), owners: tuple[tuple[int, str], ...] = ()):
         self.client = client
         self.bank_codes = bank_codes   # the client's own bank accounts and cards; () when no client
+        self.owners = owners           # its directors, partners or members (accounts.choosable's owners)
         self.business_name = business_name
         self.business_type = business_type   # models.BusinessType, or None when not known
 
@@ -176,7 +177,8 @@ class TransactionExtractor:
         whose = f"{name}, {kind}" if name else kind
         invoices = (f" An invoice issued by {name} is a sale (in); an invoice or receipt addressed to {name} "
                     "is a purchase (out)." if name else "")
-        chart = "\n".join(f"{a.code} {a.name}: {a.definition}" for a in choosable(self.business_type, self.bank_codes))
+        chart = "\n".join(f"{a.code} {a.name}: {a.definition}" for a in choosable(self.business_type, self.bank_codes,
+                                                                                     self.owners))
         return f"""You keep the books of {whose}. List each movement of money into or out of the business's bank account that the document records, as a JSON object with a "transactions" array.
 
 Rules:

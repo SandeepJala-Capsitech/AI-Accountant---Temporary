@@ -7,7 +7,8 @@ import re
 from decimal import Decimal
 from typing import Optional, Sequence
 
-from .accounts import (ASSET_CANDIDATES, BY_CODE, CARDS, CAPITAL, CREDITORS, DEBTORS, DIRECTORS_LOAN, DIVIDENDS, DRAWINGS, HOTELS, SHARES,
+from .accounts import (ASSET_CANDIDATES, BY_CODE, CAPITALS, CARDS, CREDITORS, DEBTORS, DIRECTORS_LOANS, DIVIDENDS,
+                       HOTELS, MEMBERS_CURRENT, OWNER_DRAWINGS, OWNER_WORDS, SHARES, owner_codes, owner_slots,
                        NET_WAGES, PAYE, PENSION, PURCHASE_VAT, SALES_VAT, STAFF_EXPENSES, SUSPENSE, WAGES, Account,
                        AccountType)
 from .models import NOT_TRANSACTIONS, BusinessSettings, Direction, Issue, Transaction
@@ -32,11 +33,11 @@ _DERIVED = {"unknown_account", "same_account", "non_gbp_currency", "vat_not_appl
             "cis_deducted", "personal", "possible_duplicate", "booked_without_document", "card_credit", "vat_unclaimed",
             "on_account", "no_vat_number", "vat_over_rate", "reverse_charge", "before_vat_registration", "small_asset",
             "meal_check", "future_date", "journal_note", "prepayment", "unusual_account", "asset_check",
-            "should_be_asset"} | MATCHING_ISSUES | STATEMENT_ISSUES
+            "should_be_asset", "whose_account"} | MATCHING_ISSUES | STATEMENT_ISSUES
 # Warnings that are a matter of judgement: a person who has looked can say one is fine (Transaction.accepted), and it
 # is not raised on that row again.
 ACCEPTABLE = frozenset({"no_vat_number", "vat_over_rate", "small_asset", "meal_check", "addressed_to", "future_date",
-                        "file_date", "unusual_account", "asset_check", "should_be_asset"})
+                        "file_date", "unusual_account", "asset_check", "should_be_asset", "whose_account"})
 # Words that say a cost was paid for time ahead, and the accounts whose bills usually are (insurance).
 _AHEAD = re.compile(r"\b(annual|yearly|12[- ]months?|per annum|in advance|quarter(ly)? rent)\b", re.IGNORECASE)
 _PAID_AHEAD = frozenset({"8204", "7303"})
@@ -307,15 +308,25 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
         issues.append(issue("unusual_direction", (
             f"A credit note to a customer: it takes the amount off {account.name}." if document
             else f"Money out on {account.name}: a customer refund?"), "info"))
-    if settings.business_type == "limited_company" and account is not None and tx.account_code in (CAPITAL, DRAWINGS):
+    if (settings.business_type == "limited_company" and account is not None
+            and tx.account_code in (*CAPITALS, *OWNER_DRAWINGS, *MEMBERS_CURRENT)):
         issues.append(issue("director_loan", f"Use Director's Loan Account, not {account.name}, for a limited "
                                              "company."))
     elif (settings.business_type not in (None, "limited_company") and account is not None
-          and tx.account_code in (DIRECTORS_LOAN, SHARES, DIVIDENDS)):
+          and tx.account_code in (*DIRECTORS_LOANS, SHARES, DIVIDENDS)):
         issues.append(issue("director_loan", f"{account.name} is for companies only. Use Drawings or "
                                              "Capital Introduced."))
+    elif (len(settings.owners) > 1 and account is not None and tx.method != "user"
+          and tx.account_code in owner_codes(settings.business_type, settings.owners)
+          and "whose_account" not in tx.accepted):
+        # Read from a document, it went to the first owner's account: the papers seldom say which of them it was.
+        word = OWNER_WORDS[settings.business_type]
+        issues.append(issue("whose_account", f"This business has {len(settings.owners)} {word}s: booked to "
+                                             f"{account.name}. Check whose it is, and recode it if it is another "
+                                             f"{word}'s."))
+    drawn = owner_slots(settings.business_type)["drawings"]
     service = (personal(tx.counterparty, tx.description, business_type=settings.business_type)
-               if tx.account_code in (DIRECTORS_LOAN, DRAWINGS) else None)
+               if tx.account_code in (*DIRECTORS_LOANS, *OWNER_DRAWINGS, *drawn) else None)
     if service and tx.direction == Direction.OUT and account is not None:
         issues.append(issue("personal", f"{service} looks like personal spending: booked to the {account.name}. "
                                         "Recode it if it was for the business.", "info"))

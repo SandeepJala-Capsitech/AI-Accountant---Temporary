@@ -117,6 +117,7 @@ export interface TrialRow {
   code: string
   name: string
   type: string
+  heading?: string           // where it goes in the accounts (accounts.Heading on the API), from its closing balance
   opening: number            // each in pence, a debit positive and a credit negative
   movement: number
   closing: number
@@ -126,12 +127,12 @@ export interface TrialRow {
 export function trialRows(result: TrialBalanceResult): TrialRow[] {
   const net = (l: { debit: string; credit: string }) => pence(l.debit) - pence(l.credit)
   const rows = new Map<string, TrialRow>()
-  const rowOf = (l: { code: string; name: string; type: string }) => {
-    if (!rows.has(l.code)) rows.set(l.code, { code: l.code, name: l.name, type: l.type, opening: 0, movement: 0, closing: 0 })
+  const rowOf = (l: { code: string; name: string; type: string; heading?: string }) => {
+    if (!rows.has(l.code)) rows.set(l.code, { code: l.code, name: l.name, type: l.type, heading: l.heading, opening: 0, movement: 0, closing: 0 })
     return rows.get(l.code)!
   }
   for (const l of result.opening ?? []) rowOf(l).opening = net(l)
-  for (const l of result.lines) rowOf(l).closing = net(l)
+  for (const l of result.lines) Object.assign(rowOf(l), { closing: net(l), heading: l.heading || rowOf(l).heading })
   return [...rows.values()].sort((a, b) => a.code.localeCompare(b.code))
     .map(r => ({ ...r, movement: r.closing - r.opening }))
 }
@@ -173,47 +174,79 @@ export const journalRow = (draft: JournalDraft) => ({
 export interface StatementLine { label: string; amount: number; total?: boolean }
 export interface Statements { profitAndLoss: StatementLine[]; balanceSheet: StatementLine[]; agrees: boolean }
 
-// The year's profit and loss account and its closing balance sheet, from the trial balance. Income less cost of
-// sales (the 5000s) is gross profit, less the other costs is the profit or loss. Fixed assets (the accounts below
-// 1000) and current assets, less liabilities, are the net assets, which equal capital and reserves with the year's
-// profit. Suspense is listed on the side its balance is on. agrees: the balance sheet balances.
+// The headings of the Companies Act formats each account goes under (accounts.Heading on the API).
+export const HEADINGS = {
+  turnover: 'Turnover', costOfSales: 'Cost of sales', administrative: 'Administrative expenses',
+  otherIncome: 'Other operating income', interestReceivable: 'Interest receivable and similar income',
+  interestPayable: 'Interest payable and similar charges', tax: 'Tax on profit', intangible: 'Intangible assets',
+  tangible: 'Tangible assets', investments: 'Investments', stocks: 'Stocks', debtors: 'Debtors',
+  cash: 'Cash at bank and in hand', creditorsShort: 'Creditors: amounts falling due within one year',
+  creditorsLong: 'Creditors: amounts falling due after more than one year',
+  membersDebt: 'Loans and other debts due to members', capital: 'Capital and reserves',
+} as const
+
+// An account's heading: the API's, or for an older API's line without one, the usual one for its code and type
+// (Suspense on the side its balance is on).
+export function headingOf(r: TrialRow): string {
+  if (r.heading) return r.heading
+  const h = HEADINGS
+  if (r.code === '9998') return r.closing > 0 ? h.debtors : h.creditorsShort
+  if (r.type === 'income') return r.code < '4900' ? h.turnover : h.otherIncome
+  if (r.type === 'expense') return r.code.startsWith('5') ? h.costOfSales : h.administrative
+  if (r.type === 'equity') return h.capital
+  if (r.type === 'liability') return h.creditorsShort
+  return r.code < '1000' ? h.tangible : r.code < '1100' ? h.stocks : r.code < '1200' ? h.debtors : h.cash
+}
+
+// The year's profit and loss account and its closing balance sheet, from the trial balance, under the headings of
+// the Companies Act formats, as the Excel export lays them out (export.statement_lines). Income and costs are
+// shown positive, and so are assets and what is owed. Each heading lists its accounts and its total; the profit
+// lines (gross, operating, before tax) show only where there is something between them. Net assets equal capital
+// and reserves with the year's profit, an LLP's debts due to its members among them. agrees: they are equal.
 export function statements(rows: TrialRow[]): Statements {
+  const h = HEADINGS
   const used = rows.filter(r => r.closing !== 0)
-  const line = (r: TrialRow, sign: 1 | -1): StatementLine => ({ label: `${r.code} ${r.name}`, amount: sign * r.closing })
   const sum = (lines: StatementLine[]) => lines.reduce((total, l) => total + l.amount, 0)
-  const block = (title: string, lines: StatementLine[]): StatementLine[] =>
-    (lines.length ? [...lines, { label: title, amount: sum(lines), total: true }] : [])
+  const of = (heading: string) => used.filter(r => headingOf(r) === heading)
+  const block = (out: StatementLine[], heading: string, sign: 1 | -1): number => {
+    const lines = of(heading).map(r => ({ label: `${r.code} ${r.name}`, amount: sign * r.closing }))
+    if (lines.length) out.push(...lines, { label: heading, amount: sum(lines), total: true })
+    return sum(lines)
+  }
+  const total = (out: StatementLine[], label: string, amount: number) => out.push({ label, amount, total: true })
 
-  const income = used.filter(r => r.type === 'income').map(r => line(r, -1))
-  const costOfSales = used.filter(r => r.type === 'expense' && r.code.startsWith('5')).map(r => line(r, 1))
-  const overheads = used.filter(r => r.type === 'expense' && !r.code.startsWith('5')).map(r => line(r, 1))
-  const profit = sum(income) - sum(costOfSales) - sum(overheads)
-  const profitAndLoss = [
-    ...block('Total income', income),
-    ...block('Cost of sales', costOfSales),
-    ...(costOfSales.length ? [{ label: 'Gross profit', amount: sum(income) - sum(costOfSales), total: true }] : []),
-    ...block('Overheads', overheads),
-    { label: profit < 0 ? 'Net loss' : 'Net profit', amount: profit, total: true },
-  ]
+  const pl: StatementLine[] = []
+  const turnover = block(pl, h.turnover, -1)
+  const cost = block(pl, h.costOfSales, 1)
+  if (of(h.costOfSales).length) total(pl, 'Gross profit', turnover - cost)
+  const admin = block(pl, h.administrative, 1)
+  const operating = turnover - cost - admin + block(pl, h.otherIncome, -1)
+  if ([h.interestReceivable, h.interestPayable, h.tax].some(x => of(x).length)) {
+    total(pl, operating < 0 ? 'Operating loss' : 'Operating profit', operating)
+  }
+  const received = block(pl, h.interestReceivable, -1)
+  const beforeTax = operating + received - block(pl, h.interestPayable, 1)
+  if (of(h.tax).length) total(pl, beforeTax < 0 ? 'Loss before tax' : 'Profit before tax', beforeTax)
+  const profit = beforeTax - block(pl, h.tax, 1)
+  total(pl, profit < 0 ? 'Net loss' : 'Net profit', profit)
 
-  const suspense = used.find(r => r.code === '9998')
-  const isAsset = (r: TrialRow) => (r.code === '9998' ? r.closing > 0 : r.type === 'asset')
-  const fixed = used.filter(r => isAsset(r) && r.code < '1000').map(r => line(r, 1))
-  const current = used.filter(r => isAsset(r) && r.code >= '1000').map(r => line(r, 1))
-  const liabilities = used.filter(r => r.type === 'liability' && !(r === suspense && r.closing > 0)).map(r => line(r, -1))
-  const equity = used.filter(r => r.type === 'equity').map(r => line(r, -1))
-  const netAssets = sum(fixed) + sum(current) - sum(liabilities)
-  const capital = sum(equity) + profit
-  const balanceSheet = [
-    ...block('Fixed assets', fixed),
-    ...block('Current assets', current),
-    ...block('Liabilities', liabilities),
-    { label: 'Net assets', amount: netAssets, total: true },
-    ...equity,
-    { label: profit < 0 ? 'Loss for the year' : 'Profit for the year', amount: profit },
-    { label: 'Capital and reserves', amount: capital, total: true },
-  ]
-  return { profitAndLoss, balanceSheet, agrees: netAssets === capital }
+  const bs: StatementLine[] = []
+  const fixedHeadings = [h.intangible, h.tangible, h.investments]
+  const fixed = fixedHeadings.reduce((t, x) => t + block(bs, x, 1), 0)
+  if (fixedHeadings.some(x => of(x).length)) total(bs, 'Fixed assets', fixed)
+  const current = [h.stocks, h.debtors, h.cash].reduce((t, x) => t + block(bs, x, 1), 0)
+  total(bs, 'Current assets', current)
+  const short = block(bs, h.creditorsShort, -1)
+  total(bs, current >= short ? 'Net current assets' : 'Net current liabilities', current - short)
+  const long = block(bs, h.creditorsLong, -1)
+  const netAssets = fixed + current - short - long
+  total(bs, 'Net assets', netAssets)
+  const members = block(bs, h.membersDebt, -1)
+  const equity = of(h.capital).map(r => ({ label: `${r.code} ${r.name}`, amount: -r.closing }))
+  bs.push(...equity, { label: profit < 0 ? 'Loss for the year' : 'Profit for the year', amount: profit })
+  const capital = members + sum(equity) + profit
+  total(bs, 'Capital and reserves', capital)
+  return { profitAndLoss: pl, balanceSheet: bs, agrees: netAssets === capital }
 }
 
 // A statement's amount: £1,200.00, or (£300.00) for a negative one; a dash for nothing.

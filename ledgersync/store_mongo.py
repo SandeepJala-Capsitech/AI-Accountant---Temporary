@@ -17,7 +17,7 @@ import pymongo
 from pymongo import MongoClient, ReturnDocument
 
 from .errors import ChangedMeanwhile, ClientArchived, NotFound
-from .models import BankAccount, Client, ClientFields, ClosedYear, OpeningBalances, Transaction
+from .models import BankAccount, Client, ClientFields, ClosedYear, OpeningBalances, Owner, Transaction
 from .rows import EDITABLE, OLD_TOTAL, WHOLE_DOCUMENT, StoredRow, now_iso, saved_form
 
 logger = logging.getLogger(__name__)
@@ -27,7 +27,7 @@ _PATCH_TRIES = 5
 
 _CLIENT_FIELDS = ("name", "business_type", "contact_name", "contact_email", "contact_phone", "vat_registered",
                   "vat_from",
-                  "bank_accounts", "first_year_end", "folder", "ai_review", "company_number", "utr", "vat_number",
+                  "bank_accounts", "owners", "first_year_end", "folder", "ai_review", "company_number", "utr", "vat_number",
                   "paye_reference")
 _REFERENCES = ("company_number", "utr", "vat_number", "paye_reference")
 _CLIENT_PROJECTION = {
@@ -40,6 +40,7 @@ _CLIENT_PROJECTION = {
     "vat_registered": 1,
     "vat_from": 1,
     "bank_accounts": 1,
+    "owners": 1,
     "first_year_end": 1,
     "folder": 1,
     "ai_review": 1,
@@ -81,6 +82,7 @@ def _client(doc: dict, earliest: Optional[dt.date] = None) -> Client:
         ai_review=doc.get("ai_review", "automatic"),
         **{field: doc.get(field, "") for field in _REFERENCES},
         **({"bank_accounts": doc["bank_accounts"]} if doc.get("bank_accounts") else {}),
+        owners=doc.get("owners") or [],
         closed_years=[ClosedYear.model_validate(y) for y in doc.get("closed_years") or []],
         archived=doc.get("archived_at") is not None,
         archived_at=doc.get("archived_at"),
@@ -179,6 +181,7 @@ class MongoStore:
             "vat_registered": bool(fields.vat_registered),
             "vat_from": fields.vat_from.isoformat() if fields.vat_from else None,
             "bank_accounts": _stored_accounts(fields.bank_accounts),
+            "owners": [o.model_dump(mode="json") for o in fields.owners],
             "first_year_end": fields.first_year_end.isoformat() if fields.first_year_end else None,
             "folder": fields.folder,
             "ai_review": fields.ai_review,
@@ -223,6 +226,8 @@ class MongoStore:
         if "bank_accounts" in set_dict:
             set_dict["bank_accounts"] = _stored_accounts(
                 [BankAccount.model_validate(a) for a in set_dict["bank_accounts"]])
+        if "owners" in set_dict:
+            set_dict["owners"] = [Owner.model_validate(o).model_dump(mode="json") for o in set_dict["owners"]]
         if "vat_from" in changes and changes["vat_from"] is None and not client.archived:
             set_dict["vat_from"] = None   # cleared: registered throughout
         archived = changes.get("archived")

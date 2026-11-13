@@ -24,7 +24,7 @@ from ledgersync.checks import booked
 from ledgersync.errors import InvalidInput, InvalidTransactions, NotFound
 from ledgersync.evidence_rules import DocumentRule, document_rule
 from ledgersync.accounts import choosable
-from ledgersync.ledger import bank_choices, settings_for
+from ledgersync.ledger import bank_choices, owners_of, settings_for
 from ledgersync.models import Evidence, Ledger, SavedRow
 from ledgersync.records import AgentRecords
 from ledgersync.resolutions import AgentResolution, resolve
@@ -55,7 +55,7 @@ FAMILIES: dict[str, Family] = {
     "needs_document": "documents",
     # The account a purchase is on: none found by the reader (parked in Suspense), another than its supplier's
     # usual one, or a cost account for equipment and a fixed asset for something small.
-    "account_unclear": "coding", "unusual_account": "coding", "asset_check": "coding", "should_be_asset": "coding",
+    "account_unclear": "coding", "unusual_account": "coding", "asset_check": "coding", "should_be_asset": "coding", "whose_account": "coding",
     "small_asset": "coding",
 }
 
@@ -249,7 +249,8 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
             "decisions": len(records.decisions(ctx.client_id, ctx.year_start)),
             "background_reviews_since_last_chat": _reviews_since_last_chat(records, ctx),
             "accounts": [{"code": a.code, "name": a.name}
-                         for a in choosable(built.client.business_type, bank_choices(built.client))],
+                         for a in choosable(built.client.business_type, bank_choices(built.client),
+                                            owners_of(built.client))],
             **_bank_position(store, ctx.client_id, ctx.year_start),
         }
         _step(runtime, "Looked over the books", "done")

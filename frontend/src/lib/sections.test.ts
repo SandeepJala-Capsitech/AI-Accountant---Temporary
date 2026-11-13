@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import type { BankCheck, Client, InvoiceSummary, Ledger, OpeningBalances, SavedRow, Year } from './clients.ts'
 import type { TrialBalanceResult } from './api.ts'
 import {
-  ageing, ageingText, vatBoxText, vatPeriods, bankBalance, bankCheckNotice, bankCheckText, journalErrors, journalRow, statementAmount, statements, closeQuestion, closeWarnings, defaultBank, fullDate, linesCount, linesFor, openingAccounts, openingErrors, splitInvoices, trialRows,
+  HEADINGS, ageing, ageingText, vatBoxText, vatPeriods, bankBalance, bankCheckNotice, bankCheckText, journalErrors, journalRow, statementAmount, statements, closeQuestion, closeWarnings, defaultBank, fullDate, linesCount, linesFor, openingAccounts, openingErrors, splitInvoices, trialRows,
 } from './sections.ts'
 
 const check = (change: Partial<BankCheck> = {}): BankCheck => ({
@@ -179,7 +179,8 @@ test('the profit and loss and the balance sheet come from the trial balance, and
   assert.equal(of(made.profitAndLoss, 'Gross profit'), 200000)
   assert.equal(of(made.profitAndLoss, 'Net profit'), 134000)
   assert.equal(of(made.balanceSheet, 'Current assets'), -26000)     // the overdraft, and what Suspense holds in debit
-  assert.equal(of(made.balanceSheet, 'Liabilities'), 30000)
+  assert.equal(of(made.balanceSheet, 'Debtors'), 24000)
+  assert.equal(of(made.balanceSheet, 'Creditors: amounts falling due within one year'), 30000)
   assert.equal(of(made.balanceSheet, 'Net assets'), 144000)
   assert.equal(of(made.balanceSheet, 'Capital and reserves'), 144000)
   assert.ok(made.agrees)
@@ -209,4 +210,27 @@ test('a year has its whole self and four quarters to work VAT figures for', () =
     ['2025-04-06', '2025-07-05'], ['2025-07-06', '2025-10-05'], ['2025-10-06', '2026-01-05'], ['2026-01-06', '2026-04-05']])
   assert.deepEqual([vatBoxText('box1', '800.00'), vatBoxText('box5', '-12.12'), vatBoxText('box5', '491.67'), vatBoxText('box6', '6500.49')],
                    ['£800.00', '£12.12 to reclaim', '£491.67 to pay', '£6,500'])
+})
+
+test('the statements follow the API\'s headings: tax after profit before tax, long-term debt apart', () => {
+  const r = (code: string, type: string, closing: number, heading: string) =>
+    ({ code, name: `A${code}`, type, heading, opening: 0, movement: closing, closing })
+  const h = HEADINGS
+  const made = statements([r('0030', 'asset', 150000, h.tangible), r('1200', 'asset', 300000, h.cash),
+                           r('2250', 'liability', 40000, h.debtors), r('2100', 'liability', -70000, h.creditorsShort),
+                           r('2320', 'liability', -130000, h.creditorsShort), r('2301', 'liability', -150000, h.creditorsLong),
+                           r('3000', 'equity', -10000, h.capital), r('4000', 'income', -1000000, h.turnover),
+                           r('5000', 'expense', 400000, h.costOfSales), r('7100', 'expense', 200000, h.administrative),
+                           r('7903', 'expense', 15000, h.interestPayable), r('8800', 'expense', 130000, h.tax),
+                           r('3200', 'equity', 125000, h.capital)])
+  const of = (lines: { label: string; amount: number }[], label: string) => lines.find(l => l.label === label)?.amount
+  const labels = made.profitAndLoss.map(l => l.label)
+  assert.deepEqual([of(made.profitAndLoss, 'Gross profit'), of(made.profitAndLoss, 'Operating profit'),
+                    of(made.profitAndLoss, 'Profit before tax'), of(made.profitAndLoss, 'Net profit')],
+                   [600000, 400000, 385000, 255000])
+  assert.ok(labels.indexOf('Profit before tax') < labels.indexOf('8800 A8800'))
+  assert.equal(of(made.balanceSheet, 'Debtors'), 40000)   // a director who owes the company is its debtor
+  assert.equal(of(made.balanceSheet, 'Creditors: amounts falling due after more than one year'), 150000)
+  assert.equal(of(made.balanceSheet, 'Net assets'), 150000 + 340000 - 200000 - 150000)
+  assert.ok(made.agrees)
 })

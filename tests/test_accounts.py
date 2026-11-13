@@ -1,8 +1,8 @@
 import json
 from pathlib import Path
 
-from ledgersync.accounts import (ALL_BANK_CODES, BANK, BANK_SLOTS, BY_CODE, CHART, AccountType, choosable, model_accounts,
-                                 reserve_for)
+from ledgersync.accounts import (ALL_BANK_CODES, BANK, BANK_SLOTS, BY_CODE, CHART, LONG_TERM, OWNER_CODES, SA103_BOXES, AccountType,
+                                 Heading, TaxTreatment, choosable, heading_for, model_accounts, reserve_for)
 
 FIXTURES = Path(__file__).parent.parent / "eval" / "fixtures"
 
@@ -41,13 +41,19 @@ def test_a_model_may_choose_any_account_but_the_control_accounts():
     # only to a client with another account, for a transfer between them.
     ledger_only = {"2200", "2201", "1100", "2100", "2110", "0031", "0041", "0051", "0056", "1103", "2109",
                    "3100", "3200", "8000", "8800", "1104", "2215",
-                   "0021", "1001", "2105", "7905", "8100"}   # stock, deferred income, bad debts: journals only
+                   "0021", "1001", "2105", "7905", "8100",   # stock, deferred income, bad debts: journals only
+                   "0002", "0011", "0016", "8002",           # depreciation and amortisation
+                   "5200", "5201", "8010", "2301", "2311",   # stock movement, disposals, long-term debt
+                   "3101", "3102", "3103"}                   # where the other partners' profit closes
     assert {a.code for a in model_accounts()} == set(BY_CODE) - ledger_only
     # Without a business type (an analysis with no client) a company's own accounts are left out, and so are
     # the bank accounts and cards beyond the first.
-    company_only = {"2250", "2320", "3000", "3250", "7001"}
+    company_only = {"2320", "3000", "3250", "7001"}
     extra_banks = {"1200", "1201", "1202", "1211", "1240", "1241"}
-    assert {a.code for a in choosable()} == set(BY_CODE) - ledger_only - company_only - extra_banks
+    # Of the owners' accounts, only the first owner's capital and drawings.
+    other_owners = OWNER_CODES - {"3010", "3260"}
+    assert {a.code for a in choosable()} == (set(BY_CODE) - ledger_only - company_only - extra_banks
+                                             - other_owners)
 
 
 def test_expenses_owed_to_staff_is_a_liability_of_its_own():
@@ -69,9 +75,12 @@ def test_vat_on_entertainment_and_cars_is_blocked_but_vans_reclaim_it():
 def test_a_limited_company_books_its_owners_through_the_directors_loan_account():
     company = {a.code for a in choosable("limited_company")}
     assert "2250" in company and not {"3010", "3260"} & company
-    for kind in ("sole_trader", "partnership", "llp"):
+    for kind in ("sole_trader", "partnership"):
         others = {a.code for a in choosable(kind)}
         assert {"3010", "3260"} <= others and "2250" not in others
+    # An LLP member draws on their current account, which their profit is allocated to.
+    llp = {a.code for a in choosable("llp")}
+    assert {"3010", "2260"} <= llp and not {"2250", "3260"} & llp
     assert (BY_CODE["2250"].name, BY_CODE["2250"].type) == ("Director's Loan Account", AccountType.LIABILITY)
 
 
@@ -92,7 +101,7 @@ def test_only_the_clients_own_bank_accounts_are_offered():
 
 
 def test_profit_closes_to_retained_earnings_or_the_owners_capital():
-    assert reserve_for("limited_company") == reserve_for("llp") == "3200"
+    assert reserve_for("limited_company") == "3200" and reserve_for("llp") == "2260"
     assert reserve_for("sole_trader") == reserve_for("partnership") == "3100"
 
 
@@ -108,3 +117,49 @@ def test_the_new_accounts_have_the_codes_names_and_types_the_site_uses():
                 "2320": ("Corporation Tax", AccountType.LIABILITY), "8250": ("Fines and Penalties", AccountType.EXPENSE),
                 "7006": ("Employer's National Insurance", AccountType.EXPENSE)}
     assert {c: (BY_CODE[c].name, BY_CODE[c].type) for c in expected} == expected
+
+
+def test_every_account_has_a_heading_and_every_income_and_cost_a_tax_treatment():
+    assert [a.code for a in CHART if a.heading is None] == []
+    profit_and_loss = [a for a in CHART if a.type in (AccountType.INCOME, AccountType.EXPENSE)]
+    assert [a.code for a in profit_and_loss if a.tax is None] == []
+    assert [a.code for a in CHART if a not in profit_and_loss and (a.tax or a.sa103)] == []
+
+
+def test_trading_income_and_costs_have_an_sa103_box_and_the_rest_none():
+    # Interest and dividends received, rent and the corporation tax charge are not trading profit.
+    boxless = {a.code for a in CHART if a.type in (AccountType.INCOME, AccountType.EXPENSE) and a.sa103 is None}
+    assert boxless == {"4902", "4904", "4905", "8800"}
+    assert {a.sa103 for a in CHART if a.sa103} <= set(SA103_BOXES)
+    assert (BY_CODE["4000"].sa103, BY_CODE["5000"].sa103, BY_CODE["5002"].sa103, BY_CODE["8000"].sa103) == (15, 17, 18, 29)
+
+
+def test_what_tax_never_allows_is_marked_disallowable():
+    disallowable = {a.code for a in CHART if a.tax == TaxTreatment.DISALLOWABLE}
+    assert disallowable == {"7403", "8000", "8010", "8200", "8250", "8800"}
+    assert {"7300", "7304", "7502", "8100"} <= {a.code for a in CHART if a.tax == TaxTreatment.CHECK}
+
+
+def test_the_headings_follow_the_companies_act_formats():
+    of = lambda code: BY_CODE[code].heading
+    assert (of("4000"), of("4904"), of("4902"), of("5201"), of("7403")) == (
+        Heading.TURNOVER, Heading.OTHER_INCOME, Heading.INTEREST_RECEIVABLE, Heading.COST_OF_SALES,
+        Heading.ADMINISTRATIVE)
+    assert (of("7900"), of("7903"), of("8800")) == (Heading.INTEREST_PAYABLE, Heading.INTEREST_PAYABLE, Heading.TAX)
+    assert (of("0001"), of("0010"), of("0060"), of("1001"), of("1250"), of("1230")) == (
+        Heading.INTANGIBLE, Heading.TANGIBLE, Heading.INVESTMENTS, Heading.STOCKS, Heading.DEBTORS, Heading.CASH)
+    # A credit card is owed, though its code is among the banks'.
+    assert of("1240") == of("1241") == of("2300") == Heading.CREDITORS_SHORT
+    assert {BY_CODE[c].heading for c in LONG_TERM.values()} == {Heading.CREDITORS_LONG}
+    assert set(LONG_TERM) == {"2300", "2310"}
+
+
+def test_suspense_and_the_directors_loan_go_on_the_side_their_balance_is_on():
+    assert heading_for("2250", 500) == heading_for("9998", 1) == Heading.DEBTORS
+    assert heading_for("2250", -500) == heading_for("9998", -1) == Heading.CREDITORS_SHORT
+    assert heading_for("2100", 500) == Heading.CREDITORS_SHORT
+
+
+def test_the_codes_are_in_order():
+    codes = [a.code for a in CHART]
+    assert codes == sorted(codes)

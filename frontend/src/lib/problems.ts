@@ -31,7 +31,7 @@ const FAMILIES: Record<string, ProblemFamily> = {
   amount_conflict: 'conflict', claim_vat: 'conflict',
   vat_not_booked: 'missing_vat', not_vat_invoice: 'missing_vat',
   not_booked: 'documents', open_document: 'documents', no_payroll: 'documents', needs_document: 'documents',
-  account_unclear: 'coding', unusual_account: 'coding', asset_check: 'coding', should_be_asset: 'coding', small_asset: 'coding',
+  account_unclear: 'coding', unusual_account: 'coding', asset_check: 'coding', should_be_asset: 'coding', small_asset: 'coding', whose_account: 'coding',
 }
 export const familyOf = (code: string): ProblemFamily => FAMILIES[code] ?? 'other'
 

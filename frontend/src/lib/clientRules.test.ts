@@ -5,7 +5,7 @@ import type { Transaction } from './api.ts'
 import type { ClientSummary, SavedRow, Upload } from './clients.ts'
 import type { PickedFile, ReadingFile } from './clientRules.ts'
 import {
-  accountList, bankAccountsLeft, changesOf, clientFormErrors, dayMonth, draftOf, emptyListText, figuresOf, importText, lineTemplate, newRowFrom, paidFromOf, paidFromOptions, requeue,
+  accountList, bankAccountsLeft, changesOf, ownerError, ownersToSend, clientFormErrors, dayMonth, draftOf, emptyListText, figuresOf, importText, lineTemplate, newRowFrom, paidFromOf, paidFromOptions, requeue,
   readingLine, rowEditErrors, sameFileAs, searchClients, someFinished, unsent, showsInvitation, statementText, transactionCount,
 } from './clientRules.ts'
 
@@ -212,4 +212,30 @@ test('a receipt can be paid from any of the client\'s accounts, the owner or sta
                    ['1200', '1240', '3010', '2110'])
   assert.equal(paidFromOf({ bank_account: null } as never, { bank_accounts: accounts } as never), '1200')
   assert.equal(paidFromOf({ bank_account: '2250' } as never, { bank_accounts: accounts } as never), '2250')
+})
+
+test('owners are checked as the API checks them', () => {
+  const o = (name: string, share = '') => ({ name, share })
+  assert.equal(ownerError('sole_trader', []), '')
+  assert.equal(ownerError('sole_trader', [o('Ann')]), 'A sole trader has no directors, partners or members to list')
+  assert.equal(ownerError('limited_company', [o('Ann'), o(' ann ')]), 'Two directors are called ann: give each their own name')
+  assert.equal(ownerError('llp', [o('')]), 'Name each member')
+  assert.equal(ownerError('partnership', [o('Ann'), o('Raj')]), '')                       // shared equally
+  assert.equal(ownerError('partnership', [o('Ann', '60'), o('Raj')]), "Give each partner's share of the profit, above 0%")
+  assert.equal(ownerError('partnership', [o('Ann', '60'), o('Raj', '30')]), "The partners' shares of the profit add up to 90%: make them 100%")
+  assert.equal(ownerError('partnership', [o('Ann', '62.5'), o('Raj', '37.5')]), '')
+  assert.equal(ownerError('limited_company', 'ABCDE'.split('').map(n => o(n))), 'You can list up to 4 directors')
+  assert.deepEqual(ownersToSend('partnership', [{ slot: 1, name: ' Ann ', share: ' 60 ' }, { name: 'Raj', share: '' }]),
+                   [{ slot: 1, name: 'Ann', share: '60' }, { name: 'Raj', share: null }])
+  assert.deepEqual(ownersToSend('sole_trader', [o('Ann')]), [])
+})
+
+test('each listed owner can have paid a receipt themselves', () => {
+  const bank = [{ code: '1200', name: 'Barclays', kind: 'current' as const }]
+  assert.deepEqual(paidFromOptions({ business_type: 'limited_company', bank_accounts: bank,
+                                     owners: [{ slot: 0, name: 'Ann' }, { slot: 2, name: 'Raj' }] }).map(o => o.code),
+                   ['1200', '2250', '2252', '2110'])
+  assert.deepEqual(paidFromOptions({ business_type: 'partnership', bank_accounts: bank, owners: [{ slot: 1, name: 'Raj' }] })[1],
+                   { code: '3011', name: "Raj's own money or card" })
+  assert.deepEqual(paidFromOptions({ business_type: 'sole_trader', bank_accounts: bank }).map(o => o.code), ['1200', '3010', '2110'])
 })

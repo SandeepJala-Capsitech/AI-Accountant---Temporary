@@ -13,8 +13,8 @@ from decimal import Decimal
 from typing import NamedTuple, Optional
 
 from . import years as yr
-from .accounts import (BY_CODE, CREDITORS, DEBTORS, DIRECTORS_LOAN, LOANS, PURCHASE_VAT, SALES_VAT, SUSPENSE,
-                       AccountType, reserve_for)
+from .accounts import (BY_CODE, CREDITORS, DEBTORS, DIRECTORS_LOANS, LOANS, LONG_TERM, PURCHASE_VAT, SALES_VAT,
+                       SUSPENSE, AccountType, owner_names, profit_split)
 from .checks import booked, issue, long_date, normalise, registered_on
 from .coding import usual_accounts, unusual_account_text
 from .duplicates import WINDOW, possible_duplicates, renumbered_invoices
@@ -331,13 +331,25 @@ def _balances(tb: TrialBalance) -> dict[str, Decimal]:
     return {line.code: line.debit - line.credit for line in tb.lines}
 
 
-def _carried(b: _Books, balances: dict[str, Decimal]) -> dict[str, Decimal]:
-    """Balances at a year's end as the next year opens with them: the income and costs in the reserve (retained
-    earnings, or the owners' capital)."""
-    reserve = reserve_for(b.client.business_type)
+def _shares(client) -> tuple[tuple[int, Optional[Decimal]], ...]:
+    """The client's owners' slots and shares of the profit, as accounts.profit_split takes them."""
+    return tuple((o.slot, o.share) for o in client.owners if o.slot is not None)
+
+
+def _carried(b: _Books, balances: dict[str, Decimal], shares=None) -> dict[str, Decimal]:
+    """Balances at a year's end as the next year opens with them: the year's profit closed (accounts.profit_split) to
+    a company's retained earnings, or split between the partners' capital accounts or the LLP members' current
+    accounts by their shares (a closed year's own, given; the owners' now otherwise)."""
     carried: dict[str, Decimal] = defaultdict(lambda: ZERO)
+    profit = ZERO
     for code, balance in balances.items():
-        carried[reserve if BY_CODE[code].type.value in _PROFIT_AND_LOSS else code] += balance
+        if BY_CODE[code].type.value in _PROFIT_AND_LOSS:
+            profit += balance
+        else:
+            carried[code] += balance
+    shares = _shares(b.client) if shares is None else tuple(tuple(s) for s in shares)
+    for code, part in profit_split(b.client.business_type, shares, profit).items():
+        carried[code] += part
     return {code: balance for code, balance in carried.items() if balance != 0}
 
 
@@ -348,11 +360,14 @@ def _opening(b: _Books, n: int) -> dict[str, Decimal]:
     typed = _typed(b.opening)
     if n == 0:
         return typed
-    closed = {c.start: c.closing for c in b.client.closed_years}
+    closed = {c.start: c for c in b.client.closed_years}
     last = next((k for k in range(n - 1, -1, -1) if b.years[k].start in closed), None)
-    if last == n - 1:
-        return _carried(b, closed[b.years[last].start])
-    since, base = (-1, typed) if last is None else (last, _carried(b, closed[b.years[last].start]))
+    if last is not None:
+        year = closed[b.years[last].start]
+        carried = _carried(b, year.closing, year.shares)
+        if last == n - 1:
+            return carried
+    since, base = (-1, typed) if last is None else (last, carried)
     try:
         before = b.post(b.settings, keep=[since < p < n for p in b.placed], opening=base)
     except InvalidTransactions as exc:
@@ -388,7 +403,7 @@ def _shown(b: _Books, n: int) -> TrialBalance:
     except InvalidTransactions as stopped:
         shown = b.post(b.settings_in(n), keep=[p == n for p in b.placed], opening=_opening(b, n),
                        rules=b.rules_apply(n), skip_errors=True)
-        return shown.model_copy(update={"left_out": list(stopped.problems)})
+        return _owners_named(b, shown).model_copy(update={"left_out": list(stopped.problems)})
 
 
 def vat_figures(store: MongoStore, client_id: int, year_start: dt.date, start: Optional[dt.date] = None,
@@ -451,8 +466,25 @@ def vat_figures(store: MongoStore, client_id: int, year_start: dt.date, start: O
 
 
 def _trial_balance(b: _Books, n: int) -> TrialBalance:
-    return b.post(b.settings_in(n), keep=[p == n for p in b.placed], opening=_opening(b, n),
-                  rules=b.rules_apply(n))
+    return _owners_named(b, b.post(b.settings_in(n), keep=[p == n for p in b.placed], opening=_opening(b, n),
+                                   rules=b.rules_apply(n)))
+
+
+def _owners_named(b: _Books, tb: TrialBalance) -> TrialBalance:
+    """The trial balance with each owner's accounts named after them ("Drawings — Ann Lee")."""
+    names = owner_names(b.client.business_type, tuple((o.slot, o.name) for o in b.client.owners if o.slot is not None))
+    if not names:
+        return tb
+
+    def named(lines):
+        return [line.model_copy(update={"name": f"{BY_CODE[_first_of(line.code)].name} — {names[line.code]}"})
+                if line.code in names else line for line in lines]
+    return tb.model_copy(update={"lines": named(tb.lines), "opening": named(tb.opening)})
+
+
+def _first_of(code: str) -> str:
+    """The first owner's account of the kind code is (2252 → 2250)."""
+    return code[:3] + "0"
 
 
 def booked_rows(store: MongoStore, client_id: int, year_start: dt.date) -> list[tuple[int, Transaction]]:
@@ -599,17 +631,21 @@ def _months(start: dt.date, stop: dt.date) -> Optional[str]:
 def _pointers(tb: TrialBalance) -> list[str]:
     """What an accountant would want pointed out in the year's figures: a director's loan the director owes (a debit
     balance), which s455 taxes if it is still owed nine months after the year end."""
-    owed = sum((line.debit - line.credit for line in tb.lines if line.code == DIRECTORS_LOAN), ZERO)
     found = []
-    if owed > 0:
-        found.append(f"The Director's Loan Account is overdrawn by {_gbp(owed)} (the director owes the company). If it "
-                     "is still owed nine months after the year end, s455 tax is due on it.")
+    for line in tb.lines:
+        owed = line.debit - line.credit
+        if line.code in DIRECTORS_LOANS and owed > 0:
+            found.append(f"The {line.name} is overdrawn by {_gbp(owed)} (the director owes the company). If it is still "
+                         "owed nine months after the year end, s455 tax is due on it"
+                         + (", and a loan over £10,000 at any time in the year is a benefit in kind for the P11D."
+                            if owed > 10000 else "."))
     # More paid off a loan than the books say was owed: its opening balance is missing, or the repayments hold
     # interest that belongs in the costs.
-    loans = sum((line.debit - line.credit for line in tb.lines if line.code == LOANS), ZERO)
+    loans = sum((line.debit - line.credit for line in tb.lines if line.code in (LOANS, LONG_TERM[LOANS])), ZERO)
     if loans > 0:
         found.append(f"Loans is {_gbp(loans)} in debit: more has been repaid than the books show was borrowed. Enter "
-                     "the loan's opening balance, and move the interest in the repayments to Bank Interest Paid.")
+                     "the loan's opening balance, and move the interest in the repayments to Loan and Hire Purchase "
+                     "Interest.")
     return found
 
 
@@ -791,7 +827,7 @@ def close(store: MongoStore, client_id: int, year_start: dt.date) -> Client:
         raise InvalidInput("The trial balance must balance before the year is closed.")
     return store.close_year(client_id, ClosedYear(start=year.start, end=year.end, closed_at=now_iso(),
                                                   closing=_balances(tb),
-                                                  rules=DOCUMENT_RULES))
+                                                  rules=DOCUMENT_RULES, shares=list(_shares(b.client))))
 
 
 def reopen(store: MongoStore, client_id: int, year_start: dt.date) -> Client:

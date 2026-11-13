@@ -43,8 +43,11 @@ def test_the_workbook_has_the_trial_balance_and_the_transactions(store):
     title = tb["A1"].value   # the year the figures are for, and the day they were worked out
     assert title.startswith("Business Cube Ltd — trial balance — Year to ") and title.endswith(", as at 6 Oct 2026")
     assert [[c.value for c in row] for row in tb.iter_rows(min_row=2)] == [
-        ["Code", "Account", "Debit", "Credit"], ["1200", "Bank Current Account", 0, 72],
-        ["7502", "Telephone and Internet", 60, 0], ["2201", "Purchase VAT", 12, 0], [None, "Totals", 72, 72]]
+        ["Code", "Account", "Debit", "Credit", "Heading", "Tax", "SA103F box"],
+        ["1200", "Bank Current Account", 0, 72, "Cash at bank and in hand", None, None],
+        ["7502", "Telephone and Internet", 60, 0, "Administrative expenses", "Check: part may be disallowable", 23],
+        ["2201", "Purchase VAT", 12, 0, "Creditors: amounts falling due within one year", None, None],
+        [None, "Totals", 72, 72, None, None, None]]
     assert (tb["C3"].number_format, tb.freeze_panes) == (MONEY, "A3")
     assert [c.value for c in txs[2]] == ["Date", "Description", "Counterparty", "Document type", "In/Out", "Amount",
                                          "VAT", "Net", "Account", "Account name", "Other side", "Still owed",
@@ -111,3 +114,29 @@ def test_the_workbook_has_a_profit_and_loss_and_a_balance_sheet_that_balance(sto
     bs = {row[1]: row[2] for row in book["Balance sheet"].iter_rows(min_row=2, values_only=True)}
     assert pl["Net loss"] < 0 and pl["Net loss"] == bs["Loss for the year"]
     assert bs["Net assets"] == bs["Capital and reserves"]
+
+
+def test_the_statements_follow_the_companies_act_headings():
+    from decimal import Decimal
+    from ledgersync.export import statement_lines
+    from ledgersync.posting import _line
+    from ledgersync.models import TrialBalance
+    pounds = {"0030": 2000, "0031": -500, "1100": 900, "1200": 3000, "2250": 400, "2100": -700, "2301": -1500,
+              "2310": -300, "3000": -100, "3200": 1000, "4000": -10000, "4902": -50, "5000": 4000, "7100": 2000,
+              "7903": 150, "8800": 1300, "2320": -1300, "9998": -300}
+    lines = [_line(code, Decimal(amount)) for code, amount in sorted(pounds.items())]
+    pl, bs = statement_lines(TrialBalance(lines=lines, total_debits=0, total_credits=0, is_balanced=True, journal=[]))
+    p = {label: amount for _, label, amount, _ in pl}
+    b = {label: amount for _, label, amount, _ in bs}
+    assert (p["Turnover"], p["Gross profit"], p["Operating profit"], p["Profit before tax"], p["Net profit"]) == (
+        10000, 6000, 4000, 3900, 2600)
+    assert p["Interest receivable and similar income"] == 50 and p["Tax on profit"] == 1300
+    # The corporation tax charge comes after profit before tax, not among the overheads.
+    labels = [label for _, label, _, _ in pl]
+    assert labels.index("Profit before tax") < labels.index("Corporation Tax Charge")
+    assert (b["Tangible assets"], b["Fixed assets"]) == (1500, 1500)
+    assert b["Debtors"] == 1300   # the director owes the company 400: a debtor, not a negative creditor
+    assert b["Creditors: amounts falling due within one year"] == 2600   # with what Suspense holds in credit
+    assert b["Creditors: amounts falling due after more than one year"] == 1500
+    assert b["Net current assets"] == 1300 + 3000 - 2600
+    assert b["Net assets"] == b["Capital and reserves"] == 1500 + 1700 - 1500   # shares 100, losses 1,000, profit

@@ -12,6 +12,7 @@ from openpyxl import Workbook
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.styles import Font
 
+from .accounts import BY_CODE, Heading, TaxTreatment
 from .models import Direction, Ledger, Transaction, TrialBalance
 
 MONEY = '"£"#,##0.00'
@@ -22,6 +23,9 @@ _TYPE_NAMES = {"receipt": "Receipt", "invoice": "Invoice", "expense_claim": "Exp
                "statement": "Bank statement", "quote": "Quote", "pro_forma": "Pro forma",
                "purchase_order": "Purchase order", "remittance_advice": "Remittance advice",
                "supplier_statement": "Supplier statement", "other": "Other"}
+# How the trial balance sheet marks an account's tax treatment: an allowable one is left blank.
+_TAX_WORDS = {TaxTreatment.DISALLOWABLE: "Disallowable", TaxTreatment.CHECK: "Check: part may be disallowable",
+              TaxTreatment.NON_TRADING: "Not trading income"}
 _UNSAFE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 _SPACES = re.compile(r"\s+")
 
@@ -72,69 +76,94 @@ def _trial_balance(sheet, ledger: Ledger, balance, day: dt.date) -> None:
         for problem in balance:
             _append(sheet, [problem])
         return
-    _append(sheet, ["Code", "Account", "Debit", "Credit"])
+    _append(sheet, ["Code", "Account", "Debit", "Credit", "Heading", "Tax", "SA103F box"])
     for line in balance.lines:
-        _append(sheet, [line.code, line.name, line.debit, line.credit])
+        account = BY_CODE[line.code]
+        _append(sheet, [line.code, line.name, line.debit, line.credit, line.heading or account.heading.value,
+                        _TAX_WORDS.get(account.tax), account.sa103])
     _append(sheet, [None, "Totals", balance.total_debits, balance.total_credits])
     for row in sheet.iter_rows(min_row=3, min_col=3, max_col=4):
         for cell in row:
             cell.number_format = MONEY
     sheet.freeze_panes = "A3"
-    _widths(sheet, (8, 34, 14, 14))
+    _widths(sheet, (8, 34, 14, 14, 44, 14, 11))
 
 
 def _statements(book, ledger: Ledger, balance: TrialBalance) -> None:
-    """A "Profit and loss" sheet and a "Balance sheet" sheet, from the trial balance, as the Trial balance page lays
-    them out: income less cost of sales (the 5000s) and overheads; fixed assets (below 1000) and current assets less
-    liabilities, equal to capital and reserves with the year's profit. Suspense is on the side its balance is on."""
-    def net(line) -> Decimal:
-        return line.debit - line.credit
-
-    def block(sheet, title: str, lines, sign: int) -> Decimal:
-        total = Decimal("0.00")
-        for line in lines:
-            _append(sheet, [line.code, line.name, sign * net(line)])
-            total += sign * net(line)
-        if lines:
-            _append(sheet, [None, title, total])
-            sheet.cell(row=sheet.max_row, column=2).font = Font(bold=True)
-        return total
-
-    def finish(sheet) -> None:
+    """A "Profit and loss" sheet and a "Balance sheet" sheet, from the trial balance, laid out as the Trial balance
+    page lays them out: by the Companies Act headings each account belongs to (accounts.Heading)."""
+    pl_lines, bs_lines = statement_lines(balance)
+    for title, lines in (("profit and loss", pl_lines), ("balance sheet", bs_lines)):
+        sheet = book.create_sheet(title.capitalize())
+        _title(sheet, f"{ledger.client.name} — {title} — {ledger.year.label}")
+        for code, label, amount, total in lines:
+            _append(sheet, [code, label, amount])
+            if total:
+                sheet.cell(row=sheet.max_row, column=2).font = Font(bold=True)
         for row in sheet.iter_rows(min_row=2, min_col=3, max_col=3):
             row[0].number_format = MONEY
-        _widths(sheet, (8, 40, 16))
+        _widths(sheet, (8, 52, 16))
 
-    def total_row(sheet, title: str, amount: Decimal) -> None:
-        _append(sheet, [None, title, amount])
-        sheet.cell(row=sheet.max_row, column=2).font = Font(bold=True)
 
-    used = [line for line in balance.lines if net(line) != 0]
-    pl = book.create_sheet("Profit and loss")
-    _title(pl, f"{ledger.client.name} — profit and loss — {ledger.year.label}")
-    income = block(pl, "Total income", [l for l in used if l.type == "income"], -1)
-    cost_of_sales = [l for l in used if l.type == "expense" and l.code.startswith("5")]
-    direct = block(pl, "Cost of sales", cost_of_sales, 1)
-    if cost_of_sales:
-        total_row(pl, "Gross profit", income - direct)
-    overheads = block(pl, "Overheads", [l for l in used if l.type == "expense" and not l.code.startswith("5")], 1)
-    profit = income - direct - overheads
-    total_row(pl, "Net loss" if profit < 0 else "Net profit", profit)
-    finish(pl)
+# A statement line: an account's code (None for a total), its label, its amount, and whether it is a total.
+StatementLine = tuple[Optional[str], str, Decimal, bool]
 
-    def is_asset(line) -> bool:
-        return net(line) > 0 if line.code == "9998" else line.type == "asset"
 
-    bs = book.create_sheet("Balance sheet")
-    _title(bs, f"{ledger.client.name} — balance sheet — {ledger.year.label}")
-    fixed = block(bs, "Fixed assets", [l for l in used if is_asset(l) and l.code < "1000"], 1)
-    current = block(bs, "Current assets", [l for l in used if is_asset(l) and l.code >= "1000"], 1)
-    owed = block(bs, "Liabilities", [l for l in used if l.type == "liability" and not is_asset(l)], -1)
-    total_row(bs, "Net assets", fixed + current - owed)
-    equity = block(bs, "Capital brought forward and paid in or out", [l for l in used if l.type == "equity"], -1)
-    _append(bs, [None, "Loss for the year" if profit < 0 else "Profit for the year", profit])
-    total_row(bs, "Capital and reserves", equity + profit)
-    finish(bs)
+def statement_lines(balance: TrialBalance) -> tuple[list[StatementLine], list[StatementLine]]:
+    """The profit and loss account and the balance sheet. Income is shown as a positive amount and so are costs;
+    assets are positive and so are what is owed. Each heading lists its accounts and its total; the profit lines
+    (gross, operating, before tax) show only where there is something between them. Net assets equal capital and
+    reserves with the year's profit, an LLP's debts due to its members among them."""
+    used = [line for line in balance.lines if line.debit != line.credit]
+    pl: list[StatementLine] = []
+    bs: list[StatementLine] = []
+
+    def of(heading: Heading) -> list:
+        return [line for line in used if (line.heading or BY_CODE[line.code].heading.value) == heading.value]
+
+    def block(out: list, heading: Heading, sign: int) -> Decimal:
+        lines = of(heading)
+        total = sum((sign * (line.debit - line.credit) for line in lines), Decimal("0.00"))
+        for line in lines:
+            out.append((line.code, line.name, sign * (line.debit - line.credit), False))
+        if lines:
+            out.append((None, heading.value, total, True))
+        return total
+
+    def total(out: list, label: str, amount: Decimal) -> None:
+        out.append((None, label, amount, True))
+
+    turnover = block(pl, Heading.TURNOVER, -1)
+    cost = block(pl, Heading.COST_OF_SALES, 1)
+    if of(Heading.COST_OF_SALES):
+        total(pl, "Gross profit", turnover - cost)
+    operating = turnover - cost - block(pl, Heading.ADMINISTRATIVE, 1) + block(pl, Heading.OTHER_INCOME, -1)
+    below = (Heading.INTEREST_RECEIVABLE, Heading.INTEREST_PAYABLE, Heading.TAX)
+    if any(of(h) for h in below):
+        total(pl, "Operating profit" if operating >= 0 else "Operating loss", operating)
+    before_tax = operating + block(pl, Heading.INTEREST_RECEIVABLE, -1) - block(pl, Heading.INTEREST_PAYABLE, 1)
+    if of(Heading.TAX):
+        total(pl, "Profit before tax" if before_tax >= 0 else "Loss before tax", before_tax)
+    profit = before_tax - block(pl, Heading.TAX, 1)
+    total(pl, "Net loss" if profit < 0 else "Net profit", profit)
+
+    fixed = sum((block(bs, h, 1) for h in (Heading.INTANGIBLE, Heading.TANGIBLE, Heading.INVESTMENTS)), Decimal("0.00"))
+    if fixed or any(of(h) for h in (Heading.INTANGIBLE, Heading.TANGIBLE, Heading.INVESTMENTS)):
+        total(bs, "Fixed assets", fixed)
+    current = sum((block(bs, h, 1) for h in (Heading.STOCKS, Heading.DEBTORS, Heading.CASH)), Decimal("0.00"))
+    total(bs, "Current assets", current)
+    short = block(bs, Heading.CREDITORS_SHORT, -1)
+    total(bs, "Net current assets" if current >= short else "Net current liabilities", current - short)
+    long = block(bs, Heading.CREDITORS_LONG, -1)
+    net_assets = fixed + current - short - long
+    total(bs, "Net assets", net_assets)
+    members = block(bs, Heading.MEMBERS_DEBT, -1)
+    capital = sum((-(line.debit - line.credit) for line in of(Heading.CAPITAL)), Decimal("0.00"))
+    for line in of(Heading.CAPITAL):
+        bs.append((line.code, line.name, -(line.debit - line.credit), False))
+    bs.append((None, "Loss for the year" if profit < 0 else "Profit for the year", profit, False))
+    total(bs, "Capital and reserves", members + capital + profit)
+    return pl, bs
 
 
 def _transactions(sheet, ledger: Ledger) -> None:

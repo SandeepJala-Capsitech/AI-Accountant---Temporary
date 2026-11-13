@@ -21,7 +21,7 @@ from .checks import long_date
 from .coding import Usual, usual_accounts, usual_text
 from .file_dates import date_in_name
 from .errors import InvalidInput, LedgerSyncError, NotFound
-from .ledger import bank_choices, ensure_open, require_active
+from .ledger import bank_choices, ensure_open, owners_of, require_active
 from .matching import CARD_DAYS, names_match, same_payee
 from .models import Decision, DecisionDraft, Evidence, SavedRow, Transaction
 from .money import PENNY, ZERO, VatTreatment, vat_in_gross
@@ -275,7 +275,7 @@ def _split_vat(rows: dict[int, SavedRow], row_id: int, r: SplitVat, *, b, **_) -
     _usable(row)
     if len(r.parts) < 2:
         raise _Refused("A split needs two parts or more.")
-    allowed = {a.code for a in choosable(b.client.business_type, bank_choices(b.client))}
+    allowed = {a.code for a in choosable(b.client.business_type, bank_choices(b.client), owners_of(b.client))}
     for part in r.parts:
         if part.account_code not in allowed:
             raise _Refused(f"{part.account_code} isn't an account {b.client.name} can use.")

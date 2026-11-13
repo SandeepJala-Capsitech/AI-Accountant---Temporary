@@ -10,8 +10,7 @@ from collections import Counter
 from decimal import Decimal
 from typing import Optional
 
-from .accounts import (BY_CODE, CARDS, CLEARING, DEBTORS, DIRECTORS_LOAN, DRAWINGS, LOANS, SUSPENSE, AccountType,
-                       pays_cards)
+from .accounts import (BY_CODE, CARDS, CLEARING, DEBTORS, LOANS, SUSPENSE, AccountType, owner_code, pays_cards)
 from .payees import card_payment, on_account, personal, processor
 from .checks import OWED_TO, issue, normalise
 from .models import DOCUMENT_TYPES, BusinessSettings, Direction, Transaction
@@ -262,7 +261,7 @@ def _recoded(code: str, row: dict, settings: BusinessSettings) -> str:
         return DEBTORS
     if (row.get("direction") != "in" and (loose or owners) and settings.business_type
             and account.type != AccountType.INCOME and personal(*names, business_type=settings.business_type)):
-        return DIRECTORS_LOAN if settings.business_type == "limited_company" else DRAWINGS
+        return owner_code(settings.business_type, "drawings", settings.owners)
     return code
 
 

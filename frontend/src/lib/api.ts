@@ -81,6 +81,8 @@ export interface TrialBalanceLine {
   code: string
   name: string
   type: string
+  heading?: string      // where it goes in the accounts, such as 'Tangible assets'; missing from older APIs
+  tax?: string | null   // an income or cost account's tax treatment: allowable, disallowable, check or non_trading
   debit: string
   credit: string
 }

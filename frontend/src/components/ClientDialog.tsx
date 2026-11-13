@@ -1,12 +1,13 @@
 'use client'
 
 import { useState, type FormEvent } from 'react'
-import type { AiReviewMode, BankAccountKind, BusinessType, Client, ClientFields } from '@/lib/clients'
-import { bankAccountsLeft, BANK_KINDS, BUSINESS_TYPES, clientFormErrors } from '@/lib/clientRules'
+import type { AiReviewMode, BankAccountKind, BusinessType, Client, ClientFields, Owner } from '@/lib/clients'
+import { bankAccountsLeft, BANK_KINDS, BUSINESS_TYPES, clientFormErrors, MAX_OWNERS, OWNER_WORDS, ownersToSend } from '@/lib/clientRules'
 
 const NEW_CLIENT: ClientFields = {
   name: '', business_type: 'limited_company', contact_name: '', contact_email: '', contact_phone: '', vat_registered: true,
-  first_year_end: '', bank_accounts: [{ code: '', name: 'Bank current account', kind: 'current' }], folder: '', ai_review: 'automatic',
+  first_year_end: '', bank_accounts: [{ code: '', name: 'Bank current account', kind: 'current' }], owners: [], folder: '',
+  ai_review: 'automatic',
 }
 
 // Adds a client, or edits one. The responsible person is the client's own contact. A bank account that has a code
@@ -21,7 +22,8 @@ export default function ClientDialog({ client, taken, onCancel, onSave }: {
     name: client.name, business_type: client.business_type, contact_name: client.contact_name,
     contact_email: client.contact_email, contact_phone: client.contact_phone, vat_registered: client.vat_registered,
     vat_from: client.vat_from ?? '',
-    first_year_end: client.first_year_end, bank_accounts: client.bank_accounts.map(a => ({ ...a })), folder: client.folder,
+    first_year_end: client.first_year_end, bank_accounts: client.bank_accounts.map(a => ({ ...a })),
+    owners: (client.owners ?? []).map(o => ({ ...o, share: o.share ?? '' })), folder: client.folder,
     ai_review: client.ai_review ?? 'automatic', company_number: client.company_number ?? '', utr: client.utr ?? '',
     vat_number: client.vat_number ?? '', paye_reference: client.paye_reference ?? '',
   } : NEW_CLIENT))
@@ -33,6 +35,11 @@ export default function ClientDialog({ client, taken, onCancel, onSave }: {
   const changeAccount = (index: number, change: { name?: string; kind?: BankAccountKind }) =>
     set('bank_accounts', fields.bank_accounts.map((a, i) => (i === index ? { ...a, ...change } : a)))
   const kindToAdd = (Object.keys(BANK_KINDS) as BankAccountKind[]).find(kind => bankAccountsLeft(fields.bank_accounts, kind) > 0)
+  const owners = fields.owners ?? []
+  const ownerWord = OWNER_WORDS[fields.business_type]
+  const shared = fields.business_type === 'partnership' || fields.business_type === 'llp'
+  const changeOwner = (index: number, change: Partial<Owner>) =>
+    set('owners', owners.map((o, i) => (i === index ? { ...o, ...change } : o)))
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
@@ -41,7 +48,7 @@ export default function ClientDialog({ client, taken, onCancel, onSave }: {
     setSaving(true)
     setError('')
     try {
-      await onSave(fields)
+      await onSave({ ...fields, owners: ownersToSend(fields.business_type, fields.owners) })
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
       setSaving(false)
@@ -145,6 +152,35 @@ export default function ClientDialog({ client, taken, onCancel, onSave }: {
           </div>
           {showErrors && errors.bank_accounts && <span className="field-error">{errors.bank_accounts}</span>}
         </fieldset>
+        {ownerWord && (
+          <fieldset className="field bank-accounts">
+            <legend>{ownerWord[0].toUpperCase() + ownerWord.slice(1)}s</legend>
+            {owners.map((owner, i) => (
+              <div className="bank-row" key={i}>
+                <input className="input" value={owner.name} aria-label={`${ownerWord} ${i + 1} name`}
+                       onChange={e => changeOwner(i, { name: e.target.value })} placeholder="e.g. Ann Lee" />
+                {shared && (
+                  <input className="input" inputMode="decimal" value={owner.share ?? ''} aria-label={`${ownerWord} ${i + 1} profit share`}
+                         onChange={e => changeOwner(i, { share: e.target.value })} placeholder="Profit share %" />
+                )}
+                <button type="button" className="link-btn danger" onClick={() => set('owners', owners.filter((_, j) => j !== i))}>
+                  Remove
+                </button>
+              </div>
+            ))}
+            <div>
+              <button type="button" className="btn btn-small" disabled={owners.length >= MAX_OWNERS}
+                      onClick={() => set('owners', [...owners, { name: '', share: '' }])}>
+                Add {ownerWord}
+              </button>
+            </div>
+            <span className="hint">
+              Each {ownerWord} gets accounts of their own{fields.business_type === 'limited_company' ? ' (a director’s loan account)' : ''}.
+              {shared ? ' Leave the shares empty to share the profit equally.' : ''}
+            </span>
+            {showErrors && errors.owners && <span className="field-error">{errors.owners}</span>}
+          </fieldset>
+        )}
         <label className="field">
           <span>Folder</span>
           <input className="input" value={fields.folder} onChange={e => set('folder', e.target.value)}

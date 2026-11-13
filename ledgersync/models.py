@@ -52,6 +52,25 @@ class BankAccount(BaseModel):
         return "" if value is None else str(value).strip()
 
 
+class Owner(BaseModel):
+    """One of a client's directors, partners or LLP members: their name, their share of the profit in percent (a
+    partner's or member's), and their slot among the chart's owners' accounts (accounts.owner_slots; None until
+    ledger.assign_owners gives them the next free one)."""
+    slot: Optional[int] = None
+    name: str
+    share: Optional[Decimal] = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _trimmed(cls, value):
+        return "" if value is None else str(value).strip()
+
+    @field_validator("share", mode="before")
+    @classmethod
+    def _empty_share(cls, value):
+        return None if value == "" else value
+
+
 class Issue(BaseModel):
     code: str
     message: str
@@ -72,6 +91,8 @@ class BusinessSettings(BaseModel):
                                                # already in the opening balances
     bank_account: str = BANK                   # the default bank: a receipt's, and a bank line's without its own
     bank_accounts: tuple[str, ...] = (BANK,)   # the client's bank accounts and cards, by code
+    owners: tuple[int, ...] = ()               # the slots of its directors, partners or members, in order; () when
+                                               # none are listed: the first owner's accounts (slot 0) are used
 
 
 class Settlement(BaseModel):
@@ -249,6 +270,8 @@ class TrialBalanceLine(BaseModel):
     code: str
     name: str
     type: str
+    heading: str = ""              # accounts.Heading: where it goes in the profit and loss account or balance sheet
+    tax: Optional[str] = None      # accounts.TaxTreatment of an income or cost account; None on the balance sheet
     debit: Decimal
     credit: Decimal
 
@@ -329,6 +352,7 @@ class ClientFields(BaseModel):
     vat_from: Optional[dt.date] = None  # the day the VAT registration started; None: registered throughout
     bank_accounts: list[BankAccount] = Field(
         default_factory=lambda: [BankAccount(code=BANK, name="Bank current account", kind="current")])
+    owners: list[Owner] = Field(default_factory=list)   # its directors, partners or members; none for a sole trader
     folder: str = ""                   # where the client's files are on the computer the site runs on; "" for none
     ai_review: Literal["automatic", "suggest", "off"] = "automatic"   # what the background AI review may do
     # The client's references, as its papers print them: kept and shown, used by nothing yet.
@@ -359,6 +383,9 @@ class ClosedYear(BaseModel):
     # "document_rules" once the year was closed with the document rules applied; None for a year closed before
     # them, which is still worked out without them (closed is closed).
     rules: Optional[str] = None
+    # The owners' slots and shares its profit was split by when it closed (accounts.profit_split), so a later change
+    # to them leaves it as it was; None for a year closed before they were kept, which is split by today's.
+    shares: Optional[list[tuple[int, Optional[Decimal]]]] = None
 
 
 class Client(ClientFields):
@@ -380,6 +407,7 @@ class ClientPatch(BaseModel):
     vat_registered: Optional[bool] = None
     vat_from: Optional[dt.date] = None             # null clears it: registered throughout
     bank_accounts: Optional[list[BankAccount]] = None
+    owners: Optional[list[Owner]] = None
     first_year_end: Optional[dt.date] = None
     folder: Optional[str] = None
     ai_review: Optional[Literal["automatic", "suggest", "off"]] = None
