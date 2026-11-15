@@ -69,7 +69,6 @@ export default function OverviewSection() {
     ['PAYE reference', client.paye_reference || '—'],
     ['First year end', fullDate(client.first_year_end)],
     ['Bank accounts', client.bank_accounts.map(a => a.name).join(', ') || '—'],
-    ['Folder', client.folder || '—'],
   ]
 
   const ledgerNote = postedLedgerNote(unposted)

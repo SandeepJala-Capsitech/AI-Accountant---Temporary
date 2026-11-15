@@ -104,8 +104,8 @@ def test_a_total_put_out_by_a_persons_change_is_said_on_the_line_they_changed(st
     store.add_upload(client.id, "Matt.xlsx", "table", lines)
     hotel, ee = books.ledger(store, client.id, YEAR).transactions
     hotel, ee = ledger.change_row(store, client.id, ee.id, RowPatch(gross=Decimal("30.22"))).transactions
-    # (the claim's lines have no receipts, so they also say they are held; that is not what this is about)
-    totals = lambda r: [i for i in r.issues if i.code != "needs_document"]
+    # (the claim's hotel line has no receipt, so it also says one is still wanted; that is not what this is about)
+    totals = lambda r: [i for i in r.issues if i.code != "document_wanted"]
     assert ([i.code for i in totals(hotel)], [i.code for i in totals(ee)], totals(ee)[0].related) == (
         [], ["total_mismatch"], [hotel.id])
 
@@ -152,8 +152,8 @@ def test_the_clients_page_works_a_client_out_again_only_after_its_work_changes(s
     drawings = store.add_upload(cube.id, "a.pdf", "pdf", [row(account_code="3260", document_type="receipt")])
     store.add_upload(jo.id, "b.pdf", "pdf", [row()])
     [saved] = store.rows(cube.id)
-    read, rows = [], store.rows
-    monkeypatch.setattr(store, "rows", lambda client_id: read.append(client_id) or rows(client_id))
+    read, whole = [], store.whole   # a client's ledger is built from one read of the whole client
+    monkeypatch.setattr(store, "whole", lambda client_id: read.append(client_id) or whole(client_id))
 
     def visit():
         read.clear()
@@ -355,9 +355,11 @@ def test_a_row_a_person_corrected_is_booked_by_the_trial_balance_as_the_ledger_b
     assert [i.code for i in built.transactions[1].issues] == ["total_mismatch"]
     assert booked_in_the_trial_balance(store, client.id) == booked_in_the_ledger(store, client.id)
     tb = books.trial_balance(store, client.id, YEAR)
-    # the corrected amount, not the one first read; the £173.75 hotel line has no document, so it sits in Suspense
-    assert [(l.code, l.debit) for l in tb.lines if l.type == "expense"] == [("7502", Decimal("30.22"))]
-    assert [(l.code, l.debit) for l in tb.lines if l.code == "9998"] == [("9998", Decimal("173.75"))]
+    # the corrected amount, not the one first read; the £173.75 hotel line has no receipt, and is booked as the claim
+    # shows it, so nothing sits in Suspense
+    assert [(l.code, l.debit) for l in tb.lines if l.type == "expense"] == [("7402", Decimal("173.75")),
+                                                                            ("7502", Decimal("30.22"))]
+    assert [(l.debit, l.credit) for l in tb.lines if l.code == "9998" and (l.debit or l.credit)] == []
 
 
 def test_the_trial_balance_and_the_ledger_match_with_the_same_decisions(store, monkeypatch):

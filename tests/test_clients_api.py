@@ -184,8 +184,9 @@ def test_a_line_added_by_hand_joins_its_document_and_clears_its_total_warning(ap
     [first] = manual(client, cid, claim)["transactions"]
     assert "total_mismatch" in [i["code"] for i in first["issues"]]
     rows = manual(client, cid, {**claim, "date": "2026-09-24", "gross": "54.00", "document_total": None})["transactions"]
-    # (the claim's lines have no receipts, so they say they are held; that is not what this is about)
-    assert [[i["code"] for i in r["issues"] if i["code"] != "needs_document"] for r in rows] == [[], []] and {r["owed"] for r in rows} == {"90.00"}
+    # (the claim's lines have no receipts, so the £54.00 one says its receipt is still wanted; that is not what this
+    # is about)
+    assert [[i["code"] for i in r["issues"] if i["code"] != "document_wanted"] for r in rows] == [[], []] and {r["owed"] for r in rows} == {"90.00"}
 
 
 def test_an_archived_client_takes_no_new_rows(api):
@@ -728,9 +729,10 @@ def test_a_receipt_the_statement_does_not_show_is_parked_until_a_person_says_who
            {**line, "date": "2026-05-22", "document_ref": "b"}, tv)
     rows = client.get(f"/api/clients/{cid}/years/{YEAR}/ledger").json()["transactions"]
     parked = next(r for r in rows if r["document_type"] == "receipt")
-    assert parked["contra_account_code"] == "9998" and [i["code"] for i in parked["issues"]] == [
-        "needs_document", "not_on_statement"] or [i["code"] for i in parked["issues"]] == ["not_on_statement",
-                                                                                         "needs_document"]
+    # Off the bank, in Suspense, until someone says who paid. The receipt shows no VAT, so it is the record of the
+    # cost and no VAT invoice is waited for: it only notes that none is reclaimed.
+    assert parked["contra_account_code"] == "9998"
+    assert sorted(i["code"] for i in parked["issues"]) == ["not_on_statement", "vat_unclaimed"]
     bank = next(c for c in client.get(f"/api/clients/{cid}/years/{YEAR}/bank").json() if c["code"] == "1200")
     assert bank["books"] == "-29.00"           # only the two bank lines: the receipt is not on the bank
 
@@ -743,3 +745,31 @@ def test_a_receipt_the_statement_does_not_show_is_parked_until_a_person_says_who
     said = client.patch(f"/api/clients/{cid}/rows/{parked['id']}", json={"bank_account": "2250"}).json()
     paid = next(r for r in said["transactions"] if r["id"] == parked["id"])
     assert paid["contra_account_code"] == "2250" and "not_on_statement" not in [i["code"] for i in paid["issues"]]
+
+
+def test_a_request_reads_the_client_once_however_many_figures_it_works_out(api, monkeypatch):
+    # Each read is a round trip to the database, which may be far away: the posted trial balance made twelve.
+    from pymongo.collection import Collection
+    client = api()
+    cid = add(client)["id"]
+    manual(client, cid, {**LINE, "date": "2026-05-11"})
+    assert client.get(f"/api/clients/{cid}/years/{YEAR}/posted-trial-balance").status_code == 200   # settled by now
+    reads = []
+    for name in ("find", "aggregate"):
+        real = getattr(Collection, name)
+        monkeypatch.setattr(Collection, name, lambda self, *a, _real=real, **k: (
+            reads.append(self.name) if self.name == "clients" else None) or _real(self, *a, **k))
+    for route in ("posted-trial-balance", "vat", "suggestions", "ledger"):
+        reads.clear()
+        assert client.get(f"/api/clients/{cid}/years/{YEAR}/{route}").status_code == 200
+        assert reads == ["clients"], route
+
+
+def test_a_change_made_in_a_request_is_in_what_the_request_answers(api):
+    # The request reads the client once, and reads it again after its own change.
+    client = api()
+    cid = add(client)["id"]
+    [row] = manual(client, cid, {**LINE, "date": "2026-05-11"})["transactions"]
+    changed = client.patch(f"/api/clients/{cid}/rows/{row['id']}", json={"description": "Line rental"}).json()
+    assert [r["description"] for r in changed["transactions"]] == ["Line rental"]
+    assert client.patch(f"/api/clients/{cid}", json={"contact_name": "Sam Lee"}).json()["contact_name"] == "Sam Lee"

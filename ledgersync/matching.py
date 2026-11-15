@@ -12,7 +12,7 @@ from itertools import combinations
 from typing import Optional, Sequence
 
 from .accounts import BY_CODE, CLEARING, CREDITORS, DEBTORS, DIRECTORS_LOANS, STAFF_EXPENSES, SUSPENSE, AccountType
-from .checks import MATCHING_ISSUES, PAYROLL_OWED, booked, issue, long_date, reclaims_vat, registered_on
+from .checks import MATCHING_ISSUES, PAYROLL_OWED, booked, is_fare, issue, long_date, reclaims_vat, registered_on
 from .models import BusinessSettings, Direction, Issue, OpenItem, Settlement, Transaction
 from .payees import processor
 from .money import PENNY, ZERO, VatTreatment
@@ -913,6 +913,7 @@ def _claim_vat(line: Transaction, document: _Document, rows: list[Transaction],
     if not line.vat or shown >= line.vat:
         return [], {}
     first = rows[document.rows[0]]
+    fine = "claim_vat" in first.accepted   # a person looked, and said it is fine as it is booked
     kind = _NUMBERED.get(first.document_type, "document")
     if (len(document.rows) == 1 and first.vat is None and first.document_net is not None
             and document.total - first.document_net == line.vat and reclaims_vat(first, settings)):
@@ -923,6 +924,16 @@ def _claim_vat(line: Transaction, document: _Document, rows: list[Transaction],
             return [offer], {"vat_found": line.vat}
         return ([issue("vat_worked_out", f"VAT {_gbp(line.vat)} booked from its prices: {prices}.", "info")],
                 {"vat_posted": line.vat, "net": first.gross - line.vat})
+    if (len(document.rows) == 1 and first.vat is None and first.vat_treatment is None and line.vat < first.gross
+            and reclaims_vat(first, settings) and not is_fare(first)):
+        # The document is silent on VAT and the claim shows it: the claim is the person's record of the purchase, so
+        # its VAT is booked and reclaimed, and the row says a VAT invoice is still wanted. (A document that shows a
+        # VAT figure of its own, even nil, is not silent: below. A fare is zero-rated whatever the claim says.)
+        said = [] if fine else [issue("claim_vat", f"VAT {_gbp(line.vat)} booked as the claim shows it; the {kind} "
+                                                   "shows none. Get a VAT invoice for this.")]
+        return said, {"vat_posted": line.vat, "net": first.gross - line.vat, "vat_from_claim": True}
+    if fine:
+        return [], {}
     on_it = f"only {_gbp(shown)}" if shown else "none"
     return [issue("claim_vat", f"The claim shows VAT {_gbp(line.vat)}; the {kind} shows {on_it}. Only the {kind}'s "
                                "VAT is reclaimed.")], {}

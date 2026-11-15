@@ -38,8 +38,8 @@ def test_the_limits_are_those_the_accountant_chose():
 @pytest.mark.parametrize("kind,gross,vat_no,expected", [
     ("statement", "49.99", None, ("book", False, None)),
     ("statement", "50.00", None, ("hold", False, "receipt_or_invoice")),
-    ("expense_claim", "84.20", None, ("hold", False, "receipt_or_invoice")),
-    ("expense_claim", "20.00", None, ("book", False, None)),
+    ("expense_claim", "84.20", None, ("book", True, None)),   # a claim line is booked as the claim shows it
+    ("expense_claim", "20.00", None, ("book", True, None)),
     ("receipt", "120.00", "GB123456789", ("book", True, None)),
     ("receipt", "120.00", None, ("book", False, None)),
     ("receipt", "250.00", "GB123456789", ("book", True, None)),
@@ -54,8 +54,8 @@ def test_document_rule(kind, gross, vat_no, expected):
     assert verdict(document_rule(tx, SETTINGS)) == expected
 
 
-def test_a_receipt_showing_no_vat_reclaims_none():
-    assert document_rule(receipt("120.00", vat=None, vat_no="GB123456789"), SETTINGS).reclaim_vat is False
+def test_a_receipt_showing_no_vat_and_no_sign_of_it_reclaims_none():
+    assert document_rule(receipt("120.00", vat=None), SETTINGS).reclaim_vat is False
 
 
 def test_a_document_that_is_not_a_vat_invoice_reclaims_nothing():
@@ -179,9 +179,10 @@ def test_a_purchase_parked_in_suspense_as_unclear_falls_under_the_document_rule(
     assert verdict(document_rule(parked(gross), SETTINGS)) == expected
 
 
-def test_an_unclear_expense_claim_line_is_held_too():
-    assert verdict(document_rule(parked("84.20", document_type="expense_claim"), SETTINGS)) == (
-        "hold", False, "receipt_or_invoice")
+def test_an_unclear_expense_claim_line_is_covered_too_and_says_its_document_is_wanted():
+    # A claim line is booked as the claim shows it (here to Suspense, its account being unclear), and says so.
+    rule = document_rule(parked("84.20", document_type="expense_claim"), SETTINGS)
+    assert (verdict(rule), rule.unbacked) == (("book", True, None), True)
 
 
 def test_money_in_parked_as_unclear_books():
@@ -219,7 +220,7 @@ def test_a_reason_on_a_row_the_rules_book_anyway_changes_nothing():
 def test_a_claim_line_its_bill_backs_is_booked_with_its_vat_kept_in_the_cost():
     from ledgersync.models import Settlement
     line = ready(document_type="expense_claim", gross=D("120.00"), account_code="7400")
-    assert verdict(document_rule(line, SETTINGS)) == ("hold", False, "receipt_or_invoice")
+    assert verdict(document_rule(line, SETTINGS)) == ("book", True, None)   # as the claim shows it, until it is backed
     backed = line.model_copy(update={"documented_by": Settlement(ref="bill", amount=D("130.00"), kind="invoice")})
     assert verdict(document_rule(backed, SETTINGS)) == ("book", False, None)
 
@@ -261,10 +262,117 @@ def test_a_mileage_claim_is_its_own_record():
     # "Business mileage in own car, 320 miles @ 45p" was held in Suspense for a receipt that can't exist.
     rule = document_rule(_line("expense_claim", "7400", "144.00", "Business mileage in own car, 320 miles @ 45p"), SETTINGS)
     assert (rule.action, rule.reclaim_vat) == ("book", False)
-    assert document_rule(_line("expense_claim", "7400", "144.00", "Train to Leeds"), SETTINGS).action == "hold"
+    other = document_rule(_line("expense_claim", "7400", "144.00", "Train to Leeds"), SETTINGS)
+    assert (other.action, other.unbacked) == ("book", True)   # any other claim line says its receipt is wanted
 
 
 def test_business_rates_are_never_asked_for_a_vat_invoice():
     rates = document_rule(_line("statement", "7103", "310.00", "Rushmoor BC, business rates"), SETTINGS)
     assert (rates.action, rates.needs) == ("hold", "receipt_or_invoice")
     assert document_rule(_line("statement", "7500", "310.00"), SETTINGS).needs == "vat_invoice"
+
+
+# ─── VAT a person entered or confirmed ─────────────────────────────────────────
+
+def test_vat_a_person_entered_is_reclaimed_where_the_rules_alone_would_hold_the_row():
+    # A £547.84 booking confirmation: over £250 and not a VAT invoice, so held; with the VAT a person typed, booked.
+    held = receipt("547.84", vat="91.31", account="7402", not_vat_invoice=True)
+    assert verdict(document_rule(held, SETTINGS)) == ("hold", False, "vat_invoice")
+    theirs = receipt("547.84", vat="91.31", account="7402", not_vat_invoice=True, vat_confirmed=True)
+    rule = document_rule(theirs, SETTINGS)
+    assert (verdict(rule), rule.confirmed) == (("book", True, None), True) and "person" in rule.reason
+    lines = {l.code: (l.debit, l.credit) for l in journal_with_rule(theirs, 0, rule)}
+    assert lines["7402"] == (D("456.53"), D("0")) and lines["2201"] == (D("91.31"), D("0")) and "9998" not in lines
+
+
+def test_vat_a_person_entered_is_reclaimed_on_a_receipt_that_is_not_a_vat_invoice_and_a_line_with_no_receipt():
+    small = receipt("12.00", vat="2.00", vat_confirmed=True)   # no supplier VAT number: kept in the cost otherwise
+    assert verdict(document_rule(receipt("12.00", vat="2.00"), SETTINGS)) == ("book", False, None)
+    assert verdict(document_rule(small, SETTINGS)) == ("book", True, None)
+    line = ready(document_type="statement", gross=D("300.00"), vat=D("50.00"), account_code="7500", vat_confirmed=True)
+    assert verdict(document_rule(line, SETTINGS)) == ("book", True, None)
+
+
+def test_confirming_changes_nothing_where_the_rules_reclaim_already_or_there_is_no_vat():
+    already = document_rule(receipt("12.00", vat="2.00", vat_no="123456789", vat_confirmed=True), SETTINGS)
+    assert (verdict(already), already.confirmed) == (("book", True, None), False)
+    none = document_rule(receipt("547.84", account="7402", vat_confirmed=True), SETTINGS)   # no VAT on the row
+    assert (verdict(none), none.confirmed) == (("book", False, None), False)
+
+
+def test_a_receipt_over_250_that_shows_no_vat_is_booked_whole_and_one_that_shows_vat_is_held():
+    # A £447.28 hotel booking confirmation: no VAT on it, so no VAT invoice would add anything. The receipt is the
+    # record of the cost.
+    stay = receipt("447.28", account="7402", description="Booking.com, hotel stay")
+    rule = document_rule(stay, SETTINGS)
+    assert (verdict(rule), rule.large_no_vat) == (("book", False, None), True)
+    lines = {l.code: l.debit for l in journal_with_rule(stay, 0, rule)}
+    assert lines["7402"] == D("447.28") and "9998" not in lines and "2201" not in lines
+    assert verdict(document_rule(receipt("447.28", vat="74.55"), SETTINGS)) == ("hold", False, "vat_invoice")
+    assert verdict(document_rule(statement_line("447.28"), SETTINGS)) == ("hold", False, "vat_invoice")   # no receipt
+
+
+# ─── VAT a receipt shows is there, without printing how much ───────────────────
+
+def worked_out(tx: Transaction) -> tuple:
+    """The VAT booked, whether it is reclaimed, and whether the row says it was worked out."""
+    return tx.vat_posted, document_rule(tx, SETTINGS).reclaim_vat, "vat_implied" in [i.code for i in tx.issues]
+
+
+def test_a_receipt_with_the_suppliers_vat_number_and_no_vat_amount_has_its_vat_worked_out_and_reclaimed():
+    # Two burger receipts print the VAT number and a total, no VAT line: a sixth of each is VAT.
+    assert worked_out(receipt("14.70", vat_no="516176005", account="7406")) == (D("2.45"), True, True)
+    assert worked_out(receipt("13.55", vat_no="516176005", account="7406")) == (D("2.26"), True, True)
+    burger = receipt("14.70", vat_no="516176005", account="7406")
+    lines = {l.code: l.debit for l in journal_with_rule(burger, 0, document_rule(burger, SETTINGS))}
+    assert (lines["7406"], lines["2201"]) == (D("12.25"), D("2.45"))
+
+
+def test_a_receipt_that_says_vat_is_included_has_it_worked_out_and_reclaimed_without_a_number():
+    assert worked_out(receipt("14.70", account="7406", vat_stated=True)) == (D("2.45"), True, True)
+    assert worked_out(receipt("14.70", account="7406")) == (D("0.00"), False, False)   # no sign of VAT: none
+
+
+def test_vat_is_not_worked_out_where_the_document_or_what_it_is_for_says_there_is_none():
+    # a fare is zero-rated, whoever prints a VAT number on the ticket
+    assert worked_out(receipt("21.20", vat_no="791726106", counterparty="Trainline",
+                              description="Stansted Airport to London Liverpool Street train tickets"))[::2] == (D("0.00"), False)
+    assert worked_out(receipt("128.98", vat_no="GB1", description="easyJet flight Glasgow to London"))[::2] == (D("0.00"), False)
+    # the receipt prints VAT of nothing (cold food to take away): shown, so not worked out
+    printed = ready(document_type="receipt", gross=D("4.00"), vat=D("0.00"), account_code="7406", supplier_vat_number="GB1")
+    assert worked_out(printed) == (D("0.00"), False, False)
+    assert worked_out(receipt("14.70", vat_no="GB1", account="7406", not_vat_invoice=True))[::2] == (D("0.00"), False)
+    assert worked_out(receipt("600.00", vat_no="GB1", account="7504"))[::2] == (D("0.00"), False)   # over £250
+    assert worked_out(receipt("60.00", vat_no="GB1", account="8204"))[::2] == (D("0.00"), False)   # insurance: exempt
+    assert worked_out(statement_line("14.70"))[::2] == (D("0.00"), False)                          # a bank line
+
+
+def test_a_fare_is_zero_rated_so_it_is_never_held_for_a_vat_invoice():
+    # A £447.28 flight with VAT someone typed on it: booked whole to Travel, the VAT not reclaimed.
+    flight = receipt("447.28", vat="74.55", description="British Airways - Air travel Glasgow to London")
+    rule = document_rule(flight, SETTINGS)
+    assert verdict(rule) == ("book", False, None) and "zero-rated" in rule.reason
+    lines = {l.code: l.debit for l in journal_with_rule(flight, 0, rule)}
+    assert lines["7400"] == D("447.28") and "9998" not in lines and "2201" not in lines
+    abroad = receipt("612.00", description="Emirates flight London to Delhi")
+    assert verdict(document_rule(abroad, SETTINGS)) == ("book", False, None)
+    # with no receipt at all, a fare over £250 still wants one, but not a VAT invoice
+    line = ready(document_type="statement", gross=D("447.28"), account_code="7400", description="BRITISH AIRWAYS flight")
+    assert verdict(document_rule(line, SETTINGS)) == ("hold", False, "receipt_or_invoice")
+    # anything else that size showing VAT is still held for its VAT invoice
+    assert verdict(document_rule(receipt("447.28", vat="74.55", description="Laptop"), SETTINGS)) == ("hold", False, "vat_invoice")
+
+
+def test_a_claim_line_with_no_receipt_is_booked_as_the_claim_shows_it_and_says_a_document_is_wanted():
+    # A £457.20 hotel on the claim sheet with £76.20 VAT and no receipt: on Hotels, the VAT reclaimed.
+    line = ready(document_type="expense_claim", gross=D("457.20"), vat=D("76.20"), account_code="7402",
+                 counterparty="Mark McNee", description="Mark McNee - Innside Liverpool")
+    rule = document_rule(line, SETTINGS)
+    assert (verdict(rule), rule.unbacked) == (("book", True, None), True)
+    lines = {l.code: l.debit for l in journal_with_rule(line, 0, rule)}
+    assert (lines["7402"], lines["2201"]) == (D("381.00"), D("76.20")) and "9998" not in lines
+    small = ready(document_type="expense_claim", gross=D("20.00"), account_code="7400")   # under £50, no VAT: nothing said
+    assert document_rule(small, SETTINGS).unbacked is False
+    assert document_rule(ready(document_type="expense_claim", gross=D("20.00"), vat=D("3.33"), account_code="7500"),
+                         SETTINGS).unbacked is True
+    assert verdict(document_rule(statement_line("457.20"), SETTINGS)) == ("hold", False, "vat_invoice")   # a bank line waits

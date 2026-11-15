@@ -166,3 +166,18 @@ def test_settling_suggests_the_usual_account_for_a_bill_on_another(store, record
     [d] = [d for d in records.decisions(acme, YEAR_1) if d.action == "change_account"]
     assert (d.status, d.actor) == ("suggested", "rules")
     assert d.after == {str(d.row_ids[0]): {"account_code": "7502"}}
+
+
+def test_settling_a_year_that_is_up_to_date_reads_the_client_once(store, records, acme, monkeypatch):
+    # Settling works out the automatic dates, the suggestions, the questions and the posting from one copy of the
+    # client; each read it saves is a round trip to the database.
+    from pymongo.collection import Collection
+    add_rows(store, acme, travel_line(), year_start=YEAR_1)
+    upkeep.settle(store, records, acme, YEAR_1)
+    reads = []
+    for name in ("find", "aggregate"):
+        real = getattr(Collection, name)
+        monkeypatch.setattr(Collection, name, lambda self, *a, _real=real, **k: (
+            reads.append(self.name) if self.name == "clients" else None) or _real(self, *a, **k))
+    upkeep.settle(store, records, acme, YEAR_1)
+    assert reads == ["clients"]

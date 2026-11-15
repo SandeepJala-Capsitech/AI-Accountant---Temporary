@@ -329,6 +329,7 @@ def to_transactions(rows: list[dict], source: str, settings: BusinessSettings, o
                          document_total=_printed_total(row) if key else None,
                          document_net=abs(net) if net is not None and not statement else None,
                          not_vat_invoice=not statement and bool(row.get("not_vat_invoice")),
+                         vat_stated=not statement and vat is None and bool(row.get("vat_stated")),
                          total_worked_out=_worked_out(row, printed), cis_deducted=cis,
                          document_ref=refs[key] if key else uuid.uuid4().hex[:12],
                          balance=to_money(row.get("balance")) if statement else None,

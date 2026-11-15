@@ -167,6 +167,22 @@ class Transaction(BaseModel):
                                                    # id (Not the same): never paired with it or asked about
     without_document: Optional[str] = None         # a person booked it without the receipt or invoice the document
                                                    # rules want, for this reason: no VAT reclaimed (never the AI)
+    # Its receipt or invoice says VAT is charged or included (the word, or a rate) without printing the amount: with
+    # the supplier's VAT number, what lets the ledger work the VAT out of the amount (checks.vat_implied).
+    vat_stated: bool = False
+    # Set by matching, never saved: the row's VAT (vat_posted) is what its expense claim shows, its own receipt or
+    # invoice showing none. The claim is the person's record of it, so the document rules reclaim it, and the row
+    # says a VAT invoice is still wanted.
+    vat_from_claim: bool = False
+    # A person entered the row's VAT, or said to reclaim it: the VAT is theirs to vouch for, so the document rules
+    # reclaim it whatever the document is (a booking confirmation, a receipt over the limit, a line with no receipt).
+    # Set when a person edits the VAT on a page or tells the chat to; never by the reading or the AI's own decision.
+    vat_confirmed: bool = False
+    # Set by the ledger, never saved: the VAT on the row (vat_posted) that the document rules do not reclaim, because
+    # the row is held in Suspense or its document is not a VAT invoice, and why. The books then hold the whole
+    # amount with no VAT, so a page shows that, and says where the VAT went.
+    vat_not_reclaimed: Optional[Decimal] = None
+    vat_not_reclaimed_why: Optional[str] = None
     link: Optional[list[str]] = None               # a person's decision on a bank line: None automatic,
                                                    # [] not a payment of any document, refs: pays these
     # Inputs too, on a bank statement row: the running balance printed on its line and the statement's
@@ -601,6 +617,9 @@ class RowPatch(BaseModel):
     # A service from abroad with no VAT charged, which the business accounts for itself (the reverse charge).
     reverse_charge: Optional[bool] = None
     accepted: Optional[list[str]] = None     # the warnings a person said are fine, by code (checks.ACCEPTABLE)
+    # Reclaim the row's VAT on the person's say (True), or leave it to the document rules again (False). A VAT amount
+    # a person sends sets it by itself: ledger.change_row.
+    vat_confirmed: Optional[bool] = None
     revert: bool = False
 
     @field_validator("without_document")

@@ -11,7 +11,7 @@ from langgraph.checkpoint.mongodb import MongoDBSaver
 from ledgersync.config import Settings
 
 from .llm import chat_model
-from .middleware import ModelErrorsAsUnavailable, StopWhenCancelled, ToolErrorsAsMessages
+from .middleware import ModelErrorsAsUnavailable, ReadsClientOnce, StopWhenCancelled, ToolErrorsAsMessages
 from .prompt import SYSTEM_PROMPT
 from .run import ChatEvent, stream_turn
 from .tools import AgentDeps, ChatContext, make_tools
@@ -28,7 +28,8 @@ def build_agent(settings: Settings, deps: AgentDeps, *, model=None, checkpointer
     - ends, with a message, before a 31st model call or when the model asks for an 81st tool call;
     - reads at most 20 documents (a call past that is answered "limit exceeded" and the run carries on);
     - retries a failing model call twice, and then raises ModelUnavailable;
-    - answers a tool error (a tool that doesn't exist, arguments that don't fit, a LedgerSyncError) to the model."""
+    - answers a tool error (a tool that doesn't exist, arguments that don't fit, a LedgerSyncError) to the model;
+    - reads the client once for each tool call, however many figures the tool works out of it."""
     if checkpointer is None:
         checkpointer = MongoDBSaver(deps.store.client, db_name=f"{deps.store.db_name}_checkpoints")
     middleware = [
@@ -42,6 +43,8 @@ def build_agent(settings: Settings, deps: AgentDeps, *, model=None, checkpointer
         ModelRetryMiddleware(max_retries=2, on_failure="error"),
         ToolErrorsAsMessages(),
     ]
+    if deps.store is not None:   # inside the errors' handling: each tool call reads the client once
+        middleware.append(ReadsClientOnce(deps.store))
     return create_agent(model if model is not None else chat_model(settings),
                         make_tools(deps, actor=f"agent:{settings.chat_model_name}"), system_prompt=SYSTEM_PROMPT,
                         middleware=middleware, context_schema=ChatContext, checkpointer=checkpointer)

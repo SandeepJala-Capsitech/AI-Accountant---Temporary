@@ -626,6 +626,13 @@ def test_under_the_figure_is_not_marked():
     assert "asset_check" in dict(codes(big("500.00")))
 
 
+def test_an_amount_in_another_currency_is_not_marked_until_it_is_in_pounds():
+    # USD 1,800.00 is not £1,800.00: the row asks to be converted, and is checked once it has been.
+    dollars = big(currency="USD")
+    assert "asset_check" not in dict(codes(dollars)) and "non_gbp_currency" in dict(codes(dollars))
+    assert not is_asset_candidate(dollars)
+
+
 def test_rent_and_stock_are_not_marked():
     assert "asset_check" not in dict(codes(big(account="7100")))
     assert "asset_check" not in dict(codes(big(account="5000")))

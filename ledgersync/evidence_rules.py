@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from .accounts import ALL_BANK_CODES, BY_CODE, SUSPENSE, Account, AccountType
 from .models import BusinessSettings, Direction, JournalLine, Transaction
+from .checks import is_fare
 from .money import ZERO, VatTreatment
 from .payees import part_payment
 from .posting import journal_for, withheld
@@ -28,6 +29,10 @@ class DocumentRule(BaseModel):
     reason: str          # one plain sentence, shown on the question card and the decision
     waived: bool = False  # it would be held, but a person booked it without the document (without_document)
     small: bool = False   # a purchase under the limit booked from its line: its VAT is not reclaimed without a document
+    confirmed: bool = False   # the VAT is reclaimed only because a person entered or confirmed it (vat_confirmed)
+    large_no_vat: bool = False   # a receipt over the simplified limit that shows no VAT: booked whole, and said
+    unbacked: bool = False   # a line of an expense claim with no receipt or invoice behind it: booked as the claim
+                             # shows it, VAT and all, and the row says the document is still wanted
 
 
 def _fixed_asset(account: Account) -> bool:
@@ -87,9 +92,19 @@ def _hold(needs: Literal["receipt_or_invoice", "vat_invoice"], reason: str) -> D
 def document_rule(tx: Transaction, settings: BusinessSettings) -> DocumentRule:
     """What to do with one row after checks.normalise and matching.match: book it (reclaiming its VAT or not),
     or hold it in Suspense for the document it needs. A row a person booked without its document (without_document)
-    is booked with no VAT reclaimed instead of held. settings is accepted so the rules can follow a client's own
-    settings later; none changes them yet."""
+    is booked with no VAT reclaimed instead of held. VAT a person entered or confirmed on the row (vat_confirmed) is
+    theirs to vouch for: where the rules alone would hold the row or keep its VAT in the cost, it is booked to its
+    account and the VAT reclaimed, and the rule says so (confirmed). VAT the account itself can't take (Suspense,
+    entertaining, before registration) was never posted, so there is none to reclaim. settings is accepted so the
+    rules can follow a client's own settings later; none changes them yet."""
     rule = _rule(tx, settings)
+    if tx.vat_confirmed and (tx.vat_posted or ZERO) > 0 and not rule.reclaim_vat:
+        return DocumentRule(action="book", reclaim_vat=True, confirmed=True,
+                            reason="VAT entered or confirmed by a person: reclaimed on their say.")
+    if tx.vat_from_claim and (tx.vat_posted or ZERO) > 0 and not rule.reclaim_vat:
+        # The VAT is the expense claim's, the receipt showing none: booked as claimed (matching says an invoice is wanted).
+        return DocumentRule(action="book", reclaim_vat=True,
+                            reason="VAT as the expense claim shows it: reclaimed, with a VAT invoice still wanted.")
     if rule.action == "hold" and tx.without_document:
         return DocumentRule(action="book", reclaim_vat=False, waived=True,
                             reason=f"Booked without a receipt: {tx.without_document}; no VAT reclaimed.")
@@ -108,23 +123,40 @@ def _rule(tx: Transaction, settings: BusinessSettings) -> DocumentRule:
     if tx.document_type == "expense_claim" and _MILEAGE.search(tx.description):
         return DocumentRule(action="book", reclaim_vat=False,
                             reason="A mileage claim is its own record: no receipt is needed.")
-    if tx.document_type in ("statement", "expense_claim"):   # a line with no document behind it
+    if tx.document_type == "expense_claim":
+        # A claim line with no receipt or invoice behind it. The claim is the person's own record of the expense,
+        # so it is booked as it shows it, its VAT reclaimed; from £50, or with VAT on it, the row says the receipt or
+        # the VAT invoice is still wanted (books._saved_rows).
+        return DocumentRule(action="book", reclaim_vat=True,
+                            unbacked=tx.gross >= NO_DOCUMENT_LIMIT or (tx.vat_posted or ZERO) > 0,
+                            reason="Booked as the expense claim shows it: no receipt or invoice for it yet.")
+    if tx.document_type == "statement":   # a bank line with no document behind it
         if tx.gross < NO_DOCUMENT_LIMIT:
             return DocumentRule(action="book", reclaim_vat=False, small=True,
                                 reason="Small purchase: booked from the line without a receipt; no VAT reclaimed.")
-        if tx.gross > SIMPLIFIED_LIMIT and not _no_vat(tx):
+        if tx.gross > SIMPLIFIED_LIMIT and not _no_vat(tx) and not is_fare(tx):   # a fare has no VAT: a receipt will do
             return _hold("vat_invoice", "No receipt or invoice, and a purchase this size needs a full VAT "
                                         "invoice: held in Suspense until it is uploaded.")
         return _hold("receipt_or_invoice", "No receipt or invoice: held in Suspense until one is uploaded.")
     if tx.document_type == "receipt":
         if tx.gross > SIMPLIFIED_LIMIT and not _no_vat(tx):
+            if is_fare(tx):
+                # A flight or a train ticket is zero-rated, at home or abroad: no VAT invoice exists to wait for.
+                # Booked whole; any VAT on the row is not reclaimed unless a person vouches for it (document_rule).
+                return DocumentRule(action="book", reclaim_vat=False,
+                                    reason="A fare is zero-rated: booked whole, with no VAT to reclaim.")
+            if not (tx.vat_posted or ZERO) > 0:
+                # A VAT invoice is wanted to reclaim VAT. A receipt that shows none (a flight, a hotel booked through
+                # an agent) has none to reclaim, and is the record of the cost: booked whole to its account.
+                return DocumentRule(action="book", reclaim_vat=False, large_no_vat=True,
+                                    reason="Receipt shows no VAT: booked whole, with nothing to reclaim.")
             return _hold("vat_invoice", "Only a receipt, but this needs a full VAT invoice: held in Suspense "
                                         "until it is uploaded.")
         if tx.not_vat_invoice:
             return DocumentRule(action="book", reclaim_vat=False, reason="Not a VAT invoice: VAT kept in the cost.")
         if not (tx.vat_posted or ZERO) > 0:
             return DocumentRule(action="book", reclaim_vat=False, reason="Receipt shows no VAT: nothing to reclaim.")
-        if tx.supplier_vat_number is None:
+        if tx.supplier_vat_number is None and not tx.vat_stated:
             return DocumentRule(action="book", reclaim_vat=False,
                                 reason="Receipt without the supplier's VAT number: VAT kept in the cost.")
         return DocumentRule(action="book", reclaim_vat=True,

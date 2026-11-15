@@ -154,15 +154,14 @@ class _Books:
 
 
 def _books(store: MongoStore, client_id: int, today: Optional[dt.date] = None) -> _Books:
-    client = store.get_client(client_id)
-    stored = store.rows(client_id)
-    listed = store.uploads(client_id)
+    # One read of the client for everything a calculation needs: each read is a round trip to the database.
+    client, stored, listed, opening = store.whole(client_id)
     by_id = {u["id"]: u for u in listed}
     placed = [_place(client, row, by_id) for row in stored]
     latest = max(placed + [yr.year_index(client.first_year_end, today or dt.date.today()) or 0])
     read, apart = _decisions(stored)
     return _Books(client=client, stored=stored, uploads=listed, placed=placed, read=read, apart=apart,
-                  opening=store.opening(client_id), years=[_year(client, n) for n in range(latest + 1)])
+                  opening=opening, years=[_year(client, n) for n in range(latest + 1)])
 
 
 def years_of(store: MongoStore, client_id: int, today: dt.date) -> list[Year]:
@@ -231,6 +230,27 @@ def _saved_rows(b: _Books, n: Optional[int]) -> tuple[list[SavedRow], dict[int, 
                     ready[k] = tx.model_copy(update={"issues": [*tx.issues, issue(
                         "vat_unclaimed", f"No VAT reclaimed: booked from the bank line. Add its receipt or invoice to "
                                          f"reclaim up to £{most:,.2f}.", "info")]})
+            if rule.unbacked and "document_wanted" not in tx.accepted:
+                vat = tx.vat_posted or ZERO
+                ready[k] = ready[k].model_copy(update={"issues": [*ready[k].issues, issue("document_wanted", (
+                    f"Booked as the claim shows it, with £{vat:,.2f} VAT reclaimed, but there is no receipt or invoice "
+                    "for it. Get a VAT invoice for this." if vat > 0 else
+                    "Booked as the claim shows it, but there is no receipt or invoice for it. Get one for this."),
+                    "warning")]})
+            if rule.large_no_vat:   # said, so VAT a fuller invoice would show is not lost unnoticed
+                ready[k] = ready[k].model_copy(update={"issues": [*ready[k].issues, issue(
+                    "vat_unclaimed", "No VAT reclaimed: the receipt shows none. If VAT was charged, enter it, or add "
+                                     "the VAT invoice.", "info")]})
+            if rule.confirmed:   # said, so the VAT reclaimed on a person's word can always be found again
+                ready[k] = ready[k].model_copy(update={"issues": [*ready[k].issues, issue(
+                    "vat_confirmed", f"VAT £{tx.vat_posted:,.2f} is reclaimed because a person entered or confirmed "
+                                     "it; the document itself would not have allowed it. Keep the VAT invoice on "
+                                     "file.", "info")]})
+            # VAT on the row that the rule keeps out of Purchase VAT (held, or its document isn't a VAT invoice):
+            # said on the row, so a page never shows VAT and a net that the trial balance doesn't hold.
+            if not rule.reclaim_vat and (tx.vat_posted or ZERO) > ZERO and tx.direction == Direction.OUT:
+                ready[k] = ready[k].model_copy(update={"vat_not_reclaimed": tx.vat_posted,
+                                                       "vat_not_reclaimed_why": rule.reason})
     # A document dated after the year that holds today: a later year opens for it, so a person checks the date.
     this_year = yr.year_index(b.client.first_year_end, dt.date.today()) or 0
     ahead = b.years[min(this_year, len(b.years) - 1)].end

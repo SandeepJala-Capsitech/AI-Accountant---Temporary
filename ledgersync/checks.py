@@ -33,12 +33,47 @@ _DERIVED = {"unknown_account", "same_account", "non_gbp_currency", "vat_not_appl
             "cis_deducted", "personal", "possible_duplicate", "booked_without_document", "card_credit", "vat_unclaimed",
             "on_account", "no_vat_number", "vat_over_rate", "reverse_charge", "before_vat_registration", "small_asset",
             "meal_check", "future_date", "journal_note", "prepayment", "unusual_account", "asset_check",
-            "should_be_asset", "whose_account"} | MATCHING_ISSUES | STATEMENT_ISSUES
+            "should_be_asset", "whose_account", "vat_confirmed", "vat_implied", "document_wanted"} | MATCHING_ISSUES | STATEMENT_ISSUES
 # Warnings that are a matter of judgement: a person who has looked can say one is fine (Transaction.accepted), and it
 # is not raised on that row again.
 ACCEPTABLE = frozenset({"no_vat_number", "vat_over_rate", "small_asset", "meal_check", "addressed_to", "future_date",
-                        "file_date", "unusual_account", "asset_check", "should_be_asset", "whose_account"})
+                        "file_date", "unusual_account", "asset_check", "should_be_asset", "whose_account",
+                        "claim_vat", "document_wanted"})
 # Words that say a cost was paid for time ahead, and the accounts whose bills usually are (insurance).
+# Fares that carry no VAT whoever sells them (passenger transport is zero-rated): a ticket seller prints its VAT
+# number for its own booking fee, which says nothing about the fare.
+_FARES = re.compile(r"\b(train(line)?s?|rail(way|card)?|lner|avanti|gwr|scotrail|eurostar|flights?|airways|airlines?|"
+                    r"airfare|air travel|easyjet|ryanair|jet2|tfl|transport for london|underground|tube|oyster|bus|"
+                    r"coach|megabus|national express|stagecoach|ferry|tram)\b", re.IGNORECASE)
+
+
+def is_fare(tx: Transaction) -> bool:
+    """Whether the row is a fare, by who was paid and what for: a flight, a train, bus, coach, tram or ferry ticket,
+    at home or abroad. Passenger transport is zero-rated, so there is never VAT on it to reclaim."""
+    return bool(_FARES.search(f"{tx.counterparty or ''} {tx.description}"))
+
+
+IMPLIED_LIMIT = Decimal("250.00")   # up to this a receipt needn't print its VAT: its total and the rate give it
+
+
+def vat_implied(tx: Transaction, settings: BusinessSettings) -> bool:
+    """Whether a purchase's document shows VAT is in its amount without printing how much: it prints the supplier's
+    VAT number, or says VAT is charged or included (vat_stated), shows no VAT amount, and nobody chose a VAT treatment.
+    Up to £250 such a receipt is a VAT invoice in its own right (the total and the rate give the VAT), so the VAT is
+    worked out of the amount at the account's rate. Not when the document says it is not a VAT invoice, on an account
+    that carries no VAT or can't reclaim it, on a fare (zero-rated), on one row holding items of different kinds, or
+    on a bank line or a claim line, which print neither."""
+    account = BY_CODE.get(tx.account_code)
+    return (tx.direction == Direction.OUT and tx.document_type in ("receipt", "invoice")
+            and tx.vat is None and tx.vat_treatment is None and not tx.not_vat_invoice
+            and (tx.supplier_vat_number is not None or tx.vat_stated)
+            and ZERO < tx.gross <= IMPLIED_LIMIT and tx.currency == "GBP"
+            and reclaims_vat(tx, settings) and account is not None
+            and account.vat in (VatTreatment.STANDARD, VatTreatment.REDUCED)
+            and not any(i.code == "mixed_items" for i in tx.issues)
+            and not is_fare(tx))
+
+
 _AHEAD = re.compile(r"\b(annual|yearly|12[- ]months?|per annum|in advance|quarter(ly)? rent)\b", re.IGNORECASE)
 _PAID_AHEAD = frozenset({"8204", "7303"})
 PREPAYMENT_FROM = Decimal("300.00")   # an insurance bill from this much is asked about
@@ -256,6 +291,14 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
         missed = _vat_not_booked(tx, settings)
         if missed:
             issues.append(missed)
+        elif vat_implied(tx, settings):
+            # The document shows VAT is in the amount (a VAT number, or it says so) but not how much: worked out.
+            posted = vat_in_gross(tx.gross, treatment)
+            shows = ("prints the supplier's VAT number" if tx.supplier_vat_number is not None
+                     else "says VAT is included")
+            issues.append(issue("vat_implied", (
+                f"VAT £{posted:,.2f} worked out at the {treatment.value} rate: the {tx.document_type} {shows} but "
+                "not the VAT amount. If part of it carries no VAT, enter the VAT it does carry."), "info"))
     elif vat is None:   # a person chose the rate: split the VAT out of the gross at that rate
         posted = vat_in_gross(tx.gross, treatment)
         if posted > 0:
@@ -375,8 +418,9 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
                                            f"£{SMALL_ASSET:,.0f} is usually written off as a cost. Recode it to the "
                                            "cost account of its kind, unless it is part of a bigger purchase."))
     if (purchase and not mixed and tx.account_code in ASSET_CANDIDATES and tx.gross >= LARGE_COST
-            and (tx.document_total is None or tx.document_total >= LARGE_COST)):
-        # Only a note: whether it is equipment takes reading the document, which the coding specialist does.
+            and (tx.document_total is None or tx.document_total >= LARGE_COST) and tx.currency == "GBP"):
+        # Only a note: whether it is equipment takes reading the document, which the coding specialist does. An
+        # amount in another currency isn't pounds yet: it is checked once a person has converted it.
         issues.append(issue("asset_check", f"£{tx.gross:,.2f} on {account.code} {account.name}: checked for equipment "
                                            "that should be kept as an asset.", "info"))
     if (tx.account_code == SUBSISTENCE and not journal and tx.direction == Direction.OUT and tx.gross >= MEAL_CHECK

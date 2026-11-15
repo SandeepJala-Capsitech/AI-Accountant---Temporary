@@ -470,7 +470,9 @@ def test_a_held_purchase_says_what_it_needs(mongo_store, acme_with_year_one):
     add_rows(mongo_store, acme_with_year_one,
              row(date=date(2025, 7, 1), gross=D("240.00"), account_code="7400", document_type="statement",
                  counterparty="Trainline", description="TRAINLINE"),
-             row(date=date(2025, 7, 2), gross=D("300.00"), account_code="7400", document_type="statement",
+             row(date=date(2025, 7, 2), gross=D("300.00"), account_code="7504", document_type="statement",
+                 counterparty="Currys", description="CURRYS"),
+             row(date=date(2025, 7, 4), gross=D("310.00"), account_code="7400", document_type="statement",
                  counterparty="Trainline", description="TRAINLINE"),
              row(date=date(2025, 7, 3), gross=D("38.50"), vat=D("6.42"), account_code="7300",
                  document_type="statement", description="SHELL"), year_start=date(2025, 4, 1))
@@ -478,9 +480,11 @@ def test_a_held_purchase_says_what_it_needs(mongo_store, acme_with_year_one):
     said = {r.gross: [i.message for i in r.issues if i.code == "needs_document"] for r in rows}
     assert said[D("240.00")] == ["Held in Suspense: needs its receipt or invoice."]
     assert said[D("300.00")] == ["Held in Suspense: needs a full VAT invoice."]
+    # a fare is zero-rated, so over £250 it still only needs its receipt: no VAT invoice exists to wait for
+    assert said[D("310.00")] == ["Held in Suspense: needs its receipt or invoice."]
     assert said[D("38.50")] == []
     assert all(i.severity == "warning" for r in rows for i in r.issues if i.code == "needs_document")
-    assert books.summary(mongo_store, acme_with_year_one, date(2025, 4, 1)).to_review == 2
+    assert books.summary(mongo_store, acme_with_year_one, date(2025, 4, 1)).to_review == 3
 
 
 # ─── Closed is closed: a year closed before the document rules stays as it closed ──────────────────────────────
@@ -791,3 +795,68 @@ def test_a_closed_years_row_is_history_but_never_flagged(store, acme):
     [later] = books.ledger(store, acme, YEAR_2).transactions
     [said] = [i for i in later.issues if i.code == "unusual_account"]
     assert said.message.startswith("Coded to 7400 Travel. 4 of the other 5 bills")
+
+
+@pytest.mark.mongo
+def test_vat_the_rules_do_not_reclaim_is_said_on_the_row_and_the_books_hold_none(store, acme):
+    # A £547.84 hotel receipt with £91.31 VAT typed in: over £250 with no full VAT invoice, so it is held whole in
+    # Suspense. A £9.72 receipt with the supplier's VAT number reclaims its £1.62, and says nothing.
+    add_rows(store, acme,
+             row(date=date(2025, 6, 1), gross=D("547.84"), vat=D("91.31"), account_code="7402", description="Hotel"),
+             row(date=date(2025, 6, 2), gross=D("9.72"), vat=D("1.62"), account_code="7406", description="Bap",
+                 supplier_vat_number="123456789"))
+    hotel, bap = books.ledger(store, acme, YEAR_1).transactions
+    assert (hotel.vat_posted, hotel.vat_not_reclaimed) == (D("91.31"), D("91.31")) and "VAT invoice" in hotel.vat_not_reclaimed_why
+    assert (bap.vat_posted, bap.vat_not_reclaimed, bap.vat_not_reclaimed_why) == (D("1.62"), None, None)
+    tb = books.trial_balance(store, acme, YEAR_1)
+    assert (net(tb, "9998"), net(tb, "7402"), net(tb, "2201")) == (D("547.84"), D("0"), D("1.62"))
+
+
+@pytest.mark.mongo
+def test_vat_a_person_enters_on_a_held_row_books_it_and_reclaims_the_vat_until_they_take_it_back(store, acme):
+    add_rows(store, acme, row(date=date(2025, 6, 1), gross=D("547.84"), account_code="7402", description="Hotel",
+                              not_vat_invoice=True))
+    rid = first_row_id(store, acme)
+
+    def books_now():
+        [hotel] = books.ledger(store, acme, YEAR_1).transactions
+        tb = books.trial_balance(store, acme, YEAR_1)
+        return hotel, (net(tb, "9998"), net(tb, "7402"), net(tb, "2201"))
+
+    hotel, figures = books_now()
+    assert figures == (D("0"), D("547.84"), D("0"))             # shows no VAT: booked whole, none to reclaim
+    assert [(i.code, i.severity) for i in hotel.issues] == [("vat_unclaimed", "info")]
+    ledger.change_row(store, acme, rid, RowPatch(vat=D("91.31")))                # the person types the VAT
+    hotel, figures = books_now()
+    assert figures == (D("0"), D("456.53"), D("91.31"))                          # on Hotels, VAT reclaimed
+    assert hotel.vat_confirmed and hotel.vat_not_reclaimed is None
+    assert [i.code for i in hotel.issues if i.severity != "info"] == [] and "vat_confirmed" in [i.code for i in hotel.issues]
+    ledger.change_row(store, acme, rid, RowPatch(vat_confirmed=False))           # Don't reclaim it
+    hotel, figures = books_now()
+    assert figures == (D("547.84"), D("0"), D("0")) and hotel.vat_not_reclaimed == D("91.31")
+    ledger.change_row(store, acme, rid, RowPatch(vat_confirmed=True))            # Reclaim it
+    assert books_now()[1] == (D("0"), D("456.53"), D("91.31"))
+    ledger.change_row(store, acme, rid, RowPatch(revert=True))                   # as read: nobody vouches for VAT
+    hotel, figures = books_now()
+    assert figures == (D("0"), D("547.84"), D("0")) and not hotel.vat_confirmed and hotel.vat is None
+    with pytest.raises(InvalidInput):                                            # no VAT on the row to reclaim
+        ledger.change_row(store, acme, rid, RowPatch(vat_confirmed=True))
+
+
+def test_a_years_figures_are_worked_out_from_one_read_of_the_client(store, acme, monkeypatch):
+    # Each read is a round trip to the database, which may be far away: the ledger, the trial balance and the rest
+    # each make one, where they made four.
+    from pymongo.collection import Collection
+    add_rows(store, acme, row(date=date(2025, 6, 1), gross=D("60.00"), account_code="7504"), year_start=YEAR_1)
+    reads = []
+    for name in ("find", "aggregate"):
+        real = getattr(Collection, name)
+        monkeypatch.setattr(Collection, name,
+                            lambda self, *a, _real=real, _name=name, **k: reads.append(_name) or _real(self, *a, **k))
+    for work in (books.ledger, books.trial_balance, books.summary, books.invoices, books.bank_checks):
+        reads.clear()
+        work(store, acme, YEAR_1)
+        assert reads == ["find"], work.__name__
+    reads.clear()
+    books.years_of(store, acme, date(2025, 6, 1))
+    assert reads == ["find"]

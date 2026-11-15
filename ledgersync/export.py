@@ -173,7 +173,10 @@ def _transactions(sheet, ledger: Ledger) -> None:
     for tx in ledger.transactions:
         code, name = (tx.paid_against, tx.paid_against_name) if tx.paid_against else (tx.account_code, tx.account_name)
         _append(sheet, [tx.date, tx.description, tx.counterparty, _TYPE_NAMES.get(tx.document_type, tx.document_type),
-                      "In" if tx.direction == Direction.IN else "Out", tx.gross, tx.vat_posted, tx.net, code, name,
+                      "In" if tx.direction == Direction.IN else "Out", tx.gross,
+                      # as the books hold it: VAT the document rules don't reclaim stays in the amount
+                      ZERO if tx.vat_not_reclaimed else tx.vat_posted,
+                      tx.net + tx.vat_not_reclaimed if tx.vat_not_reclaimed and tx.net is not None else tx.net, code, name,
                       tx.contra_account_code, tx.owed, "; ".join(i.message for i in tx.issues) or None,
                       uploads.get(tx.upload_id), "Yes" if tx.edited else None, _left_out(tx)])
     for row in sheet.iter_rows(min_row=3):

@@ -53,6 +53,20 @@ class ToolErrorsAsMessages(AgentMiddleware):
                                 "if it fails again, tell the person.")
 
 
+class ReadsClientOnce(AgentMiddleware):
+    """Each tool call works from one copy of the client, read again only after the tool changes it
+    (MongoStore.reading): a tool that works several figures out of the books (the overview, the trial balance) makes
+    one round trip to the database for the client instead of one for each figure."""
+
+    def __init__(self, store):
+        super().__init__()
+        self.store = store
+
+    def wrap_tool_call(self, request, handler):
+        with self.store.reading():
+            return handler(request)
+
+
 class ModelErrorsAsUnavailable(AgentMiddleware):
     """Outside the retries: a model call that still fails raises ModelUnavailable with what went wrong, so the turn
     ends saying the model isn't available. The provider's key is blanked in what it says, in case an error echoes it."""

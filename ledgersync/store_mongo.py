@@ -8,10 +8,15 @@ Optimized for:
 """
 from __future__ import annotations
 
+import contextvars
 import datetime as dt
 import logging
 import re
-from typing import Optional
+import threading
+import time
+from collections import Counter
+from contextlib import contextmanager
+from typing import Iterator, Optional
 
 import pymongo
 from pymongo import MongoClient, ReturnDocument
@@ -24,6 +29,11 @@ logger = logging.getLogger(__name__)
 
 # How many times patch_row reads and writes again when another write to the client got in between.
 _PATCH_TRIES = 5
+# The client documents a reading block has fetched, where the block runs (MongoStore.reading); None outside one.
+_READING: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar("ledgersync_reading", default=None)
+# Seconds a reading block trusts its copy of a client. A write by this process drops the copy at once; this is for a
+# write by another process on the same database, which a block that runs for long would otherwise never see.
+FRESH_FOR = 5.0
 
 _CLIENT_FIELDS = ("name", "business_type", "contact_name", "contact_email", "contact_phone", "vat_registered",
                   "vat_from",
@@ -95,6 +105,49 @@ def _stored_accounts(accounts: list[BankAccount]) -> list[dict]:
     return [a.model_dump() for a in accounts]
 
 
+def _stored(rows: list[dict]) -> list[StoredRow]:
+    """The rows of a client's document as the store gives them: in the order of their uploads and their place in
+    them, each with what was first read when a person has edited it."""
+    stored_rows = []
+    for r in sorted(rows, key=lambda r: (r.get("upload_id", 0), r.get("position", 0))):
+        data = dict(r["data"])
+        original = data.pop("original", None)
+        data.pop("original_issues", None)
+        data.pop("original_printed", None)
+        if data.get("document_total") is None:
+            old = [OLD_TOTAL.search(i.get("message", "")) for i in data.get("issues", []) if i.get("code") == "total_mismatch"]
+            if old and old[0]:
+                data["document_total"] = old[0].group(1).replace(",", "")
+        stored_rows.append(StoredRow(r["id"], r["upload_id"], Transaction.model_validate(data), original))
+    return stored_rows
+
+
+def _listed(client_id: int, uploads: list[dict], counts) -> list[dict]:
+    """The uploads of a client's document as the store lists them, the newest first, each with how many rows it has
+    (counts, by upload id)."""
+    return [{
+        "id": u["id"],
+        "client_id": client_id,
+        "name": u["name"],
+        "kind": u["kind"],
+        "sha256": u.get("sha256", ""),
+        "model": u.get("model", ""),
+        "warnings": list(u.get("warnings", [])),
+        "bank_account": u.get("bank_account"),
+        "year_start": _date(u.get("year_start")),
+        "created_at": u["created_at"],
+        "row_count": counts.get(u["id"], 0)
+    } for u in sorted(uploads, key=lambda x: x["id"], reverse=True)]
+
+
+def _earliest(doc: dict) -> Optional[dt.date]:
+    """For a client's whole document saved without a first year end (old data): the date of its earliest row."""
+    if doc.get("first_year_end"):
+        return None
+    dates = [r["data"]["date"] for r in doc.get("rows", []) if r.get("data", {}).get("date")]
+    return _date(min(dates)) if dates else None
+
+
 def _new_client(uri: str, max_pool: int) -> MongoClient:
     """A client whose pool stays small and drops idle connections: Atlas M0 allows 500 connections in all, counted
     on each node of the replica set, so nothing is kept open ahead of need."""
@@ -119,7 +172,51 @@ class MongoStore:
         self._owns_client = client is None
         self.client = _new_client(uri, max_pool) if client is None else client
         self.db = self.client[db_name]
+        self._writes: Counter = Counter()   # this process's writes to each client, which outdate a reading block's copy
+        self._writes_lock = threading.Lock()
         self._init_indexes()
+
+    # ─── Reading a client once ─────────────────────────────────────────────────
+
+    @contextmanager
+    def reading(self) -> Iterator[None]:
+        """While the block runs, where it runs (a request with the work it hands to other threads, one of the agent's
+        tool calls, the upkeep after a change), a client's document is fetched once: get_client, rows, uploads,
+        opening, revision and whole answer from that copy until this process writes to the client or FRESH_FOR
+        seconds pass. Several figures worked out of one client then cost one round trip to the database, not one
+        each, which is what a person waits for when the database is far away. A block inside a block shares the
+        outer one's copies; outside any block every read asks the database, as it always did."""
+        if _READING.get() is not None:
+            yield
+            return
+        token = _READING.set({})
+        try:
+            yield
+        finally:
+            _READING.reset(token)
+
+    def _held(self, client_id: int) -> Optional[dict]:
+        """Inside a reading block: the client's whole document, fetched now unless the block holds a copy that no
+        write of this process has outdated; NotFound when there is no such client. Outside a block: None, and the
+        caller asks the database for the part it wants."""
+        held = _READING.get()
+        if held is None:
+            return None
+        key = (id(self), client_id)
+        writes = self._writes[client_id]   # read before the document, so a write made meanwhile outdates the copy
+        copy = held.get(key)
+        if copy is None or copy[0] != writes or time.monotonic() - copy[1] > FRESH_FOR:
+            doc = self.db.clients.find_one({"id": client_id})
+            if doc is None:
+                held.pop(key, None)
+                raise NotFound("This client was not found.")
+            copy = held[key] = (writes, time.monotonic(), doc)
+        return copy[2]
+
+    def _wrote(self, client_id: int) -> None:
+        """Counts a write to the client: every reading block's copy of it is out of date from here."""
+        with self._writes_lock:
+            self._writes[client_id] += 1
 
     def close(self) -> None:
         """Closes the client this store opened; a client it was given is left to whoever made it."""
@@ -163,7 +260,12 @@ class MongoStore:
     def revision(self, client_id: int) -> int:
         """How many writes this client's document has had. It lives in the document, so every
         store on the same database sees the same number; older documents without one give 0."""
-        doc = self.db.clients.find_one({"id": client_id}, {"revision": 1})
+        try:
+            doc = self._held(client_id)
+        except NotFound:
+            return 0
+        if doc is None:
+            doc = self.db.clients.find_one({"id": client_id}, {"revision": 1})
         return int(doc.get("revision", 0)) if doc else 0
 
     # ─── Clients ───────────────────────────────────────────────────────────────
@@ -196,9 +298,13 @@ class MongoStore:
             "rows": []
         }
         self.db.clients.insert_one(dict(doc))   # a copy: insert_one adds the _id
+        self._wrote(client_id)
         return _client(doc)
 
     def get_client(self, client_id: int) -> Client:
+        held = self._held(client_id)
+        if held is not None:
+            return _client(held, _earliest(held))
         doc = self.db.clients.find_one({"id": client_id}, _CLIENT_PROJECTION)
         if not doc:
             raise NotFound("This client was not found.")
@@ -242,6 +348,7 @@ class MongoStore:
                 projection=_CLIENT_PROJECTION,
                 return_document=ReturnDocument.AFTER
             )
+            self._wrote(client_id)
             if not updated:
                 raise NotFound("This client was not found.")
             return self._as_client(updated)
@@ -250,7 +357,7 @@ class MongoStore:
 
     def opening(self, client_id: int) -> OpeningBalances:
         """The client's first year's opening balances; none for a client saved before it had them."""
-        doc = self.db.clients.find_one({"id": client_id}, {"opening": 1})
+        doc = self._held(client_id) or self.db.clients.find_one({"id": client_id}, {"opening": 1})
         if not doc:
             raise NotFound("This client was not found.")
         return OpeningBalances.model_validate(doc.get("opening") or {})
@@ -259,6 +366,7 @@ class MongoStore:
         res = self.db.clients.update_one(
             {"id": client_id},
             {"$set": {"opening": opening.model_dump(mode="json"), "updated_at": now_iso()}, "$inc": {"revision": 1}})
+        self._wrote(client_id)
         if res.matched_count == 0:
             raise NotFound("This client was not found.")
 
@@ -270,6 +378,7 @@ class MongoStore:
             {"$push": {"closed_years": closed.model_dump(mode="json")}, "$set": {"updated_at": now_iso()},
              "$inc": {"revision": 1}},
             projection=_CLIENT_PROJECTION, return_document=ReturnDocument.AFTER)
+        self._wrote(client_id)
         if not updated:
             raise NotFound("This client was not found, or that year is closed already.")
         return self._as_client(updated)
@@ -281,6 +390,7 @@ class MongoStore:
             {"$pull": {"closed_years": {"start": start.isoformat()}}, "$set": {"updated_at": now_iso()},
              "$inc": {"revision": 1}},
             projection=_CLIENT_PROJECTION, return_document=ReturnDocument.AFTER)
+        self._wrote(client_id)
         if not updated:
             raise NotFound("This client was not found.")
         return self._as_client(updated)
@@ -335,10 +445,14 @@ class MongoStore:
                 "$inc": {"revision": 1}
             }
         )
+        self._wrote(client_id)
         return upload_id
 
     def uploads(self, client_id: int) -> list[dict]:
         """Loads only upload metadata and row-counts using fast aggregation pipeline."""
+        held = self._held(client_id)
+        if held is not None:
+            return _listed(client_id, held.get("uploads", []), Counter(r.get("upload_id") for r in held.get("rows", [])))
         pipeline = [
             {"$match": {"id": client_id}},
             {"$project": {
@@ -368,25 +482,8 @@ class MongoStore:
             raise NotFound("This client was not found.")
 
         doc = result_docs[0]
-        uploads_list = doc.get("uploads", [])
         counts = {item["upload_id"]: item["count"] for item in doc.get("row_counts", [])}
-
-        results = []
-        for u in sorted(uploads_list, key=lambda x: x["id"], reverse=True):
-            results.append({
-                "id": u["id"],
-                "client_id": client_id,
-                "name": u["name"],
-                "kind": u["kind"],
-                "sha256": u.get("sha256", ""),
-                "model": u.get("model", ""),
-                "warnings": u.get("warnings", []),
-                "bank_account": u.get("bank_account"),
-                "year_start": _date(u.get("year_start")),
-                "created_at": u["created_at"],
-                "row_count": counts.get(u["id"], 0)
-            })
-        return results
+        return _listed(client_id, doc.get("uploads", []), counts)
 
     def set_upload_bank(self, client_id: int, upload_id: int, code: str) -> None:
         """Puts the upload, and its statement lines, on another bank account or card."""
@@ -399,6 +496,7 @@ class MongoStore:
             },
             array_filters=[{"u.id": upload_id}, {"r.upload_id": upload_id, "r.data.document_type": "statement"}]
         )
+        self._wrote(client_id)
         if res.matched_count == 0:
             raise NotFound("This upload was not found.")
 
@@ -415,6 +513,7 @@ class MongoStore:
                 "$inc": {"revision": 1}
             }
         )
+        self._wrote(client_id)
         if res.matched_count == 0:
             raise NotFound("This upload was not found.")
 
@@ -448,27 +547,27 @@ class MongoStore:
                 "$inc": {"revision": 1}
             }
         )
+        self._wrote(client_id)
 
     def rows(self, client_id: int) -> list[StoredRow]:
-        doc = self.db.clients.find_one({"id": client_id}, {"rows": 1, "id": 1})
+        doc = self._held(client_id) or self.db.clients.find_one({"id": client_id}, {"rows": 1, "id": 1})
         if not doc:
             raise NotFound("This client was not found.")
 
-        rows_list = doc.get("rows", [])
-        sorted_rows = sorted(rows_list, key=lambda r: (r.get("upload_id", 0), r.get("position", 0)))
+        return _stored(doc.get("rows", []))
 
-        stored_rows = []
-        for r in sorted_rows:
-            data = dict(r["data"])
-            original = data.pop("original", None)
-            data.pop("original_issues", None)
-            data.pop("original_printed", None)
-            if data.get("document_total") is None:
-                old = [OLD_TOTAL.search(i.get("message", "")) for i in data.get("issues", []) if i.get("code") == "total_mismatch"]
-                if old and old[0]:
-                    data["document_total"] = old[0].group(1).replace(",", "")
-            stored_rows.append(StoredRow(r["id"], r["upload_id"], Transaction.model_validate(data), original))
-        return stored_rows
+    def whole(self, client_id: int) -> tuple[Client, list[StoredRow], list[dict], OpeningBalances]:
+        """The client, its rows, its uploads and its opening balances, each as get_client, rows, uploads and opening
+        give it, read together in one round trip to the database. A calculation that needs them all (books._books)
+        asks once instead of four times, which matters when the database is far away, and works from one moment of
+        the client rather than four."""
+        doc = self._held(client_id) or self.db.clients.find_one({"id": client_id})
+        if not doc:
+            raise NotFound("This client was not found.")
+        rows = doc.get("rows", [])
+        counts = Counter(r.get("upload_id") for r in rows)
+        return (_client(doc, _earliest(doc)), _stored(rows), _listed(client_id, doc.get("uploads", []), counts),
+                OpeningBalances.model_validate(doc.get("opening") or {}))
 
     def patch_row(self, client_id: int, row_id: int, changes: dict, *, revert: bool = False) -> None:
         """Changes a row (and a whole-document field on the rows of its document), or puts them back as read.
@@ -490,6 +589,7 @@ class MongoStore:
                 {"id": client_id, "revision": read_at},
                 {"$set": {"rows": rows, "updated_at": now_iso()}, "$inc": {"revision": 1}})
             if saved.matched_count:
+                self._wrote(client_id)
                 return
         raise ChangedMeanwhile("The client's rows changed while this change was being saved, so it wasn't saved. "
                                "Try again.")
@@ -529,6 +629,7 @@ class MongoStore:
                 {"$set": {"rows": [*rows, *part_docs], "updated_at": now},
                  "$push": {"uploads": upload_doc}, "$inc": {"revision": 1}})
             if saved.matched_count:
+                self._wrote(client_id)
                 return [p["id"] for p in part_docs]
         raise ChangedMeanwhile("The client's rows changed while this split was being saved, so it wasn't saved. "
                                "Try again.")
@@ -566,6 +667,7 @@ class MongoStore:
         if push:
             self.db.clients.update_one({"id": client_id}, {"$push": push, "$set": {"updated_at": now_iso()},
                                                            "$inc": {"revision": 1}})
+            self._wrote(client_id)
 
     def put_row_data(self, client_id: int, data: dict[int, dict]) -> None:
         """Writes rows' data back as row_data read it, replacing it whole. Like patch_row, it writes only if the
@@ -585,6 +687,7 @@ class MongoStore:
                 {"id": client_id, "revision": read_at},
                 {"$set": {"rows": rows, "updated_at": now_iso()}, "$inc": {"revision": 1}})
             if saved.matched_count:
+                self._wrote(client_id)
                 return
         raise ChangedMeanwhile("The client's rows changed while they were being put back, so they weren't. "
                                "Try again.")
@@ -618,6 +721,7 @@ class MongoStore:
                     continue
                 r_data.update(r_data.pop("original"))
                 r_data["issues"] = r_data.pop("original_issues", r_data.get("issues", []))
+                r_data.pop("vat_confirmed", None)   # as read: no person vouches for its VAT
                 modified = True
             else:
                 change = changes if rid == row_id else {k: v for k, v in changes.items() if k in whole}

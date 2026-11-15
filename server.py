@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
-from fastapi import FastAPI, File, Form, Header, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, Header, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
@@ -90,6 +90,24 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
     app.add_middleware(CORSMiddleware, allow_origins=list(settings.cors_origins),
                        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"], allow_headers=["*"])
 
+    class ReadsClientOnce:
+        """Each request works from one copy of a client, read again only after the request changes it
+        (MongoStore.reading): a page's figures cost one round trip to the database for the client, not one each.
+        A chat turn and a file being read work on threads of their own, outside it."""
+
+        def __init__(self, inner):
+            self.inner = inner
+
+        async def __call__(self, scope, receive, send):
+            reading = getattr(store, "reading", None)   # a stand-in store has none
+            if scope["type"] != "http" or reading is None:
+                await self.inner(scope, receive, send)
+                return
+            with reading():
+                await self.inner(scope, receive, send)
+
+    app.add_middleware(ReadsClientOnce)
+
     @app.exception_handler(LedgerSyncError)
     async def ledgersync_error(request: Request, exc: LedgerSyncError):
         return JSONResponse(status_code=exc.status_code,
@@ -147,6 +165,10 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         except Exception:
             logging.getLogger("ledgersync.upkeep").exception("Couldn't record or settle a change to client %s: %s",
                                                              client_id, summary)
+
+    # A person's change to a row or a document is answered with the year's ledger as soon as it is saved; recording
+    # it and settling the books (the questions, the posting) follow once the answer is sent (BackgroundTasks), so the
+    # page shows the change at once. Anything that reads the posting meanwhile waits for the client's lock.
 
     def rows_word(n: int) -> str:
         return f"{n} {'row' if n == 1 else 'rows'}"
@@ -502,7 +524,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         return store.opening(client_id)
 
     @app.patch("/api/clients/{client_id}/rows/{row_id}", response_model=Ledger)
-    def change_row(client_id: int, row_id: int, patch: RowPatch):
+    def change_row(client_id: int, row_id: int, patch: RowPatch, after: BackgroundTasks):
         sent = [f for f in RowPatch.model_fields if f in patch.model_fields_set and (f != "revert" or patch.revert)]
         values = set(sent) - {"revert"}
         stored = next((r for r in store.rows(client_id) if r.id == row_id), None)
@@ -514,43 +536,43 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         if sent == ["without_document"]:
             said = (f"Row {row_id} booked without a receipt: {patch.without_document}" if patch.without_document
                     else f"Row {row_id} held in Suspense for its receipt or invoice again")
-        changed(client_id, kind, said, row_ids=[row_id], before=before,
+        after.add_task(changed, client_id, kind, said, row_ids=[row_id], before=before,
                 after=patch.model_dump(mode="json", include=values), year_start=result.year.start)
         return result
 
     @app.delete("/api/clients/{client_id}/rows/{row_id}", response_model=Ledger)
-    def remove_row(client_id: int, row_id: int):
+    def remove_row(client_id: int, row_id: int, after: BackgroundTasks):
         stored = next((r for r in store.rows(client_id) if r.id == row_id), None)
         before = ({"description": stored.tx.description, "gross": str(stored.tx.gross),
                    "account_code": stored.tx.account_code} if stored else {})
         result = ledger.remove_row(store, client_id, row_id)
-        changed(client_id, "row_removed", f"Row {row_id} removed", row_ids=[row_id], before=before,
+        after.add_task(changed, client_id, "row_removed", f"Row {row_id} removed", row_ids=[row_id], before=before,
                 year_start=result.year.start)
         return result
 
     @app.post("/api/clients/{client_id}/uploads", response_model=Ledger, status_code=201)
-    def add_manual_rows(client_id: int, upload: ManualUpload):
+    def add_manual_rows(client_id: int, upload: ManualUpload, after: BackgroundTasks):
         result = ledger.add_manual(store, client_id, upload)
         n = len(upload.transactions)
         added = max((u.id for u in result.uploads), default=None)   # the upload just added is the newest
-        changed(client_id, "row_added", f"{rows_word(n)} added by hand", year_start=result.year.start,
+        after.add_task(changed, client_id, "row_added", f"{rows_word(n)} added by hand", year_start=result.year.start,
                 upload_id=added, row_ids=[r.id for r in result.transactions if r.upload_id == added])
         return result
 
     @app.patch("/api/clients/{client_id}/uploads/{upload_id}", response_model=Ledger)
-    def change_upload(client_id: int, upload_id: int, patch: UploadPatch):
+    def change_upload(client_id: int, upload_id: int, patch: UploadPatch, after: BackgroundTasks):
         found = next((u for u in store.uploads(client_id) if u["id"] == upload_id), None)
         result = ledger.set_upload_bank(store, client_id, upload_id, patch.bank_account)
-        changed(client_id, "upload_bank_changed", f"{found['name'] if found else 'Upload'} moved to {patch.bank_account}",
+        after.add_task(changed, client_id, "upload_bank_changed", f"{found['name'] if found else 'Upload'} moved to {patch.bank_account}",
                 upload_id=upload_id, before={"bank_account": found.get("bank_account") if found else None},
                 after={"bank_account": patch.bank_account}, year_start=result.year.start)
         return result
 
     @app.delete("/api/clients/{client_id}/uploads/{upload_id}", response_model=Ledger)
-    def remove_upload(client_id: int, upload_id: int):
+    def remove_upload(client_id: int, upload_id: int, after: BackgroundTasks):
         found = next((u for u in store.uploads(client_id) if u["id"] == upload_id), None)
         result = ledger.remove_upload(store, client_id, upload_id)
-        changed(client_id, "upload_removed", f"{found['name'] if found else 'Upload'} removed", upload_id=upload_id,
+        after.add_task(changed, client_id, "upload_removed", f"{found['name'] if found else 'Upload'} removed", upload_id=upload_id,
                 year_start=result.year.start)
         return result
 
@@ -685,8 +707,14 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
 
     @app.get("/api/clients/{client_id}/questions", response_model=list[Question])
     def client_questions(client_id: int):
-        """The client's open and waiting questions, of every year, from every chat on it."""
+        """The client's open and waiting questions, of every year, from every chat on it. One of the AI's whose row
+        was changed or removed since it was asked is closed first, so it is never listed as still open."""
         store.get_client(client_id)
+        try:
+            with chat.locks.hold(client_id):
+                questions.close_answered(store, chat.records, client_id)
+        except Exception:   # listing the questions must not fail because closing a stale one did
+            logging.getLogger("ledgersync").exception("Couldn't close the answered questions of client %s", client_id)
         return chat.records.questions(client_id, None)
 
     @app.get("/api/clients/{client_id}/decisions", response_model=list[Decision])
@@ -763,8 +791,9 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
             # Rows saved without the upkeep (before it existed) leave an open year behind: bring it up to date, as
             # a change would. Nothing changed, so none is recorded; it is idempotent.
             try:
-                with chat.locks.hold(client_id):
-                    upkeep.settle(store, chat.records, client_id, start)
+                with chat.locks.hold(client_id):   # a change being settled now holds it: nothing is left to do then
+                    if ledger_book.unposted_changes(store, chat.records, client_id, start):
+                        upkeep.settle(store, chat.records, client_id, start)
             except Exception:
                 logging.getLogger("ledgersync.upkeep").exception("Couldn't settle client %s, year %s", client_id, start)
             unposted = ledger_book.unposted_changes(store, chat.records, client_id, start)

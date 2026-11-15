@@ -21,11 +21,13 @@ def settle(store: MongoStore, records: AgentRecords, client_id: int, year_start:
            thread_id: Optional[str] = None, decision_ids: Sequence[str] = ()) -> PostResult:
     """With the client's lock held by the caller: records the rows matching dated from the bank, suggests the usual
     account for a bill on another, works the year's questions out and posts the year, with the decisions behind the
-    posting."""
-    record_automatic(store, records, client_id=client_id, year_start=year_start, thread_id=thread_id)
-    suggest_account_changes(store, records, client_id=client_id, year_start=year_start)
-    questions.refresh(store, records, client_id, year_start)
-    return ledger_book.post(store, records, client_id, year_start, decision_ids=decision_ids)
+    posting. The four steps work from one copy of the client, read again only after one of them changes it
+    (MongoStore.reading)."""
+    with store.reading():
+        record_automatic(store, records, client_id=client_id, year_start=year_start, thread_id=thread_id)
+        suggest_account_changes(store, records, client_id=client_id, year_start=year_start)
+        questions.refresh(store, records, client_id, year_start)
+        return ledger_book.post(store, records, client_id, year_start, decision_ids=decision_ids)
 
 
 def _open_years(store: MongoStore, client_id: int, today: Optional[dt.date]) -> list[dt.date]:

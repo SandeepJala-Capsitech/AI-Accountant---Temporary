@@ -391,3 +391,8 @@ export async function streamMessage(
     if (done) return
   }
 }
+
+// The agent's words as the chat shows them. It is told to write plain text, but a model still marks a phrase bold
+// (**7400 Travel**) or a heading (## Options) now and then: the marks are dropped, the words kept.
+export const plainReply = (text: string): string =>
+  text.replace(/\*\*([^*\n]+)\*\*/g, '$1').replace(/^#{1,6}\s+/gm, '').replace(/`([^`\n]+)`/g, '$1')

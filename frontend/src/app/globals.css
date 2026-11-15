@@ -221,6 +221,15 @@ textarea.input { height: auto; min-height: 150px; padding: 10px; resize: vertica
 .issue { display: flex; gap: 7px; align-items: baseline; font-size: 12.5px; line-height: 1.45; padding: 5px 8px; border-radius: 6px; }
 .issue strong { font-weight: 600; }
 .issue-mark { flex: none; font-size: 11px; }
+/* What a person can do about an issue, on a line of its own under what it says; none for a note. */
+.issue-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 14px; margin-top: 3px; }
+.issue-actions:empty { display: none; }
+.issue-actions .link-btn { margin-left: 0; font-weight: 600; }
+/* VAT typed or read on a row that the books don't reclaim: said under the £0.00 they hold. */
+.vat-not-reclaimed { white-space: nowrap; font-family: var(--font-sans, inherit); }
+.vat-not-reclaimed .link-btn { display: block; margin: 2px 0 0 auto; }
+/* The accounts to choose from, on the issue that asks for one. */
+.issue-choice { width: auto; max-width: 240px; height: 26px; padding: 0 6px; font-size: 12.5px; color: var(--text); }
 .issue-error { background: var(--error-tint); color: var(--error); }
 .issue-warning { background: var(--warn-tint); color: var(--warn); }
 /* A note has nothing to fix, so no box: on a grey wash in grey type it looked greyed out, as if something sat
@@ -229,6 +238,12 @@ textarea.input { height: auto; min-height: 150px; padding: 10px; resize: vertica
               padding: 2px 0 2px 8px; }
 .issue-info .issue-mark { color: var(--accent); }
 
+/* Narrowing the table by several fields at once. */
+.filter-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 12px; }
+.filter-bar .input { width: auto; height: 32px; font-size: 13px; }
+.filter-bar .filter-text { flex: 1 1 240px; min-width: 180px; }
+.filter-bar .filter-amount { width: 84px; }
+.filter-range { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
 /* What needs review, by kind of issue: each chip shows only its rows. */
 .review-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: -2px 0 12px; }
 .review-count { font-size: 13px; font-weight: 600; color: var(--warn); margin-right: 4px; }

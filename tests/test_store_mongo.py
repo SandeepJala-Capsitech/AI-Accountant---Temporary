@@ -407,3 +407,121 @@ def test_a_client_saved_before_year_ends_reads_with_the_31_march_after_its_earli
     mongo_store.db.clients.update_one({"id": client.id}, {"$unset": {"first_year_end": "", "opening": ""}})
     assert mongo_store.get_client(client.id).first_year_end == dt.date(2025, 3, 31)
     assert mongo_store.opening(client.id) == OpeningBalances()
+
+
+def test_the_whole_client_is_read_in_one_go_as_its_parts_are_read_alone(mongo_store):
+    # A calculation that needs the client, its rows, its uploads and its opening balances reads them together: one
+    # round trip to the database instead of four, and one moment of the client.
+    store = mongo_store
+    client = store.create_client(CUBE)
+    store.set_opening(client.id, OpeningBalances(lines=[OpeningLine(code="1200", debit=Decimal("50.00")),
+                                                        OpeningLine(code="3000", credit=Decimal("50.00"))]))
+    store.add_upload(client.id, "a.pdf", "pdf", [ROW, ROW.model_copy(update={"description": "Second"})],
+                     sha256="abc", warnings=["Row 3 skipped."])
+    store.add_upload(client.id, "empty.pdf", "pdf", [])
+    store.patch_row(client.id, store.rows(client.id)[0].id, {"gross": "80.00"})   # keeps what was first read
+    found, rows, uploads, opening = store.whole(client.id)
+    assert found == store.get_client(client.id)
+    assert rows == store.rows(client.id) and rows[0].original["gross"] == "72.00"
+    assert uploads == store.uploads(client.id) and [u["row_count"] for u in uploads] == [0, 2]
+    assert opening == store.opening(client.id)
+    with pytest.raises(NotFound):
+        store.whole(client.id + 1)
+
+
+def test_the_whole_of_a_client_saved_without_a_first_year_end_reads_as_get_client_does(mongo_store):
+    store = mongo_store
+    client = store.create_client(CUBE)
+    store.add_upload(client.id, "a.pdf", "pdf", [ROW])
+    store.db.clients.update_one({"id": client.id}, {"$set": {"first_year_end": None}})   # as old data was saved
+    assert store.whole(client.id)[0] == store.get_client(client.id)
+    assert store.whole(client.id)[0].first_year_end == dt.date(2027, 3, 31)   # the 31 March on or after its row
+
+
+# ─── Reading a client once for several calculations ────────────────────────────
+
+@pytest.fixture
+def reads(monkeypatch):
+    """The reads of the clients collection, as they are made: each is a round trip to the database."""
+    from pymongo.collection import Collection
+    made = []
+    for name in ("find", "aggregate"):
+        real = getattr(Collection, name)
+        monkeypatch.setattr(Collection, name, lambda self, *a, _real=real, _name=name, **k: (
+            made.append(_name) if self.name == "clients" else None) or _real(self, *a, **k))
+    return made
+
+
+def test_inside_a_reading_block_the_client_is_fetched_once_however_it_is_read(mongo_store, reads):
+    store = mongo_store
+    client = store.create_client(CUBE)
+    store.add_upload(client.id, "a.pdf", "pdf", [ROW], sha256="abc")
+    alone = (store.get_client(client.id), store.rows(client.id), store.uploads(client.id), store.opening(client.id),
+             store.revision(client.id))
+    reads.clear()
+    with store.reading():
+        together = (store.get_client(client.id), store.rows(client.id), store.uploads(client.id),
+                    store.opening(client.id), store.revision(client.id))
+        assert store.whole(client.id) == alone[:4]
+        with store.reading():   # a block inside a block shares the copy
+            assert store.rows(client.id) == alone[1]
+    assert together == alone and reads == ["find"]
+    reads.clear()
+    store.get_client(client.id), store.rows(client.id)   # outside a block every read asks the database, as before
+    assert reads == ["find", "find"]
+
+
+def test_a_write_inside_a_reading_block_is_seen_by_the_next_read(mongo_store):
+    store = mongo_store
+    client = store.create_client(CUBE)
+    with store.reading():
+        assert store.rows(client.id) == []
+        upload_id = store.add_upload(client.id, "a.pdf", "pdf", [ROW, ROW])
+        first, second = store.rows(client.id)
+        assert [u["row_count"] for u in store.uploads(client.id)] == [2]
+        store.patch_row(client.id, first.id, {"gross": "80.00"})
+        assert store.rows(client.id)[0].tx.gross == Decimal("80.00")
+        store.put_row_data(client.id, {second.id: {**store.row_data(client.id, [second.id])[second.id],
+                                                   "description": "Put back"}})
+        assert store.rows(client.id)[1].tx.description == "Put back"
+        store.add_split(client.id, second.id, [ROW], "d1")
+        assert len(store.rows(client.id)) == 3 and len(store.uploads(client.id)) == 2
+        store.delete_row(client.id, first.id)
+        assert [r.id for r in store.rows(client.id)][0] == second.id
+        store.set_upload_bank(client.id, upload_id, "1210")
+        assert store.uploads(client.id)[-1]["bank_account"] == "1210"
+        store.set_opening(client.id, OpeningBalances(lines=[OpeningLine(code="1200", debit=Decimal("5.00")),
+                                                            OpeningLine(code="3000", credit=Decimal("5.00"))]))
+        assert store.opening(client.id).lines[0].debit == Decimal("5.00")
+        assert store.update_client(client.id, {"contact_name": "Sam"}).contact_name == "Sam"
+        assert store.get_client(client.id).contact_name == "Sam"
+        kept = store.raw_rows(client.id, [second.id])
+        store.delete_upload(client.id, upload_id)
+        assert [r.id for r in store.rows(client.id)] != [second.id]
+        store.restore_rows(client.id, *kept)
+        assert second.id in [r.id for r in store.rows(client.id)]
+        before = store.revision(client.id)
+        store.update_client(client.id, {"archived": True})
+        assert store.get_client(client.id).archived and store.revision(client.id) == before + 1
+
+
+def test_a_write_from_another_thread_is_seen_inside_a_reading_block(mongo_store):
+    store = mongo_store
+    client = store.create_client(CUBE)
+    with store.reading():
+        assert store.rows(client.id) == []
+        writer = threading.Thread(target=store.add_upload, args=(client.id, "a.pdf", "pdf", [ROW]))
+        writer.start()
+        writer.join()
+        assert len(store.rows(client.id)) == 1
+
+
+def test_a_client_that_is_not_there_is_not_found_inside_a_reading_block_either(mongo_store):
+    with mongo_store.reading():
+        for read in (mongo_store.get_client, mongo_store.rows, mongo_store.uploads, mongo_store.opening,
+                     mongo_store.whole):
+            with pytest.raises(NotFound):
+                read(999)
+        assert mongo_store.revision(999) == 0
+        created = mongo_store.create_client(CUBE)   # a client made inside the block is found
+        assert mongo_store.get_client(created.id).name == CUBE.name

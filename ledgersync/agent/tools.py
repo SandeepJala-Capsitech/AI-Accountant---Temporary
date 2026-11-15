@@ -1,8 +1,9 @@
 """The accountant agent's tools. Each takes the client, the year the chat is on and the chat itself from the run's
 context (ToolRuntime), never from the model's arguments, and its arguments are checked by Pydantic. They read the
-books, the documents, the questions and the decisions. Only resolve_issue changes rows, through resolutions.resolve,
-which checks the evidence and records the decision; ask_user adds a question. No tool sets a date or posts: dates come
-from the bank lines or from the person, and the server posts at the end of each turn. Each tool says what it is
+books, the documents, the questions and the decisions. Two change rows: resolve_issue, through resolutions.resolve,
+which checks the evidence and records the decision, and edit_row, which makes a change the person in the chat asked
+for (resolutions.edit_as_told: the Edit dialog's change, recorded as a decision). ask_user adds a question. No tool
+posts: the server posts at the end of each turn. Each tool says what it is
 doing as a step of the turn, under its tool call's id, which run.stream_turn passes on."""
 from __future__ import annotations
 
@@ -27,7 +28,7 @@ from ledgersync.accounts import choosable
 from ledgersync.ledger import bank_choices, owners_of, settings_for
 from ledgersync.models import Evidence, Ledger, SavedRow
 from ledgersync.records import AgentRecords
-from ledgersync.resolutions import AgentResolution, resolve
+from ledgersync.resolutions import AgentResolution, RowEdit, edit_as_told, resolve
 from ledgersync.store_mongo import MongoStore
 
 from .locks import ClientLocks
@@ -52,7 +53,7 @@ FAMILIES: dict[str, Family] = {
     "vat_not_booked": "missing_vat", "not_vat_invoice": "missing_vat",
     # A document that isn't a transaction, or that is missing.
     "not_booked": "documents", "open_document": "documents", "no_payroll": "documents",
-    "needs_document": "documents",
+    "needs_document": "documents", "document_wanted": "documents",
     # The account a purchase is on: none found by the reader (parked in Suspense), another than its supplier's
     # usual one, or a cost account for equipment and a fixed asset for something small.
     "account_unclear": "coding", "unusual_account": "coding", "asset_check": "coding", "should_be_asset": "coding", "whose_account": "coding",
@@ -414,6 +415,38 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
                      "before": decision.before, "after": decision.after})
 
     @tool
+    def edit_row(row_id: Annotated[int, Field(description="The row to change.")],
+                 change: RowEdit,
+                 reason: Annotated[str, Field(min_length=1, max_length=400,
+                                              description="What the person asked for, in a sentence they will read.")],
+                 runtime: ToolRuntime[ChatContext]) -> dict:
+        """Changes a row as the person in this chat told you to: its account, its VAT (vat, or no_vat to clear it;
+        reclaim_vat true when they say to reclaim VAT the books hold back, such as a row waiting for a VAT invoice), its
+        VAT treatment, date, amount, description or direction; marks warnings on it as fine (accept_warnings); or
+        books a row held in Suspense without its receipt (without_document, the person's reason). Use it when the
+        person says what a row should be, in a message or in their answer to a question: "put the toll to Travel",
+        "use the VAT on the claim", "that warning is fine". Give only the fields to change. The person's word is the
+        authority, so no evidence is needed, but never use it on your own judgement, and it is refused in a
+        background review. The books check the change as they check an edit and refuse what can't be booked, saying
+        why. It is shown to the person as a change they can undo."""
+        ctx = runtime.context
+        if ctx.trigger != "chat":
+            _step(runtime, f"Didn't change row {row_id}", "failed", "Only a person in a chat can ask for this.")
+            return {"status": "refused", "why": "edit_row makes a change a person asked for in a chat. In a "
+                                                "background review, use resolve_issue or ask_user."}
+        _step(runtime, f"Changing row {row_id}…")
+        with deps.locks.hold(ctx.client_id):
+            decision = edit_as_told(store, records, client_id=ctx.client_id, thread_id=ctx.thread_id, actor=actor,
+                                    row_id=row_id, edit=change, reason=reason)
+        if decision.status != "applied":
+            _step(runtime, f"Didn't change row {row_id}", "failed", decision.reason)
+            return {"status": "refused", "why": decision.reason}
+        _step(runtime, f"Row {row_id}: changed as asked", "done")
+        return _out({"decision_id": decision.id, "status": "applied", "before": decision.before,
+                     "after": decision.after,
+                     "note": "Changed. A question you asked about this row closes by itself after this turn."})
+
+    @tool
     def ask_user(row_ids: Annotated[list[int], Field(description="The rows the question is about.")],
                  question: Annotated[str, Field(min_length=1, max_length=300,
                                                 description="One specific question, in a plain sentence.")],
@@ -591,5 +624,6 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
         _step(runtime, "Worked out the VAT figures", "done")
         return _out(figures.model_dump())
 
-    return [get_overview, list_issues, list_rows, get_row, list_documents, read_document, resolve_issue, ask_user,
+    return [get_overview, list_issues, list_rows, get_row, list_documents, read_document, resolve_issue, edit_row,
+            ask_user,
             close_question, list_questions, list_decisions, list_changes, get_trial_balance, get_vat_figures]

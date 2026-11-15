@@ -11,6 +11,7 @@ export interface ClientYear {
   years: Year[]
   ledger: Ledger             // the year's rows and uploads
   reload: () => Promise<void>   // fetches the year again, after a change
+  show: (next: Ledger) => void  // shows the ledger a change was answered with, without fetching the year again
   error: string              // why the last load failed; '' when it worked
   reading: ReadingFile[]     // the files the API is reading for the client now, from any page or before a refresh
   checkReading: () => void   // looks again at once, after files were sent

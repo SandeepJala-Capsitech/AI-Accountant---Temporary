@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { analysisForm, analyze, ApiError, getHealth, startAnalysis, waitForJob, type Transaction } from '@/lib/api'
-import { addManualRows, importFolder, type BankAccount, type Upload } from '@/lib/clients'
-import { importText, readingLine, requeue, sameFileAs, sameFileText, transactionCount, unsent, type FileStatus, type PickedFile,
+import { addManualRows, type BankAccount, type Upload } from '@/lib/clients'
+import { readingLine, requeue, sameFileAs, sameFileText, transactionCount, unsent, type FileStatus, type PickedFile,
          type ReadingFile } from '@/lib/clientRules'
 import { fingerprint } from '@/lib/duplicates'
 
@@ -13,18 +13,17 @@ const MARK: Record<FileStatus, string> = { waiting: '○', sending: '', reading:
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
-// Upload, Paste and Add by hand for one year of a client, and Import from folder. Each analysis runs as a job that
+// Upload, Paste and Add by hand for one year of a client. Each analysis runs as a job that
 // the API saves to the year when it finishes, so onSaved reloads the year; a row added by hand is saved here, once
 // the model has suggested its account. A statement goes on the account picked in Add to (the client's first by
 // default): the API refuses a statement without one when the client has several. Picked files are all sent at once,
 // so a refresh or another page loses none once they are sent; reading (the files the API is reading for the client)
 // lists those this page isn't following, such as files sent before a refresh, and onSent has it looked at again.
-export default function AddDocuments({ clientId, yearStart, bankAccounts, company, folder, uploads, reading, onSaved, onSent }: {
+export default function AddDocuments({ clientId, yearStart, bankAccounts, company, uploads, reading, onSaved, onSent }: {
   clientId: number
   yearStart: string
   bankAccounts: BankAccount[]
   company: boolean           // a limited company: the owner's own money is the Director's Loan Account
-  folder: string             // the client's folder on this computer; '' when none is set
   uploads: Upload[]
   reading: ReadingFile[]
   onSaved: () => void
@@ -41,7 +40,6 @@ export default function AddDocuments({ clientId, yearStart, bankAccounts, compan
   const [error, setError] = useState('')
   const [batch, setBatch] = useState<PickedFile[]>([])
   const [picked, setPicked] = useState('')   // the account chosen in Add to
-  const [imported, setImported] = useState('')   // what the last import from the folder found and did
   const [limits, setLimits] = useState({ parallel: 1, maxMb: 20 })
   const bank = bankAccounts.some(a => a.code === picked) ? picked : bankAccounts[0]?.code ?? ''
   const where = { clientId, yearStart, bankAccount: bank }
@@ -212,37 +210,6 @@ export default function AddDocuments({ clientId, yearStart, bankAccounts, compan
     }
   }
 
-  // Reads the files in the client's folder it has not had before, as jobs like an upload's, then reloads the year.
-  const importFromFolder = async () => {
-    cancelRef.current = false
-    setBusy(true)
-    setError('')
-    setImported('')
-    setProgress('Looking in the folder…')
-    try {
-      const result = await importFolder(clientId, yearStart, bank)
-      const failed: string[] = []
-      let read = 0
-      setProgress(`Reading ${result.jobs.length} new file${result.jobs.length === 1 ? '' : 's'}…`)
-      await Promise.all(result.jobs.map(async job => {
-        try {
-          await waitForJob(job.job_id, () => {}, () => cancelRef.current)
-        } catch (e) {
-          failed.push(`${job.name}: ${message(e)}`)
-        }
-        setProgress(`${++read} of ${result.jobs.length} files read…`)
-      }))
-      setImported(importText(result))
-      if (failed.length) setError(failed.join(' '))
-    } catch (e) {
-      setError(message(e))
-    } finally {
-      setBusy(false)
-      setProgress('')
-      onSaved()
-    }
-  }
-
   const canRetry = !busy && batch.some(item => item.status === 'failed' || item.status === 'cancelled')
   const closed = busy   // nothing new can be started while files are being read
   return (
@@ -267,12 +234,7 @@ export default function AddDocuments({ clientId, yearStart, bankAccounts, compan
             </select>
           </label>
         )}
-        {tab === 'upload' && (
-          <button type="button" className="btn" onClick={importFromFolder} disabled={closed || !folder}>Import from folder</button>
-        )}
-        {tab === 'upload' && !folder && <span className="muted small">Set the client&apos;s folder in Edit details to import from it.</span>}
       </div>
-      {imported && <div className="notice notice-info">{imported}</div>}
       {tab === 'upload' && (
         <>
           <input ref={fileInput} type="file" multiple hidden onChange={e => pickFiles(e.target.files)}

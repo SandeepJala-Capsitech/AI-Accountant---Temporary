@@ -181,7 +181,7 @@ def test_a_receipt_and_its_card_payment_post_once_with_the_receipts_vat():
         ("1200", "0.00", "21.35"), ("7406", "17.79", "0.00"), ("2201", "3.56", "0.00")]
 
 
-def test_a_claim_and_its_receipts_owe_the_claimant_once_with_the_receipts_vat():
+def test_a_claim_and_its_receipts_owe_the_claimant_once_with_the_vat_the_receipt_or_the_claim_shows():
     def line(gross, account, merchant, vat=None):
         return Transaction(direction="out", gross=gross, vat=vat, account_code=account, counterparty="Jenny Hogg",
                            description=f"Jenny Hogg - {merchant}", date=dt.date(2026, 9, 14),
@@ -195,7 +195,8 @@ def test_a_claim_and_its_receipts_owe_the_claimant_once_with_the_receipts_vat():
             receipt("173.75", "7402", "Clayton Hotel Manchester City Centre")]
     tb = trial_balance(rows, REGISTERED)
     assert [(l.code, str(l.debit), str(l.credit)) for l in tb.lines] == [
-        ("2110", "0.00", "240.65"), ("7400", "60.90", "0.00"), ("7402", "173.75", "0.00"), ("2201", "6.00", "0.00")]
+        ("2110", "0.00", "240.65"), ("7400", "60.90", "0.00"), ("7402", "144.79", "0.00"), ("2201", "34.96", "0.00")]
+    # (the hotel receipt shows no VAT, so the £28.96 the claim shows is booked, and a VAT invoice asked for)
 
 
 

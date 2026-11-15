@@ -17,13 +17,13 @@ from pydantic import BaseModel, Field
 
 from . import books
 from .accounts import BY_CODE, FIXED_ASSETS, AccountType, choosable
-from .checks import long_date
+from .checks import ACCEPTABLE, long_date
 from .coding import Usual, usual_accounts, usual_text
 from .file_dates import date_in_name
 from .errors import InvalidInput, LedgerSyncError, NotFound
-from .ledger import bank_choices, ensure_open, owners_of, require_active
+from .ledger import _check_edit, bank_choices, ensure_open, owners_of, require_active
 from .matching import CARD_DAYS, names_match, same_payee
-from .models import Decision, DecisionDraft, Evidence, SavedRow, Transaction
+from .models import ChangeDraft, Decision, DecisionDraft, Direction, Evidence, RowPatch, SavedRow, Transaction
 from .money import PENNY, ZERO, VatTreatment, vat_in_gross
 from .records import AgentRecords
 from .store_mongo import MongoStore
@@ -695,6 +695,87 @@ def set_date(store: MongoStore, records: AgentRecords, *, client_id: int, thread
                  reason=f"Dated {long_date(date)} from the person's answer.")
     change = _Change(rule=draft["rule"], touched=[row_id], patches={row_id: {"date": date.isoformat()}})
     return _commit(store, records, b, change, key, draft)
+
+
+class RowEdit(BaseModel):
+    """What the person in a chat can tell the agent to change on a row: the fields of the Edit dialog that belong to
+    the row alone, the warnings they say are fine, and booking it without its receipt. Only what is given changes."""
+    account_code: Optional[str] = Field(None, description="The account to book it to: a code get_overview lists.")
+    vat: Optional[Decimal] = Field(None, description="The VAT in pounds the row should show.")
+    no_vat: bool = Field(False, description="True to clear the VAT shown on the row.")
+    reclaim_vat: Optional[bool] = Field(None, description=(
+        "True when the person says to reclaim the VAT already on the row (they hold the VAT invoice) although the "
+        "books don't reclaim it or hold the row in Suspense for a VAT invoice; false to leave it to the document "
+        "rules again. A vat amount the person gives is reclaimed without this."))
+    vat_treatment: Optional[VatTreatment] = Field(None, description="How VAT applies, when the person says.")
+    date: Optional[dt.date] = None
+    gross: Optional[Decimal] = Field(None, description="The amount in pounds, VAT included.")
+    description: Optional[str] = None
+    direction: Optional[Direction] = None
+    accept_warnings: list[str] = Field(default_factory=list, description=(
+        "Issue codes of warnings on the row the person says are fine as they are: "
+        + ", ".join(sorted(ACCEPTABLE)) + "."))
+    without_document: Optional[str] = Field(None, description=(
+        "Book a row held in Suspense for its receipt or invoice without it, with no VAT reclaimed: the person's "
+        "reason there is none."))
+
+
+def edit_as_told(store: MongoStore, records: AgentRecords, *, client_id: int, thread_id: Optional[str], actor: str,
+                 row_id: int, edit: RowEdit, reason: str) -> Decision:
+    """Changes a row as the person in the chat said to: the same change, checked the same way, as the Edit dialog
+    makes (ledger.change_row), recorded as a decision so it shows in the chat and can be undone. The person is the
+    authority for it, so no evidence is asked for; the books still refuse what can't be booked (an account that
+    isn't the client's, VAT above the amount, a closed year, a change that leaves the row with a new error). It is
+    also recorded as the person's own edit of the row: a background review then leaves the row to them, and a
+    question the agent asked about it is closed when the books are next settled."""
+    b = books._books(store, client_id)
+    place = {s.id: k for k, s in enumerate(b.stored)}
+    year = b.years[b.placed[place[row_id]]] if row_id in place else b.years[-1]
+    draft = dict(client_id=client_id, thread_id=thread_id, year_start=year.start, action="edit_row",
+                 rule="Changed as you asked", row_ids=[row_id], reason=reason, actor=actor, trigger="chat")
+    refusal = f"edit_row|{client_id}|{row_id}"
+    try:
+        if b.client.archived:
+            raise _Refused(f"{b.client.name} is archived.")
+        if row_id not in place:
+            raise _Refused(f"Row {row_id} isn't one of {b.client.name}'s rows.")
+        tx = b.stored[place[row_id]].tx
+        if tx.superseded_by or tx.excluded:
+            raise _Refused(f"Row {row_id} is out of the books: nothing on it is booked.")
+        wanted: dict = {k: getattr(edit, k) for k in ("account_code", "vat", "vat_treatment", "date", "gross",
+                                                      "description", "direction", "without_document")
+                        if getattr(edit, k) is not None}
+        if edit.no_vat:
+            wanted["vat"] = None
+        if "vat" in wanted or edit.reclaim_vat is not None:
+            # VAT the person gives is theirs to vouch for: reclaimed. reclaim_vat says so for VAT already on the row.
+            wanted["vat_confirmed"] = (edit.reclaim_vat if edit.reclaim_vat is not None
+                                       else wanted.get("vat") is not None and wanted["vat"] > 0)
+        if edit.accept_warnings:
+            wanted["accepted"] = sorted({*tx.accepted, *edit.accept_warnings})
+        patch = RowPatch(**wanted)
+        sent = {k for k in wanted if getattr(patch, k) != getattr(tx, k)}
+        if not sent:
+            raise _Refused("The row already says that: nothing to change.")
+        try:
+            ensure_open(b.client, [year.start, *([patch.date] if "date" in sent else [])])
+            _check_edit(patch, sent, tx, b.client)
+        except LedgerSyncError as exc:
+            raise _Refused(exc.message) from exc
+    except _Refused as refused:
+        return _record(records, refusal, draft, status="refused", reason=str(refused))
+    values = patch.model_dump(mode="json", include=sent)
+    change = _Change(rule=draft["rule"], touched=[row_id], patches={row_id: values})
+    # A key of its own: asked for again once made, the row already says so and nothing is changed (above); asked for
+    # again after the row has moved on, it is a new change.
+    key = f"{refusal}|{uuid4().hex}"
+    decision = _commit(store, records, b, change, key, draft)
+    if decision.status == "applied":
+        records.add_change(ChangeDraft(
+            client_id=client_id, year_start=year.start, actor="user", kind="row_edited", row_ids=[row_id],
+            before=decision.before.get(str(row_id), {}), after=values, in_chat=True,
+            summary=f"Row {row_id} changed in the chat, as the person asked: {', '.join(sorted(sent))}"))
+    return decision
 
 
 def record_automatic(store: MongoStore, records: AgentRecords, *, client_id: int, year_start: dt.date,

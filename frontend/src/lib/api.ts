@@ -25,6 +25,12 @@ export interface Transaction {
   vat_treatment: string | null  // rate a person picked, to estimate VAT not shown; null = none picked
   vat_posted: string | null     // set by the API: the VAT the ledger books
   net: string | null            // set by the API: gross minus vat_posted
+  // Set by the API: the part of vat_posted the books do not reclaim (the row is held in Suspense for its VAT
+  // invoice, or its document isn't a VAT invoice), and why. The books hold the whole amount with no VAT.
+  vat_not_reclaimed?: string | null
+  vat_confirmed?: boolean           // a person entered the VAT, or said to reclaim it: reclaimed on their say
+  vat_from_claim?: boolean          // set by the API: its VAT is what its expense claim shows, its receipt showing none
+  vat_not_reclaimed_why?: string | null
   account_code: string
   account_name?: string | null
   contra_account_name?: string | null   // the name of the other side: a journal's credit account

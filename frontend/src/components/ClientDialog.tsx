@@ -182,12 +182,6 @@ export default function ClientDialog({ client, taken, onCancel, onSave }: {
           </fieldset>
         )}
         <label className="field">
-          <span>Folder</span>
-          <input className="input" value={fields.folder} onChange={e => set('folder', e.target.value)}
-                 placeholder="e.g. /Users/you/Clients/Acme" />
-          <span className="hint">Where this client’s files are on this computer. Optional: it lets you import new files in one go.</span>
-        </label>
-        <label className="field">
           <span>AI review</span>
           <select className="input" value={fields.ai_review ?? 'automatic'} onChange={e => set('ai_review', e.target.value as AiReviewMode)}>
             <option value="automatic">Automatic</option>

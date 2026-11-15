@@ -575,13 +575,13 @@ def test_only_a_checked_resolution_can_set_a_date():
 
     tools = make_tools(AgentDeps(store=None, records=None, blobs=None), actor="agent:test")
     assert {t.name for t in tools} == {"get_overview", "list_issues", "list_rows", "get_row", "list_documents", "read_document",
-                                       "resolve_issue", "ask_user", "close_question", "list_questions",
+                                       "resolve_issue", "edit_row", "ask_user", "close_question", "list_questions",
                                        "list_decisions", "list_changes", "get_trial_balance", "get_vat_figures"}
     dated = [(tool.name, name) for tool in tools for name, field in properties(tool.tool_call_schema.model_json_schema())
              if "date" in name or field.get("format") in ("date", "date-time")]
-    # The one date any tool takes is set_date's, which resolutions.resolve checks against another record, the file
-    # name or the document before it changes the row (R1).
-    assert dated == [("resolve_issue", "date")]
+    # The dates a tool takes: set_date's, which resolutions.resolve checks against another record, the file name or
+    # the document before it changes the row (R1), and the one a person in the chat tells edit_row to set.
+    assert dated == [("resolve_issue", "date"), ("edit_row", "date")]
 
 
 # ─── Threads ───────────────────────────────────────────────────────────────────
@@ -786,6 +786,48 @@ def test_resolve_issue_carries_the_contexts_trigger_and_mode(mongo_store, deps, 
     assert not next(r for r in mongo_store.rows(staples) if r.id == args["resolution"]["drop_row_ids"][0]).tx.excluded
 
 
+@pytest.mark.mongo
+def test_edit_row_changes_a_row_as_the_person_said_and_its_question_goes(mongo_store, deps, staples):
+    import time
+    from ledgersync import questions
+    receipt = next(r for r in mongo_store.rows(staples) if r.tx.document_type == "receipt")
+    to = "7400" if receipt.tx.account_code != "7400" else "7504"
+    asked = questions.ask(deps.records, client_id=staples, year_start=YEAR, row_ids=[receipt.id],
+                          text="Which account should this go to?", why="Its account is unclear.")
+    time.sleep(1.1)   # times are kept to the second
+    args = dict(row_id=receipt.id, change={"account_code": to}, reason="You said to put it to that account.")
+    model = ScriptedChatModel(replies=[call("edit_row", **args), call("edit_row", **args), say("Moved it.")])
+    agent = build_agent(SETTINGS, deps, model=model, checkpointer=InMemorySaver())
+    ctx = context(staples)
+
+    list(stream_turn(agent, ctx, f'Answer to "{asked.text}": that account'))
+
+    assert next(r for r in mongo_store.rows(staples) if r.id == receipt.id).tx.account_code == to
+    made, again = deps.records.decisions(staples)
+    assert (made.action, made.status, made.thread_id, made.row_ids) == ("edit_row", "applied", ctx.thread_id, [receipt.id])
+    assert made.before == {str(receipt.id): {"account_code": receipt.tx.account_code}}
+    assert made.after == {str(receipt.id): {"account_code": to}}
+    assert again.status == "refused" and "already says that" in again.reason   # asked twice, changed once
+    assert receipt.id in deps.records.person_rows(staples)   # the person's own change: a review leaves it to them
+    questions.refresh(mongo_store, deps.records, staples, YEAR)
+    assert deps.records.question(asked.id).status == "resolved"
+
+
+@pytest.mark.mongo
+def test_edit_row_refuses_what_the_books_cannot_take_and_a_background_review(mongo_store, deps, staples):
+    receipt = next(r for r in mongo_store.rows(staples) if r.tx.document_type == "receipt")
+    bad = dict(row_id=receipt.id, change={"account_code": "0000"}, reason="You said so.")
+    model = ScriptedChatModel(replies=[call("edit_row", **bad), say("Couldn't.")])
+    list(stream_turn(build_agent(SETTINGS, deps, model=model, checkpointer=InMemorySaver()), context(staples), "Do it."))
+    assert json.loads(answered(model, 1)[0].content)["status"] == "refused"
+
+    fine = dict(row_id=receipt.id, change={"description": "Paper"}, reason="Tidier.")
+    model = ScriptedChatModel(replies=[call("edit_row", **fine), say("Left it.")])
+    list(stream_turn(build_agent(SETTINGS, deps, model=model, checkpointer=InMemorySaver()), background(staples), "Review."))
+    assert json.loads(answered(model, 1)[0].content)["status"] == "refused"
+    assert next(r for r in mongo_store.rows(staples) if r.id == receipt.id).tx == receipt.tx
+
+
 def agent_question(deps, client_id: int, row_id: int):
     """A question of the agent's own about the row, asked on the first of January 2030 (for the changes after it)."""
     from ledgersync import questions
@@ -972,3 +1014,27 @@ def test_the_prompt_carries_the_tax_facts_the_chat_got_wrong():
                  "nine months and one day", "There is no minimum amount", "33.75%",
                  "Never give a tax rate, a threshold or a deadline from memory"):
         assert said in " ".join(SYSTEM_PROMPT.split()), said
+
+
+# ─── One read of the client for each tool call ─────────────────────────────────
+
+@pytest.mark.mongo
+def test_each_tool_call_reads_the_client_once(mongo_store, deps, acme, monkeypatch):
+    # Each read is a round trip to the database, which may be far away: a tool works several figures out of one copy
+    # of the client. (The trial balance tool made nineteen reads, the overview eleven.)
+    from pymongo.collection import Collection
+    three_clean_rows(mongo_store, acme)
+    ledger_book.post(mongo_store, deps.records, acme, YEAR)
+    reads = []
+    for name in ("find", "aggregate"):
+        real = getattr(Collection, name)
+        monkeypatch.setattr(Collection, name, lambda self, *a, _real=real, **k: (
+            reads.append(self.name) if self.name == "clients" else None) or _real(self, *a, **k))
+    for tool, args in (("get_trial_balance", {}), ("get_overview", {}), ("get_vat_figures", {}), ("list_issues", {}),
+                       ("get_row", {"row_id": mongo_store.rows(acme)[0].id})):
+        model = ScriptedChatModel(replies=[call(tool, **args), say("Looked.")])
+        agent = build_agent(SETTINGS, deps, model=model, checkpointer=InMemorySaver())
+        reads.clear()
+        list(stream_turn(agent, context(acme), "Look."))
+        assert answered(model, 1)[0].status != "error", tool
+        assert reads == ["clients"], tool

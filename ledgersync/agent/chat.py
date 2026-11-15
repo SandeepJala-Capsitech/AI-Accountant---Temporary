@@ -415,6 +415,14 @@ class Chat:
         files read. The first message titles the chat."""
         client = self.store.get_client(thread.client_id)
         since = since_now(self.records, client.id)
+        # The questions as the books ask them now: one a change on a page has answered since isn't put to the agent,
+        # or to the person, again. Never fails the turn; a closed year's questions stay as they are.
+        if all(c.start != thread.year_start for c in client.closed_years):
+            try:
+                with self.locks.hold(client.id):
+                    questions.refresh(self.store, self.records, client.id, thread.year_start)
+            except Exception:   # noqa: BLE001
+                logger.exception("Couldn't work out the questions of client %s before a turn", client.id)
         before = {q.id for q in self.records.questions(client.id, thread.year_start)}   # open or waiting already
         message_id = uuid4().hex   # the person's message in the chat's memory, and the turn on the thread
         called: set[str] = set()   # the tools the agent calls

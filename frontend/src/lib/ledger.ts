@@ -227,6 +227,7 @@ const ISSUE_TITLES: Record<string, string> = {
   unusual_account: "Not this supplier's usual account", asset_check: 'Checked for equipment', should_be_asset: 'Equipment?', whose_account: 'Whose account?',
   vat_not_booked: 'VAT not booked', needs_document: 'Needs its document', booked_without_document: 'Booked without a receipt', claimed_less: 'Claimed less than its bill', total_worked_out: 'Total not printed',
   card_credit: 'Money in on a card', vat_unclaimed: 'VAT not reclaimed', on_account: 'Payment on account',
+  vat_confirmed: 'VAT reclaimed on your say', vat_implied: 'VAT worked out', document_wanted: 'Invoice needed',
   payroll_person: 'Check this person\'s pay', cis_deducted: 'CIS deducted', payout_report: 'Payout report needed', personal: 'Looks personal', subtotal_only: 'Total not printed',
 }
 
@@ -269,8 +270,79 @@ export const canBeApart = (code: string) => MAY_BE_ONE.has(code)
 
 // Warnings that are a matter of judgement, which a person who has looked can answer It's fine (checks.ACCEPTABLE).
 const ACCEPTABLE = new Set(['no_vat_number', 'vat_over_rate', 'small_asset', 'meal_check', 'addressed_to', 'future_date',
-                            'file_date', 'unusual_account', 'asset_check', 'should_be_asset', 'whose_account'])
+                            'file_date', 'unusual_account', 'asset_check', 'should_be_asset', 'whose_account', 'claim_vat', 'document_wanted'])
 export const canBeAccepted = (code: string) => ACCEPTABLE.has(code)
+// What accepting a warning is called on its button: the row stays booked as it is, and stops asking.
+export const acceptLabel = (code: string) => (code === 'document_wanted' ? "It's fine without one" : "It's fine")
+
+// A way to fix an issue, offered on the issue itself: a change made at once, a list to choose from there on the
+// row, the Edit dialog, or the Documents page for a file that is missing.
+export interface IssueFix {
+  label: string
+  change?: RowChange       // made at once
+  choose?: 'account'       // the client's accounts, to pick one from
+  edit?: boolean           // opens Edit
+  documents?: boolean      // goes to Documents, to add the file
+}
+
+const SUSPENSE = '9998'
+const ACCOUNT_ISSUES = new Set(['account_unclear', 'account_not_recognised', 'unknown_account', 'same_account'])
+const DATE_ISSUES = new Set(['date_missing', 'date_out_of_period', 'before_first_year'])
+const VAT_ISSUES = new Set(['vat_arithmetic', 'vat_rate_mismatch', 'vat_estimated', 'sale_without_vat', 'vat_not_booked'])
+const DOCUMENT_ISSUES = new Set(['needs_document', 'document_wanted', 'no_payroll', 'payout_report'])
+
+// The line of an expense claim that the row's receipt or invoice backs, among the year's rows: what the claimant
+// said it was (its account, its VAT), which a fix can take.
+export const claimLineOf = (tx: Transaction, rows: Transaction[]): Transaction | undefined =>
+  tx.claimed_in && tx.document_ref
+    ? rows.find(r => r.document_type === 'expense_claim' && r.document_ref === tx.claimed_in!.ref
+                     && r.recorded_by?.ref === tx.document_ref)
+    : undefined
+
+// How a person can fix a warning or an error from where it is listed (a note needs no fix). claimLine: claimLineOf.
+// An issue with controls of its own elsewhere on the row (Link, Show both, Not the same, It's fine) offers none here.
+export function issueFixes(tx: Transaction, issue: Issue, claimLine?: Transaction): IssueFix[] {
+  // The note on VAT reclaimed on a person's say is where they take that back.
+  if (issue.code === 'vat_confirmed') return [{ label: "Don't reclaim it", change: { vat_confirmed: false } }]
+  // VAT worked out of the amount because the document shows a VAT number or says VAT: a person who knows it
+  // carries none says so, or enters what it does carry.
+  if (issue.code === 'vat_implied') return [{ label: 'No VAT on it', change: { vat: '0.00' } }, { label: 'Enter the VAT', edit: true }]
+  if (issue.severity === 'info') return []
+  const code = issue.code
+  if (ACCOUNT_ISSUES.has(code)) {
+    const theirs = claimLine?.account_code && claimLine.account_code !== SUSPENSE && claimLine.account_code !== tx.account_code
+      ? [{ label: `Use ${claimLine.account_name || claimLine.account_code}, as the claim has it`,
+           change: { account_code: claimLine.account_code } }]
+      : []
+    return [...theirs, { label: 'Choose the account', choose: 'account' }]
+  }
+  if (code === 'claim_vat') {
+    // Booked as the claim shows it already: the way out is to say it carries none.
+    if (tx.vat_from_claim) return [{ label: 'No VAT on it', change: { vat: '0.00' } }]
+    return claimLine?.vat && Number(claimLine.vat) > 0
+      ? [{ label: `Book VAT ${money(claimLine.vat)}, as claimed`, change: { vat: claimLine.vat } }]
+      : [{ label: 'Enter the VAT', edit: true }]
+  }
+  // VAT read on a row whose account takes none: on Suspense it goes once the account is chosen.
+  if (code === 'vat_not_applicable') return tx.account_code === SUSPENSE ? [] : [{ label: 'Remove the VAT', change: { vat: null } }]
+  if (code === 'non_gbp_currency') return [{ label: 'Enter it in pounds', edit: true }]
+  if (DATE_ISSUES.has(code)) return [{ label: 'Set the date', edit: true }]
+  if (VAT_ISSUES.has(code)) return [{ label: 'Correct the VAT', edit: true }]
+  if (DOCUMENT_ISSUES.has(code)) {
+    // A row held for its VAT invoice with VAT on it: the person can vouch for the VAT, which books the row.
+    // or say it carries none, which books it whole.
+    const reclaim: IssueFix[] = code === 'needs_document' && tx.vat_not_reclaimed
+      ? [{ label: `Reclaim VAT ${money(tx.vat_not_reclaimed)} and book it`, change: { vat_confirmed: true } },
+         { label: 'No VAT on it', change: { vat: '0.00' } }] : []
+    return [...reclaim, { label: 'Add the document', documents: true }]
+  }
+  return []
+}
+
+// What to ask the AI about an issue, from the row: the chat opens on the client with this as its first message.
+export const askAbout = (tx: Transaction, issue: Issue) =>
+  `Help me fix this: "${tx.description}"${tx.date ? `, ${longDate(tx.date)}` : ''}, ${money(tx.gross)}. `
+  + `${issueHeading(issue.code)} ${issue.message} Tell me the options, and make the change when I say which.`
 export const acceptChange = (tx: Transaction, code: string): RowChange =>
   ({ accepted: [...new Set([...(tx.accepted ?? []), code])] })
 
@@ -283,6 +355,63 @@ export function apartStatus(tx: Transaction, describe: (id: number) => string | 
   const names = (tx.apart_from ?? []).map(describe).filter((name): name is string => !!name)
   return names.length ? { text: `Not the same as ${names.map(n => `"${n}"`).join(', ')} (you said)`,
                           actions: [{ label: 'Undo', change: { apart_from: [] } }] } : null
+}
+
+// The VAT and the net the books hold for a row. VAT the document rules don't reclaim (a row held in Suspense for its
+// VAT invoice, a receipt that isn't a VAT invoice) stays in the amount: none is booked, and the net is the whole
+// amount. So the table and its totals agree with the trial balance.
+const pounds = (pennies: number) => (pennies / 100).toFixed(2)
+const pennies = (value: string) => Math.round(Number(value) * 100)
+export const vatBooked = (tx: Transaction): string | null => (tx.vat_not_reclaimed ? '0.00' : tx.vat_posted)
+export const netBooked = (tx: Transaction): string | null =>
+  tx.vat_not_reclaimed && tx.net != null ? pounds(pennies(tx.net) + pennies(tx.vat_not_reclaimed)) : tx.net
+
+// ─── Filtering the table ─────────────────────────────────────────────────────
+
+// What the table can be narrowed by, all at once: words, account, kind of document, direction, dates, amounts and
+// what state the row is in. An empty field doesn't narrow.
+export interface RowFilters {
+  text: string        // words found in the description, who was paid, the file, the document number or the account
+  account: string     // an account code
+  type: string        // a document type
+  direction: '' | 'in' | 'out'
+  from: string        // dates, YYYY-MM-DD, both included
+  to: string
+  min: string         // amounts in pounds, both included
+  max: string
+  status: '' | 'review' | 'edited' | 'vat' | 'no_vat' | 'not_booked'
+}
+export const NO_FILTERS: RowFilters = { text: '', account: '', type: '', direction: '', from: '', to: '', min: '', max: '', status: '' }
+
+// How many fields narrow the table.
+export const filtersSet = (f: RowFilters): number => Object.values(f).filter(v => v.trim() !== '').length
+
+// Whether a row passes every field that is set. Every word typed must be found somewhere on the row; a row with no
+// date fails a date limit; an amount that isn't a number doesn't narrow.
+export function matchesFilters(tx: Transaction & { edited?: boolean }, f: RowFilters, fileName = ''): boolean {
+  const words = f.text.toLowerCase().split(/\s+/).filter(Boolean)
+  if (words.length) {
+    const on = [tx.description, tx.counterparty, fileName, tx.document_number, tx.account_name, tx.account_code, tx.gross]
+      .filter(Boolean).join(' ').toLowerCase()
+    if (!words.every(w => on.includes(w))) return false
+  }
+  if (f.account && tx.account_code !== f.account) return false
+  if (f.type && (tx.document_type ?? 'receipt') !== f.type) return false
+  if (f.direction && tx.direction !== f.direction) return false
+  if ((f.from || f.to) && !tx.date) return false
+  if (f.from && tx.date! < f.from) return false
+  if (f.to && tx.date! > f.to) return false
+  const amount = Number(tx.gross)
+  const min = f.min.trim() === '' ? NaN : Number(f.min)
+  const max = f.max.trim() === '' ? NaN : Number(f.max)
+  if (!Number.isNaN(min) && amount < min) return false
+  if (!Number.isNaN(max) && amount > max) return false
+  if (f.status === 'review' && !needsReview(tx)) return false
+  if (f.status === 'edited' && !tx.edited) return false
+  if (f.status === 'vat' && !(Number(vatBooked(tx) ?? 0) > 0)) return false
+  if (f.status === 'no_vat' && Number(vatBooked(tx) ?? 0) > 0) return false
+  if (f.status === 'not_booked' && kindOf(tx) !== 'not booked' && !leftOut(tx)) return false
+  return true
 }
 
 export interface ReviewItem { code: string; title: string; severity: 'warning' | 'error'; rows: number }
@@ -332,7 +461,7 @@ export function totalsOf(all: Transaction[]): TotalRow[] {
     const rows = txs.filter(keep)
     if (!rows.length) return []
     const total: TotalRow = { key, label, count: rows.length, gross: sum(rows.map(tx => tx.gross)),
-                              vat: sum(rows.map(tx => tx.vat_posted)), net: sum(rows.map(tx => tx.net)) }
+                              vat: sum(rows.map(vatBooked)), net: sum(rows.map(netBooked)) }
     if (key.startsWith('documents')) {
       // What is still owed is carried by every row of a document, so it is counted once per document, on the side
       // it is owed: an agent's statement has rows both ways.

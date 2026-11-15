@@ -56,6 +56,15 @@ export default function ClientYearLayout({ children }: { children: ReactNode }) 
     reload()
   }, [reload])
 
+  // A change is answered with its year's ledger: shown as it is, so the page doesn't wait for a second fetch. A
+  // change that moved the row into another year is answered with that year's, so this one is fetched again.
+  const show = useCallback((next: Ledger) => {
+    if (next.year.start !== start) { reload(); return }
+    latest.current++   // a load still on its way is older than this
+    setLedger(next)
+    setError('')
+  }, [start, reload])
+
   // The files the API is reading for the client, whichever page sent them and across a refresh: looked at when the
   // year opens and every few seconds while any is being read; the year is fetched again as each one is saved.
   const [reading, setReading] = useState<ReadingFile[]>([])
@@ -83,8 +92,8 @@ export default function ClientYearLayout({ children }: { children: ReactNode }) 
   }, [clientId, reload, readingTick])
 
   const value = useMemo<ClientYear | null>(() => ledger && {
-    client: ledger.client, year: ledger.year, years: ledger.years, ledger, reload, error, reading, checkReading,
-  }, [ledger, reload, error, reading, checkReading])
+    client: ledger.client, year: ledger.year, years: ledger.years, ledger, reload, show, error, reading, checkReading,
+  }, [ledger, reload, show, error, reading, checkReading])
 
   if (missing === 'client') {
     return (

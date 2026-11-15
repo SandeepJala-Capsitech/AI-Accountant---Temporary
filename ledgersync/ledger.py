@@ -376,7 +376,7 @@ def summaries(store: MongoStore, archived: bool = False, records=None) -> list[C
 
 
 # A field sent as null that can't be left empty, and what to tell the person.
-_NEEDED = {"direction": "Choose money in or out.", "gross": "Enter the amount.", "account_code": "Choose an account.",
+_NEEDED = {"vat_confirmed": "Say whether to reclaim the VAT.", "direction": "Choose money in or out.", "gross": "Enter the amount.", "account_code": "Choose an account.",
            "document_type": "Choose a document type.", "include": "Tick or untick Include.",
            "reverse_charge": "Tick or untick Reverse charge.", "accepted": "Say which warnings are fine."}
 
@@ -416,6 +416,8 @@ def _check_edit(patch: RowPatch, sent: set[str], tx: Transaction, client: Client
         raise InvalidInput("An amount can only be converted to pounds.")
     gross = patch.gross if "gross" in sent else tx.gross
     vat = patch.vat if "vat" in sent else tx.vat
+    if "vat_confirmed" in sent and patch.vat_confirmed and not (vat is not None and vat > 0):
+        raise InvalidInput("Enter the VAT first: there is none on this row to reclaim.")
     if gross <= 0:
         raise InvalidInput("The amount must be above zero.")
     if gross >= MOST:
@@ -451,7 +453,11 @@ def change_row(store: MongoStore, client_id: int, row_id: int, patch: RowPatch) 
     else:
         sent = patch.model_fields_set - {"revert"}
         _check_edit(patch, sent, row.tx, client)
-        store.patch_row(client_id, row_id, patch.model_dump(mode="json", include=sent))
+        values = patch.model_dump(mode="json", include=sent)
+        if "vat" in sent and "vat_confirmed" not in sent:
+            # VAT a person enters is theirs to vouch for, so it is reclaimed; clearing it takes that back.
+            values["vat_confirmed"] = patch.vat is not None and patch.vat > 0
+        store.patch_row(client_id, row_id, values)
     return _books().ledger_of(store, client_id, _year_of(store, client, row))
 
 

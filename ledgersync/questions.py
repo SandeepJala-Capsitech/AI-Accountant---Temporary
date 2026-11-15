@@ -2,8 +2,9 @@
 asks for one, a row held in Suspense by the document rules asks for the document. A person's answer is applied here
 without the model: a date goes through resolutions.set_date, "I don't have it" and "Not sure" leave the question
 waiting. After an answer the questions are worked out again and the year is posted. A question goes when the books
-no longer need it; the agent's own questions are never touched by that. An uploaded document is not an answer here:
-the API reads it into the client's documents and then calls refresh."""
+no longer need it. One of the agent's own goes when a person has changed a row it is about since it was asked, or none
+of its rows is in the books any more: it asked about the books as they were. An uploaded document is not an answer
+here: the API reads it into the client's documents and then calls refresh."""
 from __future__ import annotations
 
 import datetime as dt
@@ -148,10 +149,73 @@ def _same(stored: Question, draft: QuestionDraft) -> bool:
         draft.kind, draft.text, draft.why, draft.row_ids, draft.year_start)
 
 
+# A person's own changes to a row: after one, a question the agent asked about that row is about the row as it was.
+_PERSON_CHANGES = frozenset({"row_edited", "row_removed", "row_reverted", "row_linked", "row_included", "rows_apart"})
+CHANGED_SINCE = "You changed this row after it was asked."
+ROWS_GONE = "Its row is no longer in the books."
+
+
+def _partners(rows) -> dict[int, set[int]]:
+    """For each row, the rows matching pairs it with as records of the same purchase: the receipt or invoice a claim
+    line or card payment is booked from, the claim it is on, a copy, and the bank line that pays a document."""
+    by_ref: dict[str, list[int]] = {}
+    for r in rows:
+        if r.document_ref:
+            by_ref.setdefault(r.document_ref, []).append(r.id)
+    found: dict[int, set[int]] = {}
+    for r in rows:
+        refs = [s.ref for s in (r.recorded_by, r.copy_of, r.documented_by) if s is not None]
+        refs += [s.ref for s in (r.pays or [])] + [s.ref for s in (r.paid_by or [])]
+        for ref in refs:
+            for other in by_ref.get(ref, []):
+                if other != r.id:
+                    found.setdefault(r.id, set()).add(other)
+                    found.setdefault(other, set()).add(r.id)
+    return found
+
+
+def _close_answered(store: MongoStore, records: AgentRecords, client_id: int, year_start: dt.date) -> None:
+    """Resolves the year's open and waiting questions of the agent's that the books have moved past: none of its
+    rows is in the books any more (removed, left out or replaced), or a person changed one of them after it was
+    asked. A question about no row is left alone. Each closing is recorded as a change."""
+    asked = [q for q in records.questions(client_id, year_start) if q.source == "agent" and q.row_ids]
+    if not asked:
+        return
+    in_books = {r.id for r in store.rows(client_id) if not (r.tx.excluded or r.tx.superseded_by)}
+    theirs = [c for c in records.changes(client_id, since=min(q.created_at for q in asked), limit=1000)
+              if c.actor == "user" and c.kind in _PERSON_CHANGES]
+    partners = _partners(books.all_rows(store, client_id)) if theirs else {}
+    for q in asked:
+        # The rows the question is about, and the other record of each (a claim line's receipt, a bill's bank line):
+        # a question about one of a pair is answered by a change to either.
+        about = set(q.row_ids) | {p for n in q.row_ids for p in partners.get(n, ())}
+        if not set(q.row_ids) & in_books:
+            said = ROWS_GONE
+        elif any(c.created_at > q.created_at and set(c.row_ids) & about for c in theirs):
+            said = CHANGED_SINCE
+        else:
+            continue
+        records.set_question(q.id, "resolved", said)
+        records.add_change(ChangeDraft(
+            client_id=client_id, year_start=q.year_start, actor="rules", kind="question_closed", row_ids=list(q.row_ids),
+            before={"question": {"status": q.status, "answer": q.answer}}, after={"question": {"status": "resolved"}},
+            summary=f"Closed the question: {q.text} {said}"))
+
+
+def close_answered(store: MongoStore, records: AgentRecords, client_id: int) -> None:
+    """Resolves the agent's questions, of every year of the client, that the books have moved past (_close_answered).
+    For a page that lists the questions: it shows none whose row has since been changed or removed, whether or not
+    the books were settled after that change. It reads the questions once when the agent has none open."""
+    years = {q.year_start for q in records.questions(client_id, None) if q.source == "agent" and q.row_ids}
+    for year_start in sorted(years):
+        _close_answered(store, records, client_id, year_start)
+
+
 def refresh(store: MongoStore, records: AgentRecords, client_id: int, year_start: dt.date) -> list[Question]:
     """Works the year's rule questions out from the books and keeps them: each is asked once under its key (asked
     again, it keeps its status and answer, so one waiting stays waiting), one that was resolved and is needed again
-    is reopened, and one the books no longer need is resolved with no answer. The agent's questions are left alone.
+    is reopened, and one the books no longer need is resolved with no answer. The agent's questions that the books
+    have moved past are resolved too (_close_answered).
     The year's questions are read once and only those that are new or have changed are written, so settling after
     every change costs a read when nothing moved. Returns the year's open and waiting questions, oldest first."""
     wanted, _ = _wanted(store, client_id, year_start)
@@ -166,6 +230,7 @@ def refresh(store: MongoStore, records: AgentRecords, client_id: int, year_start
     for key, q in stored.items():
         if key not in wanted and q.status != "resolved":
             records.set_question(q.id, "resolved", _settled_by(store, client_id, q))
+    _close_answered(store, records, client_id, year_start)
     return records.questions(client_id, year_start)
 
 

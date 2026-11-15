@@ -88,6 +88,7 @@ from decimal import Decimal
 from helpers import SETTINGS as HELPER_SETTINGS, match_one, net, normalise_and_match, only_issue
 from helpers import row as helper_row
 from ledgersync.checks import booked, issue, normalise
+from ledgersync.evidence_rules import document_rule
 from ledgersync.matching import match
 from ledgersync.models import BusinessSettings, Direction, Transaction
 from ledgersync.posting import journal_for, trial_balance
@@ -799,12 +800,34 @@ def test_the_claimants_own_name_does_not_make_a_bill_the_shop_of_a_claim_line():
     assert [(t.amount_found, t.recorded_by, codes(t)) for t in (line, plumber)] == [(None, None, [])] * 2
 
 
-def test_vat_on_the_claim_that_the_receipt_does_not_show_is_flagged():
-    # The hotel "receipt" was a check-in email; the claim added VAT £28.96 from colleagues' folios.
+def test_vat_on_the_claim_that_the_receipt_does_not_show_is_booked_as_claimed_and_an_invoice_asked_for():
+    # The hotel "receipt" was a check-in email; the claim shows VAT £28.96. The claim is the person's record of it.
     _, receipt = matched(claim_line("173.75", "2026-09-14", "Clayton Hotel Manchester", account="7402", vat="28.96"),
                          row("receipt", "out", "173.75", "2026-09-14", "Clayton Hotel Manchester City Centre", "email",
                              account="7402"))
-    assert codes(receipt) == [("claim_vat", "warning")] and "£28.96" in receipt.issues[0].message
+    assert codes(receipt) == [("claim_vat", "warning")]
+    assert "£28.96" in receipt.issues[0].message and "Get a VAT invoice" in receipt.issues[0].message
+    assert (receipt.vat_posted, receipt.net, receipt.vat_from_claim) == (Decimal("28.96"), Decimal("144.79"), True)
+    assert document_rule(receipt, SETTINGS).reclaim_vat is True
+
+
+def test_a_fare_takes_no_vat_from_the_claim_and_a_receipt_showing_nil_vat_keeps_it():
+    _, flight = matched(claim_line("173.75", "2026-09-14", "British Airways", vat="28.96"),
+                        row("receipt", "out", "173.75", "2026-09-14", "British Airways", "ticket", account="7400",
+                            description="British Airways flight Glasgow to London"))
+    assert (flight.vat_posted, flight.vat_from_claim) == (Decimal("0.00"), False)
+    _, nil = matched(claim_line("173.75", "2026-09-14", "Clayton Hotel Manchester", account="7402", vat="28.96"),
+                     row("receipt", "out", "173.75", "2026-09-14", "Clayton Hotel Manchester City Centre", "email",
+                         account="7402", vat="0.00"))
+    assert (nil.vat_posted, nil.vat_from_claim, codes(nil)) == (Decimal("0.00"), False, [("claim_vat", "warning")])
+
+
+def test_vat_on_the_claim_only_is_not_flagged_once_a_person_says_it_is_fine():
+    receipt = row("receipt", "out", "173.75", "2026-09-14", "Clayton Hotel Manchester City Centre", "email",
+                  account="7402").model_copy(update={"accepted": ["claim_vat"]})
+    _, receipt = matched(claim_line("173.75", "2026-09-14", "Clayton Hotel Manchester", account="7402", vat="28.96"),
+                         receipt)
+    assert codes(receipt) == [] and receipt.vat_posted == Decimal("28.96")   # booked as claimed, and nothing said
 
 
 def amazon_order(settings=SETTINGS, account="7504", **receipt):
@@ -833,10 +856,15 @@ def test_vat_on_a_receipt_that_says_it_is_not_a_vat_invoice_is_offered_not_booke
     assert all(s in receipt.issues[0].message for s in ("£3.00", "£14.99", "£17.99", "Book VAT"))
 
 
-@pytest.mark.parametrize("prices", [{}, {"document_net": "15.00"},     # no price before VAT, or £2.99 of VAT
-                                    {"document_net": "14.99", "vat": "0.00"}])   # or it shows no VAT charged
-def test_prices_that_do_not_show_the_claims_vat_leave_it_unbooked(prices):
+@pytest.mark.parametrize("prices", [{}, {"document_net": "15.00"}])     # no price before VAT, or £2.99 of VAT
+def test_prices_that_do_not_show_the_claims_vat_book_it_as_claimed_and_ask_for_an_invoice(prices):
     receipt = amazon_order(**prices)
+    assert (receipt.vat_posted, receipt.vat_found, codes(receipt)) == (Decimal("3.00"), None, [("claim_vat", "warning")])
+    assert "Get a VAT invoice" in receipt.issues[0].message
+
+
+def test_a_receipt_that_shows_no_vat_charged_leaves_the_claims_vat_unbooked():
+    receipt = amazon_order(document_net="14.99", vat="0.00")
     assert (receipt.vat_posted, receipt.vat_found, codes(receipt)) == (Decimal("0.00"), None, [("claim_vat", "warning")])
 
 
@@ -1420,7 +1448,8 @@ def test_a_companys_receipt_addressed_to_someone_else_is_asked_about():
     tv = row("invoice", "out", "200.00", "2026-05-16", "Currys Group Ltd", "tv", account="7504",
              addressed_to="Mr M Marlow", supplier_vat_number="GB1")
     flagged, = match([normalise(tv, COMPANY)], COMPANY)
-    assert codes(flagged) == [("addressed_to", "warning")]
+    # (its VAT number with no VAT amount: the VAT is worked out, and said)
+    assert codes(flagged) == [("vat_implied", "info"), ("addressed_to", "warning")]
     for change in ({"addressed_to": "Marlow Building Services Limited"}, {"accepted": ["addressed_to"]},
                    {"account_code": "2250"}):
         fine, = match([normalise(tv.model_copy(update=change), COMPANY)], COMPANY)

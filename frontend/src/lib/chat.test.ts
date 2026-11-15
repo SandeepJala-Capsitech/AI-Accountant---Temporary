@@ -284,3 +284,9 @@ test('a purchase waiting for its receipt or invoice can be booked without it; a 
   assert.equal(questionState({ ...question('receipt_or_invoice'), status: 'resolved',
                                answer: 'Booked without a receipt: Lost' }), 'Booked without a receipt: Lost')
 })
+
+test('the marks a model puts round a phrase are dropped from its reply, the words kept', async () => {
+  const { plainReply } = await import('./chat.ts')
+  assert.equal(plainReply('1. **7400 Travel**: the usual home for a toll.\n## Options\nUse `7400`. 2 * 3 * 4 stays.'),
+               '1. 7400 Travel: the usual home for a toll.\nOptions\nUse 7400. 2 * 3 * 4 stays.')
+})

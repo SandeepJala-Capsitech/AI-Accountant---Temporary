@@ -11,7 +11,7 @@ import { ApiError } from '@/lib/api'
 import {
   ATTENTION, POLL_MS, effectLine, fileStatus, getThread, hasResult, readStatus, retryFiles, shouldPoll, stopRun, streamMessage, withQuestion,
   type AnswerResult, type ChatError, type ChatEvent, type ChatMessage, type Step, type ThreadDetail, type TurnResult,
-} from '@/lib/chat'
+ plainReply } from '@/lib/chat'
 import { getYears } from '@/lib/clients'
 import { sectionHref } from '@/lib/years'
 
@@ -128,12 +128,15 @@ export default function ThreadPage() {
   }
 
   // A link (the Overview's) may carry a question to ask in a new chat. Only a suggested prompt is ever sent, and only
-  // into an empty chat; the address then loses it, so a reload does not ask again. The address is changed with the history
+  // into an empty chat; any other (Ask the AI on a row's issue) is put in the message box for the person to read and
+  // send, so no link can make the chat say something by itself. The address then loses it, so a reload does not ask
+  // again. The address is changed with the history
   // API, not router.replace: a Next navigation remounts the page, which would abort the turn just started.
   useEffect(() => {
     if (ask === null || !detail || asked.current) return
     asked.current = true
     if (SUGGESTIONS.includes(ask) && !history.length && !turns.length) send(ask, [], [])
+    else if (!history.length && !turns.length) setDraft(ask.slice(0, 2000))
     window.history.replaceState(null, '', `/chat/${threadId}`)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ask, detail])
@@ -193,7 +196,7 @@ export default function ThreadPage() {
       <div className="transcript">
         {history.map((m, i) => (
           <div key={i} className={m.role === 'user' ? 'bubble-user' : 'bubble-agent'}>
-            {m.text}
+            {m.role === 'user' ? m.text : plainReply(m.text)}
             {m.files.length > 0 && (
               <ul className="file-chips sent">
                 {m.files.map((f, j) => {
@@ -233,7 +236,7 @@ export default function ThreadPage() {
             </div>
             <div className="bubble-agent">
               <RunSteps steps={t.steps} status={t.status} running={t.running} />
-              {t.reply && <p className="narrative">{t.reply}</p>}
+              {t.reply && <p className="narrative">{plainReply(t.reply)}</p>}
               {hasResult(t.result) && (
                 <ReplyResult result={t.result} threadId={threadId} onAnswered={onAnswered} onSay={text => send(text, [], [])}
                              effects={effects} busy={busy} />

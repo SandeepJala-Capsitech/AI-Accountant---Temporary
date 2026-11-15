@@ -261,13 +261,25 @@ def test_invoice_that_does_not_fit_stays_open(store, records, acme):
 
 
 def test_a_receipt_for_a_payment_over_250_is_not_enough(store, records, acme):
-    # The receipt pays the bank line, but only a full VAT invoice will do: the question moves to the receipt.
-    add_rows(store, acme, travel_line(gross=D("300.00")), year_start=YEAR_1)
+    # The receipt pays the bank line and shows VAT, but only a full VAT invoice will do to reclaim it: the question
+    # moves to the receipt. (A fare, or a receipt showing no VAT, has none to reclaim and is booked whole.)
+    add_rows(store, acme, travel_line(gross=D("300.00"), account_code="7504", counterparty="Currys",
+                                      description="CURRYS"), year_start=YEAR_1)
     [q] = refresh(store, records, acme)
-    add_rows(store, acme, row(date=date(2025, 7, 1), gross=D("300.00"), account_code="7400", counterparty="Trainline",
-                              description="Season ticket", document_ref="R-1"), year_start=YEAR_1)
+    add_rows(store, acme, row(date=date(2025, 7, 1), gross=D("300.00"), vat=D("50.00"), account_code="7504",
+                              counterparty="Currys", description="Printer", document_ref="R-1"), year_start=YEAR_1)
     [now] = refresh(store, records, acme)
     assert now.kind == "vat_invoice" and now.id != q.id and records.question(q.id).status == "resolved"
+
+
+def test_a_receipt_showing_no_vat_settles_a_payment_over_250(store, records, acme):
+    # No VAT on the receipt, so no VAT invoice would add anything: the receipt is the record of the cost.
+    add_rows(store, acme, travel_line(gross=D("300.00"), account_code="7504", counterparty="Currys",
+                                      description="CURRYS"), year_start=YEAR_1)
+    [q] = refresh(store, records, acme)
+    add_rows(store, acme, row(date=date(2025, 7, 1), gross=D("300.00"), account_code="7504", counterparty="Currys",
+                              description="Printer", document_ref="R-1"), year_start=YEAR_1)
+    assert refresh(store, records, acme) == [] and records.question(q.id).status == "resolved"
 
 
 def test_a_question_comes_back_when_the_document_is_taken_away(store, records, acme):
@@ -281,8 +293,8 @@ def test_a_question_comes_back_when_the_document_is_taken_away(store, records, a
 
 
 def test_a_receipt_edited_to_over_250_asks_for_a_vat_invoice_and_back(store, records, acme):
-    add_rows(store, acme, row(date=date(2025, 8, 1), gross=D("100.00"), account_code="7400", counterparty="Rail",
-                              description="Tickets"), year_start=YEAR_1)
+    add_rows(store, acme, row(date=date(2025, 8, 1), gross=D("100.00"), vat=D("16.67"), account_code="7504",
+                              counterparty="Staples", description="Printer paper"), year_start=YEAR_1)
     assert refresh(store, records, acme) == []
     rid = store.rows(acme)[0].id
     store.patch_row(acme, rid, {"gross": "300.00"})
@@ -306,8 +318,8 @@ def test_a_held_line_moved_to_the_next_year_is_asked_there_only(store, records, 
 
 
 def test_a_held_receipt_patched_to_a_statement_line_is_asked_for_the_other_document(store, records, acme):
-    add_rows(store, acme, row(date=date(2025, 8, 1), gross=D("300.00"), account_code="7400", counterparty="Rail",
-                              description="Tickets"), year_start=YEAR_1)
+    add_rows(store, acme, row(date=date(2025, 8, 1), gross=D("300.00"), vat=D("50.00"), account_code="7504",
+                              counterparty="Staples", description="Printer"), year_start=YEAR_1)
     [q] = refresh(store, records, acme)
     assert q.kind == "vat_invoice"
     store.patch_row(acme, store.rows(acme)[0].id, {"document_type": "statement", "gross": "240.00"})
@@ -448,3 +460,83 @@ def test_booking_without_a_document_needs_a_reason_and_a_document_question(store
                WithoutDocumentAnswer(kind="without_document", reason="  "))
     with pytest.raises(InvalidInput):
         answer(store, records, acme, by_kind["date"], WithoutDocumentAnswer(kind="without_document", reason="Lost"))
+
+
+# ─── The agent's questions go when the books answer them ───────────────────────
+
+def person_changed(records, client_id, row_id, kind="row_edited"):
+    """A person's change to a row, as the API records it."""
+    from ledgersync.models import ChangeDraft
+    records.add_change(ChangeDraft(client_id=client_id, year_start=YEAR_1, actor="user", kind=kind, row_ids=[row_id],
+                                   summary=f"Row {row_id} changed: account_code"))
+
+
+def asked_about(store, records, client_id, *rows):
+    ids = [r.id for r in store.rows(client_id)][-len(rows):] if rows else []
+    return questions.ask(records, client_id=client_id, year_start=YEAR_1, row_ids=ids,
+                         text="Which account should this go to?", why="Its account is unclear.")
+
+
+def test_an_agent_question_goes_once_a_person_changes_its_row(store, records, acme):
+    add_rows(store, acme, travel_line(gross=D("12.00")), year_start=YEAR_1)
+    asked = asked_about(store, records, acme, "the line")
+    assert [q.id for q in refresh(store, records, acme)] == [asked.id]   # nothing has changed: it stays
+    import time
+    time.sleep(1.1)   # times are kept to the second
+    person_changed(records, acme, asked.row_ids[0])
+    assert refresh(store, records, acme) == []
+    closed = records.question(asked.id)
+    assert closed.status == "resolved" and closed.answer == "You changed this row after it was asked."
+    assert records.changes(acme)[-1].kind == "question_closed"
+
+
+def test_an_agent_question_goes_once_its_rows_are_removed(store, records, acme):
+    add_rows(store, acme, travel_line(gross=D("12.00")), year_start=YEAR_1)
+    asked = asked_about(store, records, acme, "the line")
+    store.delete_row(acme, asked.row_ids[0])
+    assert refresh(store, records, acme) == []
+    assert records.question(asked.id).answer == "Its row is no longer in the books."
+
+
+def test_an_agent_question_asked_after_the_change_stays(store, records, acme):
+    add_rows(store, acme, travel_line(gross=D("12.00")), year_start=YEAR_1)
+    [line] = store.rows(acme)
+    person_changed(records, acme, line.id)
+    import time
+    time.sleep(1.1)   # times are kept to the second
+    asked = asked_about(store, records, acme, "the line")
+    assert [q.id for q in refresh(store, records, acme)] == [asked.id]
+
+
+def test_an_agent_question_about_no_row_stays(store, records, acme):
+    add_rows(store, acme, travel_line(gross=D("12.00")), year_start=YEAR_1)
+    asked = asked_about(store, records, acme)
+    person_changed(records, acme, store.rows(acme)[0].id)
+    assert [q.id for q in refresh(store, records, acme)] == [asked.id]
+
+
+def test_the_answered_questions_of_every_year_are_closed_for_a_page_that_lists_them(store, records, acme):
+    add_rows(store, acme, travel_line(gross=D("12.00")), year_start=YEAR_1)
+    asked = asked_about(store, records, acme, "the line")
+    questions.close_answered(store, records, acme)
+    assert [q.id for q in records.questions(acme, None)] == [asked.id]   # nothing has changed: it stays
+    store.delete_row(acme, asked.row_ids[0])
+    questions.close_answered(store, records, acme)
+    assert records.questions(acme, None) == []
+
+
+def test_an_agent_question_about_a_claim_line_goes_once_a_person_changes_its_receipt(store, records, acme):
+    import time
+    add_rows(store, acme, row(date=date(2025, 7, 1), gross=D("255.98"), vat=D("42.66"), account_code="7402",
+                              document_type="expense_claim", counterparty="Mark McNee", description="Mark McNee - hotel",
+                              document_ref="claim"), year_start=YEAR_1)
+    add_rows(store, acme, row(date=date(2025, 7, 1), gross=D("255.98"), account_code="7402", description="Hotel stay",
+                              counterparty="Booking.com", document_ref="stay"), year_start=YEAR_1)
+    line, receipt = store.rows(acme)
+    assert next(t for t in books.ledger(store, acme, YEAR_1).transactions if t.id == line.id).recorded_by.ref == "stay"
+    asked = questions.ask(records, client_id=acme, year_start=YEAR_1, row_ids=[line.id],
+                          text="Book it with no VAT, as the receipt shows?", why="The receipt prints no VAT.")
+    time.sleep(1.1)   # times are kept to the second
+    person_changed(records, acme, receipt.id)   # the person settles it on the receipt, the other record of the pair
+    assert asked.id not in [q.id for q in refresh(store, records, acme)]
+    assert records.question(asked.id).answer == "You changed this row after it was asked."

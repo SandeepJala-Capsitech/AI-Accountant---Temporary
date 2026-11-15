@@ -2,7 +2,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Transaction } from './api.ts'
-import { aboutAnotherRow, acceptChange, accountName, apartChange, apartStatus, canBeAccepted, canBeApart, checkHover, issueHeading, issueTitle, kindOf, needsReview, postedLedgerNote,
+import { filtersSet, matchesFilters, netBooked, NO_FILTERS, vatBooked } from './ledger.ts'
+import { aboutAnotherRow, acceptChange, acceptLabel, accountName, askAbout, claimLineOf, issueFixes, apartChange, apartStatus, canBeAccepted, canBeApart, checkHover, issueHeading, issueTitle, kindOf, needsReview, postedLedgerNote,
          reviewSummary, rowStatus, showLabel, takesLines, totalsOf } from './ledger.ts'
 
 // A transaction as the API returns it (an unpaid rent bill), with what a test needs changed.
@@ -320,4 +321,118 @@ test("a judgement warning can be marked as fine, and a hard error can't", () => 
   assert.equal(canBeAccepted('vat_arithmetic'), false)
   assert.deepEqual(acceptChange(tx({ accepted: ['small_asset'] }), 'meal_check'), { accepted: ['small_asset', 'meal_check'] })
   assert.equal(issueTitle('no_vat_number'), 'No VAT number on the invoice')
+})
+
+// ─── Fixing an issue from where it is listed ─────────────────────────────────
+
+const warning = (code: string, message = '') => ({ code, message, severity: 'warning' as const, related: [] })
+const claim = { ref: 'claim', amount: '12.00', date: '2026-09-14', description: "Matt Barnes's expense claim", kind: 'expense_claim' }
+const toll = tx({ document_type: 'receipt', document_ref: 'toll', account_code: '9998', account_name: 'Suspense',
+                  gross: '12.00', vat: '2.00', claimed_in: claim, description: 'M6toll' })
+const tollLine = tx({ document_type: 'expense_claim', document_ref: 'claim', account_code: '7400', account_name: 'Travel',
+                      gross: '12.00', vat: '2.00', recorded_by: { ref: 'toll', amount: '12.00', date: '2026-09-14', description: 'M6toll', kind: 'receipt' } })
+
+test('a receipt on a claim finds its claim line, and no other row does', () => {
+  assert.equal(claimLineOf(toll, [tx(), tollLine, toll]), tollLine)
+  assert.equal(claimLineOf(tx(), [tx(), tollLine, toll]), undefined)
+})
+
+test('a row in Suspense offers the account its claim has, and the list of accounts', () => {
+  assert.deepEqual(issueFixes(toll, warning('account_unclear'), tollLine), [
+    { label: 'Use Travel, as the claim has it', change: { account_code: '7400' } },
+    { label: 'Choose the account', choose: 'account' }])
+  assert.deepEqual(issueFixes(toll, warning('account_unclear')), [{ label: 'Choose the account', choose: 'account' }])
+  // the VAT ignored on Suspense goes with the account: nothing of its own to do
+  assert.deepEqual(issueFixes(toll, warning('vat_not_applicable')), [])
+  assert.deepEqual(issueFixes(tx({ account_code: '2100' }), warning('vat_not_applicable')), [{ label: 'Remove the VAT', change: { vat: null } }])
+})
+
+test('VAT only the claim shows can be booked as claimed, or left out', () => {
+  const hotelLine = { ...tollLine, vat: '384.75' }
+  assert.deepEqual(issueFixes(toll, warning('claim_vat'), hotelLine), [{ label: 'Book VAT £384.75, as claimed', change: { vat: '384.75' } }])
+  assert.equal(canBeAccepted('claim_vat'), true)
+  assert.equal(acceptLabel('claim_vat'), "It's fine")
+  assert.equal(acceptLabel('document_wanted'), "It's fine without one")
+  // booked as the claim shows it already: the way out is to say it carries none
+  assert.deepEqual(issueFixes({ ...toll, vat_from_claim: true }, warning('claim_vat'), hotelLine), [{ label: 'No VAT on it', change: { vat: '0.00' } }])
+  assert.deepEqual(issueFixes(tx(), warning('document_wanted')), [{ label: 'Add the document', documents: true }])
+})
+
+test('a date, a currency, VAT and a missing document each say where they are fixed; a note offers nothing', () => {
+  assert.deepEqual(issueFixes(tx(), warning('date_missing')), [{ label: 'Set the date', edit: true }])
+  assert.deepEqual(issueFixes(tx(), { ...warning('non_gbp_currency'), severity: 'error' }), [{ label: 'Enter it in pounds', edit: true }])
+  assert.deepEqual(issueFixes(tx(), warning('vat_arithmetic')), [{ label: 'Correct the VAT', edit: true }])
+  assert.deepEqual(issueFixes(tx(), warning('needs_document')), [{ label: 'Add the document', documents: true }])
+  assert.deepEqual(issueFixes(tx(), { ...warning('account_unclear'), severity: 'info' }), [])
+  assert.deepEqual(issueFixes(tx(), warning('possible_duplicate')), [])   // Show both and Not the same are its controls
+})
+
+test('asking the AI about an issue names the row and what is wrong with it', () => {
+  assert.equal(askAbout(toll, warning('account_unclear', 'Account unclear: put in Suspense. Choose one.')),
+    'Help me fix this: "M6toll", 1 Oct 2026, £12.00. Account to check. Account unclear: put in Suspense. Choose one. '
+    + 'Tell me the options, and make the change when I say which.')
+})
+
+// ─── VAT the books don't reclaim ─────────────────────────────────────────────
+
+test('a row whose VAT is not reclaimed shows no VAT and its whole amount, as the trial balance holds it', () => {
+  const held = tx({ gross: '547.84', vat: '91.31', vat_posted: '91.31', net: '456.53', vat_not_reclaimed: '91.31',
+                    document_type: 'statement' })
+  assert.deepEqual([vatBooked(held), netBooked(held)], ['0.00', '547.84'])
+  const booked = tx({ gross: '9.72', vat: '1.62', vat_posted: '1.62', net: '8.10', document_type: 'statement' })
+  assert.deepEqual([vatBooked(booked), netBooked(booked)], ['1.62', '8.10'])
+  const [total] = totalsOf([held, booked])
+  assert.deepEqual([total.gross, total.vat, total.net], ['557.56', '1.62', '555.94'])
+})
+
+test('VAT the books hold back can be reclaimed on the person\'s say, and that can be taken back', () => {
+  const held = tx({ document_type: 'receipt', gross: '547.84', vat: '91.31', vat_posted: '91.31', net: '456.53', vat_not_reclaimed: '91.31' })
+  assert.deepEqual(issueFixes(held, warning('needs_document')), [
+    { label: 'Reclaim VAT £91.31 and book it', change: { vat_confirmed: true } },
+    { label: 'No VAT on it', change: { vat: '0.00' } },
+    { label: 'Add the document', documents: true }])
+  assert.deepEqual(issueFixes(tx(), warning('needs_document')), [{ label: 'Add the document', documents: true }])
+  assert.deepEqual(issueFixes(held, { ...warning('vat_confirmed'), severity: 'info' }), [{ label: "Don't reclaim it", change: { vat_confirmed: false } }])
+  assert.equal(issueTitle('vat_confirmed'), 'VAT reclaimed on your say')
+})
+
+test('VAT worked out of the amount can be set to none, or entered', () => {
+  assert.deepEqual(issueFixes(tx(), { ...warning('vat_implied'), severity: 'info' }),
+                   [{ label: 'No VAT on it', change: { vat: '0.00' } }, { label: 'Enter the VAT', edit: true }])
+})
+
+// ─── Filtering the table ─────────────────────────────────────────────────────
+
+test('a row must pass every filter that is set, and an empty filter passes everything', () => {
+  const hotel = tx({ description: 'Booking.com, hotel stay', counterparty: 'Booking.com', account_code: '7402', account_name: 'Hotels',
+                     gross: '255.98', vat_posted: '42.66', date: '2026-10-26', document_type: 'receipt', direction: 'out' })
+  const f = (change: Partial<typeof NO_FILTERS>) => ({ ...NO_FILTERS, ...change })
+  assert.equal(matchesFilters(hotel, NO_FILTERS), true)
+  assert.equal(filtersSet(NO_FILTERS), 0)
+  assert.equal(filtersSet(f({ text: 'hotel', min: '100' })), 2)
+  // words: each must be found, in the description, who was paid, the account or the file
+  assert.equal(matchesFilters(hotel, f({ text: 'booking HOTEL' })), true)
+  assert.equal(matchesFilters(hotel, f({ text: 'booking flight' })), false)
+  assert.equal(matchesFilters(hotel, f({ text: 'spitalfields' }), 'Booking.com-Spitalfields.pdf'), true)
+  assert.equal(matchesFilters(hotel, f({ text: 'hotels' })), true)
+  // each field narrows, and they narrow together
+  assert.equal(matchesFilters(hotel, f({ account: '7402', type: 'receipt', direction: 'out' })), true)
+  assert.equal(matchesFilters(hotel, f({ account: '7400' })), false)
+  assert.equal(matchesFilters(hotel, f({ type: 'invoice' })), false)
+  assert.equal(matchesFilters(hotel, f({ direction: 'in' })), false)
+  assert.equal(matchesFilters(hotel, f({ from: '2026-10-26', to: '2026-10-26' })), true)
+  assert.equal(matchesFilters(hotel, f({ from: '2026-10-27' })), false)
+  assert.equal(matchesFilters(tx({ date: null }), f({ to: '2026-12-31' })), false)
+  assert.equal(matchesFilters(hotel, f({ min: '255.98', max: '255.98' })), true)
+  assert.equal(matchesFilters(hotel, f({ min: '300' })), false)
+  assert.equal(matchesFilters(hotel, f({ max: 'abc' })), true)
+  assert.equal(matchesFilters(hotel, f({ account: '7402', min: '300' })), false)
+  // what state it is in
+  assert.equal(matchesFilters(hotel, f({ status: 'vat' })), true)
+  assert.equal(matchesFilters({ ...hotel, vat_not_reclaimed: '42.66' }, f({ status: 'vat' })), false)
+  assert.equal(matchesFilters(hotel, f({ status: 'no_vat' })), false)
+  assert.equal(matchesFilters(hotel, f({ status: 'review' })), false)
+  assert.equal(matchesFilters({ ...hotel, issues: [warning('document_wanted')] }, f({ status: 'review' })), true)
+  assert.equal(matchesFilters({ ...hotel, edited: true }, f({ status: 'edited' })), true)
+  assert.equal(matchesFilters(hotel, f({ status: 'edited' })), false)
 })
