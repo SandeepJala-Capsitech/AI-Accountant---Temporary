@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import type { Decision } from '@/lib/chat'
-import type { ProblemGroup } from '@/lib/problems'
+import type { Problem, ProblemGroup } from '@/lib/problems'
 import { problemCount } from '@/lib/problems'
 
 // What a waiting suggestion would do, in a line. An account change names the account it moves the row to (its
@@ -13,8 +13,9 @@ const suggested = (d: Decision, rowId: number): string => {
 }
 
 // Every open problem of the year in one place, by kind: what the row is, what the check says, a link to the row,
-// and, where a change is waiting for the person, what it would do and Apply.
-export default function ProblemsList({ groups, rowHref, canApply, working, refused, onApply, made, onUndo }: {
+// and, where a change is waiting for the person, what it would do and Apply. A problem with a whole document is
+// named by its file; a total that doesn't add up on purpose can be left as it is.
+export default function ProblemsList({ groups, rowHref, canApply, working, refused, onApply, made, onUndo, onLeave }: {
   groups: ProblemGroup[]
   rowHref: (rowId: number) => string
   canApply: boolean                    // not for an archived client or a closed year
@@ -23,6 +24,7 @@ export default function ProblemsList({ groups, rowHref, canApply, working, refus
   onApply: (suggestion: Decision) => void
   made: Decision[]                     // the changes applied from this list since the page opened: each can be undone
   onUndo: (made: Decision) => void
+  onLeave: (problem: Problem) => void  // a total that doesn't add up: leave it as it is
 }) {
   const count = problemCount(groups)
   return (
@@ -45,9 +47,18 @@ export default function ProblemsList({ groups, rowHref, canApply, working, refus
             {group.problems.map(p => (
               <li key={`${p.rowId}:${p.code}`}>
                 <div>
-                  <strong>{p.what}</strong> <Link href={rowHref(p.rowId)} className="small">Show</Link>
+                  <strong>{p.what}</strong>{' '}
+                  <Link href={rowHref(p.rowId)} className="small">{p.document ? 'Show its lines' : 'Show'}</Link>
                 </div>
                 <div>{p.message}</div>
+                {p.leave && (
+                  <div className="question-row">
+                    <button type="button" className="btn btn-small" disabled={!canApply || !!working}
+                            onClick={() => onLeave(p)}>
+                      {working === `leave:${p.rowId}` ? 'Saving…' : 'Leave it as it is'}
+                    </button>
+                  </div>
+                )}
                 {p.suggestion && (
                   <div className="question-row">
                     <span className="small">{suggested(p.suggestion, p.rowId)}</span>

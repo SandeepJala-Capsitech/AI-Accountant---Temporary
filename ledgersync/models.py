@@ -77,6 +77,12 @@ class Issue(BaseModel):
     severity: Literal["info", "warning", "error"]
     related: list[int] = Field(default_factory=list)   # the other rows it is about (Show both): places in the rows
                                                        # matched; in a client's ledger, their row ids
+    # What it is a problem with: the row that carries it, or that row's whole document (lines that don't reach the
+    # document's total, when no one line explains why), which the pages then show against the document.
+    about: Literal["row", "document"] = "row"
+    # On a total that doesn't add up: the printed total less the lines and what is set aside (positive: short;
+    # negative: over). What a person accepts when they say to leave it as it is.
+    difference: Optional[Decimal] = None
 
 
 class BusinessSettings(BaseModel):
@@ -154,6 +160,9 @@ class Transaction(BaseModel):
     # Inputs set only by the accountant chat's decisions (never by a person's edit, so not in rows.EDITABLE or
     # RowPatch): a decision can leave a row out of the books, or replace it with another row.
     excluded: bool = False
+    # An input a person's Remove sets on a row read from a file, with excluded: the row is out of the books and stays
+    # listed, so Put back can book it again. Never set or cleared by the AI.
+    removed: bool = False
     superseded_by: Optional[str] = None            # the decision that replaced this row
     decision_ids: list[str] = Field(default_factory=list)   # the decisions that changed this row
     supplier_vat_number: Optional[str] = None      # the VAT number printed on its document, which decides whether
@@ -163,6 +172,9 @@ class Transaction(BaseModel):
                                                    # code (checks.ACCEPTABLE): not raised on the row again
     reverse_charge: bool = False                   # a service bought from abroad with no VAT charged: the business
                                                    # accounts for the VAT itself, due and reclaimed (boxes 1 and 4)
+    # The difference between its document's printed total and its lines that a person said to leave as it is (kept
+    # on every row of the document): while the difference is this much, the total raises a note, not a warning.
+    total_accepted: Optional[Decimal] = None
     apart_from: list[int] = Field(default_factory=list)   # rows a person said are not the same as this one, by row
                                                    # id (Not the same): never paired with it or asked about
     without_document: Optional[str] = None         # a person booked it without the receipt or invoice the document
@@ -620,6 +632,9 @@ class RowPatch(BaseModel):
     # Reclaim the row's VAT on the person's say (True), or leave it to the document rules again (False). A VAT amount
     # a person sends sets it by itself: ledger.change_row.
     vat_confirmed: Optional[bool] = None
+    removed: Optional[bool] = None           # false: Put back a row the person removed (Remove is what sets it)
+    # Leave its document's total out by this much (the difference its warning gives); null: ask about it again.
+    total_accepted: Optional[Decimal] = None
     revert: bool = False
 
     @field_validator("without_document")

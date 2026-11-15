@@ -190,4 +190,6 @@ def _transactions(sheet, ledger: Ledger) -> None:
 def _left_out(tx: Transaction) -> Optional[str]:
     """Why a row the sheet lists is not in the books: a decision left it out, or replaced it with the rows of a split
     (which the sheet lists too). None for a row in the books, so adding up the rest adds up the books."""
+    if tx.removed:
+        return "Removed by a person"
     return "Replaced by a split" if tx.superseded_by else "Left out" if tx.excluded else None

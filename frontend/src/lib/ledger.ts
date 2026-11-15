@@ -35,6 +35,28 @@ export const kindOf = (tx: Transaction): RowKind => {
 // A row a decision left out of the books or replaced with a split: the table still lists it, crossed out.
 export const leftOut = (tx: Transaction) => !!(tx.excluded || tx.superseded_by)
 
+// What a row left out of the books says under its description: who took it out.
+export const leftOutLabel = (tx: Transaction): 'Replaced' | 'Removed by you' | 'Left out' =>
+  tx.superseded_by ? 'Replaced' : tx.removed ? 'Removed by you' : 'Left out'
+
+// Whether Remove deletes the row for good: only a row typed in by hand. A row read from a file is set aside, stays
+// listed, and can be put back.
+export const removedForGood = (row: { upload_id: number }, uploads: { id: number; kind: string }[]): boolean =>
+  uploads.some(u => u.id === row.upload_id && u.kind === 'manual')
+
+// A row's own issues: those about the row, not about its whole document (documentProblems lists those).
+export const rowIssues = (tx: Transaction): Issue[] => tx.issues.filter(i => i.about !== 'document')
+
+// A problem with a whole document (its lines don't reach its total, and no one line explains why): the row that
+// carries it (the document's first), the issue, and every line of the document that is in the books.
+export interface DocumentProblem<Row extends Transaction & { id: number }> { row: Row; issue: Issue; lines: number[] }
+export function documentProblems<Row extends Transaction & { id: number }>(rows: Row[]): DocumentProblem<Row>[] {
+  const inBooks = rows.filter(r => !leftOut(r))
+  return inBooks.flatMap(row => row.issues.filter(i => i.about === 'document' && i.severity !== 'info').map(issue => ({
+    row, issue, lines: inBooks.filter(r => r.id === row.id || (!!row.document_ref && r.document_ref === row.document_ref)).map(r => r.id),
+  })))
+}
+
 // Whether a row needs a person: it has a warning or an error (its own, or those the page adds, such as a possible
 // duplicate), and it is in the books. What is wrong with a row left out no longer matters; the agent skips it too.
 export const needsReview = (tx: Transaction, issues: Issue[] = tx.issues) =>
@@ -205,7 +227,7 @@ function lineStatus(tx: Transaction): RowStatus[] {
 
 // What each kind of issue is called where the table lists it; the message says the rest.
 const ISSUE_TITLES: Record<string, string> = {
-  total_mismatch: "Total doesn't add up", possible_duplicate: 'Possible duplicate', duplicate_document: 'Copy of a document',
+  total_mismatch: "Total doesn't add up", total_accepted: 'Total left as it is', possible_duplicate: 'Possible duplicate', duplicate_document: 'Copy of a document',
   choose_payment: 'Choose what it pays', possible_payment: 'May pay a document', open_document: 'May pay an open invoice', part_payment: 'Part payment',
   overpayment: 'Overpaid', stale_link: 'Link no longer found', mixed_link: "Links can't be combined",
   claim_vat: 'VAT not on the receipt', vat_worked_out: 'VAT worked out', not_vat_invoice: 'Not a VAT invoice',
@@ -307,8 +329,12 @@ export function issueFixes(tx: Transaction, issue: Issue, claimLine?: Transactio
   // VAT worked out of the amount because the document shows a VAT number or says VAT: a person who knows it
   // carries none says so, or enters what it does carry.
   if (issue.code === 'vat_implied') return [{ label: 'No VAT on it', change: { vat: '0.00' } }, { label: 'Enter the VAT', edit: true }]
+  // A total a person said to leave as it is: the note is where they take that back.
+  if (issue.code === 'total_accepted') return [{ label: 'Undo', change: { total_accepted: null } }]
   if (issue.severity === 'info') return []
   const code = issue.code
+  // A total that doesn't add up on purpose (a line removed long ago, a total printed wrong): the person says so.
+  if (code === 'total_mismatch') return issue.difference ? [{ label: 'Leave it as it is', change: { total_accepted: issue.difference } }] : []
   if (ACCOUNT_ISSUES.has(code)) {
     const theirs = claimLine?.account_code && claimLine.account_code !== SUSPENSE && claimLine.account_code !== tx.account_code
       ? [{ label: `Use ${claimLine.account_name || claimLine.account_code}, as the claim has it`,

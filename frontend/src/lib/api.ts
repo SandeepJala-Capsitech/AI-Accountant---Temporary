@@ -6,6 +6,8 @@ export interface Issue {
   message: string
   severity: 'info' | 'warning' | 'error'
   related?: number[]   // the other rows it is about, by row id (Show both)
+  about?: 'row' | 'document'   // what it is a problem with: the row (when absent too), or its whole document
+  difference?: string | null   // a total that doesn't add up: what it is out by (positive: short; negative: over)
 }
 
 export interface Settlement {
@@ -71,6 +73,8 @@ export interface Transaction {
   reverse_charge?: boolean           // a service from abroad with no VAT charged: the VAT is due and reclaimed
   without_document?: string | null   // a person booked it without its receipt or invoice, for this reason
   excluded?: boolean                 // a decision left it out of the books
+  removed?: boolean                  // a person removed it: out of the books (excluded too) until they Put back
+  total_accepted?: string | null     // the difference from its document's total a person said to leave as it is
   superseded_by?: string | null      // the decision that replaced it with other rows
   decision_ids?: string[]            // the decisions that changed it
 }

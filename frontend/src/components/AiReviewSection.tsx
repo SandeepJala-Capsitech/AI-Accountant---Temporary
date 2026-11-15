@@ -12,7 +12,9 @@ import {
   undoDecision,
   type ReviewDetail,
 } from '@/lib/reviews'
-import { groupProblems } from '@/lib/problems'
+import { groupProblems, type Problem } from '@/lib/problems'
+import { changeRow } from '@/lib/clients'
+import { DOCUMENT_TYPES } from '@/lib/clientRules'
 import { sectionHref } from '@/lib/years'
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
@@ -54,7 +56,12 @@ export default function AiReviewSection() {
   }, [load, client.id])
 
   // The year's open problems, from the rows the page already has, each with the suggestion waiting for it.
-  const groups = useMemo(() => groupProblems(ledger.transactions, suggestions), [ledger.transactions, suggestions])
+  // A problem with a whole document is named by its file: "Mark october expenses.xlsx, expense claim".
+  const groups = useMemo(() => {
+    const names = new Map(ledger.uploads.map(u => [u.id, u.name]))
+    return groupProblems(ledger.transactions, suggestions, row =>
+      `${names.get(row.upload_id) ?? 'Document'}, ${(DOCUMENT_TYPES[row.document_type ?? 'receipt'] ?? 'document').toLowerCase()}`)
+  }, [ledger.transactions, ledger.uploads, suggestions])
   // A problem's row on the Transactions page, beside the rows the problem names.
   const rowHref = (rowId: number) => `${sectionHref(client.id, year.start, 'transactions')}?row=${rowId}`
 
@@ -75,6 +82,22 @@ export default function AiReviewSection() {
       await reload()
     } catch (e) {
       setProblems(p => ({ ...p, [d.id]: message(e) }))
+    } finally {
+      setWorking('')
+    }
+  }
+
+  // A total that doesn't add up, which the person says to leave: the difference is kept on its document, and the
+  // problem goes until the difference changes.
+  const leave = async (p: Problem) => {
+    if (!p.leave) return
+    setWorking(`leave:${p.rowId}`)
+    setError('')
+    try {
+      await changeRow(client.id, p.rowId, { total_accepted: p.leave })
+      await reload()
+    } catch (e) {
+      setError(message(e))
     } finally {
       setWorking('')
     }
@@ -171,7 +194,7 @@ export default function AiReviewSection() {
       <div className="section-head"><h2>AI review</h2></div>
       {error && <div className="notice notice-error">{error}</div>}
       <ProblemsList groups={groups} rowHref={rowHref} canApply={!client.archived && !year.closed} working={working}
-                    refused={problems} onApply={d => change(d, 'apply')} made={made} onUndo={d => change(d, 'undo')} />
+                    refused={problems} onApply={d => change(d, 'apply')} made={made} onUndo={d => change(d, 'undo')} onLeave={leave} />
       {!runs && !error && <p className="muted">Loading the reviews…</p>}
       {runs && runs.length === 0 && <p className="muted">No review has run on this year yet. One runs after the books change and go quiet.</p>}
       {runs?.map(run => (

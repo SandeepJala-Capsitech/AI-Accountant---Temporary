@@ -952,7 +952,9 @@ def _checked_totals(rows: list[Transaction], read: list[Optional[Decimal]],
     a row a person changed by just that much, or a row of just that much read twice, or the one row of that much;
     otherwise on the first row. Worked out afresh every time, so the warning goes once a line the reading missed is
     added, or a row read twice is removed. left_out is, for each document, the total of its rows a decision left out of
-    the books: a document that adds up with them is not short of anything, only a decision has set them aside."""
+    the books: a document that adds up with them is not short of anything, only a decision has set them aside. A
+    difference a person said to leave as it is (total_accepted, on the document's rows) raises a note in place of the
+    warning, for as long as the difference is that much."""
     marked = list(rows)
     for doc in _grouped(rows, lambda tx: tx.document_type != "statement").values():
         printed = next((rows[n].document_total for n in doc.rows if rows[n].document_total is not None), None)
@@ -960,9 +962,19 @@ def _checked_totals(rows: list[Transaction], read: list[Optional[Decimal]],
         if printed is None or (claimed_in is not None and claimed_in.amount == doc.total):
             continue   # none printed; or on a claim, whose line for it confirms what it books (part of a bill, say)
         first = rows[doc.rows[0]]
+        accepted = next((rows[n].total_accepted for n in doc.rows if rows[n].total_accepted is not None), None)
+
+        def left(text: str) -> None:
+            marked[doc.rows[0]] = marked[doc.rows[0]].model_copy(update={
+                "issues": marked[doc.rows[0]].issues + [issue("total_accepted", text, "info")]})
+
         if first.document_type == "agent_statement":
             net = doc.total if doc.direction == "in" else -doc.total
             if net == printed:
+                continue
+            if accepted == printed - net:
+                left(f"Items net to {_gbp(net)}, {_gbp(abs(printed - net))} {'under' if printed > net else 'over'} "
+                     f"the {_gbp(printed)} the statement paid over.")
                 continue
             message = f"Items net to {_gbp(net)}; the statement paid over {_gbp(printed)}."
         else:
@@ -976,12 +988,17 @@ def _checked_totals(rows: list[Transaction], read: list[Optional[Decimal]],
                 _NUMBERED.get(first.document_type) or _KIND_WORDS.get(first.document_type, "document"))
             word = "line" if first.document_type == "expense_claim" else "row"
             gap = printed - doc.total - aside   # what the lines, left out ones included, don't reach
+            if accepted == gap:
+                left(f"{word.capitalize()}s total {_gbp(doc.total)}, {_gbp(abs(gap))} "
+                     f"{'under' if gap > 0 else 'over'} the {kind}'s {_gbp(printed)}.")
+                continue
             message = (f"{word.capitalize()}s total {_gbp(doc.total)}; the {kind}'s total is {_gbp(printed)}. "
                        + (f"{_gbp(gap)} missing: add the {word}." if gap > 0
                           else f"{_gbp(-gap)} over: remove a duplicate or fix an amount."))
             changed = [n for n in doc.rows if read[n] is not None and rows[n].gross - read[n] == -gap]
             same = [n for n in doc.rows if rows[n].gross == -gap] if gap < 0 else []
-            where = doc.rows[0]
+            # A row that explains the difference carries it; otherwise it is the document's, not its first row's.
+            where, explained = doc.rows[0], True
             if len(changed) == 1:
                 where = changed[0]
                 message = (f"Changed from {_gbp(read[where])} to {_gbp(rows[where].gross)}; {word}s now total "
@@ -992,14 +1009,18 @@ def _checked_totals(rows: list[Transaction], read: list[Optional[Decimal]],
             elif len(same) == 1:
                 where = same[0]
                 message = f"{_gbp(-gap)} over the {kind}'s total, this {word}'s amount. Check it belongs."
+            else:
+                explained = False
             # Show its lines: the line it repeats, when it was read twice; otherwise every other line.
             twice = len(changed) != 1 and len(same) == 2 and where == same[1]
             others = [same[0]] if twice else [n for n in doc.rows if n != where]
             at = marked[where]
-            marked[where] = at.model_copy(update={"issues": at.issues + [issue("total_mismatch", message,
-                                                                               related=others)]})
+            marked[where] = at.model_copy(update={"issues": at.issues + [issue(
+                "total_mismatch", message, related=others, about="row" if explained else "document",
+                difference=gap)]})
             continue
-        marked[doc.rows[0]] = first.model_copy(update={"issues": first.issues + [issue("total_mismatch", message)]})
+        marked[doc.rows[0]] = first.model_copy(update={"issues": first.issues + [issue(
+            "total_mismatch", message, about="document", difference=printed - net)]})
     return marked
 
 

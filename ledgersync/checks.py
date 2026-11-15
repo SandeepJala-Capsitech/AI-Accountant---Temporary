@@ -18,7 +18,7 @@ from .payees import personal
 _NO_VAT = {AccountType.LIABILITY, AccountType.EQUITY}
 # Issues matching.match adds; listed here so validating again replaces them instead of adding copies.
 MATCHING_ISSUES = {"choose_payment", "part_payment", "overpayment", "possible_payment", "stale_link",
-                   "mixed_link", "duplicate_document", "total_mismatch", "claim_vat", "vat_worked_out",
+                   "mixed_link", "duplicate_document", "total_mismatch", "total_accepted", "claim_vat", "vat_worked_out",
                    "not_vat_invoice", "date_conflict", "date_from_claim", "date_from_bank", "booked_twice",
                    "amount_conflict", "open_document", "no_payroll", "transfer", "sale_without_vat",
                    "payout_report", "subtotal_only", "claimed_less", "not_on_statement", "till_takings",
@@ -83,8 +83,10 @@ MEAL_CHECK = Decimal("50.00")     # a meal from this much is asked about: with g
 SUBSISTENCE, ENTERTAINMENT = "7406", "7403"
 
 
-def issue(code: str, message: str, severity: str = "warning", related: Sequence[int] = ()) -> Issue:
-    return Issue(code=code, message=message, severity=severity, related=list(related))
+def issue(code: str, message: str, severity: str = "warning", related: Sequence[int] = (), *,
+          about: str = "row", difference: Optional[Decimal] = None) -> Issue:
+    return Issue(code=code, message=message, severity=severity, related=list(related), about=about,
+                 difference=difference)
 
 
 def long_date(date: dt.date) -> str:

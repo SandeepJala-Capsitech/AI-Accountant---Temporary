@@ -17,13 +17,14 @@ INPUTS = {"date", "description", "direction", "gross", "vat", "vat_treatment", "
           "total_worked_out", "cis_deducted",
           "include", "apart_from", "link", "balance", "opening_balance", "closing_balance", "supplier_vat_number",
           "addressed_to", "reverse_charge", "accepted", "vat_confirmed", "vat_stated",
-          "excluded", "superseded_by", "decision_ids"}
+          "excluded", "removed", "superseded_by", "decision_ids", "total_accepted"}
 # The fields a person can edit; a row's first edit keeps what they held as `original`.
 EDITABLE = ("date", "description", "counterparty", "direction", "gross", "vat", "account_code", "document_type",
             "currency", "vat_treatment", "bank_account", "reverse_charge")
 # Fields of a whole document: a change to one row changes every row with its document_ref. An expense claim's
-# lines are separate expenses, each with its own receipt, so there Include books one line.
-WHOLE_DOCUMENT = {"counterparty", "document_type", "include"}
+# lines are separate expenses, each with its own receipt, so there Include books one line. The difference from its
+# total that a person accepted is the document's too, so it outlasts any one of its rows.
+WHOLE_DOCUMENT = {"counterparty", "document_type", "include", "total_accepted"}
 # Rows read before 2026-10-08 kept their document's printed total only in the words of their warning.
 OLD_TOTAL = re.compile(r"(?:its total is|it paid over) £(-?[\d,]+\.\d{2})")
 

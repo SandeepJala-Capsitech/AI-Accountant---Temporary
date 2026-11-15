@@ -531,7 +531,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         before = stored.tx.model_dump(mode="json", include=values) if stored else {}
         result = ledger.change_row(store, client_id, row_id, patch)
         kind = ("row_reverted" if patch.revert else "row_linked" if "link" in sent else
-                "row_included" if "include" in sent else "rows_apart" if "apart_from" in sent else "row_edited")
+                "row_included" if "include" in sent or "removed" in sent else "rows_apart" if "apart_from" in sent else "row_edited")
         said = f"Row {row_id} changed: {', '.join(sent)}"
         if sent == ["without_document"]:
             said = (f"Row {row_id} booked without a receipt: {patch.without_document}" if patch.without_document

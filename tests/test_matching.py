@@ -897,6 +897,20 @@ def test_a_document_that_does_not_add_up_says_once_what_is_missing():
     assert codes(first) == [("total_mismatch", "warning")] and codes(second) == []
     assert about(first, "total_mismatch") == [1]                # Show its lines
     assert first.issues[0].message == "Lines total £66.90; the claim's total is £120.90. £54.00 missing: add the line."
+    # No one line explains it, so it is the claim's problem, not the first line's; and it says by how much.
+    assert (first.issues[0].about, first.issues[0].difference) == ("document", Decimal("54.00"))
+
+
+def test_a_total_problem_a_row_explains_stays_about_the_row():
+    *_, twice = matched(*(claim_line(gross, date, "Southgate", document_total="90.00") for gross, date in (
+        ("36.00", "2026-09-09"), ("54.00", "2026-09-24"), ("54.00", "2026-09-24"))))
+    assert (twice.issues[0].about, twice.issues[0].difference) == ("row", Decimal("-54.00"))
+
+
+def test_an_agents_statement_that_does_not_net_is_about_the_document():
+    first, *_ = matched(*(t.model_copy(update={"document_total": Decimal("600.00")}) for t in agent_statement()))
+    [found] = [i for i in first.issues if i.code == "total_mismatch"]
+    assert (found.about, found.difference) == ("document", Decimal("73.25"))
 
 
 def test_a_total_put_out_by_a_changed_line_is_said_on_that_line():
@@ -1486,3 +1500,40 @@ def test_wages_are_not_offered_another_persons_expense_claim():
     claim = row("expense_claim", "out", "144.00", "2026-04-30", "M Marlow", "claim", account="7400")
     _, wages = matched(claim, bank("1850.00", "2026-05-01", "S Marlow", "w", account="2220"))
     assert "open_document" not in dict(codes(wages))
+
+
+# ─── A total a person said to leave as it is ───────────────────────────────────
+
+def test_a_difference_a_person_left_raises_a_note_not_a_warning():
+    first, second = matched(
+        claim_line("36.00", "2026-09-09", "Southgate Bath Car Park", document_total="120.90", total_accepted="54.00"),
+        claim_line("30.90", "2026-09-30", "Transport for London", document_total="120.90", total_accepted="54.00"))
+    assert codes(first) == [("total_accepted", "info")] and codes(second) == []
+    assert first.issues[0].message == "Lines total £66.90, £54.00 under the claim's £120.90."
+
+
+def test_a_difference_left_on_a_line_read_twice_is_a_note_too():
+    lines = matched(*(claim_line(gross, date, "Southgate", document_total="90.00", total_accepted="-54.00")
+                      for gross, date in (("36.00", "2026-09-09"), ("54.00", "2026-09-24"), ("54.00", "2026-09-24"))))
+    assert [codes(t) for t in lines] == [[("total_accepted", "info")], [], []]
+    assert lines[0].issues[0].message == "Lines total £144.00, £54.00 over the claim's £90.00."
+
+
+def test_an_accepted_difference_that_changed_is_asked_about_again():
+    first, _ = matched(
+        claim_line("36.00", "2026-09-09", "Southgate Bath Car Park", document_total="120.90", total_accepted="10.00"),
+        claim_line("30.90", "2026-09-30", "Transport for London", document_total="120.90", total_accepted="10.00"))
+    assert codes(first) == [("total_mismatch", "warning")]
+
+
+def test_an_accepted_difference_is_forgotten_once_the_document_adds_up():
+    lines = matched(claim_line("36.00", "2026-09-09", "Southgate", document_total="90.00", total_accepted="54.00"),
+                    claim_line("54.00", "2026-09-24", "Southgate", document_total="90.00", total_accepted="54.00"))
+    assert [codes(t) for t in lines] == [[], []]
+
+
+def test_an_agents_statement_left_as_it_is_raises_a_note():
+    first, *rest = matched(*(t.model_copy(update={"document_total": Decimal("600.00"),
+                                                   "total_accepted": Decimal("73.25")}) for t in agent_statement()))
+    assert [i.code for t in (first, *rest) for i in t.issues if i.code.startswith("total_")] == ["total_accepted"]
+    assert first.issues[-1].message == "Items net to £526.75, £73.25 under the £600.00 the statement paid over."

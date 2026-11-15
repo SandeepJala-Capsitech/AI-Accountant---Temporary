@@ -304,3 +304,14 @@ def test_an_undo_makes_the_client_due_after_the_wait_it_is_given(mongo_store, re
     undo.undo_decision(mongo_store, records, locks, client_id=nb.id, decision_id=d.id, wait=777)
     due = dt.datetime.fromisoformat(records.review_state(nb.id).due_at)
     assert abs((due - dt.datetime.now(dt.timezone.utc)).total_seconds() - 777) < 60
+
+
+def test_undo_refuses_a_row_a_person_removed_since(mongo_store, records, locks, pages, nb):
+    # The AI left the sheet's line out, then a person removed it: undoing the AI's change would book a row the
+    # person took out, and leave it marked removed with nothing to put back.
+    d = call(mongo_store, records, pages, nb, nb.sheet_costco, keep_receipt(nb), QUOTE)
+    mongo_store.patch_row(nb.id, nb.sheet_costco, {"excluded": True, "removed": True})
+    with pytest.raises(InvalidInput) as err:
+        undo.undo_decision(mongo_store, records, locks, client_id=nb.id, decision_id=d.id)
+    assert f"Row {nb.sheet_costco} was removed by a person" in err.value.message
+    assert saved(mongo_store, nb.id, nb.sheet_costco).excluded

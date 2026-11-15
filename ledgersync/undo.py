@@ -114,6 +114,8 @@ def _undo_rows(store: MongoStore, records: AgentRecords, locks: ClientLocks, cli
         ensure_open(store.get_client(client_id), days, d.year_start)
         for n, wanted in d.after.items():
             tx = rows.get(int(n)) if n.isdigit() else None
+            if tx is not None and tx.removed:   # a person's Remove is theirs: only their Put back books it again
+                raise InvalidInput(f"Row {n} was removed by a person; put it back by hand instead.")
             now = tx.model_dump(mode="json") if tx else {}
             if tx is None or not all(_same(f, now.get(f), v) for f, v in wanted.items()):
                 raise InvalidInput(f"Row {n} has changed since; change it by hand instead.")

@@ -9,7 +9,7 @@ import TransactionsTable from '@/components/TransactionsTable'
 import type { Transaction } from '@/lib/api'
 import { addManualRows, changeRow, removeRow, type RowChange, type SavedRow } from '@/lib/clients'
 import { CLOSED_YEAR_NOTICE, lineTemplate, newRowFrom, type EditDraft } from '@/lib/clientRules'
-import { money } from '@/lib/ledger'
+import { money, removedForGood } from '@/lib/ledger'
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
@@ -41,7 +41,10 @@ export default function TransactionsSection() {
   }
   // The row leaves the table as soon as the person confirms; it comes back, with why, if the API refuses.
   const remove = async (row: SavedRow) => {
-    const question = `Remove "${row.description}" (${money(row.gross)})? This can't be undone. Its document's total is checked again without it.`
+    // A row typed in by hand is deleted; one read from a file is set aside, and its document still accounts for it.
+    const question = removedForGood(row, ledger.uploads)
+      ? `Remove "${row.description}" (${money(row.gross)})? This can't be undone. Its document's total is checked again without it.`
+      : `Remove "${row.description}" (${money(row.gross)})? It is taken out of the books and stays listed, crossed out, so you can put it back.`
     if (!(await ask(question, 'Remove'))) return
     setError('')
     setRemoving(s => new Set(s).add(row.id))

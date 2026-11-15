@@ -85,6 +85,14 @@ def test_a_row_left_out_of_the_books_says_so(store):
     assert [txs[f"P{n}"].value for n in (2, 3, 4, 5)] == ["Left out", None, "Left out", "Replaced by a split"]
 
 
+def test_a_row_a_person_removed_says_so(store):
+    client = store.create_client(CUBE)
+    store.add_upload(client.id, "a.pdf", "pdf", [receipt(), receipt()])
+    store.patch_row(client.id, store.rows(client.id)[1].id, {"excluded": True, "removed": True})
+    _, txs, _ = sheets(store, client.id)
+    assert [txs[f"P{n}"].value for n in (3, 4)] == [None, "Removed by a person"]
+
+
 def test_the_file_name_drops_characters_file_names_cannot_hold():
     # Review focus: a client name with characters a file name can't hold, or letters outside ASCII.
     assert file_name('A/B: "Trading" Ltd', DAY) == "A B Trading Ltd 2026-10-06.xlsx"

@@ -5,7 +5,7 @@ import { formatMoney } from './chat.ts'
 import { dayMonth } from './clientRules.ts'
 import type { SavedRow } from './clients'
 
-export type ProblemFamily = 'coding' | 'duplicate' | 'date' | 'combined_vat' | 'missing_vat' | 'conflict' | 'documents' | 'other'
+export type ProblemFamily = 'coding' | 'duplicate' | 'totals' | 'date' | 'combined_vat' | 'missing_vat' | 'conflict' | 'documents' | 'other'
 
 export interface Problem {
   rowId: number
@@ -14,12 +14,14 @@ export interface Problem {
   message: string
   related: number[]             // the other rows the problem is about
   suggestion: Decision | null   // a change waiting for the person to apply
+  document: boolean             // it is about the row's whole document, which `what` then names
+  leave: string | null          // a total that doesn't add up: the difference Leave it as it is accepts
 }
 export interface ProblemGroup { family: ProblemFamily; title: string; problems: Problem[] }
 
 // The groups, in the order they are listed.
 const TITLES: [ProblemFamily, string][] = [
-  ['coding', 'Account'], ['duplicate', 'Recorded twice'], ['date', 'Date'], ['combined_vat', 'VAT across items'],
+  ['coding', 'Account'], ['duplicate', 'Recorded twice'], ['totals', 'Document totals'], ['date', 'Date'], ['combined_vat', 'VAT across items'],
   ['missing_vat', 'VAT not booked'], ['conflict', 'Records disagree'], ['documents', 'Documents'], ['other', 'Other'],
 ]
 
@@ -47,15 +49,19 @@ const whatOf = (row: SavedRow): string =>
 // The year's problems by family, in the fixed order, empty families left out. A problem is a warning or an error on
 // a row that is in the books (notes are not problems; a row a decision left out or replaced has none). A row with
 // two warnings is listed under each. Each suggestion goes with the first problem of the family it settles on the
-// first of its rows that has one; a suggestion with no such problem is dropped.
-export function groupProblems(rows: SavedRow[], suggestions: Decision[]): ProblemGroup[] {
+// first of its rows that has one; a suggestion with no such problem is dropped. A problem with a whole document is
+// listed under Document totals whatever its code, named by its file (fileOf) rather than by the row that carries it.
+export function groupProblems(rows: SavedRow[], suggestions: Decision[], fileOf?: (row: SavedRow) => string): ProblemGroup[] {
   const problems: (Problem & { family: ProblemFamily })[] = []
   for (const row of rows) {
     if (row.excluded || row.superseded_by) continue
     for (const issue of row.issues) {
       if (issue.severity === 'info') continue
-      problems.push({ rowId: row.id, what: whatOf(row), code: issue.code, message: issue.message,
-                      related: issue.related ?? [], suggestion: null, family: familyOf(issue.code) })
+      const document = issue.about === 'document'
+      problems.push({ rowId: row.id, what: document && fileOf ? fileOf(row) : whatOf(row), code: issue.code,
+                      message: issue.message, related: issue.related ?? [], suggestion: null, document,
+                      leave: issue.code === 'total_mismatch' ? issue.difference ?? null : null,
+                      family: document ? 'totals' : familyOf(issue.code) })
     }
   }
   for (const s of suggestions) {

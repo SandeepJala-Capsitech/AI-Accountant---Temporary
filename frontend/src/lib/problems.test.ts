@@ -22,7 +22,8 @@ test('a warning becomes a problem in its family', () => {
   assert.equal(group.family, 'coding')
   assert.equal(group.title, 'Account')
   assert.deepEqual(group.problems, [{ rowId: 7, what: 'Vodafone bill, 12 Oct, £86.40', code: 'unusual_account',
-                                      message: 'unusual_account said', related: [1, 2], suggestion: null }])
+                                      message: 'unusual_account said', related: [1, 2], suggestion: null,
+                                      document: false, leave: null }])
 })
 
 test('info notes are not problems', () => {
@@ -75,4 +76,25 @@ test('problemCount adds the groups', () => {
   const rows = [row(1, [issue('needs_document')]), row(2, [issue('date_missing'), issue('small_asset')])]
   assert.equal(problemCount(groupProblems(rows, [])), 3)
   assert.equal(problemCount([]), 0)
+})
+
+test("a document's problem is listed under Document totals, named by its file", () => {
+  const short = { ...issue('total_mismatch'), about: 'document' as const, difference: '457.20' }
+  const [group, ...rest] = groupProblems([row(7, [short])], [], () => 'Mark october expenses.xlsx, expense claim')
+  assert.deepEqual([group.family, group.title, rest.length], ['totals', 'Document totals', 0])
+  assert.deepEqual([group.problems[0].what, group.problems[0].document, group.problems[0].leave],
+                   ['Mark october expenses.xlsx, expense claim', true, '457.20'])
+})
+
+test('a total problem one row explains stays under Recorded twice, and can still be left as it is', () => {
+  const twice = { ...issue('total_mismatch'), about: 'row' as const, difference: '-54.00' }
+  const [group] = groupProblems([row(7, [twice])], [], () => 'a file')
+  assert.deepEqual([group.title, group.problems[0].what, group.problems[0].document, group.problems[0].leave],
+                   ['Recorded twice', 'Vodafone bill, 12 Oct, £86.40', false, '-54.00'])
+})
+
+test('Document totals come after Recorded twice', () => {
+  const short = { ...issue('total_mismatch'), about: 'document' as const, difference: '457.20' }
+  const groups = groupProblems([row(7, [short]), row(8, [issue('booked_twice')]), row(9, [issue('date_missing')])], [])
+  assert.deepEqual(groups.map(g => g.title), ['Recorded twice', 'Document totals', 'Date'])
 })

@@ -116,6 +116,8 @@ export type RowChange = Partial<Record<EditableField, string | null>> & {
   apart_from?: number[]
   without_document?: string | null   // book it without its receipt or invoice, for this reason; null: hold it again
   vat_confirmed?: boolean            // reclaim the row's VAT on the person's say; false: leave it to the rules again
+  removed?: false                    // Put back a row the person removed
+  total_accepted?: string | null     // leave its document's total out by this much; null: ask about it again (Undo)
   revert?: boolean
   currency?: string                  // 'GBP': the amount, read in another currency, is now in pounds
   bank_account?: string | null       // what paid a receipt: one of the client's accounts, or who paid it themselves

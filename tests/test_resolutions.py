@@ -1085,3 +1085,10 @@ def test_what_waits_keeps_a_reviews_suggestion(mongo_store, records, pages, nb):
              drop_row_ids=[nb.sheet_costco]), "TOTAL  £64.80", trigger="background", review_id="r1", suggest=True)
     assert d.status == "suggested"
     assert [w.id for w in waiting_suggestions(mongo_store, records, client_id=nb.id, year_start=YEAR)] == [d.id]
+
+
+def test_a_decision_on_a_row_a_person_removed_is_refused(mongo_store, records, staples):
+    # A person's Remove is theirs: the AI never drops, keeps or changes such a row.
+    mongo_store.patch_row(staples.id, staples.sheet, {"excluded": True, "removed": True})
+    decision = staples_call(mongo_store, records, staples, staples.sheet, [staples.sheet])
+    assert decision.status == "refused" and f"Row {staples.sheet} was removed by a person." in decision.reason

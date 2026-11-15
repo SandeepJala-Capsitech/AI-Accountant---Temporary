@@ -773,3 +773,127 @@ def test_a_change_made_in_a_request_is_in_what_the_request_answers(api):
     changed = client.patch(f"/api/clients/{cid}/rows/{row['id']}", json={"description": "Line rental"}).json()
     assert [r["description"] for r in changed["transactions"]] == ["Line rental"]
     assert client.patch(f"/api/clients/{cid}", json={"contact_name": "Sam Lee"}).json()["contact_name"] == "Sam Lee"
+
+
+# ─── Remove sets a read row aside; Put back ────────────────────────────────────
+
+def read_claim(store, cid, *lines, total="90.00"):
+    """A claim read from a file (not typed in): its lines, each printing the claim's total."""
+    from ledgersync.models import Transaction
+    store.add_upload(cid, "claim.pdf", "pdf", [Transaction(
+        date="2026-09-09", description=f"Jenny Hogg - {gross}", direction="out", gross=gross, account_code="7400",
+        document_type="expense_claim", counterparty="Jenny Hogg", document_ref="claim", document_total=total)
+        for gross in lines])
+
+
+def codes_of(ledger):
+    return [[i["code"] for i in r["issues"]] for r in ledger["transactions"]]
+
+
+def test_removing_a_read_line_sets_it_aside_and_its_claim_still_adds_up(api, mongo_store):
+    # A person removed a claim's line on purpose: the claim said "£54.00 missing: add the line" on its first line.
+    client = api()
+    cid = add(client)["id"]
+    read_claim(mongo_store, cid, "36.00", "54.00")
+    [first, second] = client.get(f"/api/clients/{cid}/years/{YEAR}/ledger").json()["transactions"]
+    after = client.delete(f"/api/clients/{cid}/rows/{second['id']}")
+    assert after.status_code == 200, after.text
+    [kept, removed] = after.json()["transactions"]
+    assert (removed["id"], removed["excluded"], removed["removed"]) == (second["id"], True, True)
+    assert not kept["removed"] and "total_mismatch" not in sum(codes_of(after.json()), [])
+
+
+def test_put_back_books_a_removed_line_again(api, mongo_store):
+    client = api()
+    cid = add(client)["id"]
+    read_claim(mongo_store, cid, "36.00", "54.00")
+    second = client.get(f"/api/clients/{cid}/years/{YEAR}/ledger").json()["transactions"][1]
+    client.delete(f"/api/clients/{cid}/rows/{second['id']}")
+    back = client.patch(f"/api/clients/{cid}/rows/{second['id']}", json={"removed": False})
+    assert back.status_code == 200, back.text
+    row = back.json()["transactions"][1]
+    assert (row["excluded"], row["removed"]) == (False, False)
+    assert "total_mismatch" not in sum(codes_of(back.json()), [])
+
+
+def test_a_row_added_by_hand_is_still_deleted(api):
+    client = api()
+    cid = add(client)["id"]
+    [row] = manual(client, cid, BILL)["transactions"]
+    assert client.delete(f"/api/clients/{cid}/rows/{row['id']}").json()["transactions"] == []
+
+
+def test_put_back_is_refused_on_a_row_that_was_not_removed(api, mongo_store):
+    client = api()
+    cid = add(client)["id"]
+    read_claim(mongo_store, cid, "90.00")
+    [row] = client.get(f"/api/clients/{cid}/years/{YEAR}/ledger").json()["transactions"]
+    refused = client.patch(f"/api/clients/{cid}/rows/{row['id']}", json={"removed": False})
+    assert refused.status_code == 422 and "was not removed" in refused.text
+
+
+def test_removed_true_is_refused(api, mongo_store):
+    client = api()
+    cid = add(client)["id"]
+    read_claim(mongo_store, cid, "90.00")
+    [row] = client.get(f"/api/clients/{cid}/years/{YEAR}/ledger").json()["transactions"]
+    refused = client.patch(f"/api/clients/{cid}/rows/{row['id']}", json={"removed": True})
+    assert refused.status_code == 422 and "Use Remove to take a row out of the books." in refused.text
+    assert mongo_store.rows(cid)[0].tx.excluded is False
+
+
+def test_put_back_is_refused_for_an_archived_client(api, mongo_store):
+    client = api()
+    cid = add(client)["id"]
+    read_claim(mongo_store, cid, "36.00", "54.00")
+    second = client.get(f"/api/clients/{cid}/years/{YEAR}/ledger").json()["transactions"][1]
+    client.delete(f"/api/clients/{cid}/rows/{second['id']}")
+    client.patch(f"/api/clients/{cid}", json={"archived": True})
+    refused = client.patch(f"/api/clients/{cid}/rows/{second['id']}", json={"removed": False})
+    assert (refused.status_code, refused.json()["detail"]["code"]) == (409, "client_archived")
+
+
+def test_a_removed_statement_line_raises_nothing_new(api, mongo_store):
+    # Review focus: a bank line a person removes is treated as one a decision left out, no worse.
+    from ledgersync.models import Transaction
+    client = api()
+    cid = add(client)["id"]
+    mongo_store.add_upload(cid, "bank.csv", "csv", [Transaction(
+        date=f"2026-09-0{n}", description=f"line {n}", direction="out", gross="10.00", account_code="7502",
+        document_type="statement", document_ref=f"l{n}", balance=str(100 - 10 * n)) for n in (1, 2, 3)])
+    middle = client.get(f"/api/clients/{cid}/years/{YEAR}/ledger").json()["transactions"][1]["id"]
+    removed = codes_of(client.delete(f"/api/clients/{cid}/rows/{middle}").json())
+    mongo_store.patch_row(cid, middle, {"removed": False})   # as a decision leaves it: excluded only
+    left_out = codes_of(client.get(f"/api/clients/{cid}/years/{YEAR}/ledger").json())
+    assert removed == left_out and len(removed) == 3
+
+
+# ─── Leave it as it is ─────────────────────────────────────────────────────────
+
+def test_leave_it_as_it_is_clears_a_total_and_undo_brings_it_back(api):
+    # A total that is out on purpose (a line deleted long ago, a total printed wrong) had no way out but adding a line.
+    client = api()
+    cid = add(client)["id"]
+    claim = {"date": "2026-09-09", "description": "Jenny Hogg - car park", "direction": "out", "gross": "36.00",
+             "account_code": "7400", "document_type": "expense_claim", "counterparty": "Jenny Hogg",
+             "document_ref": "claim", "document_total": "90.00"}
+    manual(client, cid, claim)
+    [first, second] = manual(client, cid, {**claim, "gross": "10.00", "document_total": None})["transactions"]
+    [short] = [i for i in first["issues"] if i["code"] == "total_mismatch"]
+    assert (short["about"], short["difference"]) == ("document", "44.00")
+    left = client.patch(f"/api/clients/{cid}/rows/{second['id']}", json={"total_accepted": short["difference"]})
+    assert left.status_code == 200, left.text
+    codes = [[i["code"] for i in r["issues"] if i["code"].startswith("total_")] for r in left.json()["transactions"]]
+    assert codes == [["total_accepted"], []]
+    assert {r["total_accepted"] for r in left.json()["transactions"]} == {"44.00"}   # kept on the whole document
+    undone = client.patch(f"/api/clients/{cid}/rows/{first['id']}", json={"total_accepted": None})
+    assert [i["code"] for i in undone.json()["transactions"][0]["issues"] if i["code"].startswith("total_")] == ["total_mismatch"]
+    assert {r["total_accepted"] for r in undone.json()["transactions"]} == {None}
+
+
+def test_a_zero_difference_is_refused(api):
+    client = api()
+    cid = add(client)["id"]
+    [row] = manual(client, cid, BILL)["transactions"]
+    refused = client.patch(f"/api/clients/{cid}/rows/{row['id']}", json={"total_accepted": "0.00"})
+    assert refused.status_code == 422 and "There is no difference to leave." in refused.text

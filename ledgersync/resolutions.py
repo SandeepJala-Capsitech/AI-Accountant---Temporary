@@ -192,7 +192,10 @@ def _paying_lines(rows: dict[int, SavedRow], doc: SavedRow) -> list[SavedRow]:
 
 
 def _usable(row: SavedRow, kept: bool = True) -> None:
-    """Refuses a row a split replaced, or, for a row the change keeps, one left out of the books."""
+    """Refuses a row a person removed or a split replaced, or, for a row the change keeps, one left out of the
+    books."""
+    if row.removed:
+        raise _Refused(f"Row {row.id} was removed by a person.")
     if row.superseded_by:
         raise _Refused(f"Row {row.id} was replaced by a split.")
     if kept and row.excluded:

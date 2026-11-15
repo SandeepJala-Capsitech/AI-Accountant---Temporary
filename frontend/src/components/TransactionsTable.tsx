@@ -9,8 +9,8 @@ import { listAccounts, type AccountChoice, type Ledger, type RowChange, type Sav
 import { accountList, DOCUMENT_TYPES, transactionCount } from '@/lib/clientRules'
 import { sectionHref } from '@/lib/years'
 import { acceptLabel, askAbout, claimLineOf, filtersSet, issueFixes, matchesFilters, netBooked, NO_FILTERS, vatBooked, type IssueFix, type RowFilters } from '@/lib/ledger'
-import { aboutAnotherRow, acceptChange, accountName, apartChange, apartStatus, canBeAccepted, canBeApart, checkHover, issueHeading, kindOf, leftOut, longDate, money, needsReview,
-         reviewSummary, rowStatus, showLabel, takesLines, totalsOf } from '@/lib/ledger'
+import { aboutAnotherRow, acceptChange, accountName, apartChange, apartStatus, canBeAccepted, canBeApart, checkHover, documentProblems, issueHeading, kindOf, leftOut, leftOutLabel,
+         longDate, money, needsReview, reviewSummary, rowIssues, rowStatus, showLabel, takesLines, totalsOf } from '@/lib/ledger'
 
 const SEVERITY_ORDER = { error: 0, warning: 1, info: 2 } as const
 const MARKS = { error: '✖', warning: '⚠', info: 'ℹ' } as const
@@ -48,7 +48,7 @@ function originalText(row: SavedRow): string {
 // or error carries its own way out: the fix where there is one (a change made at once, the accounts to choose from,
 // Edit, or Documents for a missing file), Show both and Not the same for two records that may be one, It's fine for
 // a matter of judgement, and Ask the AI, which opens a chat on the issue.
-function IssueList({ issues, onShowBoth, onNotSame, onAccept, fixesOf, onFix, onEdit, accounts, documentsHref, askHref }: {
+function IssueList({ issues, onShowBoth, onNotSame, onAccept, fixesOf, onFix, onEdit, onAddLine, accounts, documentsHref, askHref }: {
   issues: Issue[]
   onShowBoth?: (related: number[]) => void   // each issue shows the rows it is about
   onNotSame?: (related: number[]) => void
@@ -56,6 +56,7 @@ function IssueList({ issues, onShowBoth, onNotSame, onAccept, fixesOf, onFix, on
   fixesOf?: (issue: Issue) => IssueFix[]     // none when the row can't be changed
   onFix?: (change: RowChange) => void
   onEdit?: () => void
+  onAddLine?: () => void                     // a document's problem: add the line its total is short of
   accounts?: AccountChoice[]                 // the accounts a row of the client can be coded to
   documentsHref?: string
   askHref?: (issue: Issue) => string         // the chat, asked about the issue
@@ -77,6 +78,9 @@ function IssueList({ issues, onShowBoth, onNotSame, onAccept, fixesOf, onFix, on
             )}
             {onNotSame && canBeApart(issue.code) && !!issue.related?.length && (
               <button type="button" className="link-btn" onClick={() => onNotSame(issue.related!)}>Not the same</button>
+            )}
+            {onAddLine && issue.severity !== 'info' && (
+              <button type="button" className="link-btn" onClick={onAddLine}>Add line</button>
             )}
             {(fixesOf?.(issue) ?? []).map((fix, j) => (
               fix.change && onFix ? (
@@ -184,11 +188,14 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
   const uploads = useMemo(() => new Map(ledger.uploads.map(u => [u.id, u.name])), [ledger.uploads])
   const byId = useMemo(() => new Map(rows.map(r => [r.id, r])), [rows])
   const described = useMemo(() => new Map(rows.map(r => [r.id, r.description])), [rows])
-  // The API's issues, a possible duplicate among them (worked out with the books, so the AI sees it too).
-  const issuesOf = useMemo(() => rows.map(row => row.issues), [rows])
+  // Each row's own issues, a possible duplicate among them (worked out with the books, so the AI sees it too). A
+  // problem with a whole document is not its first line's: it is listed once, above the table.
+  const issuesOf = useMemo(() => rows.map(rowIssues), [rows])
+  const docs = useMemo(() => documentProblems(rows), [rows])
   // Rows left out of the books are listed, crossed out, but are never counted or filtered as rows to review.
-  const review = useMemo(() => reviewSummary(issuesOf.filter((_, i) => !leftOut(rows[i]))), [rows, issuesOf])
-  const flagged = rows.filter((row, i) => needsReview(row, issuesOf[i])).length
+  const review = useMemo(() => reviewSummary([...issuesOf.filter((_, i) => !leftOut(rows[i])), ...docs.map(d => [d.issue])]),
+                         [rows, issuesOf, docs])
+  const flagged = rows.filter((row, i) => needsReview(row, issuesOf[i])).length + docs.length
   const all = rows.map((row, i) => ({ row, issues: issuesOf[i] }))
   // The filters narrow the table by several fields at once; the review chips then pick among the rows left.
   const [filters, setFilters] = useState<RowFilters>(NO_FILTERS)
@@ -198,8 +205,10 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
   const accountChoices = useMemo(() => [...new Map(rows.filter(r => r.account_code).map(r =>
     [r.account_code, r.account_name || r.account_code])).entries()].sort((a, b) => a[1].localeCompare(b[1], 'en-GB')), [rows])
   const typeChoices = useMemo(() => [...new Set(rows.map(r => r.document_type ?? 'receipt'))], [rows])
-  const shown = passing.filter(({ row, issues }) =>
-    only === null || (only === 'review' ? needsReview(row, issues) : !leftOut(row) && issues.some(i => i.code === only)))
+  // A chip also shows every line of a document with that problem ("Only these": with any problem).
+  const ofDocs = new Set(docs.filter(d => only === 'review' || d.issue.code === only).flatMap(d => d.lines))
+  const shown = passing.filter(({ row, issues }) => only === null || ofDocs.has(row.id)
+    || (only === 'review' ? needsReview(row, issues) : !leftOut(row) && issues.some(i => i.code === only)))
   const filter = only !== null && !shown.length ? null : only   // a filter whose rows are all fixed shows everything
   const together = focus ? all.filter(({ row }) => focus.includes(row.id)) : []
   const picked = together.length ? together : filter === null ? passing : shown
@@ -211,10 +220,11 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
     ? picked.map((item, n) => ({ item, n })).sort((a, b) =>
         (a.item.row.date ?? '').localeCompare(b.item.row.date ?? '') || a.n - b.n).map(({ item }) => item)
     : picked
-  const showBoth = (row: SavedRow, related: number[]) => {
-    setFocus([row.id, ...related])
+  const showTogether = (ids: number[]) => {
+    setFocus(ids)
     card.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
   }
+  const showBoth = (row: SavedRow, related: number[]) => showTogether([row.id, ...related])
 
   return (
     <section ref={card} className="card section table-card">
@@ -296,6 +306,25 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
           ))}
         </div>
       )}
+      {/* A problem with a whole document, said once against the document: its lines don't reach its total and no
+          one line explains why. Not narrowed by the filters, so it is never hidden with its first line. */}
+      {docs.length > 0 && (
+        <div className="document-problems" role="group" aria-label="Documents to check">
+          {docs.map(({ row, issue, lines }) => (
+            <div key={`${row.id}:${issue.code}`} className="document-problem">
+              <div className="document-name">
+                {uploads.get(row.upload_id) ?? 'Document'} · {DOCUMENT_TYPES[row.document_type ?? 'receipt'] ?? row.document_type}
+              </div>
+              <IssueList issues={[issue]} onShowBoth={() => showTogether(lines)}
+                         onAddLine={!readOnly && onAdd && takesLines(row) ? () => onAdd(row) : undefined}
+                         fixesOf={readOnly ? undefined : found => issueFixes(row, found)}
+                         onFix={change => onChange(row.id, change)}
+                         askHref={readOnly ? undefined
+                           : found => `/chat?client=${client.id}&ask=${encodeURIComponent(askAbout(row, found))}`} />
+            </div>
+          ))}
+        </div>
+      )}
       {!rows.length ? <p className="muted">Add documents to see their transactions here.</p> : (
         <table className="table">
           <thead>
@@ -327,8 +356,12 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
                     <span style={left ? { textDecoration: 'line-through' } : undefined}>{row.description}</span>
                     {touched === null ? <span className="badge badge-accent">Agent</span>
                       : touched.length > 0 && <AgentBadge decisions={touched} />}
-                    {left && <div className="row-status">{row.superseded_by ? 'Replaced' : 'Left out'}
-                      {whyLeftOut(row) && `: ${whyLeftOut(row)}`}</div>}
+                    {left && <div className="row-status">{leftOutLabel(row)}
+                      {!row.removed && whyLeftOut(row) && `: ${whyLeftOut(row)}`}
+                      {row.removed && !readOnly && (
+                        <button type="button" className="link-btn" title="Book it again"
+                                onClick={() => onChange(row.id, { removed: false })}>Put back</button>
+                      )}</div>}
                     {held.has(row.id) && !row.issues.some(i => i.code === 'booked_without_document') && (
                       <div className="row-status">
                         <span className="badge badge-warn">Documentation required</span>
@@ -414,7 +447,7 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
                       <button type="button" className="link-btn"
                               onClick={() => onChange(row.id, { revert: true })}>Revert</button>
                     )}
-                    {!readOnly && onRemove && (
+                    {!readOnly && onRemove && !row.removed && (
                       <button type="button" className="link-btn danger" onClick={() => onRemove(row)}>Remove</button>
                     )}
                   </td>

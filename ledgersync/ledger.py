@@ -410,6 +410,13 @@ def _check_edit(patch: RowPatch, sent: set[str], tx: Transaction, client: Client
     if "reverse_charge" in sent and patch.reverse_charge and (
             patch.document_type if "document_type" in sent else tx.document_type) not in ("receipt", "invoice"):
         raise InvalidInput("The reverse charge is set on the supplier's invoice or receipt, not on the bank line.")
+    if "total_accepted" in sent and patch.total_accepted is not None and not (
+            0 < abs(patch.total_accepted) < MOST):
+        raise InvalidInput("There is no difference to leave.")
+    if "removed" in sent and patch.removed is not False:
+        raise InvalidInput("Use Remove to take a row out of the books.")
+    if "removed" in sent and not tx.removed:
+        raise InvalidInput("This row was not removed.")
     if "accepted" in sent and not set(patch.accepted) <= ACCEPTABLE:
         raise InvalidInput("Only a warning that is a matter of judgement can be marked as fine.")
     if "currency" in sent and patch.currency != "GBP":
@@ -457,6 +464,8 @@ def change_row(store: MongoStore, client_id: int, row_id: int, patch: RowPatch) 
         if "vat" in sent and "vat_confirmed" not in sent:
             # VAT a person enters is theirs to vouch for, so it is reclaimed; clearing it takes that back.
             values["vat_confirmed"] = patch.vat is not None and patch.vat > 0
+        if "removed" in sent:
+            values["excluded"] = False   # Put back: the row a person removed is in the books again
         store.patch_row(client_id, row_id, values)
     return _books().ledger_of(store, client_id, _year_of(store, client, row))
 
@@ -490,7 +499,7 @@ def add_manual(store: MongoStore, client_id: int, upload: ManualUpload) -> Ledge
     # A dated row goes by its date; an undated one waits in the year it was added to (today's, when none is said).
     ensure_open(client, [tx.date for tx in upload.transactions], upload.year_start or dt.date.today())
     # Only a decision of the agent excludes or supersedes a row, so a row sent by hand arrives without those marks.
-    fresh = [tx.model_copy(update={"excluded": False, "superseded_by": None, "decision_ids": [],
+    fresh = [tx.model_copy(update={"excluded": False, "removed": False, "superseded_by": None, "decision_ids": [],
                                    **({"vat": None, "vat_treatment": None, "bank_account": None}
                                       if tx.document_type == "journal" else {})})
              for tx in upload.transactions]
@@ -537,13 +546,19 @@ def remove_upload(store: MongoStore, client_id: int, upload_id: int) -> Ledger:
 
 
 def remove_row(store: MongoStore, client_id: int, row_id: int) -> Ledger:
-    """Removes one row a person no longer wants, and returns its year's ledger worked out again without it."""
+    """Takes one row a person no longer wants out of the books, and returns its year's ledger worked out again
+    without it. A row read from a file is set aside (removed): it stays listed, its document still accounts for it,
+    and Put back books it again. A row typed in by hand is deleted."""
     client = store.get_client(client_id)
     require_active(client)
     row = next((r for r in store.rows(client_id) if r.id == row_id), None)
     if row is None:
         raise NotFound("This row was not found.")
     ensure_open(client, _days(store, client, [row]))
-    store.delete_row(client_id, row_id)
+    by_hand = any(u["id"] == row.upload_id and u["kind"] == "manual" for u in store.uploads(client_id))
+    if by_hand:
+        store.delete_row(client_id, row_id)
+    else:
+        store.patch_row(client_id, row_id, {"excluded": True, "removed": True})
     return _books().ledger_of(store, client_id, _year_of(store, client, row))
 

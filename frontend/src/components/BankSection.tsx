@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import { useClientYear } from '@/components/ClientYearContext'
 import { getBankChecks, type BankCheck } from '@/lib/clients'
-import { accountName, leftOut, money } from '@/lib/ledger'
+import { accountName, leftOut, leftOutLabel, money } from '@/lib/ledger'
 import { bankBalance, bankCheckNotice, bankCheckText, defaultBank, fullDate, linesCount, linesFor } from '@/lib/sections'
 import { sectionHref } from '@/lib/years'
 
@@ -98,7 +98,7 @@ export default function BankSection() {
                     <td className="mono">{fullDate(row.date)}</td>
                     <td>
                       <span style={left ? { textDecoration: 'line-through' } : undefined}>{row.description}</span>
-                      {left && <div className="row-status">{row.superseded_by ? 'Replaced' : 'Left out'}</div>}
+                      {left && <div className="row-status">{leftOutLabel(row)}</div>}
                       {!fromHere && <div className="row-origin">Transfer from {nameOf(row.bank_account)}</div>}
                     </td>
                     <td className="num">{incoming ? money(row.gross) : ''}</td>

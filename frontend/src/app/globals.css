@@ -238,6 +238,11 @@ textarea.input { height: auto; min-height: 150px; padding: 10px; resize: vertica
               padding: 2px 0 2px 8px; }
 .issue-info .issue-mark { color: var(--accent); }
 
+/* A problem with a whole document, above the table: the file it is, then the issue as a row would show it. */
+.document-problems { display: grid; gap: 8px; margin: 0 0 12px; }
+.document-name { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.document-problem .issues { max-width: 640px; margin-top: 3px; }
+
 /* Narrowing the table by several fields at once. */
 .filter-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 12px; }
 .filter-bar .input { width: auto; height: 32px; font-size: 13px; }

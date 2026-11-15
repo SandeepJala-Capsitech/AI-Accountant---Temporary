@@ -436,3 +436,49 @@ test('a row must pass every filter that is set, and an empty filter passes every
   assert.equal(matchesFilters({ ...hotel, edited: true }, f({ status: 'edited' })), true)
   assert.equal(matchesFilters(hotel, f({ status: 'edited' })), false)
 })
+
+// ─── A document's problem, a removed row, and a total left as it is ──────────────────────────────────────────────
+
+import type { SavedRow, Upload } from './clients'
+import { documentProblems, leftOutLabel, removedForGood, rowIssues } from './ledger.ts'
+
+const saved = (id: number, change: Partial<Transaction> = {}): SavedRow =>
+  ({ ...tx({ document_type: 'expense_claim', document_ref: 'claim', ...change }), id, upload_id: 1 } as unknown as SavedRow)
+const short = { code: 'total_mismatch', severity: 'warning' as const, message: '£457.20 missing: add the line.',
+                related: [2], about: 'document' as const, difference: '457.20' }
+
+test("a document's problem is not one of its first line's own issues", () => {
+  const own = { code: 'date_missing', severity: 'warning' as const, message: 'No date' }
+  const rowOnly = { ...short, about: 'row' as const }
+  assert.deepEqual(rowIssues(tx({ issues: [short, own, rowOnly] })), [own, rowOnly])
+  // so the line is not marked for review on the document's account (rows saved before `about` read as the row's)
+  assert.equal(needsReview(tx({ issues: [short] }), rowIssues(tx({ issues: [short] }))), false)
+})
+
+test("a document's problem is listed once, with every line of the document that is in the books", () => {
+  const rows = [saved(1, { issues: [short] }), saved(2), saved(3, { excluded: true }), saved(4, { document_ref: 'other' })]
+  const [found, ...rest] = documentProblems(rows)
+  assert.deepEqual([found.row.id, found.issue, found.lines, rest.length], [1, short, [1, 2], 0])
+  // a note about a document is not a problem, and a left-out row's problem no longer matters
+  assert.deepEqual(documentProblems([saved(1, { issues: [{ ...short, severity: 'info' }] })]), [])
+  assert.deepEqual(documentProblems([saved(1, { issues: [short], excluded: true })]), [])
+})
+
+test('a row out of the books says who took it out', () => {
+  assert.deepEqual([tx({ superseded_by: 'd1' }), tx({ excluded: true, removed: true }), tx({ excluded: true })].map(leftOutLabel),
+                   ['Replaced', 'Removed by you', 'Left out'])
+})
+
+test('only a row typed in by hand is removed for good', () => {
+  const uploads = [{ id: 1, kind: 'pdf' }, { id: 2, kind: 'manual' }] as Upload[]
+  assert.equal(removedForGood(saved(1), uploads), false)
+  assert.equal(removedForGood({ ...saved(2), upload_id: 2 }, uploads), true)
+})
+
+test('a total that does not add up can be left as it is, and that can be undone', () => {
+  assert.deepEqual(issueFixes(tx(), short), [{ label: 'Leave it as it is', change: { total_accepted: '457.20' } }])
+  assert.deepEqual(issueFixes(tx(), { ...short, difference: null }), [])   // read before the difference was kept
+  const note = { code: 'total_accepted', severity: 'info' as const, message: "Lines total £1,148.43, £457.20 under the claim's £1,605.63." }
+  assert.deepEqual(issueFixes(tx(), note), [{ label: 'Undo', change: { total_accepted: null } }])
+  assert.equal(issueHeading('total_accepted'), 'Total left as it is.')
+})
