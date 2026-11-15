@@ -747,6 +747,17 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         store.get_client(client_id)
         return {"marked": chat.records.mark_reviews_seen(client_id)}
 
+    @app.post("/api/clients/{client_id}/reviews/retry")
+    def retry_review(client_id: int, x_ledgersync: Optional[str] = Header(None)):
+        """Try again: the client's review is due now, whatever it was waiting for. One already running is left to
+        finish."""
+        from_our_pages(x_ledgersync)
+        ledger.require_active(store.get_client(client_id))
+        if not chat.records.review_state(client_id).running:
+            chat.records.patch_review_state(client_id, due_at=reviews.utcnow().isoformat(timespec="seconds"),
+                                            retry_at=None)
+        return {"due": True}
+
     @app.post("/api/clients/{client_id}/decisions/{decision_id}/undo", response_model=Decision)
     def undo_decision(client_id: int, decision_id: str, x_ledgersync: Optional[str] = Header(None)):
         from_our_pages(x_ledgersync)

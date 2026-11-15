@@ -4,11 +4,10 @@ import { useSearchParams } from 'next/navigation'
 import { useMemo, useState } from 'react'
 import { useClientYear } from '@/components/ClientYearContext'
 import { useConfirm } from '@/components/ConfirmDialog'
-import EditRowDialog from '@/components/EditRowDialog'
 import TransactionsTable from '@/components/TransactionsTable'
-import type { Transaction } from '@/lib/api'
-import { addManualRows, changeRow, removeRow, type RowChange, type SavedRow } from '@/lib/clients'
-import { CLOSED_YEAR_NOTICE, lineTemplate, newRowFrom, type EditDraft } from '@/lib/clientRules'
+import { useRowDialogs } from '@/components/useRowDialogs'
+import { changeRow, removeRow, type RowChange, type SavedRow } from '@/lib/clients'
+import { CLOSED_YEAR_NOTICE } from '@/lib/clientRules'
 import { money, removedForGood } from '@/lib/ledger'
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
@@ -18,8 +17,7 @@ export default function TransactionsSection() {
   const { client, year, ledger, show: showLedger } = useClientYear()
   const { ask, dialog: confirmDialog } = useConfirm()
   const [error, setError] = useState('')
-  const [editing, setEditing] = useState<SavedRow | null>(null)
-  const [adding, setAdding] = useState<{ template: Transaction; title: string } | null>(null)   // a row being added
+  const { edit, add, dialogs } = useRowDialogs()
   // Rows being removed leave the table at once, and rows being changed are dimmed, while the API works.
   const [removing, setRemoving] = useState<Set<number>>(new Set())
   const [saving, setSaving] = useState<Set<number>>(new Set())
@@ -51,36 +49,14 @@ export default function TransactionsSection() {
     try { showLedger(await removeRow(client.id, row.id)) } catch (e) { setError(message(e)) }
     finally { setRemoving(s => without(s, row.id)) }
   }
-  const startAdding = (lineOf: SavedRow | null) => setAdding({
-    template: lineTemplate(lineOf),
-    title: lineOf ? `Add a line to ${lineOf.counterparty ?? 'this document'}` : 'Add a transaction',
-  })
-  const saveNew = async (draft: EditDraft) => {
-    if (!adding) return
-    const next = await addManualRows(client.id, [newRowFrom(draft, adding.template)], year.start)
-    setAdding(null)
-    showLedger(next)
-  }
-  const saveRow = async (change: RowChange) => {   // the dialog shows its own Saving… and any error
-    if (!editing) return
-    const next = await changeRow(client.id, editing.id, change)
-    setEditing(null)
-    showLedger(next)
-  }
 
   return (
     <>
       {year.closed && <div className="notice notice-warn">{CLOSED_YEAR_NOTICE}</div>}
       {error && <div className="notice notice-error">{error}</div>}
       <TransactionsTable key={wanted || 'all'} ledger={listed} readOnly={readOnly} show={show} saving={saving}
-                         onChange={change} onEdit={setEditing} onAdd={startAdding} onRemove={remove} />
-      {editing && (
-        <EditRowDialog row={editing} client={client} onCancel={() => setEditing(null)} onSave={saveRow} />
-      )}
-      {adding && (
-        <EditRowDialog row={adding.template} client={client} title={adding.title}
-                       onCancel={() => setAdding(null)} onAdd={saveNew} />
-      )}
+                         onChange={change} onEdit={edit} onAdd={add} onRemove={remove} />
+      {dialogs}
       {confirmDialog}
     </>
   )

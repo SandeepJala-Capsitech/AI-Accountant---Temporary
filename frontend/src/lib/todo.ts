@@ -1,0 +1,108 @@
+// What needs the person on the AI review page, as one list of cards: a card for each row with a warning or an error,
+// one for each document with a problem, and one for a suggestion or a question that belongs on neither. Kept apart
+// from the network so node --test can run it.
+import type { Issue } from './api'
+import type { Decision, Question } from './chat.ts'
+import { formatMoney } from './chat.ts'
+import { dayMonth } from './clientRules.ts'
+import type { SavedRow } from './clients'
+import { documentProblems, leftOut, rowIssues } from './ledger.ts'
+import type { ReviewDetail } from './reviews.ts'
+
+export interface TodoCard {
+  key: string                  // 'row:7', 'doc:7', or 'q:<question>' / 's:<decision>' for a card of its own
+  kind: 'row' | 'document' | 'other'
+  row: SavedRow | null         // null only when it names no row, or none that is in the year's rows
+  tag: string                  // 'Account', 'Recorded twice', …, 'Document total', 'Question', 'Suggestion'
+  title: string                // the row as a person knows it, the document's file, or the question itself
+  issues: Issue[]              // warnings and errors, errors first
+  lines: number[]              // a document's card: its lines
+  suggestions: Decision[]      // changes waiting for the person to apply
+  questions: Question[]        // questions still to answer
+  waiting: boolean             // nothing on it but questions answered "I don't have it" or "Not sure"
+}
+
+// The family of each issue code, as FAMILIES in ledgersync/agent/tools.py groups them, by the name a card is tagged
+// with. Any other code is 'Other'.
+const TAGS: Record<string, string[]> = {
+  Account: ['account_unclear', 'unusual_account', 'asset_check', 'should_be_asset', 'small_asset', 'whose_account'],
+  'Recorded twice': ['booked_twice', 'duplicate_document', 'total_mismatch', 'possible_duplicate'],
+  Date: ['date_missing', 'date_conflict', 'date_out_of_period', 'before_first_year', 'file_date'],
+  'VAT across items': ['mixed_items', 'vat_rate_mismatch'],
+  'VAT not booked': ['vat_not_booked', 'not_vat_invoice'],
+  'Records disagree': ['amount_conflict', 'claim_vat'],
+  Documents: ['not_booked', 'open_document', 'no_payroll', 'needs_document', 'document_wanted'],
+}
+const TAG_OF = new Map(Object.entries(TAGS).flatMap(([tag, codes]) => codes.map(code => [code, tag] as const)))
+export const tagOf = (code: string): string => TAG_OF.get(code) ?? 'Other'
+
+const whatOf = (row: SavedRow): string =>
+  [row.description, row.date ? dayMonth(row.date) : 'no date', formatMoney(row.gross)].join(', ')
+
+const errorsFirst = (issues: Issue[]): Issue[] =>
+  [...issues.filter(i => i.severity === 'error'), ...issues.filter(i => i.severity === 'warning')]
+
+// 0 a card with an error, 1 one with a question to answer, 2 one with a suggestion, 3 the rest, 4 waiting.
+const rank = (card: TodoCard): number =>
+  card.waiting ? 4
+    : card.issues.some(i => i.severity === 'error') ? 0
+      : card.questions.some(q => q.status === 'open') ? 1
+        : card.suggestions.length ? 2 : 3
+
+// The cards, in the order they are listed: by rank, then by the row's date (undated and row-less last). A suggestion
+// or a question goes on the card of the first of its rows that has one (the row's own, else that of the document
+// whose problem the row carries), else on a card of its own, named by the row, which two about the same row share.
+// fileOf names a document.
+export function todoCards(rows: SavedRow[], suggestions: Decision[], questions: Question[],
+                          fileOf: (row: SavedRow) => string): TodoCard[] {
+  const cards: TodoCard[] = []
+  const blank = { issues: [], lines: [], suggestions: [], questions: [], waiting: false }
+  for (const row of rows) {
+    if (leftOut(row)) continue
+    const issues = errorsFirst(rowIssues(row))
+    if (issues.length) cards.push({ ...blank, key: `row:${row.id}`, kind: 'row', row, tag: tagOf(issues[0].code), title: whatOf(row), issues,
+                                    suggestions: [], questions: [] })
+  }
+  for (const { row, issue, lines } of documentProblems(rows)) {
+    cards.push({ ...blank, key: `doc:${row.id}`, kind: 'document', row, tag: 'Document total', title: fileOf(row), issues: [issue], lines,
+                 suggestions: [], questions: [] })
+  }
+
+  const cardFor = (rowIds: number[], own: () => Pick<TodoCard, 'key' | 'tag' | 'title'>): TodoCard => {
+    const onRow = rowIds.map(id => cards.find(c => c.kind === 'row' && c.row?.id === id)).find(c => c)
+    if (onRow) return onRow
+    const onDocument = cards.find(c => c.kind === 'document' && rowIds.some(id => c.row?.id === id))
+    if (onDocument) return onDocument
+    const row = rowIds.map(id => rows.find(r => r.id === id)).find(r => r) ?? null
+    const shared = row && cards.find(c => c.kind === 'other' && c.row?.id === row.id)
+    if (shared) return shared
+    const made: TodoCard = { ...blank, ...own(), kind: 'other', row, suggestions: [], questions: [] }
+    if (row) made.title = whatOf(row)
+    cards.push(made)
+    return made
+  }
+  for (const q of questions) {
+    cardFor(q.row_ids, () => ({ key: `q:${q.id}`, tag: 'Question', title: q.text })).questions.push(q)
+  }
+  for (const s of suggestions) {
+    cardFor(s.row_ids, () => ({ key: `s:${s.id}`, tag: 'Suggestion', title: s.rule.replace(/^R\d+\s+/, '') })).suggestions.push(s)
+  }
+  for (const card of cards) {
+    card.waiting = !card.issues.length && !card.suggestions.length && card.questions.every(q => q.status === 'waiting')
+  }
+  const date = (card: TodoCard) => card.row?.date ?? '9999'
+  return cards.sort((a, b) => rank(a) - rank(b) || date(a).localeCompare(date(b)) || a.key.localeCompare(b.key))
+}
+
+// How many cards need the person: all but those only waiting on something they don't have yet.
+export const needCount = (cards: TodoCard[]): number => cards.filter(c => !c.waiting).length
+
+// Every suggestion on the list, for Apply all.
+export const waitingSuggestions = (cards: TodoCard[]): Decision[] => cards.flatMap(c => c.suggestions)
+
+// The questions the runs asked that are still to answer, each once, newest run's first.
+export function openQuestions(runs: ReviewDetail[]): Question[] {
+  const found = new Map<string, Question>()
+  for (const run of runs) for (const q of run.questions) if (q.status !== 'resolved' && !found.has(q.id)) found.set(q.id, q)
+  return [...found.values()]
+}

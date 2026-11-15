@@ -1,48 +1,58 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import DecisionLine from '@/components/chat/DecisionLine'
-import ProblemsList from '@/components/ProblemsList'
-import QuestionCard from '@/components/chat/QuestionCard'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useClientYear } from '@/components/ClientYearContext'
+import ReviewHistory from '@/components/ReviewHistory'
+import TodoList from '@/components/TodoList'
+import { useRowDialogs } from '@/components/useRowDialogs'
+import { clientDecisions } from '@/lib/api'
 import { effectLine, type AnswerResult, type Decision } from '@/lib/chat'
+import { changeRow, type RowChange } from '@/lib/clients'
+import { DOCUMENT_TYPES } from '@/lib/clientRules'
 import {
-  applySuggestion, clientAnswerer, isReversed, listReviews, listSuggestions, markReviewsSeen, newestFirst, runSaid, runTitle, runWhen,
-  undoDecision,
+  activityLines, aiChanges, applySuggestion, clientAnswerer, lastReviewed, listReviews, listSuggestions, markReviewsSeen, newestFirst,
+  retryReview, reviewNotice, undoDecision,
   type ReviewDetail,
 } from '@/lib/reviews'
-import { groupProblems, type Problem } from '@/lib/problems'
-import { changeRow } from '@/lib/clients'
-import { DOCUMENT_TYPES } from '@/lib/clientRules'
-import { sectionHref } from '@/lib/years'
+import { needCount, openQuestions, todoCards, waitingSuggestions } from '@/lib/todo'
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
+const RELOAD_EVERY = 3_000     // while a review is running, or one was asked for
+const GIVE_UP_AFTER = 120_000  // a review asked for with Try again that never starts
 
-// What the background AI review did after the client's books changed: each run, newest first, with the changes it
-// made (Undo), the ones it only suggests (Apply) and the questions it asks. Opening the section marks them seen.
-const refusedLine = (n: number) =>
-  `${n} other change${n === 1 ? '' : 's'} the AI tried ${n === 1 ? 'was' : 'were'} stopped by the checks and not made.`
-
+// What needs the person in a client's year, as one list: a card for each row or document with a problem, with the
+// change the AI suggests for it and the question it asks about it. One notice says what stands in the way of a
+// review (it failed, with Try again; it is paused; it is off). Below, closed until asked for: what the AI changed,
+// each with Undo, and one line for each run. Opening the section marks the runs seen.
 export default function AiReviewSection() {
-  const { client, year, ledger, reload } = useClientYear()
+  const { client, year, ledger, reload, show } = useClientYear()
   const router = useRouter()
   const [runs, setRuns] = useState<ReviewDetail[] | null>(null)
   const [suggestions, setSuggestions] = useState<Decision[]>([])   // what waits for the person, the rules' too
-  const [made, setMade] = useState<Decision[]>([])   // changes applied from the problems list on this visit
+  const [reversed, setReversed] = useState<Set<string>>(new Set()) // the changes some later decision undid
+  const [freshRuns, setFreshRuns] = useState<Set<string> | null>(null)   // the runs not looked at when the page opened
+  const [made, setMade] = useState<Decision[]>([])   // changes applied from the list on this visit
   const [error, setError] = useState('')
-  const [open, setOpen] = useState<Set<string>>(new Set())
   const [working, setWorking] = useState('')
   const [problems, setProblems] = useState<Record<string, string>>({})   // a refused Undo or Apply, by decision
   const [undone, setUndone] = useState<Set<string>>(new Set())
-  const [effects, setEffects] = useState<Record<string, string>>({})
+  const [answers, setAnswers] = useState<{ id: string; text: string; effect: string }[]>([])   // answered on this visit
+  // Try again was pressed: the newest run then, and the timer that stops waiting for a new one.
+  const [asked, setAsked] = useState<{ newest: string | null } | null>(null)
+  const { edit, add, dialogs } = useRowDialogs()
   const answerer = clientAnswerer(client.id)
+  const readOnly = client.archived || year.closed
 
   const load = useCallback(async () => {
     try {
-      const [reviews, waiting] = await Promise.all([listReviews(client.id, year.start), listSuggestions(client.id, year.start)])
+      const [reviews, waiting, decisions] = await Promise.all([
+        listReviews(client.id, year.start), listSuggestions(client.id, year.start), clientDecisions(client.id, year.start),
+      ])
       setRuns(newestFirst(reviews))
       setSuggestions(waiting)
+      setReversed(new Set(decisions.flatMap(d => (d.reverses ? [d.reverses] : []))))
+      setFreshRuns(fresh => fresh ?? new Set(reviews.filter(r => !r.seen).map(r => r.id)))
       setError('')
       return true
     } catch (e) {
@@ -55,29 +65,66 @@ export default function AiReviewSection() {
     load().then(ok => { if (ok) markReviewsSeen(client.id).catch(() => {}) })
   }, [load, client.id])
 
-  // The year's open problems, from the rows the page already has, each with the suggestion waiting for it.
-  // A problem with a whole document is named by its file: "Mark october expenses.xlsx, expense claim".
-  const groups = useMemo(() => {
-    const names = new Map(ledger.uploads.map(u => [u.id, u.name]))
-    return groupProblems(ledger.transactions, suggestions, row =>
-      `${names.get(row.upload_id) ?? 'Document'}, ${(DOCUMENT_TYPES[row.document_type ?? 'receipt'] ?? 'document').toLowerCase()}`)
-  }, [ledger.transactions, ledger.uploads, suggestions])
-  // A problem's row on the Transactions page, beside the rows the problem names.
-  const rowHref = (rowId: number) => `${sectionHref(client.id, year.start, 'transactions')}?row=${rowId}`
+  // While a review runs, or one was asked for and hasn't started, the runs are read again every few seconds; when
+  // it is over the year is read again too, with whatever the review changed, and its run is marked seen.
+  const newest = runs?.[0]
+  const awaited = !!asked && (newest?.id ?? null) === asked.newest
+  const reviewing = awaited || newest?.status === 'running'
+  const wasReviewing = useRef(false)
+  useEffect(() => {
+    if (reviewing) {
+      wasReviewing.current = true
+      const timer = setInterval(() => { load() }, RELOAD_EVERY)
+      return () => clearInterval(timer)
+    }
+    if (wasReviewing.current) {
+      wasReviewing.current = false
+      reload()
+      markReviewsSeen(client.id).catch(() => {})
+    }
+  }, [reviewing, load, reload, client.id])
+  useEffect(() => {
+    if (!asked) return
+    const timer = setTimeout(() => setAsked(null), GIVE_UP_AFTER)
+    return () => clearTimeout(timer)
+  }, [asked])
 
-  const toggle = (id: string) => setOpen(o => { const n = new Set(o); if (n.has(id)) n.delete(id); else n.add(id); return n })
+  const retry = async () => {
+    setError('')
+    try {
+      await retryReview(client.id)
+      setAsked({ newest: newest?.id ?? null })
+    } catch (e) {
+      setError(message(e))
+    }
+  }
+
+  // The cards: a problem with a whole document is named by its file, "Mark october expenses.xlsx, expense claim".
+  const cards = useMemo(() => {
+    const names = new Map(ledger.uploads.map(u => [u.id, u.name]))
+    return todoCards(ledger.transactions, suggestions, openQuestions(runs ?? []), row =>
+      `${names.get(row.upload_id) ?? 'Document'}, ${(DOCUMENT_TYPES[row.document_type ?? 'receipt'] ?? 'document').toLowerCase()}`)
+  }, [ledger.transactions, ledger.uploads, suggestions, runs])
+  const waiting = waitingSuggestions(cards)
+  const need = needCount(cards)
+  const changes = useMemo(() => aiChanges(runs ?? [], new Set([...reversed, ...undone]), freshRuns ?? new Set()),
+                          [runs, reversed, undone, freshRuns])
+  const notice = awaited ? { kind: 'reviewing' as const, text: 'Reviewing…', retry: false } : reviewNotice(runs ?? [])
+  const reviewed = lastReviewed(runs ?? [])
 
   const change = async (d: Decision, what: 'undo' | 'apply') => {
     setWorking(d.id)
     setProblems(p => ({ ...p, [d.id]: '' }))
     try {
-      const made = await (what === 'undo' ? undoDecision : applySuggestion)(client.id, d.id)
-      if (what === 'undo') setUndone(u => new Set(u).add(d.id))
+      const done = await (what === 'undo' ? undoDecision : applySuggestion)(client.id, d.id)
+      if (what === 'undo') {
+        setUndone(u => new Set(u).add(d.id))
+        setMade(m => m.filter(x => x.id !== d.id))
+      }
       // The checks can refuse a suggestion the books have moved on from: nothing changed, and it says why.
-      if (what === 'apply' && made.status === 'refused') setProblems(p => ({ ...p, [d.id]: `Not applied: ${made.reason}` }))
-      // A change applied from the problems list belongs to no review run, so it is kept here to be undone.
-      if (what === 'apply' && made.status === 'applied' && !runs?.some(r => r.decisions.some(x => x.id === d.id))) setMade(m => [...m, made])
-      if (what === 'undo') setMade(m => m.filter(x => x.id !== d.id))
+      if (what === 'apply' && done.status === 'refused') setProblems(p => ({ ...p, [d.id]: `Not applied: ${done.reason}` }))
+      // A change the person applied belongs to no review run, so it is kept here to be undone.
+      if (what === 'apply' && done.status === 'applied') setMade(m => [...m, done])
       await load()
       await reload()
     } catch (e) {
@@ -87,30 +134,15 @@ export default function AiReviewSection() {
     }
   }
 
-  // A total that doesn't add up, which the person says to leave: the difference is kept on its document, and the
-  // problem goes until the difference changes.
-  const leave = async (p: Problem) => {
-    if (!p.leave) return
-    setWorking(`leave:${p.rowId}`)
-    setError('')
-    try {
-      await changeRow(client.id, p.rowId, { total_accepted: p.leave })
-      await reload()
-    } catch (e) {
-      setError(message(e))
-    } finally {
-      setWorking('')
-    }
-  }
-
-  // Every suggestion of a run still waiting, applied one after another; one the checks refuse says why and the
-  // rest go on.
-  const applyAll = async (waiting: Decision[]) => {
+  // Every suggestion on the list, applied one after another; one the checks refuse says why and the rest go on.
+  const applyAll = async () => {
     setWorking('all')
     for (const d of waiting) {
       setProblems(p => ({ ...p, [d.id]: '' }))
       try {
-        await applySuggestion(client.id, d.id)
+        const done = await applySuggestion(client.id, d.id)
+        if (done.status === 'refused') setProblems(p => ({ ...p, [d.id]: `Not applied: ${done.reason}` }))
+        if (done.status === 'applied') setMade(m => [...m, done])
       } catch (e) {
         setProblems(p => ({ ...p, [d.id]: message(e) }))
       }
@@ -120,105 +152,73 @@ export default function AiReviewSection() {
     setWorking('')
   }
 
+  // A fix made on a card, as on the Transactions page: the year is shown as the API answers, and the suggestions
+  // are read again, since a row that has changed can leave one behind.
+  const changeARow = async (rowId: number, made: RowChange) => {
+    setError('')
+    try {
+      show(await changeRow(client.id, rowId, made))
+      await load()
+    } catch (e) {
+      setError(message(e))
+    }
+  }
+
   const answered = async (a: AnswerResult) => {
-    const line = effectLine(a)
-    if (line) setEffects(e => ({ ...e, [a.question.id]: line }))
+    // A question that is settled leaves the list, so what its answer did is said above it. One answered "I don't
+    // have it" stays on the list, marked as waiting, and needs no line.
+    if (a.question.status === 'resolved') {
+      setAnswers(list => [...list.filter(x => x.id !== a.question.id),
+                          { id: a.question.id, text: a.question.text, effect: effectLine(a) ?? 'Answered.' }])
+    }
     await load()
     await reload()
   }
 
   const say = (text: string) => router.push(`/chat?client=${client.id}&ask=${encodeURIComponent(text)}`)
 
-  const body = (run: ReviewDetail) => (
-    <>
-      {run.status !== 'failed' && <p className="muted">{runSaid(run)}</p>}
-      {/* A change the checks refused was never made, and its reason is written for the AI to try again: only how
-          many there were is said. */}
-      {run.decisions.some(d => d.status === 'refused') && (
-        <p className="muted small">
-          {refusedLine(run.decisions.filter(d => d.status === 'refused').length)}
-        </p>
-      )}
-      {run.decisions.some(d => d.status !== 'refused') && (
-        <div className="decisions">
-          {(() => {
-            const waiting = run.decisions.filter(d => d.status === 'suggested' && !run.applied[d.id])
-            return waiting.length > 1 && (
-              <div className="question-row">
-                <button type="button" className="btn btn-small btn-primary"
-                        disabled={!!working || client.archived || year.closed} onClick={() => applyAll(waiting)}>
-                  {working === 'all' ? 'Applying…' : `Apply all ${waiting.length}`}
-                </button>
-                <span className="muted small">These are suggestions: nothing has changed yet.</span>
-              </div>
-            )
-          })()}
-          {run.decisions.filter(d => d.status !== 'refused').map(d => {
-            const suggestion = d.status === 'suggested'
-            const applied = suggestion && !!run.applied[d.id]
-            const reversed = isReversed(run, d.id) || undone.has(d.id)
-            return (
-              <div key={d.id}>
-                <ul className="decisions"><DecisionLine decision={d} /></ul>
-                <div className="question-row">
-                  {suggestion && !applied && (
-                    <button type="button" className="btn btn-small" disabled={!!working || client.archived || year.closed}
-                            onClick={() => change(d, 'apply')}>Apply</button>
-                  )}
-                  {suggestion && applied && <span className="muted small">Applied</span>}
-                  {d.status === 'applied' && !d.reverses && !reversed && (
-                    <button type="button" className="btn btn-small" disabled={working === d.id || client.archived || year.closed}
-                            onClick={() => change(d, 'undo')}>Undo</button>
-                  )}
-                  {d.status === 'applied' && !d.reverses && reversed && <span className="muted small">Undone</span>}
-                  {problems[d.id] && <span className="field-error">{problems[d.id]}</span>}
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      )}
-      {run.questions.length > 0 && (
-        <ul className="questions">
-          {run.questions.map((q, i) => (
-            <QuestionCard key={q.id} question={q} number={i + 1} answerer={answerer} onAnswered={answered} onSay={say}
-                          effect={effects[q.id] ?? null} busy={false} />
-          ))}
-        </ul>
-      )}
-    </>
-  )
-
   return (
     <section className="card section">
       <div className="section-head"><h2>AI review</h2></div>
       {error && <div className="notice notice-error">{error}</div>}
-      <ProblemsList groups={groups} rowHref={rowHref} canApply={!client.archived && !year.closed} working={working}
-                    refused={problems} onApply={d => change(d, 'apply')} made={made} onUndo={d => change(d, 'undo')} onLeave={leave} />
-      {!runs && !error && <p className="muted">Loading the reviews…</p>}
-      {runs && runs.length === 0 && <p className="muted">No review has run on this year yet. One runs after the books change and go quiet.</p>}
-      {runs?.map(run => (
-        <div key={run.id} className="review-run">
-          {run.status === 'limited' ? (
-            <p className="muted">{runWhen(run.started_at)}: AI review paused for today: limit reached</p>
-          ) : run.status === 'off' ? (
-            <p className="muted">{runWhen(run.started_at)}: AI review is off for this client</p>
-          ) : (
-            <>
-              <button type="button" className="decision-head" aria-expanded={open.has(run.id)} onClick={() => toggle(run.id)}>
-                <span className="decision-caret" aria-hidden="true" />
-                <span className="decision-text">
-                  <strong>{run.status === 'failed' ? [runWhen(run.started_at), run.trigger_summary].filter(Boolean).join(', ') : runTitle(run)}</strong>
-                  {!run.seen && <> <span className="badge badge-accent">New</span></>}
-                  {run.status === 'running' && <> <span className="progress"><span className="spinner" /> Reviewing…</span></>}
-                </span>
-              </button>
-              {run.status === 'failed' && <p className="field-error">The review didn’t finish{run.error ? `: ${run.error}` : '.'}</p>}
-              {open.has(run.id) && run.status !== 'running' && body(run)}
-            </>
+      {notice && (
+        <div className={notice.kind === 'failed' ? 'notice notice-warn' : 'notice notice-info'}>
+          <span>{notice.kind === 'reviewing' && <span className="spinner" aria-hidden="true" />} {notice.text}</span>
+          {notice.retry && (
+            <button type="button" className="btn btn-small" disabled={readOnly} onClick={retry}>Try again</button>
           )}
         </div>
-      ))}
+      )}
+      {answers.map(a => <p key={a.id} className="muted small todo-done">{a.text} {a.effect}</p>)}
+      {!runs && !error && <p className="muted">Loading the reviews…</p>}
+      {runs && (
+        <>
+          <div className="todo-top">
+            {cards.length > 0 ? (
+              <h3>
+                {need > 0 ? `${need} ${need === 1 ? 'thing needs' : 'things need'} you` : 'Nothing needs you now'}
+                {cards.length > need && <span className="muted small"> · {cards.length - need} waiting on you</span>}
+              </h3>
+            ) : (
+              <p className="muted">
+                Nothing needs you.{' '}
+                {reviewed ? `Last reviewed ${reviewed}.`
+                  : runs.length === 0 ? 'No review has run on this year yet. One runs after the books change and go quiet.' : ''}
+              </p>
+            )}
+            {waiting.length > 1 && (
+              <button type="button" className="btn btn-small btn-primary" disabled={!!working || readOnly} onClick={applyAll}>
+                {working === 'all' ? 'Applying…' : `Apply all ${waiting.length} suggestions`}
+              </button>
+            )}
+          </div>
+          <TodoList cards={cards} working={working} refused={problems} answerer={answerer} onChange={changeARow}
+                    onApply={d => change(d, 'apply')} onEdit={edit} onAddLine={add} onAnswered={answered} onSay={say} />
+          <ReviewHistory changes={changes} made={made} lines={activityLines(runs)} readOnly={readOnly} working={working}
+                         refused={problems} onUndo={d => change(d, 'undo')} />
+        </>
+      )}
+      {dialogs}
     </section>
   )
 }

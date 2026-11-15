@@ -93,6 +93,7 @@ def test_writes_need_the_ledgersync_header(app, mongo_store, records, pages, nb)
     s = suggestion(mongo_store, records, pages, nb)
     bare = {"X-LedgerSync": ""}
     for route, body in [(f"/api/clients/{nb.id}/reviews/seen", None), (f"/api/clients/{nb.id}/decisions/{s.id}/undo", None),
+                        (f"/api/clients/{nb.id}/reviews/retry", None),
                         (f"/api/clients/{nb.id}/decisions/{s.id}/apply", None),
                         (f"/api/clients/{nb.id}/questions/x/answer", {"kind": "not_sure"})]:
         assert app.post(route, json=body, headers=bare).status_code == 403, route
@@ -268,3 +269,32 @@ def test_the_years_waiting_suggestions_are_listed(app, mongo_store, records, pag
     assert [(s["id"], s["status"], s["action"]) for s in listed.json()] == [(d.id, "suggested", "keep_one")]
     assert app.get(f"/api/clients/{nb.id}/years/2031-04-01/suggestions").status_code == 404
     assert app.get(f"/api/clients/999999/years/{YEAR}/suggestions").status_code == 404
+
+
+def test_try_again_makes_the_review_due_now(app, records, nb):
+    records.patch_review_state(nb.id, due_at=None, retry_at="2999-01-01T00:00:00+00:00")
+    before = dt.datetime.now(dt.timezone.utc)
+
+    assert app.post(f"/api/clients/{nb.id}/reviews/retry").json() == {"due": True}
+
+    state = records.review_state(nb.id)
+    assert state.retry_at is None
+    assert before - dt.timedelta(seconds=1) <= dt.datetime.fromisoformat(state.due_at) <= dt.datetime.now(dt.timezone.utc)
+
+
+def test_try_again_leaves_a_running_review_alone(app, records, nb):
+    records.patch_review_state(nb.id, running=True, due_at=None, retry_at=None)
+
+    assert app.post(f"/api/clients/{nb.id}/reviews/retry").status_code == 200
+
+    state = records.review_state(nb.id)
+    assert state.running and state.due_at is None
+
+
+def test_try_again_is_refused_for_an_archived_client_and_an_unknown_one(app, records, nb):
+    records.patch_review_state(nb.id, due_at=None)
+    assert app.post("/api/clients/999999/reviews/retry").status_code == 404
+    app.patch(f"/api/clients/{nb.id}", json={"archived": True})
+
+    assert app.post(f"/api/clients/{nb.id}/reviews/retry").status_code == 409
+    assert records.review_state(nb.id).due_at is None

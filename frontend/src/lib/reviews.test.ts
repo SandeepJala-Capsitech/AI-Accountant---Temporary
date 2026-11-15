@@ -1,7 +1,8 @@
 // Run with: npm test.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { isReversed, newestFirst, overviewReviewLine, runSaid, runTitle, unseenChanges, type ReviewDetail } from './reviews.ts'
+import { activityLines, aiChanges, isReversed, lastReviewed, newestFirst, overviewReviewLine, reviewNotice, runTitle, unseenChanges,
+         type ReviewDetail } from './reviews.ts'
 import type { Decision, Question } from './chat.ts'
 
 const decision = (id: string, status: Decision['status']): Decision => ({
@@ -37,7 +38,6 @@ test('runTitle: nothing to change', () => {
 test('a review still running does not say there is nothing to change', () => {
   const running = run({ status: 'running' })
   assert.equal(runTitle(running, now), 'Today 10:42, after 3 files were added')
-  assert.equal(runSaid(running), 'Looking through the books now.')
 })
 
 test('runTitle: suggest mode says suggested', () => {
@@ -75,8 +75,105 @@ test('newestFirst orders by start', () => {
   assert.deepEqual(order.map(r => r.id), ['new', 'old'])
 })
 
-test('a run says in its own words what it did, or why it changed nothing', () => {
-  assert.equal(runSaid(run({ summary: 'Rows 135 and 136 have no date and no record gives one: asked.' })),
-               'Rows 135 and 136 have no date and no record gives one: asked.')
-  assert.equal(runSaid(run()), 'Nothing to change.')
+// The notice and the history of the AI review page. Runs are given newest first, as the page holds them.
+const later = new Date(2026, 10, 15, 12, 0)   // Sun 15 Nov 2026
+const failed = (id: string, time: string, error = 'API key expired', more: Partial<ReviewDetail> = {}) =>
+  run({ id, status: 'failed', started_at: `2026-11-13T${time}:00`, error, ...more })
+const five = [failed('f5', '17:13'), failed('f4', '17:03'), failed('f3', '16:53'), failed('f2', '16:43'), failed('f1', '16:33')]
+const done = (id: string, time: string, more: Partial<ReviewDetail> = {}) =>
+  run({ id, status: 'done', started_at: `2026-11-13T${time}:00`, ...more })
+
+test('five failures at the top are one notice with Try again', () => {
+  assert.deepEqual(reviewNotice([...five, done('d', '12:00')], later), {
+    kind: 'failed', retry: true, text: "The review hasn't finished since Fri 13 Nov 16:33: API key expired (5 tries).",
+  })
+})
+
+test('one failure says 1 try; no error leaves the colon out', () => {
+  assert.equal(reviewNotice([failed('f1', '16:33')], later)?.text, "The review hasn't finished since Fri 13 Nov 16:33: API key expired (1 try).")
+  assert.equal(reviewNotice([failed('f1', '16:33', '')], later)?.text, "The review hasn't finished since Fri 13 Nov 16:33 (1 try).")
+})
+
+test('a run still going after failures says Reviewing…', () => {
+  assert.deepEqual(reviewNotice([run({ id: 'g', status: 'running' }), ...five], later), { kind: 'reviewing', retry: false, text: 'Reviewing…' })
+})
+
+test('a success at the top, or no runs, has no notice', () => {
+  assert.equal(reviewNotice([done('d', '18:00'), ...five], later), null)
+  assert.equal(reviewNotice([], later), null)
+})
+
+test('paused and off are notices without a button', () => {
+  assert.deepEqual(reviewNotice([run({ status: 'limited' }), ...five], later),
+                   { kind: 'limited', retry: false, text: 'AI review is paused for today: limit reached.' })
+  assert.deepEqual(reviewNotice([run({ status: 'off' })], later), { kind: 'off', retry: false, text: 'AI review is off for this client.' })
+})
+
+test('failures with different errors: the notice counts all of them and gives the newest error', () => {
+  const runs = [failed('f3', '16:53', 'Timed out'), failed('f2', '16:43'), failed('f1', '16:33'), done('d', '12:00'), failed('f0', '11:00')]
+  assert.equal(reviewNotice(runs, later)?.text, "The review hasn't finished since Fri 13 Nov 16:33: Timed out (3 tries).")
+})
+
+test('five failures with one error fold into one activity line', () => {
+  assert.deepEqual(activityLines(five, later), [
+    { key: 'f5', failed: true, text: "Fri 13 Nov 16:33 to 17:13 · 5 runs didn't finish: API key expired" },
+  ])
+})
+
+test('a fold over midnight says both days', () => {
+  const runs = [run({ id: 'f2', status: 'failed', started_at: '2026-11-14T00:05:00', error: 'x' }), failed('f1', '23:55', 'x')]
+  assert.equal(activityLines(runs, later)[0].text, "Fri 13 Nov 23:55 to Yesterday 00:05 · 2 runs didn't finish: x")
+})
+
+test('a success between failures breaks the fold', () => {
+  const lines = activityLines([failed('f2', '17:00'), done('d', '16:45'), failed('f1', '16:33')], later)
+  assert.deepEqual(lines.map(l => [l.key, l.failed]), [['f2', true], ['d', false], ['f1', true]])
+  assert.equal(lines[0].text, "Fri 13 Nov 17:00, after 3 files were added · didn't finish: API key expired")
+})
+
+test('failures with different errors are separate lines', () => {
+  const lines = activityLines([failed('f3', '16:53', 'Timed out'), failed('f2', '16:43'), failed('f1', '16:33')], later)
+  assert.deepEqual(lines.map(l => l.text), [
+    "Fri 13 Nov 16:53, after 3 files were added · didn't finish: Timed out",
+    "Fri 13 Nov 16:33 to 16:43 · 2 runs didn't finish: API key expired",
+  ])
+})
+
+test('a failure with no error or trigger says only that it did not finish', () => {
+  assert.equal(activityLines([failed('f1', '16:33', '', { trigger_summary: '' })], later)[0].text, "Fri 13 Nov 16:33 · didn't finish")
+})
+
+test('a finished run reads as its title, with what the checks stopped', () => {
+  const r = done('d', '12:00', { decisions: [decision('a', 'applied'), decision('b', 'refused'), decision('c', 'refused')] })
+  assert.deepEqual(activityLines([r], later), [{
+    key: 'd', failed: false,
+    text: 'Fri 13 Nov 12:00, after 3 files were added: sorted 1. 2 other changes the AI tried were stopped by the checks and not made.',
+  }])
+  assert.equal(activityLines([done('d', '12:00')], later)[0].text, 'Fri 13 Nov 12:00, after 3 files were added: Nothing to change.')
+})
+
+test('paused and off runs are their own activity lines', () => {
+  const lines = activityLines([run({ id: 'l', status: 'limited', started_at: '2026-11-13T09:00:00' }),
+                               run({ id: 'o', status: 'off', started_at: '2026-11-13T08:00:00' })], later)
+  assert.deepEqual(lines.map(l => l.text), ['Fri 13 Nov 09:00: paused for today: limit reached', 'Fri 13 Nov 08:00: AI review is off for this client'])
+})
+
+test('aiChanges lists applied changes newest first and leaves out undos, undone and refused', () => {
+  const undo = { ...decision('u', 'applied'), reverses: 'c' }
+  const runs = [
+    done('new', '17:00', { decisions: [decision('a', 'applied'), decision('b', 'refused'), decision('s', 'suggested')] }),
+    done('old', '12:00', { decisions: [decision('c', 'applied'), undo, decision('d', 'applied'), decision('e', 'applied')] }),
+    failed('f', '11:00', 'x', { decisions: [decision('z', 'applied')] }),
+  ]
+  assert.deepEqual(aiChanges(runs, new Set(['d']), new Set()).map(c => c.decision.id), ['a', 'e'])
+})
+
+test('aiChanges marks the changes of runs not yet seen', () => {
+  const runs = [done('new', '17:00', { decisions: [decision('a', 'applied')] }), done('old', '12:00', { decisions: [decision('e', 'applied')] })]
+  assert.deepEqual(aiChanges(runs, new Set(), new Set(['new'])).map(c => [c.decision.id, c.fresh]), [['a', true], ['e', false]])
+})
+
+test('lastReviewed is the newest finished run, null when none finished', () => {
+  assert.equal(lastReviewed([...five, done('d', '12:00'), done('e', '09:00')], later), 'Fri 13 Nov 12:00')
+  assert.equal(lastReviewed(five, later), null)
 })

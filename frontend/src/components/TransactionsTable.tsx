@@ -1,19 +1,18 @@
 'use client'
 
-import Link from 'next/link'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { clientDecisions, postedTrialBalance, type Issue } from '@/lib/api'
 import { agentDecisions, changedFields, type Decision } from '@/lib/chat'
 import { useClientYear } from '@/components/ClientYearContext'
-import { listAccounts, type AccountChoice, type Ledger, type RowChange, type SavedRow } from '@/lib/clients'
-import { accountList, DOCUMENT_TYPES, transactionCount } from '@/lib/clientRules'
+import IssueList, { MARKS } from '@/components/IssueList'
+import { useAccountChoices } from '@/components/useAccountChoices'
+import { type Ledger, type RowChange, type SavedRow } from '@/lib/clients'
+import { DOCUMENT_TYPES, transactionCount } from '@/lib/clientRules'
 import { sectionHref } from '@/lib/years'
-import { acceptLabel, askAbout, claimLineOf, filtersSet, issueFixes, matchesFilters, netBooked, NO_FILTERS, vatBooked, type IssueFix, type RowFilters } from '@/lib/ledger'
-import { aboutAnotherRow, acceptChange, accountName, apartChange, apartStatus, canBeAccepted, canBeApart, checkHover, documentProblems, issueHeading, kindOf, leftOut, leftOutLabel,
-         longDate, money, needsReview, reviewSummary, rowIssues, rowStatus, showLabel, takesLines, totalsOf } from '@/lib/ledger'
+import { askAbout, claimLineOf, filtersSet, issueFixes, matchesFilters, netBooked, NO_FILTERS, vatBooked, type RowFilters } from '@/lib/ledger'
+import { acceptChange, accountName, apartChange, apartStatus, checkHover, documentProblems, kindOf, leftOut, leftOutLabel,
+         longDate, money, needsReview, reviewSummary, rowIssues, rowStatus, takesLines, totalsOf } from '@/lib/ledger'
 
-const SEVERITY_ORDER = { error: 0, warning: 1, info: 2 } as const
-const MARKS = { error: '✖', warning: '⚠', info: 'ℹ' } as const
 
 // The worst issue on a row, as the Check column shows it. A row left out of the books needs no review, whatever its
 // issues say: they stay listed under its description, unmarked.
@@ -42,73 +41,6 @@ function originalText(row: SavedRow): string {
     .filter(([field, value]) => (value ?? '') !== (now[field] ?? ''))
     .map(([field, value]) => `${FIELD_NAMES[field] ?? field} ${field === 'gross' || field === 'vat' ? money(value) : value || 'none'}`)
   return changed.length ? `Read by the model: ${changed.join(', ')}` : 'Edited'
-}
-
-// What is wrong with a row, in words, under its description: errors first, then warnings, then notes. Each warning
-// or error carries its own way out: the fix where there is one (a change made at once, the accounts to choose from,
-// Edit, or Documents for a missing file), Show both and Not the same for two records that may be one, It's fine for
-// a matter of judgement, and Ask the AI, which opens a chat on the issue.
-function IssueList({ issues, onShowBoth, onNotSame, onAccept, fixesOf, onFix, onEdit, onAddLine, accounts, documentsHref, askHref }: {
-  issues: Issue[]
-  onShowBoth?: (related: number[]) => void   // each issue shows the rows it is about
-  onNotSame?: (related: number[]) => void
-  onAccept?: (code: string) => void          // a warning that is a matter of judgement: the person says it is fine
-  fixesOf?: (issue: Issue) => IssueFix[]     // none when the row can't be changed
-  onFix?: (change: RowChange) => void
-  onEdit?: () => void
-  onAddLine?: () => void                     // a document's problem: add the line its total is short of
-  accounts?: AccountChoice[]                 // the accounts a row of the client can be coded to
-  documentsHref?: string
-  askHref?: (issue: Issue) => string         // the chat, asked about the issue
-}) {
-  if (!issues.length) return null
-  const sorted = [...issues].sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity])
-  return (
-    <ul className="issues">
-      {sorted.map((issue, k) => (
-        <li key={k} className={`issue issue-${issue.severity}`}>
-          <span className="issue-mark" aria-hidden="true">{MARKS[issue.severity]}</span>
-          <span>
-            <strong>{issueHeading(issue.code)}</strong> {issue.message}
-            <span className="issue-actions">
-            {onShowBoth && aboutAnotherRow(issue.code) && !!issue.related?.length && (
-              <button type="button" className="link-btn" onClick={() => onShowBoth(issue.related!)}>
-                {showLabel(issue.code)}
-              </button>
-            )}
-            {onNotSame && canBeApart(issue.code) && !!issue.related?.length && (
-              <button type="button" className="link-btn" onClick={() => onNotSame(issue.related!)}>Not the same</button>
-            )}
-            {onAddLine && issue.severity !== 'info' && (
-              <button type="button" className="link-btn" onClick={onAddLine}>Add line</button>
-            )}
-            {(fixesOf?.(issue) ?? []).map((fix, j) => (
-              fix.change && onFix ? (
-                <button key={j} type="button" className="link-btn" onClick={() => onFix(fix.change!)}>{fix.label}</button>
-              ) : fix.choose === 'account' && onFix ? (
-                <select key={j} className="input issue-choice" value="" aria-label={fix.label}
-                        onChange={e => { if (e.target.value) onFix({ account_code: e.target.value }) }}>
-                  <option value="">{accounts?.length ? `${fix.label}…` : 'Loading the accounts…'}</option>
-                  {(accounts ?? []).map(a => <option key={a.code} value={a.code}>{a.name}</option>)}
-                </select>
-              ) : fix.edit && onEdit ? (
-                <button key={j} type="button" className="link-btn" onClick={onEdit}>{fix.label}</button>
-              ) : fix.documents && documentsHref ? (
-                <Link key={j} className="link-btn" href={documentsHref}>{fix.label}</Link>
-              ) : null
-            ))}
-            {onAccept && issue.severity === 'warning' && canBeAccepted(issue.code) && (
-              <button type="button" className="link-btn" onClick={() => onAccept(issue.code)}>{acceptLabel(issue.code)}</button>
-            )}
-            {askHref && issue.severity !== 'info' && (
-              <Link className="link-btn" href={askHref(issue)}>Ask the AI</Link>
-            )}
-            </span>
-          </span>
-        </li>
-      ))}
-    </ul>
-  )
 }
 
 // The decisions that touched a row, as the Agent badge's popover shows them: the rule, what it was based on, and
@@ -149,20 +81,8 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
   const rows = ledger.transactions
   const [decisions, setDecisions] = useState<Map<string, Decision>>(new Map())
   const [held, setHeld] = useState<Set<number>>(new Set())   // rows waiting in Suspense for a document
-  // The accounts a row can be coded to, for an issue that is fixed by choosing one; a bank account or card by the
-  // name the client gives it. Read once, and only when a row asks for them.
-  const [accounts, setAccounts] = useState<AccountChoice[]>([])
-  const wantsAccounts = !readOnly && rows.some(r => r.issues.some(i => issueFixes(r, i).some(f => f.choose === 'account')))
-  useEffect(() => {
-    if (!wantsAccounts || accounts.length) return
-    let current = true
-    listAccounts(client.id).then(found => {
-      if (!current) return
-      const named = found.map(a => ({ ...a, name: client.bank_accounts.find(b => b.code === a.code)?.name || a.name }))
-      setAccounts(accountList(named, { code: '', name: '' }, ''))
-    }).catch(() => {})
-    return () => { current = false }
-  }, [wantsAccounts, accounts.length, client.id, client.bank_accounts])
+  // The accounts a row can be coded to, read only when a row has an issue that is fixed by choosing one.
+  const accounts = useAccountChoices(!readOnly && rows.some(r => r.issues.some(i => issueFixes(r, i).some(f => f.choose === 'account'))))
   // The held row being booked without its document, and the reason typed for it; null when none is.
   const [without, setWithout] = useState<{ row: number; reason: string } | null>(null)
   // The decisions and the posted ledger's held rows are read again whenever the rows are loaded again; a failure

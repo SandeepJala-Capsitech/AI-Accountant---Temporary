@@ -540,3 +540,20 @@ textarea.input.composer-text { min-height: 36px; max-height: 200px; padding: 8px
 @media (max-width: 640px) {
   .bar-btn { padding: 0 8px; }
 }
+
+/* AI review: the to-do list */
+.todo-top { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin: 14px 0 10px; }
+.todo-top h3 { font: 600 15px var(--font-sans), sans-serif; }
+.todo-top p { margin: 0; }
+.todo-done { margin: 10px 0 0; }
+.todo-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.todo-card { border: 1px solid var(--rule); border-radius: 10px; padding: 12px 14px; display: grid; gap: 8px; min-width: 0; }
+.todo-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; min-width: 0; font-size: 13.5px; }
+.todo-head strong { font-weight: 600; overflow-wrap: anywhere; }
+.todo-card .issues { margin: 0; max-width: 640px; }
+.todo-suggestion { display: grid; gap: 4px; }
+.todo-waiting { background: var(--hover); }
+.review-history { display: grid; gap: 10px; margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--rule); }
+.review-history summary { cursor: pointer; font-size: 13.5px; font-weight: 600; }
+.review-history ul { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
+.review-change { margin-top: 8px; }
