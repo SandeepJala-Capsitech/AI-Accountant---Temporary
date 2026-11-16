@@ -25,7 +25,7 @@ export type RowKind = 'document' | 'bank' | 'other' | 'not booked'
 // until a person ticks Include; a card payment, which its receipt books).
 export const kindOf = (tx: Transaction): RowKind => {
   const type = tx.document_type ?? 'receipt'
-  if (!tx.include && (tx.copy_of || tx.recorded_by)) return 'not booked'
+  if (!tx.include && (tx.copy_of || tx.recorded_by || tx.left_off_claim)) return 'not booked'
   if (tx.claimed_in) return 'document'   // a receipt on an expense claim is owed to the claimant, not paid by the business
   if (type in NOT_TRANSACTIONS) return tx.include ? 'document' : 'not booked'
   if (type === 'invoice' || type === 'expense_claim' || type === 'agent_statement') return 'document'
@@ -157,10 +157,16 @@ function amountChoice(tx: Transaction, find?: (id: number) => Transaction | unde
 function statusLines(tx: Transaction): RowStatus[] {
   const type = tx.document_type ?? 'receipt'
   if (tx.recorded_by && type === 'expense_claim') {
-    const word = documentWord(tx.recorded_by.kind)
-    const from = `the ${word}: ${optionLabel([tx.recorded_by])}`
+    const several = (tx.recorded_by_refs?.length ?? 0) > 1   // several receipts of one document: a TfL statement's days
+    const word = several ? 'receipts' : documentWord(tx.recorded_by.kind)
+    const from = `${several ? tx.recorded_by_refs!.length : 'the'} ${word}: ${optionLabel([tx.recorded_by])}`
     return [{ text: tx.include ? `Booked as well as ${from}. Untick to book it from the ${word} only`
                                : `Booked from ${from}. Tick to book this line as well`,
+              actions: [], include: !!tx.include }]
+  }
+  if (tx.left_off_claim) {   // a charge on the document the claim leaves out: the claimant paid it
+    return [{ text: tx.include ? `Included, though not on ${tx.left_off_claim.description}`
+                               : `Not on ${tx.left_off_claim.description}, not booked. Tick to include it`,
               actions: [], include: !!tx.include }]
   }
   if (tx.claimed_in) {
@@ -251,6 +257,7 @@ const ISSUE_TITLES: Record<string, string> = {
   card_credit: 'Money in on a card', vat_unclaimed: 'VAT not reclaimed', on_account: 'Payment on account',
   vat_confirmed: 'VAT reclaimed on your say', vat_implied: 'VAT worked out', document_wanted: 'Invoice needed',
   payroll_person: 'Check this person\'s pay', cis_deducted: 'CIS deducted', payout_report: 'Payout report needed', personal: 'Looks personal', subtotal_only: 'Total not printed',
+  not_claimed: 'Not claimed', claim_receipts_unclear: "Can't tell which charges",
 }
 
 export const issueTitle = (code: string) => ISSUE_TITLES[code] ?? 'Check this'
@@ -282,7 +289,7 @@ export const issueHeading = (code: string) => {
 // The issues about this row and others, which offer Show both (Show its lines, for a document's total): the rows side
 // by side, without searching the table.
 const ABOUT_ANOTHER_ROW = new Set(['possible_duplicate', 'date_conflict', 'amount_conflict', 'booked_twice',
-                                   'total_mismatch'])
+                                   'total_mismatch', 'claim_receipts_unclear'])
 export const aboutAnotherRow = (code: string) => ABOUT_ANOTHER_ROW.has(code)
 export const showLabel = (code: string) => (code === 'total_mismatch' ? 'Show its lines' : 'Show both')
 
@@ -318,7 +325,7 @@ const DOCUMENT_ISSUES = new Set(['needs_document', 'document_wanted', 'no_payrol
 export const claimLineOf = (tx: Transaction, rows: Transaction[]): Transaction | undefined =>
   tx.claimed_in && tx.document_ref
     ? rows.find(r => r.document_type === 'expense_claim' && r.document_ref === tx.claimed_in!.ref
-                     && r.recorded_by?.ref === tx.document_ref)
+                     && (r.recorded_by?.ref === tx.document_ref || !!r.recorded_by_refs?.includes(tx.document_ref!)))
     : undefined
 
 // How a person can fix a warning or an error from where it is listed (a note needs no fix). claimLine: claimLineOf.

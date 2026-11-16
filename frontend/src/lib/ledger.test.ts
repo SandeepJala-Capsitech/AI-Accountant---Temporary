@@ -482,3 +482,46 @@ test('a total that does not add up can be left as it is, and that can be undone'
   assert.deepEqual(issueFixes(tx(), note), [{ label: 'Undo', change: { total_accepted: null } }])
   assert.equal(issueHeading('total_accepted'), 'Total left as it is.')
 })
+
+// Jenny's TfL claim line is booked from seven charges on her TfL statement; the eighth is left off the claim.
+const tflSet = { ref: 'tfl-06', amount: '55.40', date: '2026-10-27', kind: 'receipt',
+                 description: 'TfL Customer Services, 7 charges, 6 to 27 Oct 2026' }
+const tflLine = (change: Partial<Transaction> = {}) => tx({
+  document_type: 'expense_claim', document_ref: 'claim', description: 'Jenny Hogg - Transport for London, Train',
+  gross: '55.40', owed: null, recorded_by: tflSet, recorded_by_refs: ['tfl-06', 'tfl-07', 'tfl-08', 'tfl-10', 'tfl-20',
+                                                                     'tfl-21', 'tfl-27'], ...change,
+})
+
+test('a claim line booked from several receipts says how many, and can be ticked to book it as well', () => {
+  const [unticked] = rowStatus(tflLine())
+  assert.ok(unticked.text.startsWith('Booked from 7 receipts: TfL Customer Services, 7 charges'))
+  assert.ok(unticked.text.endsWith('Tick to book this line as well'))
+  assert.equal(kindOf(tflLine()), 'not booked')
+  const [ticked] = rowStatus(tflLine({ include: true }))
+  assert.ok(ticked.text.startsWith('Booked as well as 7 receipts: TfL Customer Services'))
+  assert.ok(ticked.text.endsWith('Untick to book it from the receipts only'))
+})
+
+test('a receipt finds its claim line among the receipts the line is booked from', () => {
+  const claim = { ref: 'claim', amount: '55.40', date: '2026-10-31', kind: 'expense_claim',
+                  description: "Jenny Hogg's expense claim" }
+  const receipt = tx({ document_type: 'receipt', document_ref: 'tfl-20', claimed_in: claim, gross: '6.60' })
+  assert.equal(claimLineOf(receipt, [tflLine(), receipt])?.document_ref, 'claim')
+})
+
+test('a charge the claim leaves out is not booked until ticked, and says so', () => {
+  const left = { ref: 'claim', amount: '55.40', date: '2026-10-31', kind: 'expense_claim',
+                 description: "Jenny Hogg's expense claim" }
+  const row = tx({ document_type: 'receipt', document_ref: 'tfl-05', gross: '6.10', owed: null, left_off_claim: left })
+  assert.equal(kindOf(row), 'not booked')
+  const [status] = rowStatus(row)
+  assert.equal(status.text, "Not on Jenny Hogg's expense claim, not booked. Tick to include it")
+  assert.equal(status.include, false)
+  assert.notEqual(kindOf({ ...row, include: true }), 'not booked')
+})
+
+test('the issues about several receipts on one claim line have titles', () => {
+  assert.equal(issueTitle('not_claimed'), 'Not claimed')
+  assert.equal(issueTitle('claim_receipts_unclear'), "Can't tell which charges")
+  assert.ok(aboutAnotherRow('claim_receipts_unclear'))
+})

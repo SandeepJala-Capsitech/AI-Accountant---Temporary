@@ -25,12 +25,12 @@ export interface TodoCard {
 // with. Any other code is 'Other'.
 const TAGS: Record<string, string[]> = {
   Account: ['account_unclear', 'unusual_account', 'asset_check', 'should_be_asset', 'small_asset', 'whose_account'],
-  'Recorded twice': ['booked_twice', 'duplicate_document', 'total_mismatch', 'possible_duplicate'],
+  'Recorded twice': ['booked_twice', 'duplicate_document', 'total_mismatch', 'possible_duplicate', 'claim_receipts_unclear'],
   Date: ['date_missing', 'date_conflict', 'date_out_of_period', 'before_first_year', 'file_date'],
   'VAT across items': ['mixed_items', 'vat_rate_mismatch'],
   'VAT not booked': ['vat_not_booked', 'not_vat_invoice'],
   'Records disagree': ['amount_conflict', 'claim_vat'],
-  Documents: ['not_booked', 'open_document', 'no_payroll', 'needs_document', 'document_wanted'],
+  Documents: ['not_booked', 'open_document', 'no_payroll', 'needs_document', 'document_wanted', 'not_claimed'],
 }
 const TAG_OF = new Map(Object.entries(TAGS).flatMap(([tag, codes]) => codes.map(code => [code, tag] as const)))
 export const tagOf = (code: string): string => TAG_OF.get(code) ?? 'Other'

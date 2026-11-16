@@ -60,6 +60,10 @@ export interface Transaction {
   copy_of?: Settlement | null        // set by the API: the earlier document this one repeats; not booked unless included
   recorded_by?: Settlement | null    // set by the API: the receipt or invoice for this bank or claim line, booked instead
   claimed_in?: Settlement | null     // set by the API on a receipt or invoice: the expense claim it is owed on
+  recorded_by_refs?: string[]        // set by the API on a claim line booked from several receipts of one document:
+                                     // each one's ref (recorded_by then stands for them all)
+  left_off_claim?: Settlement | null // set by the API on a receipt of that document the claim leaves out: the claim;
+                                     // the claimant paid it, so not booked unless included
   document_total?: string | null     // the total printed on its document, which the API checks the rows against
   document_net?: string | null       // the total before VAT printed on its document
   not_vat_invoice?: boolean          // its document says it is not a VAT invoice

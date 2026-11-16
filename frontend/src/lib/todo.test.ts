@@ -1,7 +1,7 @@
 // Run with: npm test.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { needCount, openQuestions, todoCards, waitingSuggestions } from './todo.ts'
+import { needCount, openQuestions, tagOf, todoCards, waitingSuggestions } from './todo.ts'
 import type { Decision, Question } from './chat.ts'
 import type { SavedRow } from './clients'
 import type { ReviewDetail } from './reviews.ts'
@@ -146,4 +146,9 @@ test('the same question in two runs is listed once; a resolved one is not', () =
 test('waitingSuggestions lists each suggestion once', () => {
   const cards = todoCards([row(1, [issue('unusual_account')]), row(5)], [suggestion('D1', [1]), suggestion('D2', [5])], [], file)
   assert.deepEqual(waitingSuggestions(cards).map(s => s.id).sort(), ['D1', 'D2'])
+})
+
+test('a charge left off a claim is about documents, and an unclear set about a purchase recorded twice', () => {
+  assert.equal(tagOf('not_claimed'), 'Documents')
+  assert.equal(tagOf('claim_receipts_unclear'), 'Recorded twice')
 })
