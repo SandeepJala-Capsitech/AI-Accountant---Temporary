@@ -153,6 +153,7 @@ def _same(stored: Question, draft: QuestionDraft) -> bool:
 _PERSON_CHANGES = frozenset({"row_edited", "row_removed", "row_reverted", "row_linked", "row_included", "rows_apart"})
 CHANGED_SINCE = "You changed this row after it was asked."
 ROWS_GONE = "Its row is no longer in the books."
+SAID_APART = "You said these are not the same."
 
 
 def _partners(rows) -> dict[int, set[int]]:
@@ -176,12 +177,15 @@ def _partners(rows) -> dict[int, set[int]]:
 
 def _close_answered(store: MongoStore, records: AgentRecords, client_id: int, year_start: dt.date) -> None:
     """Resolves the year's open and waiting questions of the agent's that the books have moved past: none of its
-    rows is in the books any more (removed, left out or replaced), or a person changed one of them after it was
-    asked. A question about no row is left alone. Each closing is recorded as a change."""
+    rows is in the books any more (removed, left out or replaced), a person said two of its rows are not the same
+    (whenever they said it: a review that read the books just before may ask after), or a person changed one of them
+    after it was asked. A question about no row is left alone. Each closing is recorded as a change."""
     asked = [q for q in records.questions(client_id, year_start) if q.source == "agent" and q.row_ids]
     if not asked:
         return
-    in_books = {r.id for r in store.rows(client_id) if not (r.tx.excluded or r.tx.superseded_by)}
+    rows = store.rows(client_id)
+    in_books = {r.id for r in rows if not (r.tx.excluded or r.tx.superseded_by)}
+    apart = {frozenset((r.id, other)) for r in rows for other in r.tx.apart_from}   # Not the same, by pair
     theirs = [c for c in records.changes(client_id, since=min(q.created_at for q in asked), limit=1000)
               if c.actor == "user" and c.kind in _PERSON_CHANGES]
     partners = _partners(books.all_rows(store, client_id)) if theirs else {}
@@ -191,6 +195,8 @@ def _close_answered(store: MongoStore, records: AgentRecords, client_id: int, ye
         about = set(q.row_ids) | {p for n in q.row_ids for p in partners.get(n, ())}
         if not set(q.row_ids) & in_books:
             said = ROWS_GONE
+        elif any(frozenset((a, b)) in apart for a in q.row_ids for b in q.row_ids if a != b):
+            said = SAID_APART
         elif any(c.created_at > q.created_at and set(c.row_ids) & about for c in theirs):
             said = CHANGED_SINCE
         else:

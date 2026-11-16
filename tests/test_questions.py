@@ -508,6 +508,34 @@ def test_an_agent_question_asked_after_the_change_stays(store, records, acme):
     assert [q.id for q in refresh(store, records, acme)] == [asked.id]
 
 
+def test_an_agent_question_about_rows_a_person_said_are_not_the_same_goes_however_early_they_said_it(
+        store, records, acme):
+    # Jenny's two £3.99 Victoria Food receipts: she pressed Not the same at 15:02:30, and a review that had read the
+    # books at 15:02:23 asked at 15:03:16 whether they were one purchase. Her answer came first, so it was never seen.
+    import time
+    add_rows(store, acme, travel_line(gross=D("3.99")), travel_line(gross=D("3.99"), description="Again"),
+             year_start=YEAR_1)
+    first, second = store.rows(acme)
+    store.patch_row(acme, second.id, {"apart_from": [first.id]})
+    person_changed(records, acme, second.id, kind="rows_apart")
+    time.sleep(1.1)   # times are kept to the second
+    asked = questions.ask(records, client_id=acme, year_start=YEAR_1, row_ids=[second.id, first.id],
+                          text="Were these two separate purchases?", why="Same shop and amount a day apart.")
+    assert refresh(store, records, acme) == []
+    assert records.question(asked.id).answer == "You said these are not the same."
+
+
+def test_an_agent_question_about_one_of_two_rows_set_apart_stays(store, records, acme):
+    # Not the same answers whether two rows are one, not every question about one of them.
+    add_rows(store, acme, travel_line(gross=D("3.99")), travel_line(gross=D("3.99"), description="Again"),
+             year_start=YEAR_1)
+    first, second = store.rows(acme)
+    store.patch_row(acme, second.id, {"apart_from": [first.id]})
+    asked = questions.ask(records, client_id=acme, year_start=YEAR_1, row_ids=[second.id],
+                          text="Which account should this go to?", why="Its account is unclear.")
+    assert [q.id for q in refresh(store, records, acme)] == [asked.id]
+
+
 def test_an_agent_question_about_no_row_stays(store, records, acme):
     add_rows(store, acme, travel_line(gross=D("12.00")), year_start=YEAR_1)
     asked = asked_about(store, records, acme)
