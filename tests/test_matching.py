@@ -1697,3 +1697,49 @@ def test_one_set_counts():
     assert _one_set([100, 100, 200], 200)[0] == 1      # a set is two or more: {100, 100}, not {200}
     assert _one_set([100, 100, 100], 200)[0] == 2      # three pairs, counted up to two
     assert _one_set([100, 300], 250) == (0, None)
+
+
+def test_two_sets_that_add_up_pair_nothing_and_ask():
+    line = claim_line("12.00", "2026-10-31", "Transport for London", ref="claim")
+    charges = [row("receipt", "out", gross, day, "TfL Customer Services", f"t-{day}", account="7400")
+               for day, gross in [("2026-10-05", "6.00"), ("2026-10-06", "6.00"), ("2026-10-07", "6.00"),
+                                  ("2026-10-08", "3.00")]]
+    line, *charges = matched_from([line, *charges], [176, 199, 199, 199, 199])
+    assert booked(line) and line.recorded_by is None
+    assert all(t.claimed_in is None and t.left_off_claim is None and booked(t) for t in charges)
+    assert ("claim_receipts_unclear", "warning") in codes(line)
+    assert sorted(about(line, "claim_receipts_unclear")) == [1, 2, 3, 4]
+    assert about(charges[0], "claim_receipts_unclear") == [0]
+
+
+def test_sets_on_two_uploads_pair_nothing():
+    rows, uploads = tfl_rows()
+    rows += [row("receipt", "out", "30.00", "2026-10-15", "TfL Customer Services", "tfl2-15", account="7400"),
+             row("receipt", "out", "25.40", "2026-10-16", "TfL Customer Services", "tfl2-16", account="7400")]
+    line, *charges = matched_from(rows, [*uploads, 201, 201])
+    assert booked(line) and line.recorded_by is None
+    assert all(t.claimed_in is None and t.left_off_claim is None for t in charges)
+    assert "claim_receipts_unclear" in [c for c, _ in codes(line)]
+    warned = {t.document_ref for t in charges if "claim_receipts_unclear" in [c for c, _ in codes(t)]}
+    assert warned == {"tfl-2026-10-05", "tfl2-15"}   # each upload's first candidate
+
+
+def test_two_lines_that_could_share_charges_pair_neither():
+    rows, uploads = tfl_rows()
+    rows.append(claim_line("12.80", "2026-10-31", "Transport for London", ref="claim"))
+    line, *charges, other = matched_from(rows, [*uploads, 176])
+    for claim in (line, other):
+        assert booked(claim) and claim.recorded_by is None
+        assert "claim_receipts_unclear" in [c for c, _ in codes(claim)]
+    assert all(t.claimed_in is None and t.left_off_claim is None and booked(t) for t in charges)
+
+
+def test_a_leftover_a_bank_line_pays_is_booked_from_the_bank():
+    rows, uploads = tfl_rows()
+    rows.append(bank("6.10", "2026-10-07", "TFL TRAVEL CH", ref="card-1", account="7400"))
+    line, *charges, card = matched_from(rows, [*uploads, 210])
+    left = by_ref(charges)["tfl-2026-10-05"]
+    assert left.left_off_claim is None and "not_claimed" not in [c for c, _ in codes(left)]
+    assert (left.paid_by[0].ref, left.contra_account_code, booked(left)) == ("card-1", "1200", True)
+    assert card.recorded_by.ref == "tfl-2026-10-05"
+    assert line.recorded_by_refs == CLAIMED

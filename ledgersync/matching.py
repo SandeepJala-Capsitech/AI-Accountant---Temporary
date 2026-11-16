@@ -579,7 +579,7 @@ def _pair_receipts(rows: list[Transaction], changes: list[dict], lines: list[int
     def kept_apart(n: int, receipt: _Document) -> bool:
         return any(r in apart[n] for r in receipt.rows)
 
-    receipts = list(_grouped(rows, lambda tx: tx.document_type == "receipt" and booked(tx)
+    receipts = list(_grouped(rows, lambda tx: tx.document_type == "receipt" and (booked(tx) or tx.left_off_claim)
                              and tx.claimed_in is None and tx.date_found is None).values())
     receipts = [r for r in receipts if not any(changes[k].get("paid_by") or changes[k].get("recorded_by")
                                                for k in r.rows)]
@@ -738,6 +738,9 @@ def _record(rows: list[Transaction], changes: list[dict], n: int, receipt: _Docu
     if not line.include:   # it posts nothing, so its account has no effect on the books: nothing to ask
         changes[n]["issues"] = [i for i in changes[n].get("issues", line.issues) if i.code not in ("account_not_recognised", "account_unclear")]
     for r in receipt.rows:
+        if rows[r].left_off_claim:   # the business's card paid it after all: an ordinary receipt, not the claimant's
+            changes[r]["left_off_claim"] = None
+            changes[r]["issues"] = [i for i in changes[r].get("issues", rows[r].issues) if i.code != "not_claimed"]
         changes[r]["paid_by"] = [Settlement(ref=line.document_ref or f"row-{n}", amount=line.gross,
                                             date=line.date, description=line.description, kind=line.document_type)]
         changes[r]["contra_account_code"] = line.contra_account_code
@@ -965,22 +968,53 @@ def _pair_sets(rows: list[Transaction], marked: list[Transaction], lines: list[i
                 by_upload.setdefault(upload, []).append(d)
         return {u: sorted(ds, key=lambda d: (d.date, d.rows[0])) for u, ds in by_upload.items()}
 
+    # Every open line's sets first, so which line claims which charges never depends on which was looked at first.
     open_lines = sorted((n for n in lines if n not in paired_lines), key=lambda n: (rows[n].date, n))
+    found: dict[int, list[tuple[int, list[_Document], Optional[list[int]]]]] = {}
     for n in open_lines:
-        line, found = rows[n], []
         for pool in candidates(n).values():
-            pool = [d for d in pool if d.ref not in paired_documents and d.ref not in left_off]
+            pool = [d for d in pool if d.ref not in paired_documents]
             if 2 <= len(pool) <= SET_LIMIT:
-                count, places = _one_set([int(d.total * 100) for d in pool], int(line.gross * 100))
-                found += [(count, pool, places)] if count else []
-        if sum(count for count, _, _ in found) != 1:
+                count, places = _one_set([int(d.total * 100) for d in pool], int(rows[n].gross * 100))
+                if count:
+                    found.setdefault(n, []).append((count, pool, places))
+    pools = {n: {d.ref for _, pool, _ in sets for d in pool} for n, sets in found.items()}
+    one = {n: [sets[0][1][k] for k in sets[0][2]] for n, sets in found.items() if sum(c for c, _, _ in sets) == 1}
+    unclear = {n for n in found if n not in one}
+    for n, chosen in one.items():   # two lines that could claim the same charges: which claims which is a guess
+        rivals = {m for m in found if m != n and pools[m] & {d.ref for d in chosen}}
+        if rivals:
+            unclear |= {n} | rivals
+    for n in sorted(unclear):
+        _unclear(rows, marked, n, [pool for _, pool, _ in found[n]])
+    for n in open_lines:
+        if n not in one or n in unclear:
             continue
-        _, pool, places = found[0]
-        chosen = [pool[k] for k in places]
-        _book_set(rows, marked, n, chosen, [d for d in pool if d not in chosen], settings)
+        chosen = one[n]
+        pool = next(pool for _, pool, _ in found[n])
+        others = [d for d in pool if d not in chosen and d.ref not in paired_documents and d.ref not in left_off]
+        _book_set(rows, marked, n, chosen, others, settings)
         paired_lines.add(n)
         paired_documents.update(d.ref for d in chosen)
-        left_off.update(d.ref for d in pool if d not in chosen)
+        left_off.update(d.ref for d in others)
+
+
+def _unclear(rows: list[Transaction], marked: list[Transaction], n: int, pools: list[list[_Document]]) -> None:
+    """Claim line n's charges add up to it in more than one way, or another line could claim the same ones: the line
+    and the first charge of each upload say so, and point at each other; all stay booked as they are."""
+    line = rows[n]
+    supplier = pools[0][0].counterparty or "the supplier"
+    claimant = line.counterparty or "the claimant"
+    every = [r for pool in pools for d in pool for r in d.rows]
+    marked[n] = marked[n].model_copy(update={"issues": marked[n].issues + [issue("claim_receipts_unclear", (
+        f"{supplier}'s charges add up to {_gbp(line.gross)} in more than one way, or another claim line could claim "
+        "the same ones: can't tell which this line claims."), related=every)]})
+    for pool in pools:
+        first = pool[0].rows[0]
+        marked[first] = marked[first].model_copy(update={"issues": marked[first].issues + [issue(
+            "claim_receipts_unclear", (f"Some of these charges add up to {claimant}'s claim line of "
+                                       f"{_gbp(line.gross)} in more than one way: can't tell which it claims."),
+            related=[n])]})
 
 
 def _book_set(rows: list[Transaction], marked: list[Transaction], n: int, chosen: list[_Document],
