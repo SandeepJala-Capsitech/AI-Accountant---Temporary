@@ -40,6 +40,8 @@ def test_names_that_match(a, b):
     ("NCP", "National Grid"),                                       # not its initials
     ("CPS", "National Car Parks Ltd"),
     ("NCP", "Car Parks National Ltd"),                              # initials out of order
+    ("SAP", "Hotel stay at Premier Inn"),                           # initials of words in the middle say nothing
+    ("API", "Hotel stay at Premier Inn for conference"),
 ])
 def test_names_that_do_not_match(a, b):
     assert not names_match(a, b)
@@ -1743,3 +1745,41 @@ def test_a_leftover_a_bank_line_pays_is_booked_from_the_bank():
     assert (left.paid_by[0].ref, left.contra_account_code, booked(left)) == ("card-1", "1200", True)
     assert card.recorded_by.ref == "tfl-2026-10-05"
     assert line.recorded_by_refs == CLAIMED
+
+
+def test_monthly_claim_lines_pair_with_their_own_months_on_one_statement():
+    # Review: a statement of two months with a claim line for each. Each line's window reaches into the other month,
+    # but their sets don't share a charge, so each pairs.
+    september = [("2026-09-08", "4.10"), ("2026-09-15", "7.30"), ("2026-09-29", "5.20")]
+    rows, uploads = tfl_rows()
+    rows += [row("receipt", "out", gross, day, "TfL Customer Services", f"tfl-{day}", account="7400")
+             for day, gross in [*september, ("2026-10-01", "3.30")]]
+    rows.append(claim_line("16.60", "2026-09-30", "Transport for London, Train", ref="claim"))
+    result = matched_from(rows, [*uploads, 199, 199, 199, 199, 176])
+    october, sept_line = result[0], result[-1]
+    assert sept_line.recorded_by_refs == ["tfl-2026-09-08", "tfl-2026-09-15", "tfl-2026-09-29"]
+    assert october.recorded_by_refs == CLAIMED
+    charges = by_ref(result)
+    assert charges["tfl-2026-10-01"].left_off_claim is not None and charges["tfl-2026-10-05"].left_off_claim is not None
+    assert not any("claim_receipts_unclear" in [c for c, _ in codes(t)] for t in result)
+
+
+def test_a_charge_the_business_card_paid_is_never_in_a_set():
+    # Review: the card line paying the £10.50 on 6 Oct came later in matching, so the charge went in the claim's set and
+    # was booked twice. Without it, no set of the rest makes £55.40.
+    rows, uploads = tfl_rows()
+    rows.append(bank("10.50", "2026-10-07", "TFL TRAVEL CH", ref="card-1", account="7400"))
+    line, *charges, card = matched_from(rows, [*uploads, 210])
+    assert line.recorded_by is None and booked(line)
+    assert card.recorded_by.ref == "tfl-2026-10-06"
+    assert all(t.claimed_in is None and t.left_off_claim is None for t in charges)
+
+
+def test_two_charges_on_one_day_are_named_in_the_same_order_whatever_the_rows_order():
+    rows, uploads = tfl_rows("56.40")
+    rows.append(row("receipt", "out", "1.00", "2026-10-27", "TfL Customer Services", "tfl-2026-10-27-b", account="7400"))
+    uploads = [*uploads, 199]
+    forward = by_ref(matched_from(rows, uploads))["claim"]
+    backward = by_ref(matched_from(rows[::-1], uploads[::-1]))["claim"]
+    assert forward.recorded_by_refs == backward.recorded_by_refs
+    assert forward.recorded_by.ref == backward.recorded_by.ref

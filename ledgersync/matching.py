@@ -48,11 +48,11 @@ def _initials(name: Optional[str]) -> str:
 
 
 def _initial_runs(name: Optional[str]) -> set[str]:
-    """The initials of every run of three words or more in the name: TFL in "Transport for London, Train" as well as
-    TFLT. The whole name's initials are among them."""
+    """The initials of the name's first three words or more: TFL in "Transport for London, Train" as well as TFLT.
+    Only from its first word: the initials of words in its middle say nothing (SAP in "Hotel stay at Premier Inn")."""
     words = [w for w in re.findall(r"[a-z]+", (name or "").lower()) if w not in _LEGAL]
     letters = "".join(w[0] for w in words)
-    return {letters[i:j] for i in range(len(letters)) for j in range(i + 3, len(letters) + 1)}
+    return {letters[:j] for j in range(3, len(letters) + 1)}
 
 
 def _named_in(name: Optional[str], text: str) -> bool:
@@ -963,11 +963,19 @@ def _pair_sets(rows: list[Transaction], marked: list[Transaction], lines: list[i
         for d in documents:
             upload = upload_ids[d.rows[0]]
             if (d.kind == "receipt" and len(d.rows) == 1 and upload is not None and d.date is not None
+                    and d.ref not in card_paid
                     and line.date - COVERED <= d.date <= line.date + CARD_DAYS and d.direction == line.direction.value
                     and named(line, d) and not kept_apart(n, d)):
                 by_upload.setdefault(upload, []).append(d)
-        return {u: sorted(ds, key=lambda d: (d.date, d.rows[0])) for u, ds in by_upload.items()}
+        return {u: sorted(ds, key=lambda d: (d.date, d.ref)) for u, ds in by_upload.items()}
 
+    # A charge a bank line of the business could have paid (its amount, its way, within a few days) is the business's,
+    # whatever adds up: bank matching, later, books it from the bank.
+    bank = [k for k, tx in enumerate(rows) if tx.document_type == "statement" and tx.date and tx.link is None
+            and booked_line(tx)]
+    card_paid = {d.ref for d in documents if d.date is not None and any(
+        rows[k].gross == d.total and rows[k].direction.value == d.direction
+        and abs(rows[k].date - d.date) <= CARD_DAYS for k in bank)}
     # Every open line's sets first, so which line claims which charges never depends on which was looked at first.
     open_lines = sorted((n for n in lines if n not in paired_lines), key=lambda n: (rows[n].date, n))
     found: dict[int, list[tuple[int, list[_Document], Optional[list[int]]]]] = {}
@@ -982,20 +990,21 @@ def _pair_sets(rows: list[Transaction], marked: list[Transaction], lines: list[i
     one = {n: [sets[0][1][k] for k in sets[0][2]] for n, sets in found.items() if sum(c for c, _, _ in sets) == 1}
     unclear = {n for n in found if n not in one}
     for n, chosen in one.items():   # two lines that could claim the same charges: which claims which is a guess
-        rivals = {m for m in found if m != n and pools[m] & {d.ref for d in chosen}}
+        mine = {d.ref for d in chosen}
+        rivals = {m for m in found if m != n and (
+            mine & {d.ref for d in one[m]} if m in one else mine & pools[m])}
         if rivals:
             unclear |= {n} | rivals
     for n in sorted(unclear):
         _unclear(rows, marked, n, [pool for _, pool, _ in found[n]])
-    for n in open_lines:
-        if n not in one or n in unclear:
-            continue
-        chosen = one[n]
+    pairing = [n for n in open_lines if n in one and n not in unclear]
+    claimed = {d.ref for n in pairing for d in one[n]}   # every set first: one line's leftover may be another's charge
+    for n in pairing:
         pool = next(pool for _, pool, _ in found[n])
-        others = [d for d in pool if d not in chosen and d.ref not in paired_documents and d.ref not in left_off]
-        _book_set(rows, marked, n, chosen, others, settings)
+        others = [d for d in pool if d.ref not in claimed and d.ref not in paired_documents and d.ref not in left_off]
+        _book_set(rows, marked, n, one[n], others, settings)
         paired_lines.add(n)
-        paired_documents.update(d.ref for d in chosen)
+        paired_documents.update(d.ref for d in one[n])
         left_off.update(d.ref for d in others)
 
 
