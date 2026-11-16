@@ -42,10 +42,43 @@ const SHOWN = /\.(pdf|png|jpe?g|webp|gif)$/i
 export const canShow = (name: string): boolean => SHOWN.test(name)
 export const isPdf = (name: string): boolean => /\.pdf$/i.test(name)
 
+// Whether an upload has a document to look at: any but rows typed in by hand.
+export const viewable = (upload: Upload): boolean => upload.kind !== 'manual'
+
 // The upload a row's document can be viewed from; none for a row typed in by hand.
 export function documentOf(row: { upload_id: number }, uploads: Upload[]): Upload | null {
   const upload = uploads.find(u => u.id === row.upload_id)
-  return upload && upload.kind !== 'manual' ? upload : null
+  return upload && viewable(upload) ? upload : null
+}
+
+// Said over the lines read from an upload when its file isn't shown: why there is no file. A split (rows a person split
+// in two) keeps none of its own, but the upload it was split off does, so it never says the file was lost.
+export function linesNote(upload: Upload): string {
+  if (upload.kind === 'split') {
+    return `Split off ${upload.name.replace(/ \(split\)$/, '')}, which holds the file. These are the lines split off it.`
+  }
+  if (upload.kind === 'text' && !upload.sha256 && upload.name === 'Pasted text') return 'Pasted as text. These are the lines read from it.'
+  return upload.sha256 ? 'This kind of file can’t be shown here. These are the lines read from it.'
+    : 'The original file wasn’t kept. These are the lines read from it.'
+}
+
+// Every document a card is about, each once, with the first of the card's rows read from it: its own row's first,
+// then those of the rows its issues, suggestions and questions name, so a card asking whether two records are one
+// shows both. A row typed in by hand, or no longer among the rows, adds none.
+interface Named { id: number; upload_id: number }
+export function cardDocuments(
+  card: { row: Named | null; issues: { related?: number[] }[]; suggestions: { row_ids: number[] }[]; questions: { row_ids: number[] }[] },
+  rows: Named[], uploads: Upload[],
+): { upload: Upload; rowId: number }[] {
+  const ids = [...(card.row ? [card.row.id] : []), ...card.issues.flatMap(i => i.related ?? []),
+               ...card.suggestions.flatMap(s => s.row_ids), ...card.questions.flatMap(q => q.row_ids)]
+  const found = new Map<number, { upload: Upload; rowId: number }>()
+  for (const id of ids) {
+    const row = id === card.row?.id ? card.row : rows.find(r => r.id === id)
+    const upload = row && documentOf(row, uploads)
+    if (row && upload && !found.has(upload.id)) found.set(upload.id, { upload, rowId: row.id })
+  }
+  return [...found.values()]
 }
 
 // The original file of an upload: as a download, or (show) for the page to show in place.

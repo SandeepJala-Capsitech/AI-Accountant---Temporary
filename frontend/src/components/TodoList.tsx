@@ -11,7 +11,7 @@ import type { AnswerResult, Decision } from '@/lib/chat'
 import type { RowChange, SavedRow } from '@/lib/clients'
 import { acceptChange, apartChange, askAbout, claimLineOf, issueFixes, takesLines } from '@/lib/ledger'
 import type { Answerer } from '@/lib/reviews'
-import { changeLines, documentOf } from '@/lib/suggestions'
+import { cardDocuments, changeLines } from '@/lib/suggestions'
 import type { TodoCard } from '@/lib/todo'
 import { sectionHref } from '@/lib/years'
 
@@ -24,8 +24,8 @@ export default function TodoList({ cards, working, refused, answerer, viewing, o
   working: string                      // the suggestion being applied, 'all', or ''
   refused: Record<string, string>      // why an Apply didn't go through, by suggestion
   answerer: Answerer
-  viewing: string | null               // the key of the card whose document is open beside the list
-  onView: (card: TodoCard) => void     // open the card's document beside the list
+  viewing: string | null               // the key of the card whose documents are open beside the list
+  onView: (card: TodoCard) => void     // open the card's documents beside the list
   onChange: (rowId: number, change: RowChange) => void
   onApply: (suggestion: Decision) => void
   onEdit: (row: SavedRow) => void
@@ -48,6 +48,7 @@ export default function TodoList({ cards, working, refused, answerer, viewing, o
     <ul className="todo-list">
       {cards.map(card => {
         const row = card.row
+        const documents = cardDocuments(card, rows, ledger.uploads).length
         return (
           <li key={card.key} className={`todo-card${card.waiting ? ' todo-waiting' : ''}${viewing === card.key ? ' todo-viewing' : ''}`}>
             <div className="todo-head">
@@ -56,9 +57,9 @@ export default function TodoList({ cards, working, refused, answerer, viewing, o
               {(row || !card.questions.length) && <strong>{card.title}</strong>}
               {card.waiting && <span className="badge badge-warn">Waiting on you</span>}
               {row && <Link href={rowHref(row)} className="small">{card.kind === 'document' ? 'Show its lines' : 'Show'}</Link>}
-              {row && documentOf(row, ledger.uploads) && (
+              {row && documents > 0 && (
                 <button type="button" className="link-btn small" aria-pressed={viewing === card.key} onClick={() => onView(card)}>
-                  View document
+                  {documents === 1 ? 'View document' : documents === 2 ? 'View both documents' : `View ${documents} documents`}
                 </button>
               )}
             </div>

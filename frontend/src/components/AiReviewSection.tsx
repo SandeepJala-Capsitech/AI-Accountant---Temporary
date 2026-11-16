@@ -3,7 +3,7 @@
 import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useClientYear } from '@/components/ClientYearContext'
-import DocumentPanel from '@/components/DocumentPanel'
+import DocumentPanel, { type PanelDocument } from '@/components/DocumentPanel'
 import ReviewHistory from '@/components/ReviewHistory'
 import TodoList from '@/components/TodoList'
 import { useRowDialogs } from '@/components/useRowDialogs'
@@ -16,7 +16,7 @@ import {
   retryReview, reviewNotice, undoDecision,
   type ReviewDetail,
 } from '@/lib/reviews'
-import { documentOf, sameFixGroups } from '@/lib/suggestions'
+import { cardDocuments, sameFixGroups } from '@/lib/suggestions'
 import { needCount, openQuestions, todoCards, waitingSuggestions } from '@/lib/todo'
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
@@ -110,9 +110,15 @@ export default function AiReviewSection() {
   }, [ledger.transactions, ledger.uploads, suggestions, runs])
   const waiting = useMemo(() => waitingSuggestions(cards), [cards])
   const groups = useMemo(() => sameFixGroups(waiting), [waiting])
-  // The document open beside the list: its card's, for as long as the card is on the list.
+  // The documents open beside the list: every one its card is about, for as long as the card is on the list.
   const viewed = cards.find(c => c.key === viewing && c.row) ?? null
-  const viewedUpload = viewed?.row ? documentOf(viewed.row, ledger.uploads) : null
+  const viewedDocuments: PanelDocument[] = viewed
+    ? cardDocuments(viewed, ledger.transactions, ledger.uploads).map(({ upload, rowId }) => ({
+        upload, rowId, rows: ledger.transactions.filter(r => r.upload_id === upload.id),
+        quotes: viewed.suggestions.flatMap(d => d.evidence.filter(e => e.upload_id === upload.id).map(e => e.quote)),
+      }))
+    : []
+  const panelOpen = viewedDocuments.length > 0
   const need = needCount(cards)
   const changes = useMemo(() => aiChanges(runs ?? [], new Set([...reversed, ...undone]), freshRuns ?? new Set()),
                           [runs, reversed, undone, freshRuns])
@@ -230,15 +236,11 @@ export default function AiReviewSection() {
               </button>
             </div>
           ))}
-          <div className={viewedUpload ? 'todo-with-panel todo-panel-open' : 'todo-with-panel'}>
-            <TodoList cards={cards} working={working} refused={problems} answerer={answerer} viewing={viewedUpload ? viewing : null}
+          <div className={panelOpen ? 'todo-with-panel todo-panel-open' : 'todo-with-panel'}>
+            <TodoList cards={cards} working={working} refused={problems} answerer={answerer} viewing={panelOpen ? viewing : null}
                       onView={card => setViewing(v => (v === card.key ? null : card.key))} onChange={changeARow}
                       onApply={d => change(d, 'apply')} onEdit={edit} onAddLine={add} onAnswered={answered} onSay={say} />
-            {viewed?.row && viewedUpload && (
-              <DocumentPanel upload={viewedUpload} rowId={viewed.row.id} onClose={() => setViewing(null)}
-                             rows={ledger.transactions.filter(r => r.upload_id === viewedUpload.id)}
-                             quotes={viewed.suggestions.flatMap(d => d.evidence.filter(e => e.upload_id === viewedUpload.id).map(e => e.quote))} />
-            )}
+            {panelOpen && <DocumentPanel documents={viewedDocuments} onClose={() => setViewing(null)} />}
           </div>
           <ReviewHistory changes={changes} made={made} lines={activityLines(runs)} readOnly={readOnly} working={working}
                          refused={problems} onUndo={d => change(d, 'undo')} />

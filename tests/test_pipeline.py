@@ -99,10 +99,16 @@ def test_photos_go_to_the_model_as_images():
     assert ex.calls[0]["text"] is None and len(ex.calls[0]["images"]) == 1
 
 
-def test_a_sideways_phone_photo_is_sent_upright_small_and_as_jpeg():
-    # EXIF orientation 6: the phone was turned 90 degrees; the pixels are stored sideways.
+def test_a_sideways_phone_photo_is_sent_upright_at_most_2000_pixels_and_as_jpeg():
+    # EXIF orientation 6: the phone was turned 90 degrees; the pixels are stored sideways. 2000, not 1200: at 1200 a
+    # receipt's small print (its VAT number) was lost.
     sent = Image.open(io.BytesIO(base64.b64decode(prepare_image(photo((3000, 1000), orientation=6)))))
-    assert sent.format == "JPEG" and max(sent.size) == 1200 and sent.size[0] < sent.size[1]
+    assert sent.format == "JPEG" and max(sent.size) == 2000 and sent.size[0] < sent.size[1]
+
+
+def test_a_photo_smaller_than_the_limit_is_not_enlarged():
+    sent = Image.open(io.BytesIO(base64.b64decode(prepare_image(photo((800, 600))))))
+    assert sent.size == (800, 600)
 
 
 def test_scanned_pages_go_three_per_request_and_warnings_name_their_pages():

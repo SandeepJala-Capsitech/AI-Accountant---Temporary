@@ -2,13 +2,16 @@
 
 import type { BankAccount, Upload } from '@/lib/clients'
 import { dayMonth, statementText, transactionCount } from '@/lib/clientRules'
+import { viewable } from '@/lib/suggestions'
 
 // What was added to the year, newest first, with each bank statement's account (changeable when the client has
-// several) and balance check, and Remove.
-export default function UploadsList({ uploads, bankAccounts, readOnly, onRemove, onBank }: {
+// several) and balance check, View (the file beside the list, in a closed year too) and Remove.
+export default function UploadsList({ uploads, bankAccounts, readOnly, viewing, onView, onRemove, onBank }: {
   uploads: Upload[]
   bankAccounts: BankAccount[]
   readOnly: boolean
+  viewing: number | null             // the upload open beside the list
+  onView: (upload: Upload) => void
   onRemove: (upload: Upload) => void
   onBank: (upload: Upload, code: string) => void
 }) {
@@ -26,7 +29,7 @@ export default function UploadsList({ uploads, bankAccounts, readOnly, onRemove,
             const isStatement = !!upload.statement || upload.bank_account != null
             const account = upload.bank_account ?? bankAccounts[0]?.code ?? ''
             return (
-              <li key={upload.id}>
+              <li key={upload.id} className={viewing === upload.id ? 'upload-viewing' : undefined}>
                 <div className="upload-name" title={upload.name}>{upload.name}</div>
                 <div className="muted small">{transactionCount(upload.rows)} · {dayMonth(upload.created_at)}</div>
                 {isStatement && bankAccounts.length > 1 && (readOnly ? (
@@ -49,9 +52,16 @@ export default function UploadsList({ uploads, bankAccounts, readOnly, onRemove,
                     {upload.warnings.map((warning, i) => <div key={i} className="muted">{warning}</div>)}
                   </details>
                 )}
-                {!readOnly && (
-                  <button type="button" className="link-btn danger" onClick={() => onRemove(upload)}>Remove</button>
-                )}
+                <div className="upload-actions">
+                  {viewable(upload) && (
+                    <button type="button" className="link-btn" aria-pressed={viewing === upload.id} onClick={() => onView(upload)}>
+                      View
+                    </button>
+                  )}
+                  {!readOnly && (
+                    <button type="button" className="link-btn danger" onClick={() => onRemove(upload)}>Remove</button>
+                  )}
+                </div>
               </li>
             )
           })}

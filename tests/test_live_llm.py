@@ -89,6 +89,21 @@ def test_a_suppliers_statement_of_card_payments_is_receipts_not_a_bank_statement
     assert reads == [[(day, "receipt", "out", amount) for day, amount in charged]] * 4, reads
 
 
+def test_a_receipt_photos_small_vat_number_is_read():
+    # Southgate car park prints "V.A.T No. 870 487 106" in small type at the foot of a long receipt: at 1200 pixels it
+    # was missed in 8 reads of 8, so its VAT was left in the cost; at 2000 it was read in about 22 of 23 (2026-11-16).
+    # So one read in four may miss it; at 1200, none would get it.
+    path = PRIVATE / "jenny" / "Southgate_Bath_Car_Park-2026-10-08_20_30_00.jpg"
+    if not path.is_file():
+        pytest.skip(f"needs {path.relative_to(PRIVATE.parent.parent)}")
+    reader = TransactionExtractor(live_client(), business_name="Jenny", business_type="limited_company")
+    photo = prepare_image(path.read_bytes())
+    with ThreadPoolExecutor(4) as pool:
+        reads = list(pool.map(lambda _: [(t.amount, t.vat, "".join(c for c in t.supplier_vat_number or "" if c.isdigit()))
+                                         for t in reader.extract_accounting_data(images=[photo]).data], range(4)))
+    assert reads.count([(72.0, 12.0, "870487106")]) >= 3, reads
+
+
 def test_a_shops_till_receipt_is_money_out_though_it_prints_sale():
     # Victoria Food & Groceries' till receipt names no customer and prints "Sale" above its one item: the app read it
     # as money in, and so did 1 read of 28 before the instructions said which way a shop's receipt goes (2026-11-16).

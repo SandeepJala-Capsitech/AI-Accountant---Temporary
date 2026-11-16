@@ -1,7 +1,7 @@
 // Run with: npm test.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { canShow, changeLines, documentOf, fileHref, isPdf, sameFixGroups } from './suggestions.ts'
+import { canShow, cardDocuments, changeLines, documentOf, fileHref, isPdf, linesNote, sameFixGroups } from './suggestions.ts'
 import type { Decision } from './chat.ts'
 import type { Upload } from './clients'
 
@@ -75,6 +75,39 @@ test('a row typed in by hand has no document; a row from a file has its upload',
   assert.equal(documentOf({ upload_id: 1 }, uploads), null)
   assert.equal(documentOf({ upload_id: 2 }, uploads)?.id, 2)
   assert.equal(documentOf({ upload_id: 3 }, uploads), null)
+})
+
+type Row = { id: number; upload_id: number }
+const card = (row: Row | null, issues: { related?: number[] }[]) => ({ row, issues, suggestions: [], questions: [] })
+
+test('a card about two rows from two files shows both, its own first', () => {
+  const uploads = [upload(1, 'pdf', 'a.pdf'), upload(2, 'image', 'b.jpg')]
+  const rows = [{ id: 10, upload_id: 2 }, { id: 11, upload_id: 1 }]
+  const docs = cardDocuments(card(rows[0], [{ related: [11] }]), rows, uploads)
+  assert.deepEqual(docs.map(d => [d.upload.id, d.rowId]), [[2, 10], [1, 11]])
+})
+
+test('rows from one file show it once', () => {
+  const uploads = [upload(1, 'pdf')]
+  const rows = [{ id: 10, upload_id: 1 }, { id: 11, upload_id: 1 }]
+  assert.deepEqual(cardDocuments(card(rows[0], [{ related: [11] }]), rows, uploads).map(d => d.upload.id), [1])
+})
+
+test("a typed-in row and a row that's gone add nothing; a suggestion's or a question's rows add theirs", () => {
+  const uploads = [upload(1, 'manual', 'Manual entry'), upload(2, 'pdf'), upload(3, 'pdf')]
+  const rows = [{ id: 10, upload_id: 1 }, { id: 11, upload_id: 2 }, { id: 12, upload_id: 3 }]
+  const c = { row: rows[0], issues: [{ related: [99] }], suggestions: [{ row_ids: [11] }], questions: [{ row_ids: [12] }] }
+  assert.deepEqual(cardDocuments(c, rows, uploads).map(d => d.upload.id), [2, 3])
+  assert.deepEqual(cardDocuments(card(rows[0], []), rows, uploads), [])
+})
+
+test("the note over a document's lines says why there is no file, and never that a split's file is lost", () => {
+  const up = (kind: string, name: string, sha256: string) => ({ id: 1, kind, name, sha256 } as unknown as Upload)
+  assert.equal(linesNote(up('split', 'receipts.pdf (split)', '')),
+               'Split off receipts.pdf, which holds the file. These are the lines split off it.')
+  assert.equal(linesNote(up('text', 'Pasted text', '')), 'Pasted as text. These are the lines read from it.')
+  assert.equal(linesNote(up('xlsx', 'claim.xlsx', 'abc')), 'This kind of file can’t be shown here. These are the lines read from it.')
+  assert.equal(linesNote(up('xlsx', 'claim.xlsx', '')), 'The original file wasn’t kept. These are the lines read from it.')
 })
 
 test('fileHref asks for showing only when told', () => {

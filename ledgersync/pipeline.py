@@ -28,9 +28,10 @@ def analyze(intake: Intake, extractor, ctx: JobContext):
     return extractor.extract_accounting_data(text_input=text, images=None)
 
 
-def prepare_image(data: bytes, max_side: int = 1200) -> str:
+def prepare_image(data: bytes, max_side: int = 2000) -> str:
     """A photo or page as a vision model should get it: upright (the camera's EXIF orientation
-    applied), at most max_side pixels on its long side, as a base64 JPEG."""
+    applied), at most max_side pixels on its long side, as a base64 JPEG. At 1200 the small print at the foot of a
+    long till receipt (its VAT number) was lost, and the VAT with it."""
     from PIL import Image, ImageOps
     with Image.open(io.BytesIO(data)) as img:
         upright = ImageOps.exif_transpose(img).convert("RGB")
