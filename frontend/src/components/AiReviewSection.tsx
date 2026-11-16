@@ -3,6 +3,7 @@
 import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useClientYear } from '@/components/ClientYearContext'
+import DocumentPanel from '@/components/DocumentPanel'
 import ReviewHistory from '@/components/ReviewHistory'
 import TodoList from '@/components/TodoList'
 import { useRowDialogs } from '@/components/useRowDialogs'
@@ -15,6 +16,7 @@ import {
   retryReview, reviewNotice, undoDecision,
   type ReviewDetail,
 } from '@/lib/reviews'
+import { documentOf, sameFixGroups } from '@/lib/suggestions'
 import { needCount, openQuestions, todoCards, waitingSuggestions } from '@/lib/todo'
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
@@ -40,6 +42,7 @@ export default function AiReviewSection() {
   const [answers, setAnswers] = useState<{ id: string; text: string; effect: string }[]>([])   // answered on this visit
   // Try again was pressed: the newest run then, and the timer that stops waiting for a new one.
   const [asked, setAsked] = useState<{ newest: string | null } | null>(null)
+  const [viewing, setViewing] = useState<string | null>(null)   // the card whose document is open beside the list
   const { edit, add, dialogs } = useRowDialogs()
   const answerer = clientAnswerer(client.id)
   const readOnly = client.archived || year.closed
@@ -106,6 +109,10 @@ export default function AiReviewSection() {
       `${names.get(row.upload_id) ?? 'Document'}, ${(DOCUMENT_TYPES[row.document_type ?? 'receipt'] ?? 'document').toLowerCase()}`)
   }, [ledger.transactions, ledger.uploads, suggestions, runs])
   const waiting = waitingSuggestions(cards)
+  const groups = useMemo(() => sameFixGroups(waitingSuggestions(cards)), [cards])
+  // The document open beside the list: its card's, for as long as the card is on the list.
+  const viewed = cards.find(c => c.key === viewing && c.row) ?? null
+  const viewedUpload = viewed?.row ? documentOf(viewed.row, ledger.uploads) : null
   const need = needCount(cards)
   const changes = useMemo(() => aiChanges(runs ?? [], new Set([...reversed, ...undone]), freshRuns ?? new Set()),
                           [runs, reversed, undone, freshRuns])
@@ -134,10 +141,11 @@ export default function AiReviewSection() {
     }
   }
 
-  // Every suggestion on the list, applied one after another; one the checks refuse says why and the rest go on.
-  const applyAll = async () => {
-    setWorking('all')
-    for (const d of waiting) {
+  // These suggestions (all on the list, or those that make the same change), applied one after another; one the
+  // checks refuse says why on its card and the rest go on.
+  const applyThese = async (these: Decision[], key: string) => {
+    setWorking(key)
+    for (const d of these) {
       setProblems(p => ({ ...p, [d.id]: '' }))
       try {
         const done = await applySuggestion(client.id, d.id)
@@ -207,13 +215,31 @@ export default function AiReviewSection() {
               </p>
             )}
             {waiting.length > 1 && (
-              <button type="button" className="btn btn-small btn-primary" disabled={!!working || readOnly} onClick={applyAll}>
+              <button type="button" className="btn btn-small btn-primary" disabled={!!working || readOnly} onClick={() => applyThese(waiting, 'all')}>
                 {working === 'all' ? 'Applying…' : `Apply all ${waiting.length} suggestions`}
               </button>
             )}
           </div>
-          <TodoList cards={cards} working={working} refused={problems} answerer={answerer} onChange={changeARow}
-                    onApply={d => change(d, 'apply')} onEdit={edit} onAddLine={add} onAnswered={answered} onSay={say} />
+          {/* The same change suggested for several rows, applied together and apart from the rest. */}
+          {groups.map(group => (
+            <div key={group.key} className="question-row todo-group">
+              <span className="small">{group.label}</span>
+              <button type="button" className="btn btn-small" disabled={!!working || readOnly}
+                      onClick={() => applyThese(group.suggestions, group.key)}>
+                {working === group.key ? 'Applying…' : `Apply to all ${group.suggestions.length}`}
+              </button>
+            </div>
+          ))}
+          <div className={viewedUpload ? 'todo-with-panel todo-panel-open' : 'todo-with-panel'}>
+            <TodoList cards={cards} working={working} refused={problems} answerer={answerer} viewing={viewedUpload ? viewing : null}
+                      onView={card => setViewing(v => (v === card.key ? null : card.key))} onChange={changeARow}
+                      onApply={d => change(d, 'apply')} onEdit={edit} onAddLine={add} onAnswered={answered} onSay={say} />
+            {viewed?.row && viewedUpload && (
+              <DocumentPanel upload={viewedUpload} rowId={viewed.row.id} onClose={() => setViewing(null)}
+                             rows={ledger.transactions.filter(r => r.upload_id === viewedUpload.id)}
+                             quotes={viewed.suggestions.flatMap(d => d.evidence.filter(e => e.upload_id === viewedUpload.id).map(e => e.quote))} />
+            )}
+          </div>
           <ReviewHistory changes={changes} made={made} lines={activityLines(runs)} readOnly={readOnly} working={working}
                          refused={problems} onUndo={d => change(d, 'undo')} />
         </>

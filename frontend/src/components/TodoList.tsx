@@ -11,6 +11,7 @@ import type { AnswerResult, Decision } from '@/lib/chat'
 import type { RowChange, SavedRow } from '@/lib/clients'
 import { acceptChange, apartChange, askAbout, claimLineOf, issueFixes, takesLines } from '@/lib/ledger'
 import type { Answerer } from '@/lib/reviews'
+import { changeLines, documentOf } from '@/lib/suggestions'
 import type { TodoCard } from '@/lib/todo'
 import { sectionHref } from '@/lib/years'
 
@@ -18,11 +19,13 @@ import { sectionHref } from '@/lib/years'
 // a question or a suggestion on its own. A card holds everything that settles it: the same issue list, with the same
 // controls, as the Transactions page; the change the AI suggests, with Apply; and the question it asks, with its
 // answer. A closed year or an archived client shows the cards with no control that changes anything.
-export default function TodoList({ cards, working, refused, answerer, onChange, onApply, onEdit, onAddLine, onAnswered, onSay }: {
+export default function TodoList({ cards, working, refused, answerer, viewing, onView, onChange, onApply, onEdit, onAddLine, onAnswered, onSay }: {
   cards: TodoCard[]
   working: string                      // the suggestion being applied, 'all', or ''
   refused: Record<string, string>      // why an Apply didn't go through, by suggestion
   answerer: Answerer
+  viewing: string | null               // the key of the card whose document is open beside the list
+  onView: (card: TodoCard) => void     // open the card's document beside the list
   onChange: (rowId: number, change: RowChange) => void
   onApply: (suggestion: Decision) => void
   onEdit: (row: SavedRow) => void
@@ -46,13 +49,18 @@ export default function TodoList({ cards, working, refused, answerer, onChange, 
       {cards.map(card => {
         const row = card.row
         return (
-          <li key={card.key} className={card.waiting ? 'todo-card todo-waiting' : 'todo-card'}>
+          <li key={card.key} className={`todo-card${card.waiting ? ' todo-waiting' : ''}${viewing === card.key ? ' todo-viewing' : ''}`}>
             <div className="todo-head">
               <span className="badge badge-muted">{card.tag}</span>
               {/* A question about no row is its own title: its card says it once, below. */}
               {(row || !card.questions.length) && <strong>{card.title}</strong>}
               {card.waiting && <span className="badge badge-warn">Waiting on you</span>}
               {row && <Link href={rowHref(row)} className="small">{card.kind === 'document' ? 'Show its lines' : 'Show'}</Link>}
+              {row && documentOf(row, ledger.uploads) && (
+                <button type="button" className="link-btn small" aria-pressed={viewing === card.key} onClick={() => onView(card)}>
+                  View document
+                </button>
+              )}
             </div>
             {row && card.kind === 'row' && (
               <IssueList issues={card.issues} onShowBoth={() => router.push(rowHref(row))}
@@ -69,9 +77,14 @@ export default function TodoList({ cards, working, refused, answerer, onChange, 
                          fixesOf={readOnly ? undefined : issue => issueFixes(row, issue)}
                          onFix={change => onChange(row.id, change)} askHref={askHref(row)} />
             )}
-            {card.suggestions.map(d => (
+            {card.suggestions.map(d => {
+              const change = changeLines(d)
+              return (
               <div key={d.id} className="todo-suggestion">
                 <ul className="decisions"><DecisionLine decision={d} /></ul>
+                {/* What it would change, without opening it. */}
+                {change.lines.map((line, i) => <p key={i} className="todo-change mono small">{line}</p>)}
+                {change.more > 0 && <p className="todo-change muted small">and {change.more} more</p>}
                 <div className="question-row">
                   <button type="button" className="btn btn-small" disabled={readOnly || !!working} onClick={() => onApply(d)}>
                     {working === d.id ? 'Applying…' : 'Apply'}
@@ -80,7 +93,8 @@ export default function TodoList({ cards, working, refused, answerer, onChange, 
                   {refused[d.id] && <span className="field-error">{refused[d.id]}</span>}
                 </div>
               </div>
-            ))}
+              )
+            })}
             {card.questions.length > 0 && (
               <ul className="questions">
                 {card.questions.map((q, i) => (

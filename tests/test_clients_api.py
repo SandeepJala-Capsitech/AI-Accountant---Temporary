@@ -384,6 +384,29 @@ def test_an_analysed_file_can_be_downloaded_again(mongo_store):
         assert resp.headers["content-type"].startswith("text/csv")
 
 
+@pytest.mark.parametrize("name, content_type, shown", [
+    ("r.pdf", "application/pdf", True), ("r.png", "image/png", True), ("r.jpg", "image/jpeg; charset=binary", True),
+    ("r.svg", "image/svg+xml", False), ("r.html", "text/html", False), ("r.csv", "text/csv", False),
+])
+def test_only_a_pdf_or_an_image_is_sent_for_showing(mongo_store, name, content_type, shown):
+    blobs = MemoryBlobStore()
+    app = create_app(Settings(warmup=False), model_client=FakeModel([transactions_json(ROW)]), store=mongo_store, blobs=blobs)
+    with TestClient(app, headers={"X-LedgerSync": "1"}) as api:
+        cid = add(api)["id"]
+        resp = api.post("/api/analyze", data={"client_id": str(cid)}, files={"file": ("bt.csv", BT_CSV, "text/csv")})
+        upload_id = finish(api, resp.json()["job_id"])["result"]["upload_id"]
+        sha = blobs.put(b"the file", name=name, content_type=content_type)
+        mongo_store.db.clients.update_one({"id": cid, "uploads.id": upload_id}, {"$set": {"uploads.$.sha256": sha}})
+        file = f"/api/clients/{cid}/uploads/{upload_id}/file"
+
+        asked = api.get(f"{file}?show=1")
+
+        assert asked.status_code == 200 and asked.content == b"the file"
+        assert asked.headers["content-disposition"].startswith("inline" if shown else "attachment")
+        assert asked.headers["x-content-type-options"] == "nosniff"
+        assert api.get(file).headers["content-disposition"].startswith("attachment")
+
+
 def test_pasted_text_has_no_file_to_download(api):
     client = api(FakeModel([transactions_json(ROW)]))
     cid = add(client)["id"]

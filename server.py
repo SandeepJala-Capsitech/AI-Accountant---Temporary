@@ -48,6 +48,11 @@ def configure_logging(level: str) -> None:
     logging.getLogger("ledgersync").setLevel(level)
 
 
+# The kinds of file a page may show in place (the original of an upload, beside what was read from it). Nothing that
+# a browser would run: not SVG, not HTML.
+SHOWN_IN_PAGE = frozenset({"application/pdf", "image/png", "image/jpeg", "image/webp", "image/gif"})
+
+
 def create_app(settings: Optional[Settings] = None, *, model_client=None, store: Optional[MongoStore] = None,
                blobs: Optional[BlobStore] = None, chat_model=None) -> FastAPI:
     """The API; tests pass a stand-in for the model client as model_client, a store on a test database, and the
@@ -577,8 +582,10 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         return result
 
     @app.get("/api/clients/{client_id}/uploads/{upload_id}/file")
-    def download_original(client_id: int, upload_id: int):
-        """The file an upload was read from, as it was sent; 404 when the upload was pasted text or the file is gone."""
+    def download_original(client_id: int, upload_id: int, show: bool = False):
+        """The file an upload was read from, as it was sent; 404 when the upload was pasted text or the file is gone.
+        show: for a page to show it in place, which only a PDF or an image is sent for; any other file is a download
+        whatever was asked, so a file that could run in the page never does."""
         store.get_client(client_id)
         kept = "The original file wasn't kept for this upload."
         upload = next((u for u in store.uploads(client_id) if u["id"] == upload_id), None)
@@ -588,9 +595,12 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
             raise NotFound(kept)
         blob = blobs.get(upload["sha256"])
         plain = blob.name.encode("ascii", "replace").decode().replace("?", "_").replace('"', "_")
+        kind = (blob.content_type or "").split(";")[0].strip().lower()
+        how = "inline" if show and kind in SHOWN_IN_PAGE else "attachment"
         return Response(blob.data, media_type=blob.content_type,
-                        headers={"Content-Disposition": f"attachment; filename=\"{plain}\"; "
-                                                        f"filename*=UTF-8''{quote(blob.name)}"})
+                        headers={"Content-Disposition": f"{how}; filename=\"{plain}\"; "
+                                                        f"filename*=UTF-8''{quote(blob.name)}",
+                                 "X-Content-Type-Options": "nosniff"})
 
     def workbook_download(content: bytes, name: str) -> Response:
         """An Excel workbook as a download under its file name."""
