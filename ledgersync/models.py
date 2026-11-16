@@ -298,8 +298,7 @@ class TrialBalanceLine(BaseModel):
     code: str
     name: str
     type: str
-    heading: str = ""              # accounts.Heading: where it goes in the profit and loss account or balance sheet
-    tax: Optional[str] = None      # accounts.TaxTreatment of an income or cost account; None on the balance sheet
+    heading: str                   # accounts.Heading: where it goes in the profit and loss account or balance sheet
     debit: Decimal
     credit: Decimal
 
@@ -381,7 +380,6 @@ class ClientFields(BaseModel):
     bank_accounts: list[BankAccount] = Field(
         default_factory=lambda: [BankAccount(code=BANK, name="Bank current account", kind="current")])
     owners: list[Owner] = Field(default_factory=list)   # its directors, partners or members; none for a sole trader
-    folder: str = ""                   # where the client's files are on the computer the site runs on; "" for none
     ai_review: Literal["automatic", "suggest", "off"] = "automatic"   # what the background AI review may do
     # The client's references, as its papers print them: kept and shown, used by nothing yet.
     company_number: str = ""           # Companies House number
@@ -389,7 +387,7 @@ class ClientFields(BaseModel):
     vat_number: str = ""               # VAT registration number
     paye_reference: str = ""           # employer's PAYE reference
 
-    @field_validator("name", "contact_name", "contact_email", "contact_phone", "folder", "company_number", "utr",
+    @field_validator("name", "contact_name", "contact_email", "contact_phone", "company_number", "utr",
                      "vat_number", "paye_reference", mode="before")
     @classmethod
     def _trimmed(cls, value):
@@ -437,7 +435,6 @@ class ClientPatch(BaseModel):
     bank_accounts: Optional[list[BankAccount]] = None
     owners: Optional[list[Owner]] = None
     first_year_end: Optional[dt.date] = None
-    folder: Optional[str] = None
     ai_review: Optional[Literal["automatic", "suggest", "off"]] = None
     company_number: Optional[str] = None
     utr: Optional[str] = None
@@ -449,12 +446,6 @@ class ClientPatch(BaseModel):
     @classmethod
     def _empty_date(cls, value):
         return None if value == "" else value
-
-
-class FolderImport(BaseModel):
-    """Which year, and for a statement which bank account, the files of a client's folder are read into."""
-    year_start: dt.date
-    bank_account: Optional[str] = None
 
 
 class ClientSummary(Client):
@@ -714,7 +705,7 @@ class ChangeDraft(BaseModel):
     """One change to a client's books, as its maker states it. AgentRecords.add_change adds the rest."""
     client_id: int
     year_start: Optional[dt.date] = None       # None: the whole client, or a year the caller doesn't know
-    actor: str                                 # "user", "import", "rules" or "agent:<model>"
+    actor: str                                 # "user", "rules" or "agent:<model>" ("import" on changes a folder import made)
     kind: ChangeKind
     row_ids: list[int] = Field(default_factory=list)
     upload_id: Optional[int] = None

@@ -108,8 +108,8 @@ export default function AiReviewSection() {
     return todoCards(ledger.transactions, suggestions, openQuestions(runs ?? []), row =>
       `${names.get(row.upload_id) ?? 'Document'}, ${(DOCUMENT_TYPES[row.document_type ?? 'receipt'] ?? 'document').toLowerCase()}`)
   }, [ledger.transactions, ledger.uploads, suggestions, runs])
-  const waiting = waitingSuggestions(cards)
-  const groups = useMemo(() => sameFixGroups(waitingSuggestions(cards)), [cards])
+  const waiting = useMemo(() => waitingSuggestions(cards), [cards])
+  const groups = useMemo(() => sameFixGroups(waiting), [waiting])
   // The document open beside the list: its card's, for as long as the card is on the list.
   const viewed = cards.find(c => c.key === viewing && c.row) ?? null
   const viewedUpload = viewed?.row ? documentOf(viewed.row, ledger.uploads) : null

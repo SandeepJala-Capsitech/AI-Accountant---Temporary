@@ -33,7 +33,6 @@ export interface ClientFields {
   first_year_end: string     // the end of the first year the books are kept for: "2026-03-31"
   bank_accounts: BankAccount[]
   owners?: Owner[]           // its directors, partners or members; none for a sole trader
-  folder: string             // where the client's files are on the computer the site runs on; '' for none
   ai_review?: AiReviewMode   // what the background review may do; automatic when not given
   // The client's references, as its papers print them; '' when not known.
   company_number?: string
@@ -228,20 +227,6 @@ export const getOpening = (id: number) => request<OpeningBalances>(`/api/clients
 export const putOpening = (id: number, opening: OpeningBalances) =>
   request<OpeningBalances>(`/api/clients/${id}/opening-balances`, send('PUT', opening))
 
-export interface FolderImportResult {
-  jobs: { name: string; job_id: string }[]
-  skipped: string[]          // already known, or being read now
-  unreadable: string[]       // of a type that can't be read
-  refused: { name: string; message: string }[]   // failed their check, with why
-}
-
-// Reads the files in the client's folder that it has not had before into a year; a statement goes on bankAccount.
-export const importFolder = (id: number, start: string, bankAccount: string | null) =>
-  request<FolderImportResult>(`/api/clients/${id}/import-folder`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-LedgerSync': '1' },
-    body: JSON.stringify({ year_start: start, bank_account: bankAccount || null }),
-  }, 120_000)
 export const setUploadBank = (id: number, uploadId: number, code: string) =>
   request<Ledger>(`/api/clients/${id}/uploads/${uploadId}`, send('PATCH', { bank_account: code }))
 export const changeRow = (id: number, rowId: number, change: RowChange) =>

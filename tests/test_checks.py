@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from helpers import SETTINGS as HELPER_SETTINGS, net, normalise_and_match, only_issue, row
 
 from ledgersync.accounts import BANK, CHART
-from ledgersync.checks import booked, is_asset_candidate, normalise
+from ledgersync.checks import booked, normalise
 from ledgersync.models import BusinessSettings, Issue, Transaction
 from ledgersync.posting import trial_balance
 from ledgersync.rows import saved_form
@@ -618,7 +618,6 @@ def test_a_large_purchase_on_a_candidate_account_is_marked():
     said = only_issue(big(), "asset_check")
     assert said.severity == "info"
     assert said.message == "£1,800.00 on 7504 Office Stationery: checked for equipment that should be kept as an asset."
-    assert is_asset_candidate(big())
 
 
 def test_under_the_figure_is_not_marked():
@@ -630,7 +629,6 @@ def test_an_amount_in_another_currency_is_not_marked_until_it_is_in_pounds():
     # USD 1,800.00 is not £1,800.00: the row asks to be converted, and is checked once it has been.
     dollars = big(currency="USD")
     assert "asset_check" not in dict(codes(dollars)) and "non_gbp_currency" in dict(codes(dollars))
-    assert not is_asset_candidate(dollars)
 
 
 def test_rent_and_stock_are_not_marked():
@@ -648,7 +646,7 @@ def test_a_document_with_no_total_goes_by_the_row():
 
 def test_mixed_items_is_not_marked():
     mixed = big(issues=[Issue(code="mixed_items", message="m", severity="warning")])
-    assert "asset_check" not in dict(codes(mixed)) and not is_asset_candidate(mixed)
+    assert "asset_check" not in dict(codes(mixed))
 
 
 def test_a_bank_line_is_not_marked():
@@ -661,4 +659,4 @@ def test_money_in_is_not_marked():
 
 def test_an_accepted_candidate_is_not_marked():
     quiet = big(accepted=["asset_check"])
-    assert "asset_check" not in dict(codes(quiet)) and not is_asset_candidate(quiet)
+    assert "asset_check" not in dict(codes(quiet))

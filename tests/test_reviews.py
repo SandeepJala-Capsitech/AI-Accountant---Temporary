@@ -93,7 +93,7 @@ def test_triggers_ignores_the_agent_chat_reads_closing_and_description_only_edit
         assert not t(kind=kind)
     assert not t(kind="row_edited", after={"description": "Taxi"})
     assert t(kind="row_edited", after={"description": "Taxi", "account": "7400"})
-    for field in ("name", "contact_name", "folder", "ai_review"):
+    for field in ("name", "contact_name", "ai_review"):
         assert not t(kind="client_changed", after={field: "x"})
     for field in ("vat_registered", "business_type", "first_year_end", "bank_accounts"):
         assert t(kind="client_changed", after={field: "x"})

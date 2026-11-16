@@ -54,7 +54,7 @@ test('the notice names the first problem that stops the bank check', () => {
 
 const client = (kinds: ('current' | 'savings')[]): Client => ({
   id: 1, name: 'Acme', business_type: 'limited_company', contact_name: '', contact_email: '', contact_phone: '',
-  vat_registered: false, first_year_end: '2026-03-31', folder: '', archived: false, archived_at: null, created_at: '', updated_at: '',
+  vat_registered: false, first_year_end: '2026-03-31', archived: false, archived_at: null, created_at: '', updated_at: '',
   bank_accounts: kinds.map((kind, i) => ({ code: kind === 'current' ? `120${i}` : `121${i}`, name: `Account ${i}`, kind })),
 })
 

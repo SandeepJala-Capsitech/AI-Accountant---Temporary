@@ -3,11 +3,9 @@ import datetime as dt
 import hashlib
 import io
 import logging
-import mimetypes
 import threading
 from collections import Counter
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
@@ -15,7 +13,7 @@ from fastapi import BackgroundTasks, FastAPI, File, Form, Header, Request, Uploa
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from ledgersync import (accounts, adapter, books, demo, folder, intake, ledger, ledger_book, pipeline, posting, questions,
+from ledgersync import (accounts, adapter, books, demo, intake, ledger, ledger_book, pipeline, posting, questions,
                         resolutions, reviews, undo, upkeep)
 from ledgersync.agent.tools import AgentDeps, upload_texts
 from ledgersync.agent.chat import AnswerResult, Chat, ChatFile, NewThread, ThreadDetail, ThreadPatch
@@ -31,7 +29,7 @@ from ledgersync.jobs import JobStore
 from ledgersync.matching import match
 from ledgersync.models import (AnalysisResult, BankCheck, BusinessSettings, BusinessType, ChangeDraft, ChatThread,
                                Client,
-                               ClientFields, ClientPatch, ClientSummary, Decision, FolderImport, InvoiceSummary, Ledger,
+                               ClientFields, ClientPatch, ClientSummary, Decision, InvoiceSummary, Ledger,
                                LedgerRequest, ManualUpload, VatFigures, OpeningBalances, PostedTrialBalance, Question, ReviewDetail, RowPatch,
                                TransactionList, TrialBalance, UploadPatch, Year, YearSummary)
 from ledgersync.questions import Answer
@@ -182,7 +180,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
 
     def run_analysis(item, ctx, client: Optional[Client] = None, name: str = "Pasted text", sha256: str = "",
                      bank_account: Optional[str] = None, year_start: Optional[dt.date] = None,
-                     actor: str = "user", settle: bool = True, in_chat: bool = False) -> dict:
+                     settle: bool = True, in_chat: bool = False) -> dict:
         """Reads one input. For a client: the model is told its name, kind of business and its other bank accounts,
         the rows are booked with its settings, and they are saved to it as an upload when any were found (not after
         a cancel), added to the year starting year_start; none is saved when any falls in a closed year. A
@@ -225,7 +223,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
                                                    model=extraction.model or "", warnings=extraction.warnings,
                                                    bank_account=own if statement else None,
                                                    year_start=year_start)
-            changed(client.id, "upload_read", f"{name} read: {rows_word(len(transactions))}", actor=actor,
+            changed(client.id, "upload_read", f"{name} read: {rows_word(len(transactions))}",
                     year_start=year_start, upload_id=result["upload_id"], settle=settle, in_chat=in_chat)
         return result
 
@@ -271,7 +269,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
 
     def submit_analysis(item, client: Optional[Client], name: str, sha256: str, content_type: str, data: bytes,
                         year_start: Optional[dt.date], bank_account: Optional[str], *, once: bool = False,
-                        actor: str = "user", settle: bool = True, in_chat: bool = False):
+                        settle: bool = True, in_chat: bool = False):
         """Keeps the original file (when it has a sha256) and queues the analysis of an input already checked. With
         once, a file a job is already reading for the client is not queued again: returns None."""
         key = (client.id, sha256) if client is not None and sha256 else None
@@ -294,7 +292,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
 
         def work(ctx):
             return run_analysis(item, ctx, client, name, sha256, bank_account,
-                                year_start if client is not None else None, actor, settle, in_chat)
+                                year_start if client is not None else None, settle, in_chat)
 
         try:
             if sha256:
@@ -475,48 +473,6 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
                 year_start=start)
         return client
 
-    @app.post("/api/clients/{client_id}/import-folder", status_code=202)
-    def import_folder(client_id: int, body: FolderImport, x_ledgersync: Optional[str] = Header(None)):
-        """Reads the files in the client's folder whose contents it has not had before, each as /api/analyze
-        reads an upload (the original kept, one job each). Lists the jobs, the files skipped as already known (or being read now), those
-        of a type that can't be read, and those that failed their check, with why."""
-        if not x_ledgersync:
-            raise RefusedRequest("Imports are taken from the Super Accountant pages only: the X-LedgerSync "
-                                 "header is missing.")
-        client = store.get_client(client_id)
-        ledger.require_active(client)
-        if not client.folder:
-            raise InvalidInput("Set this client's folder first.")
-        root = Path(client.folder)
-        if not root.is_dir():
-            raise InvalidInput("That folder doesn't exist on this computer.")
-        if body.bank_account:
-            ledger.check_bank_account(client, body.bank_account)
-        year_of(client_id, body.year_start)
-        ledger.ensure_open(client, [body.year_start], body.year_start)
-        scan = folder.new_files(root, {u["sha256"] for u in store.uploads(client_id) if u["sha256"]})
-        if scan.new:
-            model_client.ensure_available()
-        started, refused, skipped = [], [], list(scan.skipped)
-        for path, data, sha256 in scan.new:
-            name = path.relative_to(root).as_posix()
-            try:
-                intake.read_limited(io.BytesIO(data), settings.max_upload_bytes)
-                item = intake.load_upload(name, data, settings.max_pdf_pages)
-            except LedgerSyncError as e:
-                refused.append({"name": name, "message": e.message})
-                continue
-            content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
-            # Each file goes on the account or card its name points at; the one chosen for the import otherwise.
-            account = folder.account_for(name, client.bank_accounts, body.bank_account or None)
-            job = submit_analysis(item, client, name, sha256, content_type, data, body.year_start,
-                                  account, once=True, actor="import")
-            if job is None:   # another import, or an upload, is reading it now
-                skipped.append(name)
-                continue
-            started.append({"name": name, "job_id": job.id})
-        return {"jobs": started, "skipped": skipped, "unreadable": scan.unreadable, "refused": refused}
-
     @app.get("/api/clients/{client_id}/opening-balances", response_model=OpeningBalances)
     def opening_balances(client_id: int):
         store.get_client(client_id)
@@ -620,8 +576,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         """Reads a file sent to the chat as /api/analyze reads an upload: checked, kept and read in a job that saves
         its rows to the client, added to the year; a statement's on its bank account, by default the client's first
         current account. Refused (LedgerSyncError) before it is read when it fails its checks, and skipped (SameFile)
-        when the same file is already saved for the client or being read for it, as the Documents page and a folder
-        import skip it: read again, its rows would be booked twice."""
+        when the same file is already saved for the client or being read for it, as the Documents page skips it: read again, its rows would be booked twice."""
         data = intake.read_limited(io.BytesIO(file.data), settings.max_upload_bytes)
         item = intake.load_upload(file.name, data, settings.max_pdf_pages)
         sha256 = hashlib.sha256(data).hexdigest()

@@ -92,7 +92,6 @@ export interface TrialBalanceLine {
   name: string
   type: string
   heading?: string      // where it goes in the accounts, such as 'Tangible assets'; missing from older APIs
-  tax?: string | null   // an income or cost account's tax treatment: allowable, disallowable, check or non_trading
   debit: string
   credit: string
 }
@@ -221,7 +220,7 @@ export async function startAnalysis(formData: FormData): Promise<string> {
   return job_id
 }
 
-// Polls a job (one analyze started, or one an import from the client's folder started) until it finishes.
+// Polls a job (one analyze started) until it finishes.
 export async function waitForJob(
   job_id: string,
   onProgress: (progress: string) => void,

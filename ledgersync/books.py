@@ -22,7 +22,7 @@ from .errors import InvalidInput, InvalidTransactions, NotFound
 from .evidence_rules import document_rule, journal_with_rule
 from .export import file_name, workbook
 from .file_dates import check_file_date, date_in_name
-from .ledger import ensure_open, needs_review, require_active, settings_for
+from .ledger import ensure_open, needs_review, owners_of, require_active, settings_for
 from .matching import DocumentStatus, match_documents
 from .models import (Direction, VatFigures, BankCheck, BusinessSettings, Client, ClosedYear, InvoiceSummary, Ledger, OpeningBalances, OpenItem,
                      SavedRow, StatementCheck, Transaction, TrialBalance, Upload, Year, YearSummary)
@@ -492,7 +492,7 @@ def _trial_balance(b: _Books, n: int) -> TrialBalance:
 
 def _owners_named(b: _Books, tb: TrialBalance) -> TrialBalance:
     """The trial balance with each owner's accounts named after them ("Drawings — Ann Lee")."""
-    names = owner_names(b.client.business_type, tuple((o.slot, o.name) for o in b.client.owners if o.slot is not None))
+    names = owner_names(b.client.business_type, owners_of(b.client))
     if not names:
         return tb
 

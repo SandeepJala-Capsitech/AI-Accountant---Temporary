@@ -84,8 +84,7 @@ class Account:
                 object.__setattr__(self, "tax", TaxTreatment.ALLOWABLE)
             outside = self.tax == TaxTreatment.NON_TRADING or self.heading == Heading.TAX
             if self.sa103 is None and not outside:
-                object.__setattr__(self, "sa103", (15 if self.code == "4000" else 16) if self.type == AccountType.INCOME
-                                   else 30)
+                object.__setattr__(self, "sa103", 16 if self.type == AccountType.INCOME else 30)
 
 
 def _heading_by_code(code: str, kind: AccountType) -> Optional[Heading]:
@@ -204,7 +203,7 @@ CHART: tuple[Account, ...] = (
     Account("3260", "Drawings", _E, V.OUTSIDE_SCOPE, "Money the owner takes out for personal use."),
     *(Account(f"326{n}", f"Drawings {n + 1}", _E, V.OUTSIDE_SCOPE,
               f"Money partner number {n + 1} takes out for personal use.") for n in (1, 2, 3)),
-    Account("4000", "Sales", _I, V.STANDARD, "Money from customers for the business's goods or services."),
+    Account("4000", "Sales", _I, V.STANDARD, "Money from customers for the business's goods or services.", sa103=15),
     Account("4900", "Other Income", _I, V.STANDARD, "Income that is not from sales, rent or bank interest."),
     Account("4902", "Bank Interest Received", _I, V.EXEMPT, "Interest the bank pays on the business's accounts.",
             heading=_H.INTEREST_RECEIVABLE, tax=_T.NON_TRADING),
@@ -310,8 +309,7 @@ CHART: tuple[Account, ...] = (
 BY_CODE: dict[str, Account] = {a.code: a for a in CHART}
 BANK, SALES_VAT, PURCHASE_VAT, SUSPENSE = "1200", "2200", "2201", "9998"
 DEBTORS, CREDITORS, STAFF_EXPENSES = "1100", "2100", "2110"
-DIRECTORS_LOAN, CAPITAL, DRAWINGS = "2250", "3010", "3260"   # the first owner's: see owner_slots
-SHARES, DIVIDENDS, RETAINED, OWNERS_CAPITAL = "3000", "3250", "3200", "3100"
+SHARES, DIVIDENDS, RETAINED = "3000", "3250", "3200"
 NET_WAGES, PAYE, PENSION = "2220", "2210", "2230"
 WAGES = frozenset({"7000", "7001"})   # Gross Wages, Directors' Salaries: booked from the payroll report
 VAT_LIABILITY = "2202"
@@ -319,7 +317,6 @@ CIS_DEDUCTED, CIS_PAYABLE = "1104", "2215"   # the Construction Industry Scheme'
 LOANS = "2300"
 CLEARING = "1250"   # a payment processor's payouts, until its payout report books what they are made of
 HOTELS = "7402"
-LOAN_INTEREST = "7903"
 STOCK_MOVEMENT = ("5200", "5201")   # opening and closing stock, journalled at the year end against 1001 Stock
 DISPOSALS = "8010"                  # the profit or loss when a fixed asset is sold or scrapped
 # What is borrowed, and the account at the year end for the part of it due after more than one year (the balance

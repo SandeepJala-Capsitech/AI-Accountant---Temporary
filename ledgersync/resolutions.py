@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from . import books
 from .accounts import BY_CODE, FIXED_ASSETS, AccountType, choosable
 from .checks import ACCEPTABLE, long_date
-from .coding import Usual, usual_accounts, usual_text
+from .coding import Usual, named_account, usual_accounts, usual_text
 from .file_dates import date_in_name
 from .errors import InvalidInput, LedgerSyncError, NotFound
 from .ledger import _check_edit, bank_choices, ensure_open, owners_of, require_active
@@ -423,28 +423,37 @@ def _change_account(rows: dict[int, SavedRow], row_id: int, r: ChangeAccount, *,
     target = BY_CODE.get(r.account_code)
     if target is None:
         raise _Refused(f"{r.account_code} isn't an account.")
-    said = {i.code for i in row.issues}
-    usual = usual_account_of(rows, row_id) if "unusual_account" in said else None
-    if usual is not None and usual.code == target.code:
-        rule = "R6 Account changed"
-    elif "asset_check" in said and target.code in FIXED_ASSETS:
-        if not evidence:
-            raise _Refused("No evidence was cited.")
-        rule = "R6 Account changed"
-    elif "small_asset" in said and target.type == AccountType.EXPENSE:
-        rule = "R6 Account changed"
-    elif usual is not None:
-        raise _Refused(f"The usual account for {(row.counterparty or '').strip()} is {usual.code} "
-                       f"{BY_CODE[usual.code].name}.")
-    elif "asset_check" in said:
-        raise _Refused("Equipment kept for use goes to " + ", ".join(
-            f"{c} {BY_CODE[c].name}" for c in sorted(FIXED_ASSETS)[:-1]) + f" or {sorted(FIXED_ASSETS)[-1]} "
-            f"{BY_CODE[sorted(FIXED_ASSETS)[-1]].name}.")
-    elif "small_asset" in said:
-        raise _Refused("A small item goes to a cost account.")
-    else:
+    said, usual = _account_checks(rows, row)
+    allowed = _allowed_by(said, usual, target)
+    if allowed == "asset_check" and not evidence:
+        raise _Refused("No evidence was cited.")
+    if allowed is None:
+        if usual is not None:
+            raise _Refused(f"The usual account for {(row.counterparty or '').strip()} is {named_account(usual.code)}.")
+        if "asset_check" in said:
+            *most, last = (named_account(c) for c in sorted(FIXED_ASSETS))
+            raise _Refused(f"Equipment kept for use goes to {', '.join(most)} or {last}.")
+        if "small_asset" in said:
+            raise _Refused("A small item goes to a cost account.")
         raise _Refused("Nothing says this row is on the wrong account.")
-    return _Change(rule=rule, touched=[row_id], patches={row_id: {"account_code": target.code}})
+    return _Change(rule=_RULES["change_account"], touched=[row_id], patches={row_id: {"account_code": target.code}})
+
+
+def _account_checks(rows: dict[int, SavedRow], row: SavedRow) -> tuple[set[str], Optional[Usual]]:
+    """The row's issue codes, and its supplier's usual account when unusual_account is among them."""
+    said = {i.code for i in row.issues}
+    return said, usual_account_of(rows, row.id) if "unusual_account" in said else None
+
+
+def _allowed_by(said: set[str], usual: Optional[Usual], target) -> Optional[str]:
+    """The check that lets a row's account change to target (R6), from _account_checks; None when none does."""
+    if usual is not None and usual.code == target.code:
+        return "unusual_account"
+    if "asset_check" in said and target.code in FIXED_ASSETS:
+        return "asset_check"
+    if "small_asset" in said and target.type == AccountType.EXPENSE:
+        return "small_asset"
+    return None
 
 
 _ACTIONS = {"keep_one": _keep_one, "use_primary": _use_primary, "split_vat": _split_vat,
@@ -820,11 +829,7 @@ def _still_holds(rows: dict[int, SavedRow], d: Decision) -> bool:
     target = BY_CODE.get((d.resolution or {}).get("account_code", ""))
     if row is None or target is None or row.excluded or row.superseded_by:
         return False
-    said = {i.code for i in row.issues}
-    usual = usual_account_of(rows, row.id) if "unusual_account" in said else None
-    return ((usual is not None and usual.code == target.code)
-            or ("asset_check" in said and target.code in FIXED_ASSETS)
-            or ("small_asset" in said and target.type == AccountType.EXPENSE))
+    return _allowed_by(*_account_checks(rows, row), target) is not None
 
 
 def suggest_account_changes(store: MongoStore, records: AgentRecords, *, client_id: int,

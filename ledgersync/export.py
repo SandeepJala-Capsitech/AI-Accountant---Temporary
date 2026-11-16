@@ -79,7 +79,7 @@ def _trial_balance(sheet, ledger: Ledger, balance, day: dt.date) -> None:
     _append(sheet, ["Code", "Account", "Debit", "Credit", "Heading", "Tax", "SA103F box"])
     for line in balance.lines:
         account = BY_CODE[line.code]
-        _append(sheet, [line.code, line.name, line.debit, line.credit, line.heading or account.heading.value,
+        _append(sheet, [line.code, line.name, line.debit, line.credit, line.heading,
                         _TAX_WORDS.get(account.tax), account.sa103])
     _append(sheet, [None, "Totals", balance.total_debits, balance.total_credits])
     for row in sheet.iter_rows(min_row=3, min_col=3, max_col=4):
@@ -119,7 +119,7 @@ def statement_lines(balance: TrialBalance) -> tuple[list[StatementLine], list[St
     bs: list[StatementLine] = []
 
     def of(heading: Heading) -> list:
-        return [line for line in used if (line.heading or BY_CODE[line.code].heading.value) == heading.value]
+        return [line for line in used if line.heading == heading.value]
 
     def block(out: list, heading: Heading, sign: int) -> Decimal:
         lines = of(heading)

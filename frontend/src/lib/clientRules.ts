@@ -1,6 +1,6 @@
 // Rules the client pages share, kept apart from the network so node --test can run them.
 import type { Transaction } from './api'
-import type { AccountChoice, BankAccount, BankAccountKind, BusinessType, ClientFields, ClientSummary, EditableField, FolderImportResult, Owner, RowChange, SavedRow, StatementCheck,
+import type { AccountChoice, BankAccount, BankAccountKind, BusinessType, ClientFields, ClientSummary, EditableField, Owner, RowChange, SavedRow, StatementCheck,
               Upload } from './clients'
 import { money, needsReview, totalsOf } from './ledger.ts'
 
@@ -275,19 +275,6 @@ export function accountList(accounts: AccountChoice[], saved: { code: string; na
   const sorted = [...accounts].sort((a, b) => a.name.localeCompare(b.name, 'en-GB'))
   return !saved.code || accounts.some(a => a.code === current) ? sorted
     : [{ code: saved.code, name: saved.name || 'Unknown account', type: '', vat: '' }, ...sorted]
-}
-
-// What an import from the client's folder found, in a sentence or three: each part is left out when there is none.
-export function importText(result: FolderImportResult): string {
-  const { jobs, skipped, unreadable, refused } = result
-  if (!jobs.length && !unreadable.length && !refused.length) return 'No new files in the folder.'
-  const files = (n: number) => `${n} new file${n === 1 ? '' : 's'}`
-  return [
-    jobs.length ? `Sent ${files(jobs.length)} to be read.` : '',
-    skipped.length ? `Skipped ${skipped.length} already taken in.` : '',
-    unreadable.length ? `${unreadable.length} can't be read: ${unreadable.join(', ')}.` : '',
-    ...refused.map(r => `${r.name} was refused: ${r.message}`),
-  ].filter(Boolean).join(' ')
 }
 
 // What a closed year's sections say in place of their controls.

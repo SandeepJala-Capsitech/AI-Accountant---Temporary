@@ -37,7 +37,7 @@ FRESH_FOR = 5.0
 
 _CLIENT_FIELDS = ("name", "business_type", "contact_name", "contact_email", "contact_phone", "vat_registered",
                   "vat_from",
-                  "bank_accounts", "owners", "first_year_end", "folder", "ai_review", "company_number", "utr", "vat_number",
+                  "bank_accounts", "owners", "first_year_end", "ai_review", "company_number", "utr", "vat_number",
                   "paye_reference")
 _REFERENCES = ("company_number", "utr", "vat_number", "paye_reference")
 _CLIENT_PROJECTION = {
@@ -52,7 +52,6 @@ _CLIENT_PROJECTION = {
     "bank_accounts": 1,
     "owners": 1,
     "first_year_end": 1,
-    "folder": 1,
     "ai_review": 1,
     "company_number": 1,
     "utr": 1,
@@ -88,7 +87,6 @@ def _client(doc: dict, earliest: Optional[dt.date] = None) -> Client:
         contact_phone=doc.get("contact_phone", ""),
         vat_registered=bool(doc.get("vat_registered", True)),
         vat_from=_date(doc.get("vat_from")),
-        folder=doc.get("folder", ""),
         ai_review=doc.get("ai_review", "automatic"),
         **{field: doc.get(field, "") for field in _REFERENCES},
         **({"bank_accounts": doc["bank_accounts"]} if doc.get("bank_accounts") else {}),
@@ -285,7 +283,6 @@ class MongoStore:
             "bank_accounts": _stored_accounts(fields.bank_accounts),
             "owners": [o.model_dump(mode="json") for o in fields.owners],
             "first_year_end": fields.first_year_end.isoformat() if fields.first_year_end else None,
-            "folder": fields.folder,
             "ai_review": fields.ai_review,
             **{field: getattr(fields, field) for field in _REFERENCES},
             "opening": OpeningBalances().model_dump(mode="json"),

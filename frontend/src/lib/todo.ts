@@ -16,7 +16,6 @@ export interface TodoCard {
   tag: string                  // 'Account', 'Recorded twice', …, 'Document total', 'Question', 'Suggestion'
   title: string                // the row as a person knows it, the document's file, or the question itself
   issues: Issue[]              // warnings and errors, errors first
-  lines: number[]              // a document's card: its lines
   suggestions: Decision[]      // changes waiting for the person to apply
   questions: Question[]        // questions still to answer
   waiting: boolean             // nothing on it but questions answered "I don't have it" or "Not sure"
@@ -56,16 +55,14 @@ const rank = (card: TodoCard): number =>
 export function todoCards(rows: SavedRow[], suggestions: Decision[], questions: Question[],
                           fileOf: (row: SavedRow) => string): TodoCard[] {
   const cards: TodoCard[] = []
-  const blank = { issues: [], lines: [], suggestions: [], questions: [], waiting: false }
+  const blank = () => ({ suggestions: [] as Decision[], questions: [] as Question[], waiting: false })
   for (const row of rows) {
     if (leftOut(row)) continue
     const issues = errorsFirst(rowIssues(row))
-    if (issues.length) cards.push({ ...blank, key: `row:${row.id}`, kind: 'row', row, tag: tagOf(issues[0].code), title: whatOf(row), issues,
-                                    suggestions: [], questions: [] })
+    if (issues.length) cards.push({ ...blank(), key: `row:${row.id}`, kind: 'row', row, tag: tagOf(issues[0].code), title: whatOf(row), issues })
   }
-  for (const { row, issue, lines } of documentProblems(rows)) {
-    cards.push({ ...blank, key: `doc:${row.id}`, kind: 'document', row, tag: 'Document total', title: fileOf(row), issues: [issue], lines,
-                 suggestions: [], questions: [] })
+  for (const { row, issue } of documentProblems(rows)) {
+    cards.push({ ...blank(), key: `doc:${row.id}`, kind: 'document', row, tag: 'Document total', title: fileOf(row), issues: [issue] })
   }
 
   const cardFor = (rowIds: number[], own: () => Pick<TodoCard, 'key' | 'tag' | 'title'>): TodoCard => {
@@ -76,7 +73,7 @@ export function todoCards(rows: SavedRow[], suggestions: Decision[], questions: 
     const row = rowIds.map(id => rows.find(r => r.id === id)).find(r => r) ?? null
     const shared = row && cards.find(c => c.kind === 'other' && c.row?.id === row.id)
     if (shared) return shared
-    const made: TodoCard = { ...blank, ...own(), kind: 'other', row, suggestions: [], questions: [] }
+    const made: TodoCard = { ...blank(), ...own(), kind: 'other', row, issues: [] }
     if (row) made.title = whatOf(row)
     cards.push(made)
     return made

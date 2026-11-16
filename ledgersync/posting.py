@@ -59,7 +59,7 @@ def _vat_last(item: tuple[str, Decimal]) -> tuple[bool, str]:
 def _line(code: str, balance: Decimal) -> TrialBalanceLine:
     account = BY_CODE[code]
     return TrialBalanceLine(code=code, name=account.name, type=account.type.value,
-                            heading=heading_for(code, balance).value, tax=account.tax.value if account.tax else None,
+                            heading=heading_for(code, balance).value,
                             debit=balance if balance > 0 else ZERO, credit=-balance if balance < 0 else ZERO)
 
 

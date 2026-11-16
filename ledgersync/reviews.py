@@ -62,7 +62,7 @@ def _when(text: str) -> dt.datetime:
 def triggers(change: ChangeDraft) -> bool:
     """Whether the change needs a review. Not the agent's own changes, those a chat turn made (it says so itself),
     the rules' own, closing a year or a question, applying a decision, a row's description alone, or a client's
-    name, contact, folder or review setting."""
+    name, contact or review setting."""
     if change.actor.startswith("agent:") or change.actor == "rules" or change.in_chat:
         return False
     if change.kind in _NO_REVIEW:

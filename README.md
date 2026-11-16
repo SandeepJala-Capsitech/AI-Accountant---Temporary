@@ -55,7 +55,7 @@ The first page, **Clients**, lists the clients with each one's latest year and w
 client with its company name, business type (limited company, sole trader, partnership or LLP), its responsible
 person (the client's own contact, with email and phone), whether it is VAT registered, the end of its **first year**
 (for example 31 March 2027), its bank accounts, its directors, partners or LLP members (up to four, each with a
-profit share for a partnership or LLP; empty shares mean equal shares) and, if you like, a folder of its files. Archive hides a client and
+profit share for a partnership or LLP; empty shares mean equal shares). Archive hides a client and
 keeps everything; Restore brings it back.
 
 Open a client to get its own space: a **year picker** beside its name (for example "Year to 31 Mar 2027"), and a side
@@ -64,7 +64,7 @@ menu of six sections, all for the year picked.
 | Section | What it shows |
 |---|---|
 | Overview | The client's details (editable), whether the year is open or closed, and a summary: rows to review, what is unpaid on sales and purchases, whether each bank account agrees with its statements, whether the trial balance balances. |
-| Documents | Upload files or import them from the client's folder; every file of the year with its status (reading, read, failed, or "Doesn't add up" for a statement that doesn't reach its printed balances); download an original. |
+| Documents | Upload files; every file of the year with its status (reading, read, failed, or "Doesn't add up" for a statement that doesn't reach its printed balances); download an original. |
 | Bank | One tab for each bank account and card, with its lines for the year, its balance in the books beside the balance its statements print, and the difference. |
 | Invoices | **Sales** (invoices the client sent) and **Purchases** (bills from suppliers): the total, what has been paid, what is still owed, and the bank lines that paid it. An invoice paid in a later year shows as paid there. The site doesn't create invoices; they come from the client's files. |
 | Transactions | Every row of the year: edit, link, include, unlink, mark "Not the same", add and remove rows. |
@@ -77,7 +77,7 @@ booked again, because the opening balances hold it.
 ### Books kept up to date
 
 After any change, the questions and the posted ledger are brought up to date at once, and every change is recorded:
-who made it (the person, an import, the rules or the agent), what it touched and the values before and after. The
+who made it (the person, the rules or the agent), what it touched and the values before and after. The
 Overview says so only when the books are not up to date.
 
 ### Bank accounts and cards
@@ -140,13 +140,6 @@ points out a director's loan the director owes the company (s455).
   VAT, and the receipt asks for a complete copy. A receipt never replaces a bank line of another amount.
 - **Insurance.** The gap between a premium and its total is Insurance Premium Tax, not VAT, and isn't flagged.
 
-### Importing from the client's folder
-
-A client can have a folder on the computer the site runs on. Import from folder reads every file in it that is new
-since the last import into the year picked (and the bank account picked, for statements). A file is known by its
-contents, not its name, so a copy or a renamed file is skipped. Each file is kept in MongoDB first, then read into the
-books like an upload. Files of a type the site can't read, and files that fail their check, are listed with why.
-
 ### MongoDB only
 
 Everything is kept in MongoDB: the clients, their years, rows and opening balances, and the original files. Set
@@ -157,7 +150,7 @@ its data in MongoDB.` Dropping the database removes every client. There is no ot
 ### The API
 
 Analyses run as background jobs: `POST /api/analyze` returns `{job_id}`, then `GET /api/jobs/{job_id}` reports
-progress and the result; `DELETE` cancels. The API takes an analysis or an import only with an `X-LedgerSync` header,
+progress and the result; `DELETE` cancels. The API takes an analysis only with an `X-LedgerSync` header,
 which the pages send and a form on another web site can't. Up to five jobs run at once
 (`LEDGERSYNC_MAX_PARALLEL_JOBS`), and the UI sends that many files of an upload at a time; on Groq's free plan they
 mostly wait on its per-minute limits, so the gain shows on a paid plan. Money is sent and returned as strings, e.g.
@@ -181,7 +174,6 @@ mostly wait on its per-minute limits, so the gain shows on a paid plan. Money is
 | `GET /api/clients/{id}/years/{start}/summary` | The Overview's figures |
 | `GET /api/clients/{id}/years/{start}/export.xlsx` | The trial balance and transactions as an Excel workbook |
 | `POST /api/clients/{id}/years/{start}/close`, `.../reopen` | Close a year, or reopen the latest closed one |
-| `POST /api/clients/{id}/import-folder` | Read the client's folder's new files into a year |
 | `GET /api/clients/{id}/opening-balances`, `PUT` the same | Read or set the first year's opening balances |
 | `PATCH` or `DELETE /api/clients/{id}/rows/{row_id}` | Edit a row (the original is kept; Revert puts it back) or remove it |
 | `POST /api/clients/{id}/uploads` | Add rows by hand |

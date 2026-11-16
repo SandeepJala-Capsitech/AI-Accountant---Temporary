@@ -6,7 +6,7 @@ import { bankAccountsLeft, BANK_KINDS, BUSINESS_TYPES, clientFormErrors, MAX_OWN
 
 const NEW_CLIENT: ClientFields = {
   name: '', business_type: 'limited_company', contact_name: '', contact_email: '', contact_phone: '', vat_registered: true,
-  first_year_end: '', bank_accounts: [{ code: '', name: 'Bank current account', kind: 'current' }], owners: [], folder: '',
+  first_year_end: '', bank_accounts: [{ code: '', name: 'Bank current account', kind: 'current' }], owners: [],
   ai_review: 'automatic',
 }
 
@@ -23,7 +23,7 @@ export default function ClientDialog({ client, taken, onCancel, onSave }: {
     contact_email: client.contact_email, contact_phone: client.contact_phone, vat_registered: client.vat_registered,
     vat_from: client.vat_from ?? '',
     first_year_end: client.first_year_end, bank_accounts: client.bank_accounts.map(a => ({ ...a })),
-    owners: (client.owners ?? []).map(o => ({ ...o, share: o.share ?? '' })), folder: client.folder,
+    owners: (client.owners ?? []).map(o => ({ ...o, share: o.share ?? '' })),
     ai_review: client.ai_review ?? 'automatic', company_number: client.company_number ?? '', utr: client.utr ?? '',
     vat_number: client.vat_number ?? '', paye_reference: client.paye_reference ?? '',
   } : NEW_CLIENT))

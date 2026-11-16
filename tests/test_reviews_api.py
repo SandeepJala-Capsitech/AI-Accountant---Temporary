@@ -207,7 +207,7 @@ def test_the_ai_review_setting_round_trips_and_is_recorded(make, mongo_store, cl
 def test_decisions_and_questions_are_fetched_by_ids_for_one_client(mongo_store, records, pages, nb):
     from ledgersync import ledger, questions
     from ledgersync.models import ClientFields
-    other = {**mongo_store.get_client(nb.id).model_dump(mode="json"), "name": "Another Client Ltd", "folder": ""}
+    other = {**mongo_store.get_client(nb.id).model_dump(mode="json"), "name": "Another Client Ltd"}
     client_id = ledger.add_client(mongo_store, ClientFields.model_validate(other)).id   # two clients can't share a name
     d = call(mongo_store, records, pages, nb, nb.sheet_costco, keep_receipt(nb), QUOTE)
     q = questions.ask(records, client_id=nb.id, year_start=YEAR, row_ids=[nb.receipt], text="For?", why="?")

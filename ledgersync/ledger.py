@@ -7,7 +7,6 @@ from __future__ import annotations
 import datetime as dt
 import re
 from decimal import Decimal
-from pathlib import Path
 from typing import Iterable, Optional
 from weakref import WeakKeyDictionary
 
@@ -193,13 +192,6 @@ def check_year_end(day: dt.date, today: Optional[dt.date] = None) -> None:
                            f"{today.year + YEAR_END_AHEAD}.")
 
 
-def check_folder(folder: str) -> None:
-    """A folder that is set is one on this computer. Checked when a folder is set, not on every edit: a folder that
-    has since gone doesn't stop the client's other edits."""
-    if folder and not Path(folder).is_dir():
-        raise InvalidInput("That folder doesn't exist on this computer.")
-
-
 def assign_codes(accounts: list[BankAccount], kept: list[BankAccount]) -> list[BankAccount]:
     """The accounts, each without a code given the next free code of its kind; an account sent with its code keeps
     it. kept: the accounts rows still use, which can't be dropped."""
@@ -272,7 +264,6 @@ def add_client(store: MongoStore, fields: ClientFields) -> Client:
     check_year_end(fields.first_year_end)
     check_references(fields)
     _check_name_free(store, fields.name)
-    check_folder(fields.folder)
     return store.create_client(fields.model_copy(update={"bank_accounts": assign_codes(fields.bank_accounts, []),
                                                          "owners": assign_owners(fields.owners, [])}))
 
@@ -311,8 +302,6 @@ def change_client(store: MongoStore, client_id: int, patch: ClientPatch) -> Clie
         check_client(merged)
         if "name" in changes:
             _check_name_free(store, merged.name, besides=client_id)
-        if "folder" in changes:
-            check_folder(merged.folder)
         if "bank_accounts" in changes:
             merged.bank_accounts = assign_codes(merged.bank_accounts, _accounts_in_use(store, client))
         if "owners" in changes:

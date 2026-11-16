@@ -5,7 +5,7 @@ import type { Transaction } from './api.ts'
 import type { ClientSummary, SavedRow, Upload } from './clients.ts'
 import type { PickedFile, ReadingFile } from './clientRules.ts'
 import {
-  accountList, bankAccountsLeft, changesOf, ownerError, ownersToSend, clientFormErrors, dayMonth, draftOf, emptyListText, figuresOf, importText, lineTemplate, newRowFrom, paidFromOf, paidFromOptions, requeue,
+  accountList, bankAccountsLeft, changesOf, ownerError, ownersToSend, clientFormErrors, dayMonth, draftOf, emptyListText, figuresOf, lineTemplate, newRowFrom, paidFromOf, paidFromOptions, requeue,
   readingLine, rowEditErrors, sameFileAs, searchClients, someFinished, unsent, showsInvitation, statementText, transactionCount,
 } from './clientRules.ts'
 
@@ -14,7 +14,7 @@ const client = (change: Partial<ClientSummary> = {}): ClientSummary => ({
   contact_email: 'jenny@businesscube.co.uk', contact_phone: '', vat_registered: true, archived: false,
   archived_at: null, created_at: '2026-10-06T09:00:00+00:00', updated_at: '2026-10-06T09:00:00+00:00',
   first_year_end: '2026-03-31', bank_accounts: [{ code: '1200', name: 'Bank current account', kind: 'current' }],
-  folder: '', rows: 0, to_review: 0, ...change,
+  rows: 0, to_review: 0, ...change,
 })
 
 const row = (change: Partial<SavedRow> = {}): SavedRow => ({
@@ -36,7 +36,7 @@ test('search finds clients by company, responsible person or email, ignoring cas
 test('the client dialog needs a company name, a responsible person, a first year end and named bank accounts', () => {
   const fields = { name: ' ', business_type: 'limited_company' as const, contact_name: '', contact_email: 'jenny',
                    contact_phone: '', vat_registered: true, first_year_end: '',
-                   bank_accounts: [{ code: '', name: ' ', kind: 'current' as const }], folder: '' }
+                   bank_accounts: [{ code: '', name: ' ', kind: 'current' as const }] }
   assert.deepEqual(clientFormErrors(fields), {
     name: 'Enter the company name', contact_name: 'Enter the responsible person', contact_email: 'Enter a valid email',
     first_year_end: "Enter the client's first year end", bank_accounts: 'Name each bank account',
@@ -171,16 +171,6 @@ test('the Edit list of accounts is in name order, with a saved account the busin
                    ['Drawings', 'Hotels', 'Office Equipment', 'Telephone and Internet'])
   assert.equal(accountList(chart, { code: '9999', name: null }, '9999')[0].name, 'Unknown account')   // not in the chart
   assert.deepEqual(accountList(chart, { code: '', name: null }, '').map(a => a.code), ['7402', '0040', '7502'])
-})
-
-test('the import says what it found', () => {
-  const j = () => ({ name: 'a.csv', job_id: 'j' })
-  assert.equal(importText({ jobs: [j(), j(), j()], skipped: ['a', 'b'], unreadable: ['backup.zip'], refused: [] }),
-    "Sent 3 new files to be read. Skipped 2 already taken in. 1 can't be read: backup.zip.")
-  assert.equal(importText({ jobs: [], skipped: ['a'], unreadable: [], refused: [] }), 'No new files in the folder.')
-  assert.equal(importText({ jobs: [j()], skipped: [], unreadable: ['a.zip', 'b.zip'],
-                            refused: [{ name: 'big.pdf', message: 'Larger than the 20 MB limit.' }] }),
-    "Sent 1 new file to be read. 2 can't be read: a.zip, b.zip. big.pdf was refused: Larger than the 20 MB limit.")
 })
 
 const reading = (job_id: string, change: Partial<ReadingFile> = {}): ReadingFile =>

@@ -107,12 +107,6 @@ _NOT_TRANSACTION_NAMES = {
 }
 
 
-def is_asset_candidate(tx: Transaction) -> bool:
-    """Whether a normalised row is a large purchase on a cost account that may be equipment (it carries the
-    asset_check note): the one case an account change to a fixed asset is allowed."""
-    return any(i.code == "asset_check" for i in tx.issues)
-
-
 def booked(tx: Transaction) -> bool:
     """A quote, a pro forma or another document that is not a transaction, or a copy of a document already in
     the table, or a row dated before the client's first year, whose amount is in the opening balances, is booked

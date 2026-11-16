@@ -56,7 +56,6 @@ test('a document problem is a card named by its file', () => {
   const cards = todoCards(rows, [], [], file)
   assert.equal(cards.length, 1)
   assert.deepEqual([cards[0].key, cards[0].kind, cards[0].tag, cards[0].title], ['doc:1', 'document', 'Document total', 'file1.xlsx, expense claim'])
-  assert.deepEqual(cards[0].lines, [1, 2])
   assert.equal(cards[0].issues.length, 1)
 })
 

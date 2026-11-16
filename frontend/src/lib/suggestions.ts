@@ -19,7 +19,7 @@ export function changeLines(d: Decision, most = 4): { lines: string[]; more: num
 // Suggestions that make the same change, so they can be applied together: the same kind of change to the same new
 // values, on different rows. Only groups of two or more, in the order their first suggestion is listed. A suggestion
 // that changes no field (it keeps one of two records, say) is its own decision and joins none.
-export interface FixGroup { key: string; label: string; suggestions: Decision[]; rows: number }
+export interface FixGroup { key: string; label: string; suggestions: Decision[] }
 export function sameFixGroups(suggestions: Decision[]): FixGroup[] {
   const groups = new Map<string, { to: string[]; suggestions: Decision[] }>()
   for (const d of suggestions) {
@@ -32,7 +32,7 @@ export function sameFixGroups(suggestions: Decision[]): FixGroup[] {
   }
   return [...groups.entries()].filter(([, g]) => g.suggestions.length > 1).map(([key, g]) => {
     const rows = new Set(g.suggestions.flatMap(d => d.row_ids)).size
-    return { key, label: `${g.to.map(t => t.replace('=', ' → ')).join(', ')} on ${rows} rows`, suggestions: g.suggestions, rows }
+    return { key, label: `${g.to.map(t => t.replace('=', ' → ')).join(', ')} on ${rows} rows`, suggestions: g.suggestions }
   })
 }
 

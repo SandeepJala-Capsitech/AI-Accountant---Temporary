@@ -41,7 +41,7 @@ test('a suggestion that changes nothing has no lines', () => {
 test('two suggestions that move rows to the same account are one group', () => {
   const [d1, d2] = [account('D1', 4), account('D2', 9)]
   assert.deepEqual(sameFixGroups([d1, d2]), [
-    { key: 'change_account|Account=7400', label: 'Account → 7400 on 2 rows', rows: 2, suggestions: [d1, d2] },
+    { key: 'change_account|Account=7400', label: 'Account → 7400 on 2 rows', suggestions: [d1, d2] },
   ])
 })
 
