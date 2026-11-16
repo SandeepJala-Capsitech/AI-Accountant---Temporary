@@ -47,6 +47,14 @@ def _initials(name: Optional[str]) -> str:
     return "".join(w[0] for w in words) if len(words) >= 3 else ""
 
 
+def _initial_runs(name: Optional[str]) -> set[str]:
+    """The initials of every run of three words or more in the name: TFL in "Transport for London, Train" as well as
+    TFLT. The whole name's initials are among them."""
+    words = [w for w in re.findall(r"[a-z]+", (name or "").lower()) if w not in _LEGAL]
+    letters = "".join(w[0] for w in words)
+    return {letters[i:j] for i in range(len(letters)) for j in range(i + 3, len(letters) + 1)}
+
+
 def _named_in(name: Optional[str], text: str) -> bool:
     """Every word of the name is a word of the text: EE in "Matt Barnes - EE, mobile phone bill". Too loose to pair
     on, as BT is in BT Sport, but enough to ask whether two records are one."""
@@ -78,10 +86,11 @@ def names_match(a: Optional[str], b: Optional[str]) -> bool:
     """True, after legal forms, bank words, generic trade words and numbers are set aside, when two names are
     the same however short their words ("HML PM Ltd"), when the whole of one, three letters or more, is in the
     other, when they share a word of four or more letters, when a word of one abbreviates a word of the other, or
-    when a word of one is the other's initials (NCP, National Car Parks)."""
+    when a word of one is the initials of the other or of three or more words in a row of it (NCP, National Car
+    Parks; TFL, Transport for London, Train)."""
     wa, wb = _words(a), _words(b)
-    if any(w == initials for w, initials in ((w, _initials(b)) for w in wa) if len(w) >= 3) or any(
-            w == initials for w, initials in ((w, _initials(a)) for w in wb) if len(w) >= 3):
+    runs_a, runs_b = _initial_runs(a), _initial_runs(b)
+    if any(w in runs_b for w in wa if len(w) >= 3) or any(w in runs_a for w in wb if len(w) >= 3):
         return True
     if wa and wa == wb:
         return True

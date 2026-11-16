@@ -17,6 +17,8 @@ from ledgersync.matching import names_match, same_payee
     ("NCP", "National Car Parks Ltd"),                   # initials: Matt's claim said NCP, the receipt the full name
     ("Matt Barnes — NCP Manchester Central, parking", "National Car Parks Ltd"),
     ("TFL", "Transport for London"),
+    # Jenny's TfL Payment Statement names "TfL Customer Services"; her claim line says "Transport for London, Train".
+    ("TfL Customer Services", "Transport for London, Train"),
 ])
 def test_names_that_match(a, b):
     assert names_match(a, b) and names_match(b, a)
@@ -36,6 +38,8 @@ def test_names_that_match(a, b):
     ("DEB 4421 TESCO STORES", "Debenhams"),
     ("VIS 0193 BOOTS", "Vision Express"),
     ("NCP", "National Grid"),                                       # not its initials
+    ("CPS", "National Car Parks Ltd"),
+    ("NCP", "Car Parks National Ltd"),                              # initials out of order
 ])
 def test_names_that_do_not_match(a, b):
     assert not names_match(a, b)
