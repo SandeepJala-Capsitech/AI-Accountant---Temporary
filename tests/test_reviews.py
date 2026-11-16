@@ -18,11 +18,26 @@ from test_agent import YEAR, keep_the_receipt, scripted, STAPLES
 
 pytestmark = pytest.mark.mongo
 
-T = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)   # "now" of the tests, which are all within a day
+T = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)   # "now" of a test: read again as each one starts
+
+
+@pytest.fixture(autouse=True)
+def _the_clock_starts_with_the_test():
+    """T is the real time when the test starts. The store stamps runs with the real clock and the review counts them
+    by day against T; a T left from when the file was read drifts from it, by an hour or over midnight in a long
+    suite, and the tests about "today" then fail."""
+    global T
+    T = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
 
 
 def secs(n: float) -> dt.datetime:
     return T + dt.timedelta(seconds=n)
+
+
+def test_the_tests_clock_is_read_when_a_test_starts():
+    """Runs are stamped by the real clock and compared with T by day, and a recovered review is due by the real
+    clock: T must not be the time this file was read, which a long suite leaves an hour, or a midnight, behind."""
+    assert abs((dt.datetime.now(dt.timezone.utc) - T).total_seconds()) < 5
 
 
 def draft(client_id: int, **fields) -> ChangeDraft:
