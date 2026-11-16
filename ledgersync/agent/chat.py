@@ -41,9 +41,12 @@ from ledgersync.rows import now_iso
 from ledgersync.store_mongo import MongoStore
 
 from . import build_agent
+from .briefing import briefing
 from .llm import chat_model
 from .locks import ClientLocks, ThreadRuns
+from .router import LEAD, route
 from .run import ChatEvent, stream_turn
+from .specialists import PROFILES
 from .tools import AgentDeps, ChatContext
 
 logger = logging.getLogger(__name__)
@@ -92,10 +95,14 @@ class AnswerResult(BaseModel):
 
 
 class TurnRecord(BaseModel):
-    """A turn as its thread keeps it: the id of the person's message, the files it carried and the turn's result."""
+    """A turn as its thread keeps it: the id of the person's message, the files it carried, the turn's result, the
+    specialist the router gave the turn, and whether it handed the turn over to the lead accountant. A turn kept
+    before there were specialists has neither."""
     message_id: str
     files: list[FileRead] = []
     result: TurnResult
+    specialist: Optional[str] = None
+    handed_over: bool = False
 
 
 class ChatMessage(BaseModel):
@@ -317,6 +324,7 @@ class Chat:
         self._making = threading.Lock()
         self._records: Optional[AgentRecords] = None
         self._agent = None
+        self._deps: Optional[AgentDeps] = None   # what the agent's tools work on, once the agent is made
 
     @property
     def records(self) -> AgentRecords:
@@ -336,10 +344,31 @@ class Chat:
                         model = chat_model(self.settings)
                     except ModelUnavailable as exc:
                         model, self.unavailable = _NoModel(message=exc.message), exc.message
-                deps = AgentDeps(store=self.store, records=records, blobs=self.blobs, vision=self.vision,
-                                 is_cancelled=self.runs.is_cancelled, locks=self.locks)
-                self._agent = build_agent(self.settings, deps, model=model)
+                self._deps = AgentDeps(store=self.store, records=records, blobs=self.blobs, vision=self.vision,
+                                       is_cancelled=self.runs.is_cancelled, locks=self.locks)
+                self._agent = build_agent(self.settings, self._deps, model=model)
             return self._agent
+
+    def brief(self, ctx: ChatContext, text: str, has_files: bool = False) -> None:
+        """Gives the run to the specialist its message asks for (router.route; a chat's message that no rule places
+        stays with the specialist of its turn before, the lead accountant if that turn was handed over) and fetches
+        the briefing that specialist starts from. The run stays the lead accountant's, the whole agent's, when no
+        specialist takes the message, and when the briefing can't be built (a row that can't be posted stops the
+        figures): the lead finds its own way."""
+        self.agent   # its tools' deps are made with it
+        previous = None
+        if ctx.trigger == "chat":
+            last = (self.records.turns(ctx.thread_id) or [{}])[-1]
+            previous = None if last.get("handed_over") else last.get("specialist")
+        ctx.specialist = route(ctx.trigger, text, has_files, previous)
+        if ctx.specialist == LEAD:
+            return
+        try:
+            ctx.briefing = briefing(self._deps, ctx)
+        except Exception:   # noqa: BLE001 - whatever stopped the figures: the lead accountant takes the turn
+            logger.exception("Couldn't brief the %s for client %s, so the lead accountant takes the turn",
+                             ctx.specialist, ctx.client_id)
+            ctx.specialist, ctx.briefing = LEAD, ""
 
     # ─── Threads ───────────────────────────────────────────────────────────────
 
@@ -432,15 +461,18 @@ class Chat:
             if files:
                 yield ChatEvent("status", {"text": f"Reading {_count(len(files), 'file')}…"})
                 yield from self._read_all(client, thread.year_start, files, read)
-            yield ChatEvent("status", {"text": "Working on it…"})
             agent = self.agent
+            ctx = ChatContext(client.id, thread.id, thread.year_start)
+            if not self.unavailable:
+                self.brief(ctx, text, bool(files))   # once the files are read: its briefing has their rows
+            took = ctx.specialist   # who the turn was given to; hand_over makes ctx.specialist the lead
+            yield ChatEvent("status", {"text": PROFILES[took].status})
             if self.unavailable:   # the message is kept, so the chat shows it
                 _say(agent, thread.id, text, message_id=message_id)
                 yield _error("model_unavailable", self.unavailable)
             else:
                 _close_open_calls(agent, thread.id)
-                yield from stream_turn(agent, ChatContext(client.id, thread.id, thread.year_start), text,
-                                       message_id=message_id, called=called)
+                yield from stream_turn(agent, ctx, text, message_id=message_id, called=called)
             yield ChatEvent("status", {"text": "Posting the books…"})
         finally:   # the files read in this turn are settled even if the stream raised or the caller stopped
             with self.locks.hold(client.id):
@@ -454,8 +486,8 @@ class Chat:
                                                             thread.year_start)
                            if wrote or "get_trial_balance" in called else None),
             post=post if wrote or post.problems else None)
-        self.records.add_turn(thread.id, TurnRecord(message_id=message_id, files=read,
-                                                    result=result).model_dump(mode="json"))
+        self.records.add_turn(thread.id, TurnRecord(message_id=message_id, files=read, result=result, specialist=took,
+                                                    handed_over=ctx.handed_over).model_dump(mode="json"))
         yield ChatEvent("result", result.model_dump(mode="json"))
 
     def _read_all(self, client: Client, year_start: dt.date, files: list[ChatFile],

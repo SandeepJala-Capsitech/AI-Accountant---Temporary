@@ -5,7 +5,7 @@ import { ApiError } from './api.ts'
 import {
   agentDecisions, answerQuestion, attentionHref, changedFields, effectLine, fileStatus, formatMoney, groupThreads, hasResult, looksLikeStatement, parseEvents,
   canBookWithout, questionControl, questionState, shouldPoll, readStatus, ruleBadge, retryFiles, shownAccounts, streamMessage, suspenseLabel, uploadForQuestion,
-  withQuestion,
+  withQuestion, afterDelete, deleteQuestion, deleteThread, newTitle, renameThread,
   type AnswerResult, type ChatEvent, type ChatThread, type Decision, type PostResult, type PostedTrialBalance, type Question,
 } from './chat.ts'
 
@@ -289,4 +289,68 @@ test('the marks a model puts round a phrase are dropped from its reply, the word
   const { plainReply } = await import('./chat.ts')
   assert.equal(plainReply('1. **7400 Travel**: the usual home for a toll.\n## Options\nUse `7400`. 2 * 3 * 4 stays.'),
                '1. 7400 Travel: the usual home for a toll.\nOptions\nUse 7400. 2 * 3 * 4 stays.')
+})
+
+test('a chat\'s title is the thread list\'s once that has it, as the first message titles the chat', async () => {
+  const { currentTitle } = await import('./chat.ts')
+  const opened = { ...thread('t1', '2026-11-15T10:00:00+00:00'), title: 'New chat' }
+  assert.equal(currentTitle(opened, null), 'New chat')                       // the list hasn't arrived
+  assert.equal(currentTitle(opened, [thread('t2', '2026-11-15T10:00:00+00:00')]), 'New chat')   // not in it yet
+  const titled = { ...opened, title: 'What needs my attention?' }
+  assert.equal(currentTitle(opened, [thread('t2', '2026-11-15T10:00:00+00:00'), titled]), 'What needs my attention?')
+})
+
+test('a chat is deleted with the header, and the API\'s empty answer is not read as JSON', async () => {
+  let sent: { url: string; init?: RequestInit } | undefined
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    sent = { url, init }
+    return new Response(null, { status: 204 })
+  }) as typeof fetch
+  assert.equal(await deleteThread('t1'), undefined)
+  assert.equal(sent?.url, '/api/chat/threads/t1')
+  assert.equal(sent?.init?.method, 'DELETE')
+  assert.equal(new Headers(sent?.init?.headers).get('X-LedgerSync'), '1')
+})
+
+test('a chat with a message still running is not deleted, and the reason comes back', async () => {
+  globalThis.fetch = (async () => new Response(JSON.stringify({ detail: 'Still working on the last message.' }),
+    { status: 409, headers: { 'Content-Type': 'application/json' } })) as typeof fetch
+  await assert.rejects(deleteThread('t1'),
+    (e: unknown) => e instanceof ApiError && e.code === 'http_409' && e.message === 'Still working on the last message.')
+})
+
+test('deleting a chat asks by its title and client, and says the books are kept', async () => {
+  const t = { ...thread('t1', '2026-11-15T10:00:00+00:00'), title: 'October review' }
+  const asked = deleteQuestion(t, 'Northbridge Ltd')
+  assert.match(asked, /^Delete the chat "October review" for Northbridge Ltd\?/)
+  assert.match(asked, /books keep/)
+  assert.match(asked, /cannot be undone/)
+  assert.match(deleteQuestion(t, ''), /^Delete the chat "October review"\?/)     // the clients haven't arrived
+})
+
+test('deleting the open chat leads to a new chat; deleting another leaves the page where it is', async () => {
+  assert.equal(afterDelete('t1', 't1'), '/chat')
+  assert.equal(afterDelete('t1', 't2'), null)
+  assert.equal(afterDelete('t1', undefined), null)                            // on New chat already
+})
+
+test('a chat is renamed with the header, and the renamed chat comes back', async () => {
+  let sent: { url: string; init?: RequestInit } | undefined
+  const renamed = { ...thread('t1', '2026-11-15T10:00:00+00:00'), title: 'October review' }
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    sent = { url, init }
+    return new Response(JSON.stringify(renamed), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }) as typeof fetch
+  assert.deepEqual(await renameThread('t1', 'October review'), renamed)
+  assert.equal(sent?.url, '/api/chat/threads/t1')
+  assert.equal(sent?.init?.method, 'PATCH')
+  assert.equal(new Headers(sent?.init?.headers).get('X-LedgerSync'), '1')
+  assert.deepEqual(JSON.parse(String(sent?.init?.body)), { title: 'October review' })
+})
+
+test('a typed title is trimmed and kept to the API\'s length; an empty or unchanged one renames nothing', async () => {
+  assert.equal(newTitle('  October review ', 'New chat'), 'October review')
+  assert.equal(newTitle('   ', 'New chat'), null)
+  assert.equal(newTitle(' New chat ', 'New chat'), null)
+  assert.equal(newTitle('x'.repeat(80), 'New chat'), 'x'.repeat(60))
 })

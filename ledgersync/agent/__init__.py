@@ -11,7 +11,8 @@ from langgraph.checkpoint.mongodb import MongoDBSaver
 from ledgersync.config import Settings
 
 from .llm import chat_model
-from .middleware import ModelErrorsAsUnavailable, ReadsClientOnce, StopWhenCancelled, ToolErrorsAsMessages
+from .middleware import (ModelErrorsAsUnavailable, ReadsClientOnce, Specialists, StopWhenCancelled,
+                         ToolErrorsAsMessages)
 from .prompt import SYSTEM_PROMPT
 from .run import ChatEvent, stream_turn
 from .tools import AgentDeps, ChatContext, make_tools
@@ -23,7 +24,8 @@ def build_agent(settings: Settings, deps: AgentDeps, *, model=None, checkpointer
     """The agent on `model` (by default OPENROUTER_MODEL through OpenRouter, the one model that also reads the files),
     with every tool, the system prompt and ChatContext as the run's context. Its threads' messages are kept by
     `checkpointer`: by default in MongoDB, in the database "<db>_checkpoints" on the store's one client (never a
-    client of its own). A run:
+    client of its own). A run plays the part its context names (ChatContext.specialist): the lead accountant, which is
+    this whole agent, or a specialist with its own prompt and tools (specialists.py). A run:
     - stops before its next model call once deps.is_cancelled(thread_id) says so;
     - ends, with a message, before a 31st model call or when the model asks for an 81st tool call;
     - reads at most 20 documents (a call past that is answered "limit exceeded" and the run carries on);
@@ -34,6 +36,7 @@ def build_agent(settings: Settings, deps: AgentDeps, *, model=None, checkpointer
         checkpointer = MongoDBSaver(deps.store.client, db_name=f"{deps.store.db_name}_checkpoints")
     middleware = [
         StopWhenCancelled(deps.is_cancelled),
+        Specialists(),
         ModelCallLimitMiddleware(run_limit=30, exit_behavior="end"),
         ToolCallLimitMiddleware(run_limit=80, exit_behavior="end"),
         ToolCallLimitMiddleware(tool_name="read_document", run_limit=20),

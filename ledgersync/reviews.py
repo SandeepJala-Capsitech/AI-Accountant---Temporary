@@ -282,6 +282,7 @@ def _review_year(chat: "Chat", client_id: int, year: dt.date, changes: list[Chan
                           mode="suggest" if mode == "suggest" else "apply", review_id=run.id)
         message = _message(changes, [(row, text) for row, _, text in shown], first, summary, upload_rows, more,
                            suggest=mode == "suggest")
+        chat.brief(ctx, message)   # the run is the reviewer's, starting from its briefing
         for attempt in range(2):   # a run cut off while thinking is nudged once
             error, code = None, None
             for event in stream_turn(chat.agent, ctx, message):

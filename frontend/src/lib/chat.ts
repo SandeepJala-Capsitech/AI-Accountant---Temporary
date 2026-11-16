@@ -126,6 +126,30 @@ export interface ThreadDetail {
   running: boolean
 }
 
+// The chat's title as its page shows it: the thread list's, which is loaded again when a turn ends, over the one the
+// page loaded the chat with. The first message titles a chat, so a new chat's own copy still says "New chat".
+export const currentTitle = (thread: ChatThread, threads: ChatThread[] | null): string =>
+  threads?.find(t => t.id === thread.id)?.title ?? thread.title
+
+// What a person is asked before a chat is deleted. The client's name is left out until the clients arrive.
+export const deleteQuestion = (thread: Pick<ChatThread, 'title'>, clientName: string): string =>
+  `Delete the chat "${thread.title}"${clientName ? ` for ${clientName}` : ''}?\n\n` +
+  "The client's books keep everything this chat did; only the conversation goes. This cannot be undone."
+
+// The longest title the API keeps for a chat.
+export const TITLE_MAX = 60
+
+// The title to rename a chat to from what was typed, or null when there is nothing to rename: it is empty, or the
+// title the chat already has.
+export function newTitle(typed: string, current: string): string | null {
+  const title = typed.trim().slice(0, TITLE_MAX).trim()
+  return title && title !== current ? title : null
+}
+
+// Where the page goes once a chat is deleted: New chat when it was the open one, nowhere (null) otherwise.
+export const afterDelete = (deletedId: string, openId: string | undefined): string | null =>
+  deletedId === openId ? '/chat' : null
+
 export const POLL_MS = 3000
 
 // Whether a loaded chat is worth loading again: a turn runs on the server that this page did not send itself.
@@ -342,6 +366,11 @@ export const listThreads = (clientId?: number) =>
   request<ChatThread[]>(clientId ? `/api/chat/threads?client_id=${clientId}` : '/api/chat/threads')
 export const newThread = (clientId: number) => request<ChatThread>('/api/chat/threads', json('POST', { client_id: clientId }))
 export const getThread = (id: string) => request<ThreadDetail>(`/api/chat/threads/${id}`)
+// Gives a chat a new title. A chat a person has named keeps that name; only a "New chat" is titled by its first message.
+export const renameThread = (id: string, title: string) =>
+  request<ChatThread>(`/api/chat/threads/${id}`, json('PATCH', { title }))
+// Deletes a chat and what the AI remembers of it; refused while a message runs on it. The client's books are not touched.
+export const deleteThread = (id: string) => request<void>(`/api/chat/threads/${id}`, { method: 'DELETE', headers: WRITE })
 export const stopRun = (id: string) =>
   request<unknown>(`/api/chat/threads/${id}/stop`, { method: 'POST', headers: WRITE })
 // The client's open and waiting questions, from every chat on it.

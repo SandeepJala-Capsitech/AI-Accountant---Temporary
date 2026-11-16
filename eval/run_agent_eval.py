@@ -467,11 +467,18 @@ def _check(response) -> dict:
 
 
 def _add_client(api, store, records, case_dir: Path) -> int:
-    """The case's client, as the chat starts from it: the demo reset, any other case added by the API."""
+    """The case's client, as the chat starts from it: the demo reset, any other case added by the API. The cases'
+    clients share a name, and two clients that aren't archived can't: the one an earlier case or run left in this
+    database is archived first."""
     if case_dir.resolve() == DEMO_DIR.resolve():
         from ledgersync import demo
         return demo.reset(store, records, store.client[f"{store.db_name}_checkpoints"])
-    client_id = _check(api.post("/api/clients", json=json.loads((case_dir / "client.json").read_text())))["id"]
+    fields = json.loads((case_dir / "client.json").read_text())
+    wanted = " ".join(fields["name"].lower().split())
+    for earlier in store.list_clients():
+        if " ".join(earlier.name.lower().split()) == wanted:
+            store.update_client(earlier.id, {"archived": True})
+    client_id = _check(api.post("/api/clients", json=fields))["id"]
     if (case_dir / "opening_balances.json").exists():
         _check(api.put(f"/api/clients/{client_id}/opening-balances",
                        json=json.loads((case_dir / "opening_balances.json").read_text())))

@@ -7,9 +7,10 @@ import { useChatShell } from '@/components/chat/ChatContext'
 import Composer from '@/components/chat/Composer'
 import ReplyResult from '@/components/chat/ReplyResult'
 import RunSteps from '@/components/chat/RunSteps'
+import TitleEditor from '@/components/chat/TitleEditor'
 import { ApiError } from '@/lib/api'
 import {
-  ATTENTION, POLL_MS, effectLine, fileStatus, getThread, hasResult, readStatus, retryFiles, shouldPoll, stopRun, streamMessage, withQuestion,
+  ATTENTION, POLL_MS, currentTitle, effectLine, fileStatus, getThread, hasResult, readStatus, retryFiles, shouldPoll, stopRun, streamMessage, withQuestion,
   type AnswerResult, type ChatError, type ChatEvent, type ChatMessage, type Step, type ThreadDetail, type TurnResult,
  plainReply } from '@/lib/chat'
 import { getYears } from '@/lib/clients'
@@ -37,7 +38,7 @@ interface Turn {
 // reply with the cards its own turn raised, and the message box. Answering a card updates it in place.
 export default function ThreadPage() {
   const { threadId } = useParams<{ threadId: string }>()
-  const { clients, reloadThreads } = useChatShell()
+  const { clients, threads, reloadThreads, deleteChat, renameChat } = useChatShell()
   const ask = useSearchParams().get('ask')
   const [detail, setDetail] = useState<ThreadDetail | null>(null)
   const [history, setHistory] = useState<ChatMessage[]>([])
@@ -45,6 +46,7 @@ export default function ThreadPage() {
   const [yearLabel, setYearLabel] = useState('')
   const [draft, setDraft] = useState('')
   const [missing, setMissing] = useState(false)
+  const [renaming, setRenaming] = useState(false)   // the chat's title is a box to type in
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
   const running = turns.some(t => t.running)
@@ -175,6 +177,7 @@ export default function ThreadPage() {
   const waiting = detail.running && !running     // a turn works on the chat that this page did not send
   const busy = running || waiting
   const fresh = !history.length && !turns.length
+  const title = currentTitle(thread, threads)
   const last = turns[turns.length - 1]
   const onAnswered = (a: AnswerResult) => {
     const line = effectLine(a)
@@ -185,12 +188,26 @@ export default function ThreadPage() {
   return (
     <div className="chat-thread">
       <div className="chat-head">
-        <h1>
-          {client
-            ? <Link href={sectionHref(client.id, thread.year_start, 'overview')} className="strong">{client.name}</Link>
-            : 'Loading…'}
-        </h1>
-        <p className="muted">{[yearLabel, thread.title].filter(Boolean).join(' · ')}</p>
+        <div className="chat-head-text">
+          <h1>
+            {client
+              ? <Link href={sectionHref(client.id, thread.year_start, 'overview')} className="strong">{client.name}</Link>
+              : 'Loading…'}
+          </h1>
+          {renaming ? (
+            <p className="muted chat-head-rename">
+              {yearLabel && <span>{yearLabel} ·</span>}
+              <TitleEditor title={title} onCancel={() => setRenaming(false)}
+                           onSave={typed => { setRenaming(false); renameChat({ ...thread, title }, typed) }} />
+            </p>
+          ) : <p className="muted">{[yearLabel, title].filter(Boolean).join(' · ')}</p>}
+        </div>
+        <div className="chat-head-actions">
+          <button type="button" className="btn btn-ghost btn-small" onClick={() => setRenaming(true)}>Rename</button>
+          <button type="button" className="btn btn-ghost btn-small" disabled={busy}
+                  title={busy ? 'A message is still being worked on' : undefined}
+                  onClick={() => deleteChat({ ...thread, title })}>Delete chat</button>
+        </div>
       </div>
 
       <div className="transcript">

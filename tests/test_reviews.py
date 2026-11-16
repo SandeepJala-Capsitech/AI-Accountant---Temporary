@@ -473,3 +473,15 @@ def test_a_review_cut_off_twice_fails(make, staples):
     h.change(staples, T)
     [run] = h.worker.tick(secs(21))
     assert run.status == "failed" and "length limit" in run.error and len(h.model.seen) == 2
+
+
+def test_a_background_review_is_the_reviewers(make, staples):
+    from ledgersync.agent.middleware import BOOKS_NOW
+    from ledgersync.agent.specialists import PROFILES
+    h = make(say("Looked: nothing to do."))
+    h.change(staples, secs(0))
+    [run] = h.worker.tick(secs(32))
+    assert run.status == "done" and h.model.tools == list(PROFILES["reviewer"].tools)
+    prompt, told = h.model.seen[0][0].content.split(BOOKS_NOW)
+    assert prompt == PROFILES["reviewer"].prompt
+    assert set(__import__("json").loads(told)) == {"overview"}   # the review's message names the issues itself

@@ -576,7 +576,8 @@ def test_only_a_checked_resolution_can_set_a_date():
     tools = make_tools(AgentDeps(store=None, records=None, blobs=None), actor="agent:test")
     assert {t.name for t in tools} == {"get_overview", "list_issues", "list_rows", "get_row", "list_documents", "read_document",
                                        "resolve_issue", "edit_row", "ask_user", "close_question", "list_questions",
-                                       "list_decisions", "list_changes", "get_trial_balance", "get_vat_figures"}
+                                       "list_decisions", "list_changes", "get_trial_balance", "get_vat_figures",
+                                       "hand_over"}   # the specialists' own: it changes who works, never a row
     dated = [(tool.name, name) for tool in tools for name, field in properties(tool.tool_call_schema.model_json_schema())
              if "date" in name or field.get("format") in ("date", "date-time")]
     # The dates a tool takes: set_date's, which resolutions.resolve checks against another record, the file name or

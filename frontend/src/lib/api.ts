@@ -155,6 +155,7 @@ export async function request<T>(path: string, init: RequestInit = {}, timeoutMs
     })
     .finally(() => clearTimeout(timer))
   if (!res.ok) throw await errorFrom(res)
+  if (res.status === 204) return undefined as T     // done, with nothing to read back
   return (await res.json()) as T
 }
 

@@ -158,13 +158,39 @@ def test_health_finds_the_model_in_the_providers_list():
     assert http.requests[0][0].full_url == "https://api.groq.com/openai/v1/models"
 
 
-def test_openrouter_health_asks_for_the_accounts_own_model_list():
-    # OpenRouter's /models answers without a key; /models/user needs one, so a bad key shows up here.
-    client, http, _, _ = make_client(MODELS, settings=OPENROUTER)
+def test_openrouter_health_asks_for_the_keys_own_record_and_then_the_accounts_model_list():
+    # OpenRouter's /models answers without a key, and /models/user still lists the models for a key that has
+    # expired: the key's own record is asked first, which doesn't answer for one.
+    client, http, _, _ = make_client({"data": {"label": "sk-or-...", "usage": 1.5}}, MODELS, settings=OPENROUTER)
     assert client.health().model_available
-    req, _ = http.requests[0]
-    assert req.full_url == "https://openrouter.ai/api/v1/models/user"
-    assert req.get_header("Authorization") == f"Bearer {KEY}"
+    (key, _), (listing, _) = http.requests
+    assert key.full_url == "https://openrouter.ai/api/v1/key" and key.get_header("Authorization") == f"Bearer {KEY}"
+    assert listing.full_url == "https://openrouter.ai/api/v1/models/user"
+    assert listing.get_header("Authorization") == f"Bearer {KEY}"
+
+
+def test_openrouter_health_says_when_the_key_has_expired_though_the_models_are_still_listed():
+    # 15 Nov 2026: the header said "AI online" while every model call was refused with "API key expired."
+    client, http, _, _ = make_client(http_error(401, "API key expired."), MODELS, settings=OPENROUTER)
+    health = client.health()
+    assert health.reachable and not health.model_available
+    assert health.error == ("OpenRouter's API key has expired. Put a new key in OPENROUTER_API_KEY in .env, then "
+                            "restart the API.")
+    assert len(http.requests) == 1 and KEY not in health.error
+
+
+def test_openrouter_health_goes_by_the_model_list_when_the_keys_record_is_not_to_be_had():
+    # Another gateway on OPENROUTER_BASE_URL may not serve /key, and a rate limit proves the key works.
+    for outcome in (http_error(404), http_error(429), http_error(500)):
+        client, http, _, _ = make_client(outcome, MODELS, settings=OPENROUTER)
+        assert client.health().model_available and len(http.requests) == 2
+
+
+def test_a_call_refused_for_an_expired_key_says_the_key_has_expired():
+    client, _, _, _ = make_client(http_error(401, "API key expired."), settings=OPENROUTER)
+    with pytest.raises(LedgerSyncError) as info:
+        client.chat_json(MSG, SCHEMA)
+    assert "OpenRouter's API key has expired. Put a new key in OPENROUTER_API_KEY" in info.value.message
 
 
 def test_health_reports_a_model_the_provider_does_not_offer():

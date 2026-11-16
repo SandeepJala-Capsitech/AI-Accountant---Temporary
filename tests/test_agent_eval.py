@@ -313,3 +313,28 @@ def test_an_r5_on_another_row_is_unexpected_and_the_expected_one_stays_in_the_re
     other = {"status": "applied", "rule": "R5", "row_ids": [900]}
     assert _r5([other], "12.00") == [{"already_in_reading": {"rule": "R5", "row": R5_ROW}},
                                      {"unexpected": {"row_ids": [900], "rule": "R5"}}]
+
+
+def test_a_case_is_added_though_an_earlier_one_left_a_client_of_the_same_name(mongo_store, records):
+    # Every case's client is Northbridge Consulting Ltd, and two clients that aren't archived can't share a name:
+    # the second case of an eval was refused, and every case after it.
+    from agent_fakes import ScriptedChatModel, say
+    from fakes import FakeModel
+    from fastapi.testclient import TestClient
+
+    from ledgersync.config import Settings
+    from server import create_app
+
+    case, other = ROOT / "eval" / "agent_cases" / "clean-month", ROOT / "eval" / "agent_cases" / "combined-vat"
+    app = create_app(Settings(warmup=False), model_client=FakeModel([]), store=mongo_store,
+                     chat_model=ScriptedChatModel(then=say("Done.")))
+    with TestClient(app, headers={"X-LedgerSync": "1"}) as api:
+        first = agent_eval._add_client(api, mongo_store, records, case)
+        second = agent_eval._add_client(api, mongo_store, records, other)
+        third = agent_eval._add_client(api, mongo_store, records, case)       # a second run of the first case
+    assert len({first, second, third}) == 3
+    assert [c.id for c in mongo_store.list_clients()] == [third]             # the one the chat starts from
+    assert sorted(c.id for c in mongo_store.list_clients(archived=True)) == sorted([first, second])
+    demo_id = agent_eval._add_client(None, mongo_store, records, ROOT / "demo" / "northbridge")   # the demo resets one
+    assert [c.name for c in mongo_store.list_clients()].count("Northbridge Consulting Ltd") == 1
+    assert mongo_store.get_client(demo_id).archived is False

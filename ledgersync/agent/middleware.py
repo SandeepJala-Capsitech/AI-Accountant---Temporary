@@ -7,15 +7,19 @@ import logging
 from typing import Callable
 
 from langchain.agents.middleware import AgentMiddleware, hook_config
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langgraph.errors import GraphBubbleUp
 from pydantic import ValidationError
 
 from ledgersync.errors import LedgerSyncError, ModelUnavailable
 
+from .specialists import LEAD, profile_of
+
 logger = logging.getLogger(__name__)
 
 STOPPED = "I stopped there, as you asked."
+# What a specialist's prompt ends with, over the turn's briefing (briefing.py).
+BOOKS_NOW = "\n\nThe books now (as this turn began; a tool gives the state after a change)\n"
 
 
 def _error(call: dict, text: str) -> ToolMessage:
@@ -51,6 +55,34 @@ class ToolErrorsAsMessages(AgentMiddleware):
             logger.exception("The agent's tool %s failed", call["name"])
             return _error(call, f"{call['name']} couldn't finish because of a fault on the server. Try it once more; "
                                 "if it fails again, tell the person.")
+
+
+class Specialists(AgentMiddleware):
+    """Runs each model call as the part the turn is playing (the run's context names it: specialists.profile_of). A
+    specialist is sent its own prompt, with the turn's briefing under it, and offered only its tools. A call to a
+    tool outside its part is answered with an error before the tool runs, so a specialist that only reads can't
+    change the books whatever the model asks for. The lead accountant is the whole agent: the agent's own prompt,
+    and every tool but hand_over."""
+
+    def wrap_model_call(self, request, handler):
+        ctx = request.runtime.context
+        profile = profile_of(ctx)
+        offered = [t for t in request.tools if (getattr(t, "name", None) or t.get("name")) in profile.tools]
+        if profile.name == LEAD:
+            return handler(request.override(tools=offered))
+        briefing = getattr(ctx, "briefing", "")
+        prompt = profile.prompt + (BOOKS_NOW + briefing if briefing else "")
+        return handler(request.override(tools=offered, system_message=SystemMessage(content=prompt)))
+
+    def wrap_tool_call(self, request, handler):
+        profile = profile_of(request.runtime.context)
+        name = request.tool_call["name"]
+        if request.tool is not None and name not in profile.tools:
+            if profile.name == LEAD:   # only hand_over: to the lead it doesn't exist
+                return _error(request.tool_call, f"There is no tool called {name}. Use one of the tools you were given.")
+            return _error(request.tool_call, f"{name} isn't one of your tools in this turn. Call hand_over if the "
+                                             "request needs it.")
+        return handler(request)
 
 
 class ReadsClientOnce(AgentMiddleware):

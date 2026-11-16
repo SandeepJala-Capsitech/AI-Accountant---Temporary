@@ -849,3 +849,74 @@ def test_files_read_in_a_turn_are_settled_even_if_the_stream_raises(make, mongo_
     records = AgentRecords(mongo_store.db)
     assert ledger_book.unposted_changes(mongo_store, records, client_id, dt.date(2026, 4, 1)) == 0
     assert ledger_book.posted_trial_balance(mongo_store, records, client_id, dt.date(2026, 4, 1)).suspense
+
+
+# ─── Specialists (design of 2026-11-15) ────────────────────────────────────────
+
+from ledgersync.agent.middleware import BOOKS_NOW   # noqa: E402
+from ledgersync.agent.prompt import SYSTEM_PROMPT   # noqa: E402
+from ledgersync.agent.specialists import ALL_TOOLS, PROFILES   # noqa: E402
+
+
+def statuses(events) -> list[str]:
+    return [data["text"] for kind, data in events if kind == "status"]
+
+
+def test_a_turn_goes_to_its_specialist_who_starts_from_a_briefing(make, client_id, mongo_store):
+    api = make(say("Nothing needs you."), say("Still nothing."))
+    thread = new_thread(api, client_id)
+    events = send(api, thread["id"], "What needs my attention?")
+    assert statuses(events) == ["Looking it up…", "Posting the books…"]
+    assert api.model.tools == list(PROFILES["reporter"].tools)
+    prompt, told = api.model.seen[0][0].content.split(BOOKS_NOW)
+    assert prompt == PROFILES["reporter"].prompt
+    told = json.loads(told)
+    assert set(told) == {"overview", "open_questions", "latest_changes"} and "accounts" not in told["overview"]
+    assert told["overview"]["rows"] == 0 and told["open_questions"] == []
+    [turn] = AgentRecords(mongo_store.db).turns(thread["id"])
+    assert (turn["specialist"], turn["handed_over"]) == ("reporter", False)
+    # a follow-up no rule places stays with the specialist of the turn before
+    assert statuses(send(api, thread["id"], "yes"))[0] == "Looking it up…"
+    assert api.model.tools == list(PROFILES["reporter"].tools)
+    assert [m["role"] for m in api.get(f"/api/chat/threads/{thread['id']}").json()["messages"]] == [
+        "user", "assistant", "user", "assistant"]
+
+
+def test_a_message_no_specialist_takes_goes_to_the_lead_accountant(make, client_id, mongo_store):
+    api = make(say("Hello."))
+    thread = new_thread(api, client_id)
+    assert statuses(send(api, thread["id"], "Hello"))[0] == "Working on it…"
+    assert api.model.tools == list(ALL_TOOLS) and api.model.seen[0][0].content == SYSTEM_PROMPT
+    [turn] = AgentRecords(mongo_store.db).turns(thread["id"])
+    assert (turn["specialist"], turn["handed_over"]) == ("lead", False)
+
+
+def test_a_turn_handed_over_is_kept_as_such_and_its_follow_up_goes_to_the_lead(make, client_id, mongo_store):
+    api = make(call("hand_over", why="They want a row changed."), say("Which row do you mean?"), say("Thanks."))
+    thread = new_thread(api, client_id)
+    events = send(api, thread["id"], "What needs my attention?")
+    assert "Passed to the lead accountant" in [data["text"] for kind, data in events if kind == "step"]
+    [turn] = AgentRecords(mongo_store.db).turns(thread["id"])
+    assert (turn["specialist"], turn["handed_over"]) == ("reporter", True)
+    assert statuses(send(api, thread["id"], "yes"))[0] == "Working on it…"
+    assert api.model.tools == list(ALL_TOOLS)
+
+
+def test_when_the_briefing_cannot_be_built_the_lead_accountant_takes_the_turn(make, client_id, monkeypatch):
+    def stuck(deps, ctx):
+        raise AssertionError("One row can't be posted")   # as the books say when a row's debits and credits differ
+
+    monkeypatch.setattr(chat_module, "briefing", stuck)
+    api = make(say("I'll look."))
+    thread = new_thread(api, client_id)
+    assert statuses(send(api, thread["id"], "What needs my attention?"))[0] == "Working on it…"
+    assert api.model.tools == list(ALL_TOOLS) and api.model.seen[0][0].content == SYSTEM_PROMPT
+
+
+def test_files_sent_with_a_message_go_to_the_reviewer_whose_briefing_has_their_rows(make, client_id):
+    api = make(say("Read it."), reads=[transactions_json(PAYMENT)])
+    thread = new_thread(api, client_id)
+    events = send(api, thread["id"], "Here is the statement", STATEMENT)
+    assert statuses(events) == ["Reading 1 file…", "Reviewing the books…", "Posting the books…"]
+    told = json.loads(api.model.seen[0][0].content.split(BOOKS_NOW)[1])
+    assert told["overview"]["rows"] == 1 and [r["gross"] for r in told["need_a_look"]["rows"]] == ["240.00"]

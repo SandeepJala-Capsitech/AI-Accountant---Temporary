@@ -208,7 +208,18 @@ class ModelClient:
     def _check(self) -> ModelHealth:
         if not self._s.api_key:
             return ModelHealth(False, False, "Set OPENROUTER_API_KEY or GROQ_API_KEY in .env, then restart the API.")
-        # OpenRouter's /models answers without a key; /models/user needs one, so it checks the key too.
+        if self._openrouter:
+            # OpenRouter's /models answers without a key, and /models/user still lists the models for a key that has
+            # expired, so the header said "AI online" while every call was refused. The key's own record doesn't
+            # answer for a key that is wrong or has expired. Any other trouble with it (a gateway that doesn't serve
+            # it, a rate limit, no connection) is left to the listing below.
+            try:
+                self._request("GET", "/key", None, timeout=10)
+            except urllib.error.HTTPError as exc:
+                if exc.code in (401, 403):
+                    return ModelHealth(True, False, self._http_error(exc.code, self._detail(exc)).message)
+            except Exception:   # noqa: BLE001 - the listing says whether the provider can be reached
+                pass
         path = "/models/user" if self._openrouter else "/models"
         try:
             listing = self._request("GET", path, None, timeout=10)
@@ -264,6 +275,9 @@ class ModelClient:
     def _http_error(self, status: int, detail: str) -> Exception:
         if status in (401, 403):
             self._health = None
+            if "expired" in detail.lower():   # the provider's own word for it: a new key is needed, not a check of this one
+                return ModelUnavailable(f"{self._s.provider}'s API key has expired. Put a new key in "
+                                        f"{self._setting('API_KEY')} in .env, then restart the API.")
             return ModelUnavailable(f"{self._s.provider} rejected the API key. "
                                     f"Check {self._setting('API_KEY')} in .env, then restart the API.")
         if status == 404:   # OpenRouter's reason can be that no host fits, e.g. the account's privacy settings

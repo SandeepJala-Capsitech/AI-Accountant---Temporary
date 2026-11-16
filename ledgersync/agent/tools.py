@@ -94,6 +94,12 @@ class ChatContext:
     trigger: Literal["chat", "background"] = "chat"
     mode: Literal["apply", "suggest"] = "apply"
     review_id: Optional[str] = None
+    # The part the agent plays for this run (specialists.PROFILES): the lead accountant, which is the whole agent,
+    # unless the router picked a specialist. briefing: the state of the books as the turn began, which a specialist
+    # starts from instead of fetching it. hand_over sets handed_over and makes the rest of the run the lead's.
+    specialist: str = "lead"
+    briefing: str = ""
+    handed_over: bool = False
 
 
 def _never(thread_id: str) -> bool:
@@ -219,6 +225,86 @@ def _bank_position(store, client_id: int, year_start) -> dict:
             "missing_paperwork": summary.missing_paperwork}
 
 
+# What five of the tools return, before it is made JSON: the tools call these, and so does the briefing a specialist
+# starts its turn from (briefing.py), which therefore says exactly what the tools would.
+
+def overview(deps: AgentDeps, ctx: ChatContext) -> dict:
+    """What get_overview returns."""
+    store, records = deps.store, deps.records
+    built = books.ledger(store, ctx.client_id, ctx.year_start)
+    looked = _to_look_at(built)
+    return {
+        "client": {"name": built.client.name, "business_type": built.client.business_type,
+                   "vat_registered": built.client.vat_registered},
+        "years": [y.label for y in built.years],
+        "year": {"start": built.year.start, "end": built.year.end, "label": built.year.label,
+                 "closed": built.year.closed},
+        "rows": len(built.transactions), "documents": len(built.uploads),
+        "need_a_look": dict(Counter(f for _, _, families in looked for f in families)),
+        "held_in_suspense": sum(held is not None for _, held, _ in looked),
+        "open_questions": len(records.questions(ctx.client_id, ctx.year_start)),
+        "decisions": len(records.decisions(ctx.client_id, ctx.year_start)),
+        "background_reviews_since_last_chat": _reviews_since_last_chat(records, ctx),
+        "accounts": [{"code": a.code, "name": a.name}
+                     for a in choosable(built.client.business_type, bank_choices(built.client),
+                                        owners_of(built.client))],
+        **_bank_position(store, ctx.client_id, ctx.year_start),
+    }
+
+
+def issues(deps: AgentDeps, ctx: ChatContext, family: Optional[Family] = None, after_row_id: int = 0,
+           limit: int = 20) -> dict:
+    """What list_issues returns."""
+    built = books.ledger(deps.store, ctx.client_id, ctx.year_start)
+    rows = [(row, held) for row, held, families in _to_look_at(built)
+            if row.id > after_row_id and (family is None or family in families)]
+    names = {u.id: u.name for u in built.uploads}
+    page = rows[:limit]
+    return _kept({"rows": [_brief(row, names, held) for row, held in page],
+                  "next_after_row_id": page[-1][0].id if len(rows) > limit else None})
+
+
+def open_questions(deps: AgentDeps, ctx: ChatContext) -> dict:
+    """What list_questions returns."""
+    asked = deps.records.questions(ctx.client_id, ctx.year_start)
+    return {"questions": [_kept({"question_id": q.id, "kind": q.kind, "text": q.text, "why": q.why,
+                                 "status": q.status, "answer": q.answer, "row_ids": q.row_ids,
+                                 "asked_by": q.source, "asked_at": q.created_at}) for q in asked]}
+
+
+def changes(deps: AgentDeps, ctx: ChatContext, when: Optional[str] = None, limit: int = 50) -> dict:
+    """What list_changes returns for the changes since `when` (as the changes' times are kept), at most `limit`."""
+    made = deps.records.changes(ctx.client_id, year_start=ctx.year_start, since=when, limit=limit)
+    return {"changes": [_kept({
+        "changed_at": c.created_at, "by": c.actor, "kind": c.kind, "summary": c.summary, "row_ids": c.row_ids,
+        "upload_id": c.upload_id, "before": c.before, "after": c.after}) for c in made]}
+
+
+def trial_balance(deps: AgentDeps, ctx: ChatContext) -> dict:
+    """What get_trial_balance returns."""
+    store, records = deps.store, deps.records
+    tb = ledger_book.posted_trial_balance(store, records, ctx.client_id, ctx.year_start)
+    # Rows changed since the last posting (an edit on a page, a new upload): the figures a person sees on the
+    # Trial balance page are the books as they stand, so those are given, and said.
+    unposted = ledger_book.unposted_changes(store, records, ctx.client_id, ctx.year_start)
+    now = None
+    if unposted and tb.journal:
+        try:
+            now = books.trial_balance_shown(store, ctx.client_id, ctx.year_start)
+        except InvalidTransactions:
+            now = None
+    shown = now or tb
+    note = (f"{_count(unposted, 'row')} changed since the last posting: these are the books as they stand now, "
+            "as the Trial balance page shows them." if now else
+            None if tb.journal else "Nothing is posted yet for this year: the system posts at the end of the "
+                                    "turn. This isn't a sign the year has no rows; list_rows shows them.")
+    return _kept({
+        "lines": [{"code": l.code, "name": l.name, "debit": l.debit, "credit": l.credit} for l in shown.lines],
+        "total_debits": shown.total_debits, "total_credits": shown.total_credits,
+        "is_balanced": shown.is_balanced, "entries_posted": len(tb.journal),
+        "suspense": [_kept(s.model_dump()) for s in tb.suspense], "problems": tb.problems, "note": note})
+
+
 def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
     """The tools, working on deps. actor: who resolve_issue records its decisions as made by ("agent:<model>")."""
     store, records = deps.store, deps.records
@@ -235,25 +321,7 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
         £0.00), and the statements the books are missing."""
         ctx = runtime.context
         _step(runtime, "Looking over the books…")
-        built = books.ledger(store, ctx.client_id, ctx.year_start)
-        looked = _to_look_at(built)
-        result = {
-            "client": {"name": built.client.name, "business_type": built.client.business_type,
-                       "vat_registered": built.client.vat_registered},
-            "years": [y.label for y in built.years],
-            "year": {"start": built.year.start, "end": built.year.end, "label": built.year.label,
-                     "closed": built.year.closed},
-            "rows": len(built.transactions), "documents": len(built.uploads),
-            "need_a_look": dict(Counter(f for _, _, families in looked for f in families)),
-            "held_in_suspense": sum(held is not None for _, held, _ in looked),
-            "open_questions": len(records.questions(ctx.client_id, ctx.year_start)),
-            "decisions": len(records.decisions(ctx.client_id, ctx.year_start)),
-            "background_reviews_since_last_chat": _reviews_since_last_chat(records, ctx),
-            "accounts": [{"code": a.code, "name": a.name}
-                         for a in choosable(built.client.business_type, bank_choices(built.client),
-                                            owners_of(built.client))],
-            **_bank_position(store, ctx.client_id, ctx.year_start),
-        }
+        result = overview(deps, ctx)
         _step(runtime, "Looked over the books", "done")
         return _out(result)
 
@@ -272,14 +340,9 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
         account a purchase is on), other."""
         ctx = runtime.context
         _step(runtime, "Listing what needs a look…")
-        built = books.ledger(store, ctx.client_id, ctx.year_start)
-        rows = [(row, held) for row, held, families in _to_look_at(built)
-                if row.id > after_row_id and (family is None or family in families)]
-        names = {u.id: u.name for u in built.uploads}
-        page = rows[:limit]
-        result = _kept({"rows": [_brief(row, names, held) for row, held in page],
-                        "next_after_row_id": page[-1][0].id if len(rows) > limit else None})
-        _step(runtime, f"Found {_count(len(page), 'row')} that {'needs' if len(page) == 1 else 'need'} a look", "done")
+        result = issues(deps, ctx, family, after_row_id, limit)
+        found = len(result.get("rows", []))
+        _step(runtime, f"Found {_count(found, 'row')} that {'needs' if found == 1 else 'need'} a look", "done")
         return _out(result)
 
     @tool
@@ -520,10 +583,8 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
         (the rules or the agent)."""
         ctx = runtime.context
         _step(runtime, "Checking the open questions…")
-        asked = records.questions(ctx.client_id, ctx.year_start)
-        result = {"questions": [_kept({"question_id": q.id, "kind": q.kind, "text": q.text, "why": q.why,
-                                       "status": q.status, "answer": q.answer, "row_ids": q.row_ids,
-                                       "asked_by": q.source, "asked_at": q.created_at}) for q in asked]}
+        result = open_questions(deps, ctx)
+        asked = result["questions"]
         _step(runtime, f"{_count(len(asked), 'question')} still open" if asked else "No questions open", "done")
         return _out(result)
 
@@ -562,10 +623,8 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
             when = parsed.astimezone(dt.timezone.utc) if parsed.tzinfo else parsed.replace(tzinfo=dt.timezone.utc)
             when = when.isoformat(timespec="seconds")   # as the changes' times are kept
         limit = 200 if since else 50
-        made = records.changes(ctx.client_id, year_start=ctx.year_start, since=when, limit=limit)
-        result = {"changes": [_kept({
-            "changed_at": c.created_at, "by": c.actor, "kind": c.kind, "summary": c.summary, "row_ids": c.row_ids,
-            "upload_id": c.upload_id, "before": c.before, "after": c.after}) for c in made]}
+        result = changes(deps, ctx, when, limit)
+        made = result["changes"]
         if since and len(made) >= limit:
             result["more"] = True
         _step(runtime, f"Read {_count(len(made), 'change')}" if made else "Nothing has changed", "done")
@@ -579,26 +638,7 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
         yet."""
         ctx = runtime.context
         _step(runtime, "Checking the posted trial balance…")
-        tb = ledger_book.posted_trial_balance(store, records, ctx.client_id, ctx.year_start)
-        # Rows changed since the last posting (an edit on a page, a new upload): the figures a person sees on the
-        # Trial balance page are the books as they stand, so those are given, and said.
-        unposted = ledger_book.unposted_changes(store, records, ctx.client_id, ctx.year_start)
-        now = None
-        if unposted and tb.journal:
-            try:
-                now = books.trial_balance_shown(store, ctx.client_id, ctx.year_start)
-            except InvalidTransactions:
-                now = None
-        shown = now or tb
-        note = (f"{_count(unposted, 'row')} changed since the last posting: these are the books as they stand now, "
-                "as the Trial balance page shows them." if now else
-                None if tb.journal else "Nothing is posted yet for this year: the system posts at the end of the "
-                                        "turn. This isn't a sign the year has no rows; list_rows shows them.")
-        result = _kept({
-            "lines": [{"code": l.code, "name": l.name, "debit": l.debit, "credit": l.credit} for l in shown.lines],
-            "total_debits": shown.total_debits, "total_credits": shown.total_credits,
-            "is_balanced": shown.is_balanced, "entries_posted": len(tb.journal),
-            "suspense": [_kept(s.model_dump()) for s in tb.suspense], "problems": tb.problems, "note": note})
+        result = trial_balance(deps, ctx)
         _step(runtime, "Checked the posted trial balance", "done")
         return _out(result)
 
@@ -624,6 +664,21 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
         _step(runtime, "Worked out the VAT figures", "done")
         return _out(figures.model_dump())
 
+    @tool
+    def hand_over(why: Annotated[str, Field(min_length=1, max_length=300,
+                                            description="Why the request is outside your part, in a sentence.")],
+                  runtime: ToolRuntime[ChatContext]) -> dict:
+        """Gives the rest of this turn to the lead accountant, who has every tool, when the request is outside your
+        part. Call it straight away, before anything else, instead of attempting the work or replying that you
+        can't do it."""
+        ctx = runtime.context
+        ctx.specialist, ctx.handed_over = "lead", True   # the run's next model call is the lead's (middleware.Specialists)
+        _step(runtime, "Passed to the lead accountant", "done")
+        return {"handed_over": True, "note": "You are now the lead accountant, with every tool. Carry on with the "
+                                             "person's request; don't mention the hand-over."}
+
+    # hand_over is the specialists' own: the lead accountant is never offered it (specialists.PROFILES).
     return [get_overview, list_issues, list_rows, get_row, list_documents, read_document, resolve_issue, edit_row,
             ask_user,
-            close_question, list_questions, list_decisions, list_changes, get_trial_balance, get_vat_figures]
+            close_question, list_questions, list_decisions, list_changes, get_trial_balance, get_vat_figures,
+            hand_over]

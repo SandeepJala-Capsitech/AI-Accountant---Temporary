@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass
 from typing import Iterator, Literal, Optional
 
@@ -112,7 +113,21 @@ def stream_turn(agent, ctx: ChatContext, text: str, *, message_id: Optional[str]
       limit), with how many steps it took; model_unavailable when the model still failed after its retries; or the
       code of any other error.
     A chat asked to stop ends before its next model call, saying so. The message is kept in the thread under
-    message_id (an id of its own when None), and the name of each tool the run calls is added to `called`, if given."""
+    message_id (an id of its own when None), and the name of each tool the run calls is added to `called`, if given.
+    As the run ends one line goes to the log: the part it played (ChatContext.specialist), whether it was handed
+    over, its model calls and tool calls, and how long it took."""
+    counts, started, part = {"model": 0, "tools": 0}, time.perf_counter(), getattr(ctx, "specialist", "lead")
+    try:
+        yield from _turn(agent, ctx, text, message_id, called, counts)
+    finally:
+        logger.info("A %s turn as the %s%s: %d model calls, %d tool calls, %.1f s", getattr(ctx, "trigger", "chat"),
+                    part, ", handed over to the lead" if getattr(ctx, "handed_over", False) else "", counts["model"],
+                    counts["tools"], time.perf_counter() - started)
+
+
+def _turn(agent, ctx: ChatContext, text: str, message_id: Optional[str], called: Optional[set[str]],
+          counts: dict[str, int]) -> Iterator[ChatEvent]:
+    """stream_turn's run, counting its model calls and its tool calls into `counts`."""
     config = {"configurable": {"thread_id": ctx.thread_id}, "recursion_limit": RECURSION_LIMIT}
     steps: dict[str, dict] = {}
     limited = False
@@ -137,6 +152,7 @@ def stream_turn(agent, ctx: ChatContext, text: str, *, message_id: Optional[str]
                 for node, update in chunk.items():
                     messages = update.get("messages", []) if isinstance(update, dict) else []
                     if node == "tools":
+                        counts["tools"] += sum(isinstance(m, ToolMessage) for m in messages)
                         for result in messages:
                             if called is not None and isinstance(result, ToolMessage) and result.name:
                                 called.add(result.name)
@@ -145,6 +161,7 @@ def stream_turn(agent, ctx: ChatContext, text: str, *, message_id: Optional[str]
                                 steps[step["id"]] = _finished(step, result)
                                 yield ChatEvent("step", steps[step["id"]])
                     elif node == "model":
+                        counts["model"] += 1
                         for made in (m for m in messages if isinstance(m, AIMessage)):
                             garbled = bool(made.invalid_tool_calls) and not made.tool_calls and not made.text.strip()
                             cut = (made.response_metadata.get("finish_reason") == "length" and not made.tool_calls

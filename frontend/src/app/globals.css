@@ -418,6 +418,34 @@ textarea.input { height: auto; min-height: 150px; padding: 10px; resize: vertica
 .thread-title { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .thread-client { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .thread-link[aria-current="page"] .thread-client { color: inherit; opacity: 0.8; }
+/* A chat's rename and delete buttons sit over the right of its row: shown when the row is pointed at or holds the
+   keyboard, and always where there is no pointer to hover with. */
+.thread-row { position: relative; }
+.thread-actions {
+  position: absolute; top: 50%; right: 6px; transform: translateY(-50%); display: flex; gap: 2px; padding: 2px;
+  border-radius: 8px; background: var(--card); opacity: 0;
+}
+.thread-action {
+  width: 24px; height: 24px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 6px;
+  background: none; color: var(--muted); cursor: pointer;
+}
+.thread-row:hover .thread-actions, .thread-actions:focus-within { opacity: 1; }
+.thread-row:hover a.thread-link, .thread-row:focus-within a.thread-link { padding-right: 66px; }
+.thread-action:hover { background: var(--hover); color: var(--text); }
+.thread-delete:hover { background: var(--error-tint); color: var(--error); }
+.thread-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+@media (hover: none) {
+  .thread-actions { opacity: 1; }
+  a.thread-link { padding-right: 66px; }
+}
+/* A title being renamed, in the list and at the top of the open chat. */
+.input.title-editor { height: 28px; padding: 0 8px; font-size: inherit; min-width: 0; }
+.thread-link .title-editor { width: 100%; margin-bottom: 2px; color: var(--text); }
+.chat-head-rename { display: flex; align-items: center; gap: 6px; }
+.chat-head-rename span { white-space: nowrap; }
+.chat-head-rename .title-editor { width: min(360px, 100%); }
+.chat-head-actions { display: flex; gap: 8px; flex: none; }
+.chat-head-actions .btn-small { margin-left: 0; }
 
 .client-picker { display: flex; flex-direction: column; gap: 14px; padding: 32px 0; }
 .client-chips { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -425,6 +453,8 @@ textarea.input { height: auto; min-height: 150px; padding: 10px; resize: vertica
 .client-chip:disabled { opacity: 0.55; cursor: wait; }
 
 .chat-thread { display: flex; flex-direction: column; gap: 16px; min-height: calc(100vh - 160px); }
+.chat-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.chat-head-text { min-width: 0; }
 .chat-head h1 { font-size: 22px; }
 .chat-head h1 .strong { font-weight: inherit; }
 .transcript { display: flex; flex-direction: column; gap: 12px; flex: 1; }
@@ -433,7 +463,15 @@ textarea.input { height: auto; min-height: 150px; padding: 10px; resize: vertica
   align-self: flex-end; max-width: min(78%, 640px); padding: 9px 12px; border-radius: 12px 12px 2px 12px;
   background: var(--accent-tint); color: var(--on-tint); white-space: pre-wrap; overflow-wrap: anywhere;
 }
-.bubble-agent { display: flex; flex-direction: column; gap: 10px; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* The AI's reply sits in a box like the message box's: as wide as its words, and the full width once it holds what
+   a turn did (the sorted list, the questions, the books as posted). */
+.bubble-agent {
+  align-self: flex-start; display: flex; flex-direction: column; gap: 10px; max-width: 100%; padding: 10px 14px;
+  background: var(--card); border: 1px solid var(--rule); border-radius: 12px 12px 12px 2px;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.bubble-agent:has(.review) { align-self: stretch; padding: 14px; }
+.bubble-agent:empty { display: none; }
 .bubble-agent .notice { white-space: normal; margin: 0; }
 .narrative { white-space: pre-wrap; }
 

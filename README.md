@@ -304,6 +304,25 @@ kinds. Rows that do not add up to the document's printed total are flagged.
   switches it.
 - `.venv/bin/python -m pytest -m llm` checks the key and model with one receipt photo.
 
+### The agents
+
+The accountant chat and the background review run on one agent, on one model. Each turn is that agent playing one
+part, picked from the message by rules in code (`ledgersync/agent/router.py`), with no model call spent on choosing:
+
+| Part | What it does | Can change the books |
+|---|---|---|
+| Reviewer | Settles what the evidence settles: dates, duplicates, records that disagree, mixed-VAT rows, VAT a document prints. Runs every background review | Yes, through the checked resolutions |
+| Bookkeeper | Makes the changes the person tells it to, and applies an answer typed on a question card | Yes, as the person said |
+| Tax and VAT adviser | Answers tax questions from the books and the facts in its prompt | No |
+| Reporter | Says where the books stand: what changed, what needs the person, the balances | No |
+| Lead accountant | The whole agent, with every tool: takes what no rule places, and any turn a specialist hands over | Yes |
+
+Each specialist has a shorter prompt (cut from the lead's when the API starts, so an edit to the lead's prompt
+reaches them), only the tools its part needs, and a briefing: the state of the books as the turn began, fetched in
+code so it doesn't spend its first model calls fetching it. A tool outside its part is refused in code, and
+`hand_over` gives the rest of a turn to the lead. The log has one line for each turn: the part, its model and tool
+calls, and the seconds it took.
+
 ## Configuration
 
 Settings come from environment variables or `.env` (environment variables win).
