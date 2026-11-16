@@ -22,7 +22,7 @@ MATCHING_ISSUES = {"choose_payment", "part_payment", "overpayment", "possible_pa
                    "not_vat_invoice", "date_conflict", "date_from_claim", "date_from_bank", "booked_twice",
                    "amount_conflict", "open_document", "no_payroll", "transfer", "sale_without_vat",
                    "payout_report", "subtotal_only", "claimed_less", "not_on_statement", "till_takings",
-                   "addressed_to", "refund_of_overpayment", "reversed"}
+                   "addressed_to", "refund_of_overpayment", "reversed", "not_claimed", "claim_receipts_unclear"}
 # Issues statements.check_statement adds to bank lines, and file_dates.check_file_date to a document; derived too,
 # so checking again replaces them.
 STATEMENT_ISSUES = {"statement_gap", "statement_total", "file_date"}
@@ -112,11 +112,12 @@ def booked(tx: Transaction) -> bool:
     the table, or a row dated before the client's first year, whose amount is in the opening balances, is booked
     only when a person ticks Include. A card payment is booked from its receipt, which shows
     the VAT, and not again from the bank line; a claim line is booked from its receipt too, and as well only when a
-    person ticks Include. (matching.match finds copies and receipts.) A row a decision excluded or replaced
+    person ticks Include, as is a receipt its claim leaves off (left_off_claim): the claimant paid it.
+    (matching.match finds copies and receipts.) A row a decision excluded or replaced
     is never booked, whatever else is true of it."""
     if tx.excluded or tx.superseded_by:
         return False
-    if tx.recorded_by is not None or tx.in_opening:
+    if tx.recorded_by is not None or tx.left_off_claim is not None or tx.in_opening:
         return tx.include
     return tx.include or (tx.document_type not in NOT_TRANSACTIONS and tx.copy_of is None)
 

@@ -74,11 +74,13 @@ def _named(tx: Transaction) -> str:
 def matched_rows(transactions: list[Transaction], settings: BusinessSettings,
                  read: Optional[list[Optional[Decimal]]] = None, apart: Optional[list[set[int]]] = None, *,
                  keep: Optional[list[bool]] = None, open_items: Sequence[OpenItem] = (),
-                 name_days: Optional[list] = None, skip_errors: bool = False) -> list[tuple[int, Transaction]]:
+                 name_days: Optional[list] = None, upload_ids: Optional[list] = None,
+                 skip_errors: bool = False) -> list[tuple[int, Transaction]]:
     """The rows trial_balance posts, each with its place in transactions, matched as it matches them (see there);
-    InvalidTransactions while any of them has an error. name_days: each row's file name's day (matching.match)."""
+    InvalidTransactions while any of them has an error. name_days: each row's file name's day; upload_ids: each row's
+    upload (matching.match)."""
     ready = match([normalise(tx, settings) for tx in transactions], settings, read=read, apart=apart,
-                  open_items=open_items, name_days=name_days)
+                  open_items=open_items, name_days=name_days, upload_ids=upload_ids)
     posted = [(n, tx) for n, tx in enumerate(ready)   # a quote or the like waits for Include
               if booked(tx) and (keep is None or keep[n])]
     problems = [f"{_named(tx)}: {issue.message}" for n, tx in posted

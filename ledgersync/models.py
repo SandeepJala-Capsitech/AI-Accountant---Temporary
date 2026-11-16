@@ -220,7 +220,12 @@ class Transaction(BaseModel):
     documented_by: Optional[Settlement] = None     # the document behind a row that books instead of it, with no
                                                    # VAT reclaimed: a claim line's bill for more than was claimed,
                                                    # or a bank line's receipt that prints no total (its subtotal)
-    vat_found: Optional[Decimal] = None            # a receipt or invoice on a claim: VAT its prices and the claim agree
+    recorded_by_refs: list[str] = Field(default_factory=list)  # a claim line booked from several receipts on one
+                                                   # document (a TfL statement's daily charges): each one's ref,
+                                                   # oldest first; recorded_by then stands for them all
+    left_off_claim: Optional[Settlement] = None    # a receipt on that document the claim leaves out: the claim line;
+                                                   # the claimant paid it, so not booked unless included
+    vat_found: Optional[Decimal] = None           # a receipt or invoice on a claim: VAT its prices and the claim agree
                                                    # on, not booked because it says it is not a VAT invoice (Book VAT)
     date_found: Optional[dt.date] = None           # a receipt, or a claim line, whose other record (its claim line,
                                                    # receipt or card payment) agrees on all but the date: its date (Use)

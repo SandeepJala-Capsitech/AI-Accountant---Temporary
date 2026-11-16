@@ -148,7 +148,8 @@ class _Books:
         """The year's trial balance, its rows booked under the document rules as the posted ledger books them (with
         rules False, as a year closed before them is: every row books as posting.journal_for has it)."""
         posted = matched_rows([row.tx for row in self.stored], settings, self.read, self.apart, keep=keep,
-                              open_items=self.unpaid, name_days=_name_days(self), skip_errors=skip_errors)
+                              open_items=self.unpaid, name_days=_name_days(self),
+                              upload_ids=[row.upload_id for row in self.stored], skip_errors=skip_errors)
         return summarise([line for n, tx in posted for line in (
             journal_with_rule(tx, n, document_rule(tx, settings)) if rules else journal_for(tx, n))], opening)
 
@@ -177,7 +178,7 @@ def _matched(b: _Books, settings: BusinessSettings) -> tuple[list[Transaction], 
     """All the client's rows matched together with the invoices brought forward, in the order of b.stored, and what
     is still owed on each document, by its ref."""
     return match_documents([normalise(row.tx, settings) for row in b.stored], settings, b.read, b.apart, b.unpaid,
-                           name_days=_name_days(b))
+                           name_days=_name_days(b), upload_ids=[row.upload_id for row in b.stored])
 
 
 def _name_days(b: _Books) -> list[Optional[dt.date]]:
@@ -513,7 +514,8 @@ def booked_rows(store: MongoStore, client_id: int, year_start: dt.date) -> list[
     b = _books(store, client_id)
     n = b.index(year_start)
     posted = matched_rows([row.tx for row in b.stored], b.settings_in(n), b.read, b.apart,
-                          keep=[p == n for p in b.placed], open_items=b.unpaid, name_days=_name_days(b))
+                          keep=[p == n for p in b.placed], open_items=b.unpaid, name_days=_name_days(b),
+                          upload_ids=[row.upload_id for row in b.stored])
     return [(b.stored[k].id, tx) for k, tx in posted]
 
 

@@ -219,15 +219,17 @@ def _gbp(amount: Decimal) -> str:
 
 def match(rows: list[Transaction], settings: BusinessSettings, read: Optional[list[Optional[Decimal]]] = None,
           apart: Optional[list[set[int]]] = None, open_items: Sequence[OpenItem] = (),
-          name_days: Optional[list[Optional[dt.date]]] = None) -> list[Transaction]:
+          name_days: Optional[list[Optional[dt.date]]] = None,
+          upload_ids: Optional[list[Optional[int]]] = None) -> list[Transaction]:
     """The rows as match_documents matches them."""
-    return match_documents(rows, settings, read, apart, open_items, name_days=name_days)[0]
+    return match_documents(rows, settings, read, apart, open_items, name_days=name_days, upload_ids=upload_ids)[0]
 
 
 def match_documents(rows: list[Transaction], settings: BusinessSettings,
                     read: Optional[list[Optional[Decimal]]] = None, apart: Optional[list[set[int]]] = None,
                     open_items: Sequence[OpenItem] = (), left_out: Optional[dict[str, dict[str, Decimal]]] = None,
-                    name_days: Optional[list[Optional[dt.date]]] = None
+                    name_days: Optional[list[Optional[dt.date]]] = None,
+                    upload_ids: Optional[list[Optional[int]]] = None
                     ) -> tuple[list[Transaction], dict[str, DocumentStatus]]:
     """Which documents each bank line pays and what is still owed on each document, for transactions
     checks.normalise has already prepared. Lines a person linked go first; then lines that pay exactly what
@@ -240,13 +242,16 @@ def match_documents(rows: list[Transaction], settings: BusinessSettings,
     status, by its ref, brought-forward ones ("ob-{id}") among them. A row a decision left out of the books (excluded,
     or replaced by a split) is matched as if it were not there; left_out, for each document, is what its excluded
     rows amounted to in each direction, so the total printed on the document is not said to be short of them.
-    name_days: for each row, the day its upload's file name holds (an expense app's export names the day), or None."""
+    name_days: for each row, the day its upload's file name holds (an expense app's export names the day), or None.
+    upload_ids: for each row, the upload it came from, or None: a claim line can be booked from several receipts of one
+    upload (_with_claims); without them it is booked from one receipt only."""
     read = read or [None] * len(rows)
     apart = apart or [set() for _ in rows]
     name_days = name_days or [None] * len(rows)
     if any(tx.excluded or tx.superseded_by for tx in rows):
-        return _without_left_out(rows, settings, read, apart, open_items, name_days)
-    rows = _checked_totals(_with_claims(_without_copies([_cleared(tx) for tx in rows]), settings, apart, name_days),
+        return _without_left_out(rows, settings, read, apart, open_items, name_days, upload_ids)
+    rows = _checked_totals(_with_claims(_without_copies([_cleared(tx) for tx in rows]), settings, apart, name_days,
+                                        upload_ids),
                            read, left_out or {})
     rows = _with_till_takings(rows, settings)
     documents = {**_brought_forward(open_items), **_documents(rows)}
@@ -298,7 +303,8 @@ def match_documents(rows: list[Transaction], settings: BusinessSettings,
 
 def _without_left_out(rows: list[Transaction], settings: BusinessSettings, read: list[Optional[Decimal]],
                       apart: list[set[int]], open_items: Sequence[OpenItem],
-                      name_days: list[Optional[dt.date]]) -> tuple[list[Transaction], dict[str, DocumentStatus]]:
+                      name_days: list[Optional[dt.date]], upload_ids: Optional[list[Optional[int]]] = None
+                      ) -> tuple[list[Transaction], dict[str, DocumentStatus]]:
     """match_documents on the rows a decision didn't leave out, put back in place among the left-out ones, which
     keep no outputs of a match. The places that matching's issues name are mapped back to places in all the rows."""
     kept = [n for n, tx in enumerate(rows) if not (tx.excluded or tx.superseded_by)]
@@ -312,7 +318,8 @@ def _without_left_out(rows: list[Transaction], settings: BusinessSettings, read:
             by_direction[tx.direction.value] = by_direction.get(tx.direction.value, ZERO) + tx.gross
     matched, statuses = match_documents([rows[n] for n in kept], settings, [read[n] for n in kept],
                                         [{place[m] for m in apart[n] if m in place} for n in kept], open_items,
-                                        left_out, name_days=[name_days[n] for n in kept])
+                                        left_out, name_days=[name_days[n] for n in kept],
+                                        upload_ids=[upload_ids[n] for n in kept] if upload_ids else None)
     result = [_cleared(tx) for tx in rows]
     for n, tx in zip(kept, matched):
         result[n] = tx.model_copy(update={"issues": [
@@ -556,6 +563,7 @@ def _cleared(tx: Transaction) -> Transaction:
     return tx.model_copy(update={"paid_against": None, "pays": [], "candidates": [], "owed": None, "paid_by": [],
                                  "copy_of": None, "recorded_by": None, "claimed_in": None, "vat_found": None,
                                  "date_found": None, "amount_found": None, "documented_by": None,
+                                 "recorded_by_refs": [], "left_off_claim": None,
                                  "issues": [i for i in tx.issues if i.code not in MATCHING_ISSUES]})
 
 
@@ -753,7 +761,8 @@ def _documents(rows: list[Transaction]) -> dict[str, _Document]:
 
 
 def _with_claims(rows: list[Transaction], settings: BusinessSettings, apart: list[set[int]],
-                 name_days: Optional[list[Optional[dt.date]]] = None) -> list[Transaction]:
+                 name_days: Optional[list[Optional[dt.date]]] = None,
+                 upload_ids: Optional[list[Optional[int]]] = None) -> list[Transaction]:
     """The rows, each expense claim line that a receipt or invoice also records marked as recorded by it: the same
     amount, the same way and dated within a few days, the nearest document first and one the line names before any
     other. The document is booked, since it shows the VAT that can be reclaimed, and is owed to the
@@ -860,6 +869,13 @@ def _with_claims(rows: list[Transaction], settings: BusinessSettings, apart: lis
         ask("date_conflict", "date_found", n, document, line.date, document.date,
             f"Read as {long_date(document.date)}; the claim says {long_date(line.date)}.",
             f"Its {kind} was read as {long_date(document.date)}; this line says {long_date(line.date)}.")
+    # Then a claim line for several receipts of one upload (a TfL statement's daily charges, read as a receipt each):
+    # the one set of them, of the supplier the line names, that adds up to the line. Two sets that fit pair nothing.
+    left_off: set[str] = set()
+    if upload_ids:
+        _pair_sets(rows, marked, lines, [d for d in documents if d.ref not in paired_documents], paired_lines,
+                   paired_documents, left_off, upload_ids, settings, named, kept_apart)
+
     # Then a document on one account and a claim line from the same shop within a few days, left apart because their
     # amounts differ, and only with each other: one amount was misread, or only part of a bill is claimed.
 
@@ -870,8 +886,8 @@ def _with_claims(rows: list[Transaction], settings: BusinessSettings, apart: lis
                 and (named(line, d) or _named_in(d.counterparty, _shop(line))))
 
     used, used_lines = {d.ref for d, _ in settled}, {n for _, n in settled}
-    for document, n in _only_each_other([d for d in open_documents if d.ref not in used],
-                                        [n for n in open_lines if n not in used_lines], differs):
+    for document, n in _only_each_other([d for d in open_documents if d.ref not in used | paired_documents | left_off],
+                                        [n for n in open_lines if n not in used_lines | paired_lines], differs):
         line = rows[n]
         kind = _NUMBERED.get(document.kind, "document")
         # The purchase counts once meanwhile: the claim line, which is what is owed, is booked and the document waits.
@@ -900,6 +916,110 @@ def _with_claims(rows: list[Transaction], settings: BusinessSettings, apart: lis
             f"Read as {_gbp(document.total)}; the claim says {_gbp(line.gross)}. Not booked until you choose.",
             f"Its {kind} was read as {_gbp(document.total)}; this line says {_gbp(line.gross)}.{total}")
     return marked
+
+
+SET_LIMIT = 60          # an upload with more candidate receipts for a claim line than this is not searched for a set
+_SUMS_LIMIT = 200_000   # nor one whose sums would take more than this much working out
+
+
+def _one_set(amounts: list[int], target: int) -> tuple[int, Optional[list[int]]]:
+    """How many sets of two or more of the amounts (in pence) add up to target, counted up to 2, and the places of
+    the set when there is exactly one. A table of the sums each first so many amounts can reach, with how many ways
+    and whether by none, one or more of them; (0, None) when the table would grow too big."""
+    tables: list[dict[tuple[int, int], int]] = [{(0, 0): 1}]
+    for amount in amounts:
+        before, after = tables[-1], dict(tables[-1])
+        for (total, size), ways in before.items():
+            if total + amount <= target:
+                key = (total + amount, min(size + 1, 2))
+                after[key] = min(2, after.get(key, 0) + ways)
+        if len(after) > _SUMS_LIMIT:
+            return 0, None
+        tables.append(after)
+    found = tables[-1].get((target, 2), 0)
+    if found != 1:
+        return found, None
+    chosen, total, size = [], target, 2
+    for i in range(len(amounts), 0, -1):
+        if tables[i - 1].get((total, size), 0):   # the one set is among the first i - 1 amounts
+            continue
+        chosen.append(i - 1)
+        total -= amounts[i - 1]
+        size = 0 if size == 1 else (1 if size == 2 and not tables[i - 1].get((total, 2), 0) else 2)
+    return 1, sorted(chosen)
+
+
+def _pair_sets(rows: list[Transaction], marked: list[Transaction], lines: list[int], documents: list[_Document],
+               paired_lines: set[int], paired_documents: set[str], left_off: set[str],
+               upload_ids: list[Optional[int]], settings: BusinessSettings, named, kept_apart) -> None:
+    """Each claim line still open that the one set of its supplier's receipts on one upload adds up to: those
+    receipts are owed to the claimant on the claim and the line is not booked, as with one receipt; the upload's other
+    receipts of that supplier, the way and the days the line could claim, are the claimant's own (not_claimed)."""
+    def candidates(n: int) -> dict[int, list[_Document]]:
+        line, by_upload = rows[n], {}
+        for d in documents:
+            upload = upload_ids[d.rows[0]]
+            if (d.kind == "receipt" and len(d.rows) == 1 and upload is not None and d.date is not None
+                    and line.date - COVERED <= d.date <= line.date + CARD_DAYS and d.direction == line.direction.value
+                    and named(line, d) and not kept_apart(n, d)):
+                by_upload.setdefault(upload, []).append(d)
+        return {u: sorted(ds, key=lambda d: (d.date, d.rows[0])) for u, ds in by_upload.items()}
+
+    open_lines = sorted((n for n in lines if n not in paired_lines), key=lambda n: (rows[n].date, n))
+    for n in open_lines:
+        line, found = rows[n], []
+        for pool in candidates(n).values():
+            pool = [d for d in pool if d.ref not in paired_documents and d.ref not in left_off]
+            if 2 <= len(pool) <= SET_LIMIT:
+                count, places = _one_set([int(d.total * 100) for d in pool], int(line.gross * 100))
+                found += [(count, pool, places)] if count else []
+        if sum(count for count, _, _ in found) != 1:
+            continue
+        _, pool, places = found[0]
+        chosen = [pool[k] for k in places]
+        _book_set(rows, marked, n, chosen, [d for d in pool if d not in chosen], settings)
+        paired_lines.add(n)
+        paired_documents.update(d.ref for d in chosen)
+        left_off.update(d.ref for d in pool if d not in chosen)
+
+
+def _book_set(rows: list[Transaction], marked: list[Transaction], n: int, chosen: list[_Document],
+              others: list[_Document], settings: BusinessSettings) -> None:
+    """Claim line n is booked from the chosen receipts, which are owed to the claimant on the claim; the others are
+    left off it."""
+    line = rows[n]
+    first, last = chosen[0], chosen[-1]
+    total = sum((d.total for d in chosen), ZERO)
+    days = (f"{first.date.day} to {long_date(last.date)}" if (first.date.year, first.date.month)
+            == (last.date.year, last.date.month) else f"{long_date(first.date)} to {long_date(last.date)}")
+    supplier = first.counterparty or "the supplier"
+    them = Settlement(ref=first.ref, amount=total, date=last.date, kind="receipt",
+                      description=f"{supplier}, {len(chosen)} charges, {days}")
+    claim = Settlement(ref=line.document_ref or f"row-{n}", amount=line.gross, date=line.date,
+                       kind="expense_claim", description=_claim_name(line))
+    twice = [issue("booked_twice", f"Also booked from its {len(chosen)} receipts ({supplier}, {_gbp(total)}, {days}). "
+                                   "Untick unless they're separate purchases.",
+                   related=[r for d in chosen for r in d.rows])] if line.include else []
+    own = line.issues if line.include else [i for i in line.issues if i.code not in _VAT_NOTES]
+    marked[n] = line.model_copy(update={"recorded_by": them, "recorded_by_refs": [d.ref for d in chosen],
+                                        "issues": own + twice})
+    together = _Document(ref=first.ref, kind="receipt", direction=first.direction, account=first.account,
+                         counterparty=first.counterparty, description=them.description,
+                         rows=[r for d in chosen for r in d.rows], total=total, date=last.date, open=total)
+    found, vat = _claim_vat(line, together, rows, settings)
+    for k, r in enumerate(together.rows):
+        marked[r] = rows[r].model_copy(update={"claimed_in": claim, "contra_account_code": STAFF_EXPENSES,
+                                               "issues": rows[r].issues + (found if k == 0 else []),
+                                               **(vat if k == 0 else {})})
+    claimant = line.counterparty or "the claimant"
+    said = issue("not_claimed", (
+        f"On {supplier}'s statement with {len(chosen)} charges on {claimant}'s claim, but not claimed itself. Not "
+        f"booked: {claimant} paid it and hasn't asked for it back. If it was a business expense missed from the "
+        "claim, tick Include."), related=[n])
+    for d in others:
+        for r in d.rows:
+            marked[r] = rows[r].model_copy(update={"left_off_claim": claim, "contra_account_code": STAFF_EXPENSES,
+                                                   "issues": rows[r].issues + [said]})
 
 
 def _shop(line: Transaction) -> str:
