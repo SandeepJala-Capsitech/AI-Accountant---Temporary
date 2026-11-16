@@ -12,7 +12,8 @@ from itertools import combinations
 from typing import Optional, Sequence
 
 from .accounts import BY_CODE, CLEARING, CREDITORS, DEBTORS, DIRECTORS_LOANS, STAFF_EXPENSES, SUSPENSE, AccountType
-from .checks import MATCHING_ISSUES, PAYROLL_OWED, booked, is_fare, issue, long_date, reclaims_vat, registered_on
+from .checks import (MATCHING_ISSUES, PAYROLL_OWED, booked, is_fare, issue, long_date, reclaims_vat, registered_on,
+                     vat_implied)
 from .models import BusinessSettings, Direction, Issue, OpenItem, Settlement, Transaction
 from .payees import processor
 from .money import PENNY, ZERO, VatTreatment
@@ -924,6 +925,11 @@ def _claim_vat(line: Transaction, document: _Document, rows: list[Transaction],
             return [offer], {"vat_found": line.vat}
         return ([issue("vat_worked_out", f"VAT {_gbp(line.vat)} booked from its prices: {prices}.", "info")],
                 {"vat_posted": line.vat, "net": first.gross - line.vat})
+    if (len(document.rows) == 1 and vat_implied(first, settings) and first.vat_posted is not None
+            and abs(first.vat_posted - line.vat) <= PENNY):
+        # A small receipt that prints the VAT number or says VAT is included is a VAT invoice in its own right: its
+        # own rate gives the claim's VAT, booked from the receipt as it would be without the claim (its vat_implied).
+        return [], {}
     if (len(document.rows) == 1 and first.vat is None and first.vat_treatment is None and line.vat < first.gross
             and reclaims_vat(first, settings) and not is_fare(first)):
         # The document is silent on VAT and the claim shows it: the claim is the person's record of the purchase, so

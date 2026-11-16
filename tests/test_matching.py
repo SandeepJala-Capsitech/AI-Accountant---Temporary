@@ -830,6 +830,28 @@ def test_vat_on_the_claim_only_is_not_flagged_once_a_person_says_it_is_fine():
     assert codes(receipt) == [] and receipt.vat_posted == Decimal("28.96")   # booked as claimed, and nothing said
 
 
+@pytest.mark.parametrize("shows", [{"supplier_vat_number": "731919917"}, {"vat_stated": True}])
+def test_a_small_receipt_that_shows_vat_is_included_is_not_asked_for_a_vat_invoice_when_the_claim_agrees(shows):
+    # Jenny's Bagel Factory receipt (£8.69) prints the VAT number and "All prices inclusive of VAT" but no VAT
+    # amount; her claim shows VAT £1.45. Up to £250 the receipt is a VAT invoice in its own right, and its own 20%
+    # gives the claim's figure: booked from the receipt, with no warning that the receipt shows none.
+    _, receipt = matched(claim_line("8.69", "2026-10-07", "The Bagel Factory, ExCeL London", account="7406",
+                                    vat="1.45"),
+                         row("receipt", "out", "8.69", "2026-10-07", "The Bagel Factory", "bagel", account="7406",
+                             **shows))
+    assert codes(receipt) == [("vat_implied", "info")]
+    assert (receipt.vat_posted, receipt.vat_from_claim) == (Decimal("1.45"), False)
+    assert document_rule(receipt, SETTINGS).reclaim_vat is True
+
+
+def test_a_small_receipt_that_shows_vat_is_included_still_says_so_when_the_claims_vat_differs():
+    # The receipt's own 20% is £1.45; the claim says £1.00. Which is right is for a person to say.
+    _, receipt = matched(claim_line("8.69", "2026-10-07", "The Bagel Factory", account="7406", vat="1.00"),
+                         row("receipt", "out", "8.69", "2026-10-07", "The Bagel Factory", "bagel", account="7406",
+                             supplier_vat_number="731919917"))
+    assert ("claim_vat", "warning") in codes(receipt)
+
+
 def amazon_order(settings=SETTINGS, account="7504", **receipt):
     """Jenny's second Amazon order: the claim shows VAT £3.00; the receipt prints no VAT, only its prices."""
     rows = [claim_line("17.99", "2026-09-11", "Amazon (seller: BengBuShiYouSheng), A4 leaflet holder", account=account,
