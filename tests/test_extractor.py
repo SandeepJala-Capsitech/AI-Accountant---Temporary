@@ -196,6 +196,22 @@ def test_a_cash_machine_withdrawal_is_cash_not_a_purchase():
     assert "A card line at a cash machine is cash taken out: 1230 Petty Cash" in system
 
 
+def test_a_suppliers_list_of_card_charges_is_receipts_not_a_bank_statement():
+    # Transport for London's contactless "Payment Statement" (a card, a date range and a charge for each day) was read
+    # as the client's bank statement: every receipt dated inside it then looked unpaid by the bank.
+    _, client = extract(transactions_json(ROW), "x")
+    system = client.calls[0]["messages"][0]["content"]
+    assert "is not a bank statement, whatever it calls itself" in system
+    assert 'each charge is a receipt of its own, with the type "receipt"' in system
+
+
+def test_a_shops_receipt_is_a_purchase_though_it_prints_sale():
+    # A grocer's till receipt, which names no customer and prints "Sale" above its item, was read as money in.
+    _, client = extract(transactions_json(ROW), "x")
+    system = client.calls[0]["messages"][0]["content"]
+    assert 'is a purchase (out) even when it names no customer and prints the word "Sale"' in system
+
+
 def test_an_agents_name_comes_once_with_the_answer():
     result, _ = extract(json.dumps({"transactions": [dict(ROW, document_type="agent_statement")], "agent": " R+R PR Ltd "}))
     assert (result.data[0].document_type, result.agent) == ("agent_statement", "R+R PR Ltd")

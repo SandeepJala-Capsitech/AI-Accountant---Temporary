@@ -7,7 +7,7 @@ from ledgersync.config import Settings
 from ledgersync.extractor import TransactionExtractor
 from ledgersync.intake import load_upload
 from ledgersync.model_client import ModelClient
-from ledgersync.pipeline import prepare_image
+from ledgersync.pipeline import pdf_text, prepare_image
 
 pytestmark = pytest.mark.llm
 FIXTURES = Path(__file__).parent.parent / "eval" / "fixtures"
@@ -68,6 +68,41 @@ def test_an_amount_charged_is_not_added_to_the_vat_printed_under_it():
         reads = list(pool.map(lambda _: [(t.amount, t.vat) for t in reader.extract_accounting_data(images=[photo]).data],
                               range(4)))
     assert reads == [[(12.0, 2.0)]] * 4, reads
+
+
+def test_a_suppliers_statement_of_card_payments_is_receipts_not_a_bank_statement():
+    # Transport for London's contactless "Payment Statement" for the card Jenny travels on (a charge for each of eight
+    # days, £61.50 in all) was read as her bank statement in 4 reads of 4: the 21 receipts dated inside it then looked
+    # unpaid by the bank and were kept in Suspense (2026-11-16).
+    path = PRIVATE / "jenny" / "Transport_for_London-2026-10-31_00_00_00.pdf"
+    if not path.is_file():
+        pytest.skip(f"needs {path.relative_to(PRIVATE.parent.parent)}")
+    client = live_client()
+    reader = TransactionExtractor(client, business_name="jenny", business_type="limited_company")
+    text = pdf_text(path.read_bytes())
+    with ThreadPoolExecutor(4) as pool:
+        reads = list(pool.map(lambda _: sorted((t.date, t.document_type, t.direction, t.amount)
+                                               for t in reader.extract_accounting_data(text_input=text).data),
+                              range(4)))
+    charged = [("2026-10-05", 6.10), ("2026-10-06", 10.50), ("2026-10-07", 10.00), ("2026-10-08", 7.20),
+               ("2026-10-10", 6.00), ("2026-10-20", 6.60), ("2026-10-21", 8.90), ("2026-10-27", 6.20)]
+    assert reads == [[(day, "receipt", "out", amount) for day, amount in charged]] * 4, reads
+
+
+def test_a_shops_till_receipt_is_money_out_though_it_prints_sale():
+    # Victoria Food & Groceries' till receipt names no customer and prints "Sale" above its one item: the app read it
+    # as money in, and so did 1 read of 28 before the instructions said which way a shop's receipt goes (2026-11-16).
+    # One read can be lucky, so it is read eight times.
+    path = PRIVATE / "jenny" / "Victoria_Food___Groceries-2026-10-08_11_59_41.jpg"
+    if not path.is_file():
+        pytest.skip(f"needs {path.relative_to(PRIVATE.parent.parent)}")
+    client = live_client()
+    reader = TransactionExtractor(client, business_name="jenny", business_type="limited_company")
+    photo = prepare_image(path.read_bytes())
+    with ThreadPoolExecutor(8) as pool:
+        reads = list(pool.map(lambda _: [(t.direction, t.amount)
+                                         for t in reader.extract_accounting_data(images=[photo]).data], range(8)))
+    assert reads == [[("out", 3.99)]] * 8, reads
 
 
 def test_the_model_reads_a_receipt_photo():
