@@ -1039,3 +1039,22 @@ def test_each_tool_call_reads_the_client_once(mongo_store, deps, acme, monkeypat
         list(stream_turn(agent, context(acme), "Look."))
         assert answered(model, 1)[0].status != "error", tool
         assert reads == ["clients"], tool
+
+
+def test_a_claim_line_is_related_to_every_receipt_it_is_booked_from():
+    # Jenny's TfL claim line is booked from seven charges on her TfL statement. The AI review reads a row with the
+    # rows matching paired it with, so it must see all seven, and each of them the line.
+    from ledgersync.agent.tools import _related
+    from ledgersync.models import SavedRow, Settlement
+    claim = Settlement(ref="claim", amount=Decimal("55.40"), kind="expense_claim")
+    refs = [f"tfl-{k}" for k in range(7)]
+    line = SavedRow(**row(description="Jenny Hogg - Transport for London", gross=Decimal("55.40"),
+                          document_type="expense_claim", document_ref="claim",
+                          recorded_by=Settlement(ref=refs[0], amount=Decimal("55.40")),
+                          recorded_by_refs=refs).model_dump(), id=1, upload_id=176)
+    receipts = [SavedRow(**row(description="TfL", gross=Decimal("6.00"), document_ref=ref,
+                               claimed_in=claim).model_dump(), id=2 + k, upload_id=199)
+                for k, ref in enumerate(refs)]
+    rows = [line, *receipts]
+    assert {r.id for r in _related(line, rows)} == {r.id for r in receipts}
+    assert {r.id for r in _related(receipts[3], rows)} == {1}

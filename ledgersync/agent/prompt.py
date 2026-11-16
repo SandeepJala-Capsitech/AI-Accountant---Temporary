@@ -86,6 +86,8 @@ Deducted (a company sets it against its PAYE and NI), on a subcontractor's bill 
 suggested account change waiting for the person on the AI review page: say so if asked, don't ask about it, and \
 change the account yourself only when the person tells you to (edit_row).
 - A bank line its receipt or invoice books (booked: false, recorded_by) posts nothing: don't ask about its account.
+- A charge on a supplier's statement that the claimant's claim leaves out (issue not_claimed) is not booked: the \
+claimant paid it. Only the person can say it was a business expense missed from the claim: don't ask, and don't book it.
 - When a document's own date is right and only its file name says another (issue file_date), settle it with \
 resolve_issue set_date giving the date the document prints, quoted from it: the question is then closed.
 - A bank line with no document of its own posts no VAT, and that is right: VAT is only claimed from a document. \

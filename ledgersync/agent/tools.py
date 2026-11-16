@@ -44,6 +44,7 @@ FAMILIES: dict[str, Family] = {
     "file_date": "date",
     # One purchase recorded twice: by two records, a copy of a document, or lines over a document's total.
     "booked_twice": "duplicate", "duplicate_document": "duplicate", "total_mismatch": "duplicate",
+    "claim_receipts_unclear": "duplicate",
     "possible_duplicate": "duplicate",
     # One VAT total over items at different rates.
     "mixed_items": "combined_vat", "vat_rate_mismatch": "combined_vat",
@@ -53,7 +54,7 @@ FAMILIES: dict[str, Family] = {
     "vat_not_booked": "missing_vat", "not_vat_invoice": "missing_vat",
     # A document that isn't a transaction, or that is missing.
     "not_booked": "documents", "open_document": "documents", "no_payroll": "documents",
-    "needs_document": "documents", "document_wanted": "documents",
+    "needs_document": "documents", "document_wanted": "documents", "not_claimed": "documents",
     # The account a purchase is on: none found by the reader (parked in Suspense), another than its supplier's
     # usual one, or a cost account for equipment and a fixed asset for something small.
     "account_unclear": "coding", "unusual_account": "coding", "asset_check": "coding", "should_be_asset": "coding", "whose_account": "coding",
@@ -208,7 +209,7 @@ def _related(row: SavedRow, rows: list[SavedRow]) -> list[SavedRow]:
     def refs(r: SavedRow) -> set[str]:
         matched = [s for name in _MATCHES for s in (getattr(r, name) if isinstance(getattr(r, name), list)
                                                     else [getattr(r, name)]) if s]
-        return {s.ref for s in matched}
+        return {s.ref for s in matched} | set(r.recorded_by_refs)   # a claim line's receipts, when several
 
     named, its = {n for i in row.issues for n in i.related}, refs(row)
     return [o for o in rows if o.id != row.id and (o.id in named or (o.document_ref and o.document_ref in its)
