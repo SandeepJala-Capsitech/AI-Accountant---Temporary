@@ -41,7 +41,7 @@ def test_the_limits_are_those_the_accountant_chose():
     ("expense_claim", "84.20", None, ("book", True, None)),   # a claim line is booked as the claim shows it
     ("expense_claim", "20.00", None, ("book", True, None)),
     ("receipt", "120.00", "GB123456789", ("book", True, None)),
-    ("receipt", "120.00", None, ("book", False, None)),
+    ("receipt", "120.00", None, ("book", True, None)),     # the VAT it prints is reclaimed, number or not
     ("receipt", "250.00", "GB123456789", ("book", True, None)),
     ("receipt", "250.01", "GB123456789", ("hold", False, "vat_invoice")),
     ("invoice", "300.00", None, ("book", True, None)),
@@ -52,6 +52,16 @@ def test_document_rule(kind, gross, vat_no, expected):
     tx = ready(document_type=kind, gross=D(gross), vat=D(vat) if vat else None, account_code="7400",
                supplier_vat_number=vat_no)
     assert verdict(document_rule(tx, SETTINGS)) == expected
+
+
+def test_vat_a_receipt_prints_is_reclaimed_without_the_suppliers_vat_number():
+    # Jenny's Amazon order summary (hi-viz vests): £5.82 before VAT, "Estimated VAT" £1.17, £6.99 in all, and no VAT
+    # number. The accountant's ruling: VAT the receipt prints, estimated or not, is reclaimed with no one asked.
+    amazon = receipt("6.99", vat="1.17", account="8207", document_net="5.82")
+    rule = document_rule(amazon, SETTINGS)
+    assert verdict(rule) == ("book", True, None)
+    lines = {l.code: l.debit for l in journal_with_rule(amazon, 0, rule)}
+    assert (lines["8207"], lines["2201"]) == (D("5.82"), D("1.17"))
 
 
 def test_a_receipt_showing_no_vat_and_no_sign_of_it_reclaims_none():
@@ -141,7 +151,7 @@ def test_reclaimed_vat_posts_as_the_row_does():
 
 
 def test_no_reclaim_puts_vat_in_cost():
-    tx = receipt("60.00", vat="10.00", vat_no=None)
+    tx = receipt("60.00", vat="10.00", not_vat_invoice=True)
     assert tx.vat_posted == D("10.00")   # normalise would book it; the rule keeps it in the cost
     before = tx.model_copy(deep=True)
     lines = journal_with_rule(tx, 0, document_rule(tx, SETTINGS))
@@ -286,8 +296,8 @@ def test_vat_a_person_entered_is_reclaimed_where_the_rules_alone_would_hold_the_
 
 
 def test_vat_a_person_entered_is_reclaimed_on_a_receipt_that_is_not_a_vat_invoice_and_a_line_with_no_receipt():
-    small = receipt("12.00", vat="2.00", vat_confirmed=True)   # no supplier VAT number: kept in the cost otherwise
-    assert verdict(document_rule(receipt("12.00", vat="2.00"), SETTINGS)) == ("book", False, None)
+    small = receipt("12.00", vat="2.00", not_vat_invoice=True, vat_confirmed=True)   # kept in the cost otherwise
+    assert verdict(document_rule(receipt("12.00", vat="2.00", not_vat_invoice=True), SETTINGS)) == ("book", False, None)
     assert verdict(document_rule(small, SETTINGS)) == ("book", True, None)
     line = ready(document_type="statement", gross=D("300.00"), vat=D("50.00"), account_code="7500", vat_confirmed=True)
     assert verdict(document_rule(line, SETTINGS)) == ("book", True, None)

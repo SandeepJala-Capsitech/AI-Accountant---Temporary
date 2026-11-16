@@ -156,11 +156,13 @@ def _rule(tx: Transaction, settings: BusinessSettings) -> DocumentRule:
             return DocumentRule(action="book", reclaim_vat=False, reason="Not a VAT invoice: VAT kept in the cost.")
         if not (tx.vat_posted or ZERO) > 0:
             return DocumentRule(action="book", reclaim_vat=False, reason="Receipt shows no VAT: nothing to reclaim.")
-        if tx.supplier_vat_number is None and not tx.vat_stated:
+        if tx.vat is None and tx.supplier_vat_number is None and not tx.vat_stated:
+            # VAT the receipt shows no sign of (a rate a person chose): kept in the cost.
             return DocumentRule(action="book", reclaim_vat=False,
-                                reason="Receipt without the supplier's VAT number: VAT kept in the cost.")
-        return DocumentRule(action="book", reclaim_vat=True,
-                            reason="Receipt shows the supplier's VAT number and the VAT: VAT reclaimed.")
+                                reason="Receipt shows no VAT and no VAT number: VAT kept in the cost.")
+        # VAT the receipt prints is reclaimed, with or without the supplier's VAT number, and estimated VAT (an Amazon
+        # order summary's) counts as printed: the accountant's ruling.
+        return DocumentRule(action="book", reclaim_vat=True, reason="Receipt shows the VAT: VAT reclaimed.")
     if tx.document_type == "invoice":
         if tx.not_vat_invoice:
             return DocumentRule(action="book", reclaim_vat=False, reason="Not a VAT invoice: VAT kept in the cost.")
