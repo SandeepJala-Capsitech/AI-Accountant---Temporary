@@ -751,6 +751,9 @@ def _record(rows: list[Transaction], changes: list[dict], n: int, receipt: _Docu
 _PAYMENT_LINES = frozenset({"statement", "agent_statement"})
 # Notes on the VAT a row books: a claim line its receipt books books none, so they say nothing there.
 _VAT_NOTES = frozenset({"vat_rate_mismatch", "vat_blocked"})
+# What a claim line booked from its receipt leaves to the receipt, which books: its VAT notes and the questions its
+# account asks (who a meal was for, refreshments claimed back, what a sundry was for).
+_RECEIPTS_SAY = _VAT_NOTES | {"meal_check", "claim_refreshments", "sundry_check", "claim_note"}
 
 
 def _documents(rows: list[Transaction]) -> dict[str, _Document]:
@@ -809,7 +812,7 @@ def _with_claims(rows: list[Transaction], settings: BusinessSettings, apart: lis
                                            f"({document.counterparty}, {_gbp(document.total)}, "
                                            f"{long_date(document.date or line.date)}). Untick unless they're separate "
                                            "purchases.", related=document.rows)]
-        own = line.issues if line.include else [i for i in line.issues if i.code not in _VAT_NOTES]
+        own = line.issues if line.include else [i for i in line.issues if i.code not in _RECEIPTS_SAY]
         marked[n] = line.model_copy(update={"recorded_by": document.settlement(document.total), "issues": own + twice})
         found, vat = _claim_vat(line, document, rows, settings)
         if dated:
@@ -1044,7 +1047,7 @@ def _book_set(rows: list[Transaction], marked: list[Transaction], n: int, chosen
     twice = [issue("booked_twice", f"Also booked from its {len(chosen)} receipts ({supplier}, {_gbp(total)}, {days}). "
                                    "Untick unless they're separate purchases.",
                    related=[r for d in chosen for r in d.rows])] if line.include else []
-    own = line.issues if line.include else [i for i in line.issues if i.code not in _VAT_NOTES]
+    own = line.issues if line.include else [i for i in line.issues if i.code not in _RECEIPTS_SAY]
     marked[n] = line.model_copy(update={"recorded_by": them, "recorded_by_refs": [d.ref for d in chosen],
                                         "issues": own + twice})
     together = _Document(ref=first.ref, kind="receipt", direction=first.direction, account=first.account,

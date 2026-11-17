@@ -1631,6 +1631,13 @@ def test_receipts_booked_from_one_claim_line_together_take_its_note():
         assert by_ref(charges)[ref].claim_note == "Jenny Hogg - Transport for London - team trip"
 
 
+def test_a_claim_line_booked_from_its_receipt_does_not_ask_its_receipts_questions():
+    # Jenny's claim codes its lines "Other Business Expenses" (Sundry): the receipt books, and asks, not the line.
+    line, receipt = matched(claim_line("6.99", "2026-10-04", "Amazon — Stationery", account="8207"),
+                            row("receipt", "out", "6.99", "2026-10-04", "Amazon", "amazon", account="8207"))
+    assert "sundry_check" not in [c for c, _ in codes(line)] and ("sundry_check", "warning") in codes(receipt)
+
+
 def test_matching_the_same_rows_again_gives_the_same_receipt():
     once = matched(claim_line("28.15", "2026-10-08", "ExCeL - Coffees for team", account="7406"),
                    row("receipt", "out", "28.15", "2026-10-08", "ExCeL", "excel", account="7406", vat="3.25"))
