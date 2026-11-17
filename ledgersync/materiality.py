@@ -116,7 +116,7 @@ def decide(rows: list[Transaction], placed: list[int],
         for found in tx.presentation if booked(tx) else []:   # a row not booked (a claim line its receipt books) asks nothing
             stake = found.difference if found.difference is not None else tx.gross
             if found.code == "small_asset":   # an asset small for this client: asked; otherwise fine as it is
-                if lv is not None and stake < lv.trivial:
+                if lv is None or stake < lv.trivial:
                     kept.append(found)
                 continue
             bar, name = ((lv.working, "working level") if found.code == "asset_check" else (lv.trivial, "trivial level")) \

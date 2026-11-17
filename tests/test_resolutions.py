@@ -889,6 +889,7 @@ def voda(mongo_store, pages):
     a £9.67 cable on 0030."""
     store = mongo_store
     client_id = new_client(store, "Harbour Lane Ltd")
+    store.update_client(client_id, {"materiality": Decimal("1500")})   # the firm's: trivial £45, so the cable is small
     bills = [row(date=dt.date(2026, 4 + k % 9, 12 + k // 9), description="Vodafone bill", counterparty="Vodafone Ltd",
                  gross=Decimal("86.40"), account_code="7502", document_type="invoice", document_ref=f"v{k}")
              for k in range(11)]
@@ -899,6 +900,7 @@ def voda(mongo_store, pages):
     [dell] = add(store, client_id, pages, "dell.pdf", DELL, row(
         date=dt.date(2026, 11, 3), description="Dell laptop", counterparty="Dell Corporation Ltd",
         gross=Decimal("1800.00"), vat=Decimal("300.00"), account_code="7504", document_type="invoice",
+        alternatives=["0030"],   # the reader saw a laptop: it could be Office Equipment
         document_number="77120", document_total=Decimal("1800.00"), supplier_vat_number="GB123456789"))
     [cable] = add(store, client_id, pages, "cable.txt", "USB cable 9.67", row(
         date=dt.date(2026, 11, 4), description="USB cable", counterparty="Currys", gross=Decimal("9.67"),

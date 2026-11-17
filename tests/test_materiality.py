@@ -89,6 +89,8 @@ def test_sundry_under_the_trivial_level_is_left_and_says_so():
 def test_with_no_levels_everything_is_asked():
     [t] = decided(bill("1.00", "8207"), levels=None)
     assert codes(t) == [("sundry_check", "warning")]
+    [cable] = decided(bill("9.67", "0030"), levels=None)
+    assert codes(cable) == [("small_asset", "warning")]
 
 
 def test_a_small_asset_is_asked_about_only_under_the_trivial_level():
@@ -97,8 +99,8 @@ def test_a_small_asset_is_asked_about_only_under_the_trivial_level():
 
 
 def test_equipment_on_a_cost_account_is_asked_about_from_the_working_level():
-    assert ("asset_check", "warning") in codes(decided(bill("800.00", "7504"))[0])
-    assert codes(decided(bill("700.00", "7504"))[0]) == [("left_small", "info")]
+    assert ("asset_check", "warning") in codes(decided(bill("800.00", "7504", alternatives=["0030"]))[0])
+    assert codes(decided(bill("700.00", "7504", alternatives=["0030"]))[0]) == [("left_small", "info")]
 
 
 def test_an_annual_bill_asks_about_the_part_after_the_year_end():

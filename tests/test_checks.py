@@ -769,7 +769,8 @@ def test_a_mixed_rate_note_doesnt_call_zero_rated_goods_a_tip():
 
 def big(gross="1800.00", account="7504", **kw):
     """The row with the presentation questions normalise found among its issues."""
-    t = normalise(tx(gross=gross, account=account, **{"document_type": "invoice", "document_total": gross, **kw}),
+    t = normalise(tx(gross=gross, account=account, **{"document_type": "invoice", "document_total": gross,
+                                                       "alternatives": ["0030"], **kw}),
                   REGISTERED)
     return t.model_copy(update={"issues": t.issues + t.presentation})
 
@@ -793,6 +794,10 @@ def test_an_amount_in_another_currency_is_not_marked_until_it_is_in_pounds():
 def test_rent_and_stock_are_not_marked():
     assert "asset_check" not in dict(codes(big(account="7100")))
     assert "asset_check" not in dict(codes(big(account="5000")))
+
+
+def test_a_bill_the_reader_saw_no_equipment_in_is_not_asked_about_as_an_asset():
+    assert "asset_check" not in dict(codes(big(alternatives=[])))   # a BT broadband bill on Telephone
 
 
 def test_a_line_of_a_bigger_document_goes_by_the_line():

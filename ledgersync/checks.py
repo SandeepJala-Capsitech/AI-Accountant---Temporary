@@ -146,7 +146,8 @@ def _account_choices(tx: Transaction) -> list[str]:
     said = []
     for code in tx.alternatives:
         other = BY_CODE.get(code)
-        if other is not None and code != tx.account_code and what_differs(tx, other) is None:
+        if (other is not None and code != tx.account_code and what_differs(tx, other) is None
+                and not (code.startswith("00") and tx.account_code in ASSET_CANDIDATES)):   # asset_check asks that
             said.append(f"Could also be {other.code} {other.name}: the tax and VAT are the same either way. Recode it "
                         "if that fits better.")
     return said
@@ -552,7 +553,8 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
         issues.append(issue("small_asset", f"£{tx.gross:,.2f} is small to keep as {account.name} for this client: "
                                            "write it off as a cost. Recode it to the cost account of its kind, unless "
                                            "it is part of a bigger purchase.", difference=whole))
-    if purchase and not mixed and tx.account_code in ASSET_CANDIDATES and tx.currency == "GBP":
+    if (purchase and not mixed and tx.account_code in ASSET_CANDIDATES and tx.currency == "GBP"
+            and any(a.startswith("00") for a in tx.alternatives)):   # the reader thought it could be equipment kept
         # An amount in another currency isn't pounds yet: it is checked once a person has converted it.
         issues.append(issue("asset_check", f"£{tx.gross:,.2f} on {account.code} {account.name} may be equipment to "
                                            "keep as an asset.", "info", difference=tx.gross))   # by its own line
