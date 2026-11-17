@@ -85,19 +85,30 @@ CLAIM_MEAL_CHECK = Decimal("20.00")   # on an expense claim that doesn't say who
 SUBSISTENCE, ENTERTAINMENT, STAFF_WELFARE, REFRESHMENTS, SUNDRY = "7406", "7403", "8206", "8205", "8207"
 _FOOD_AND_DRINK = frozenset({SUBSISTENCE, ENTERTAINMENT, STAFF_WELFARE, REFRESHMENTS})
 # Who a meal or drink was for, in the row's own words: staff alone reclaim its VAT (Staff Welfare), guests block it.
-_STAFF = re.compile(r"\b(team|staff|employees?|colleagues?|(christmas|xmas|office|works?) (party|do)|away ?day)\b",
+_STAFF = re.compile(r"\b(teams?|staff|employees?|colleagues?|(christmas|xmas|office|works?) (party|do)|away ?day)\b",
                     re.IGNORECASE)
 _GUESTS = re.compile(r"\b(clients?|customers?|guests?|prospects?|suppliers?|visitors?)\b", re.IGNORECASE)
+# A claim note that says guests were there, not only that a guest word is in it ("lunch at client site" is where).
+_WITH_GUESTS = re.compile(r"\b(with|for|and|entertaining|hosting|treating)\b(\W+\w+){0,3}?\W+(clients?|customers?|guests?|"
+                          r"prospects?|suppliers?|visitors?)\b", re.IGNORECASE)
 
 
 def account_by_note(tx: Transaction) -> Optional[str]:
     """The account a receipt's claim note puts a meal or drink on: Staff Welfare when it names staff alone,
     Entertainment when it names any guest; None when the row is not food or drink, or the note names neither."""
-    if tx.account_code not in _FOOD_AND_DRINK or not tx.claim_note:
+    if tx.account_code not in _FOOD_AND_DRINK or not tx.claim_note or tx.account_chosen:
         return None
-    if _GUESTS.search(tx.claim_note):
-        return ENTERTAINMENT
+    if _GUESTS.search(tx.claim_note):   # guests named: Entertainment only when the note says they were there
+        return ENTERTAINMENT if _WITH_GUESTS.search(tx.claim_note) else None
     return STAFF_WELFARE if _STAFF.search(tx.claim_note) else None
+
+
+def _claim_words(tx: Transaction) -> Optional[str]:
+    """The words of the claim a row is on: a receipt's claim note, or a claim line's own description; None when the
+    row is not on an expense claim."""
+    if tx.claim_note is not None:
+        return tx.claim_note
+    return tx.description or "" if tx.document_type == "expense_claim" else None
 
 
 def _who_was_there(tx: Transaction) -> Optional[str]:
@@ -109,7 +120,7 @@ def _who_was_there(tx: Transaction) -> Optional[str]:
     words = f"{tx.description or ''} {tx.claim_note or ''}"
     staff, guests = bool(_STAFF.search(words)), bool(_GUESTS.search(words))
     amount = f"£{tx.gross:,.2f}"
-    claimed = tx.claim_note is not None
+    claimed = _claim_words(tx) is not None
     if tx.account_code == SUBSISTENCE and tx.gross >= (CLAIM_MEAL_CHECK if claimed else MEAL_CHECK):
         if claimed and not staff and not guests:
             return (f"A meal of {amount} on Subsistence, and the claim doesn't say who it was for: for staff only it "
@@ -473,7 +484,7 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
     if not journal and tx.direction == Direction.OUT and tx.document_type in ("receipt", "invoice", "expense_claim"):
         if account is not None and account_by_note(tx) == tx.account_code:
             issues.append(issue("claim_note", f"Booked to {account.name}: the claim says “{tx.claim_note}”.", "info"))
-        elif tx.account_code == REFRESHMENTS and tx.claim_note is not None:
+        elif tx.account_code == REFRESHMENTS and _claim_words(tx) is not None:
             issues.append(issue("claim_refreshments", f"£{tx.gross:,.2f} on Refreshments, claimed back on an expense "
                                                       "claim: Refreshments is for the workplace. If it was food or "
                                                       "drink while working away, recode it to Subsistence."))

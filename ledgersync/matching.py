@@ -814,17 +814,17 @@ def _with_claims(rows: list[Transaction], settings: BusinessSettings, apart: lis
                                            "purchases.", related=document.rows)]
         own = line.issues if line.include else [i for i in line.issues if i.code not in _RECEIPTS_SAY]
         marked[n] = line.model_copy(update={"recorded_by": document.settlement(document.total), "issues": own + twice})
-        found, vat = _claim_vat(line, document, rows, settings)
+        noted = {r: _noted(rows[r].model_copy(update={"date": dated}) if dated else rows[r], line, settings)
+                 for r in document.rows}
+        found, vat = _claim_vat(line, document, [noted.get(k, t) for k, t in enumerate(rows)], settings)
         if dated:
             kind = _NUMBERED.get(rows[document.rows[0]].document_type, "document")
             found = found + [issue("date_from_claim", f"No date on the {kind}; dated {long_date(dated)} from the "
                                                       "claim.", "info")]
         for k, r in enumerate(document.rows):
-            noted = _noted(rows[r].model_copy(update={"date": dated}) if dated else rows[r], line, settings)
-            issues = [i for i in noted.issues if not dated or i.code != "date_missing"] + (found if k == 0 else [])
-            marked[r] = noted.model_copy(update={"claimed_in": claim, "contra_account_code": STAFF_EXPENSES,
-                                                 "issues": issues, **(vat if k == 0 and reclaims_vat(noted, settings)
-                                                                      else {})})
+            issues = [i for i in noted[r].issues if not dated or i.code != "date_missing"] + (found if k == 0 else [])
+            marked[r] = noted[r].model_copy(update={"claimed_in": claim, "contra_account_code": STAFF_EXPENSES,
+                                                    "issues": issues, **(vat if k == 0 else {})})
 
     # Those whose names agree first, so two records of the same amount and day pair by name; then the rest on the
     # amount and the date alone: names can differ (a mileage log names no one), but the amount and the date don't.
@@ -1053,12 +1053,12 @@ def _book_set(rows: list[Transaction], marked: list[Transaction], n: int, chosen
     together = _Document(ref=first.ref, kind="receipt", direction=first.direction, account=first.account,
                          counterparty=first.counterparty, description=them.description,
                          rows=[r for d in chosen for r in d.rows], total=total, date=last.date, open=total)
-    found, vat = _claim_vat(line, together, rows, settings)
+    noted = {r: _noted(rows[r], line, settings) for r in together.rows}
+    found, vat = _claim_vat(line, together, [noted.get(k, t) for k, t in enumerate(rows)], settings)
     for k, r in enumerate(together.rows):
-        noted = _noted(rows[r], line, settings)
-        marked[r] = noted.model_copy(update={"claimed_in": claim, "contra_account_code": STAFF_EXPENSES,
-                                             "issues": noted.issues + (found if k == 0 else []),
-                                             **(vat if k == 0 and reclaims_vat(noted, settings) else {})})
+        marked[r] = noted[r].model_copy(update={"claimed_in": claim, "contra_account_code": STAFF_EXPENSES,
+                                                "issues": noted[r].issues + (found if k == 0 else []),
+                                                **(vat if k == 0 else {})})
     claimant = line.counterparty or "the claimant"
     said = issue("not_claimed", (
         f"On {supplier}'s statement with {len(chosen)} charges on {claimant}'s claim, but not claimed itself. Not "
@@ -1100,9 +1100,9 @@ def _claim_vat(line: Transaction, document: _Document, rows: list[Transaction],
     prints its total before VAT and that is its total less the claim's VAT, its own prices show the VAT: it is
     booked, or, when the document says it is not a VAT invoice, offered (Book VAT) for once the VAT invoice is in."""
     shown = sum((rows[r].vat or ZERO for r in document.rows), ZERO)
-    if not line.vat or shown >= line.vat:
-        return [], {}
     first = rows[document.rows[0]]
+    if not line.vat or shown >= line.vat or not reclaims_vat(first, settings):   # none to reclaim on its account
+        return [], {}
     fine = "claim_vat" in first.accepted   # a person looked, and said it is fine as it is booked
     kind = _NUMBERED.get(first.document_type, "document")
     if (len(document.rows) == 1 and first.vat is None and first.document_net is not None

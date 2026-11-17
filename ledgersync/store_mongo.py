@@ -116,7 +116,9 @@ def _stored(rows: list[dict]) -> list[StoredRow]:
             old = [OLD_TOTAL.search(i.get("message", "")) for i in data.get("issues", []) if i.get("code") == "total_mismatch"]
             if old and old[0]:
                 data["document_total"] = old[0].group(1).replace(",", "")
-        stored_rows.append(StoredRow(r["id"], r["upload_id"], Transaction.model_validate(data), original))
+        chosen = bool(original) and "account_code" in original and original["account_code"] != data.get("account_code")
+        stored_rows.append(StoredRow(r["id"], r["upload_id"], Transaction.model_validate({**data, "account_chosen": chosen}),
+                                     original))
     return stored_rows
 
 

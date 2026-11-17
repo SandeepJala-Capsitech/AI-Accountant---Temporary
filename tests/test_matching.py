@@ -1618,6 +1618,21 @@ def test_a_receipt_recoded_to_entertainment_by_its_note_posts_no_vat():
     assert (receipt.account_code, receipt.vat_posted) == ("7403", Decimal("0"))
 
 
+def test_a_receipt_recoded_to_entertainment_by_its_note_is_not_offered_the_claims_vat():
+    line, receipt = matched(claim_line("60.00", "2026-10-07", "The Gun - drinks with clients", account="7406",
+                                       vat="10.00"),
+                            row("receipt", "out", "60.00", "2026-10-07", "The Gun", "gun", account="7406"))
+    assert (receipt.account_code, receipt.vat_posted) == ("7403", Decimal("0"))
+    assert "claim_vat" not in [c for c, _ in codes(receipt)]
+
+
+def test_a_receipt_recoded_to_staff_welfare_by_its_note_reclaims_the_vat_it_shows():
+    line, receipt = matched(claim_line("60.00", "2026-10-07", "The Gun - drinks for team", account="7403", vat="10.00"),
+                            row("receipt", "out", "60.00", "2026-10-07", "The Gun", "gun", account="7403", vat="10.00"))
+    assert (receipt.account_code, receipt.vat_posted) == ("8206", Decimal("10.00"))
+    assert "claim_vat" not in [c for c, _ in codes(receipt)]
+
+
 def test_a_receipt_whose_claim_says_nothing_asks_who_was_there():
     line, receipt = matched(claim_line("28.15", "2026-10-08", "ExCeL London Hospitality", account="7406"),
                             row("receipt", "out", "28.15", "2026-10-08", "ExCeL London Hospitality", "excel",

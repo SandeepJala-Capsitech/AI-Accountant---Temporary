@@ -219,6 +219,8 @@ class Transaction(BaseModel):
     claimed_in: Optional[Settlement] = None        # a receipt or invoice on an expense claim: owed to the claimant
     claim_note: Optional[str] = None               # on such a receipt or invoice: its claim line's words, which may
                                                    # say who a meal or drink was for (set by matching)
+    account_chosen: bool = False                   # a person changed the account from what was read (set as rows
+                                                   # load): a claim note doesn't recode it
     documented_by: Optional[Settlement] = None     # the document behind a row that books instead of it, with no
                                                    # VAT reclaimed: a claim line's bill for more than was claimed,
                                                    # or a bank line's receipt that prints no total (its subtotal)

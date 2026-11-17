@@ -654,6 +654,39 @@ def test_the_claim_checks_do_not_duplicate_when_run_again():
     assert codes(normalise(once, REGISTERED)) == codes(once)
 
 
+def test_a_claim_note_needs_guests_to_have_been_there_to_point_at_entertainment():
+    # Review: "at client site" is where she worked, not who she ate with; recoding it would lose the VAT and the tax.
+    at_site = tx(gross="24.00", account="7406", claim_note="Jenny Hogg - Pret - lunch at client site")
+    assert account_by_note(at_site) is None
+    assert ("meal_check", "warning") in codes(normalise(at_site, REGISTERED))
+    assert account_by_note(tx(gross="60.00", account="7406", claim_note="The Gun - drinks with clients")) == "7403"
+    assert account_by_note(tx(gross="28.15", account="7406", claim_note="Coffees for the teams at DAS")) == "8206"
+
+
+def test_a_claim_note_does_not_overrule_the_account_a_person_chose():
+    t = tx(gross="56.45", account="7403", claim_note="The Gun - drinks for team", account_chosen=True)
+    assert account_by_note(t) is None
+
+
+def test_a_claim_line_booked_without_a_receipt_asks_as_its_receipt_would():
+    meal = tx(gross="28.15", account="7406", document_type="expense_claim",
+              description="Jenny Hogg - ExCeL London Hospitality")
+    assert codes(normalise(meal, REGISTERED)) == [("meal_check", "warning")]
+    shop = tx(gross="8.19", account="8205", document_type="expense_claim", description="Jenny Hogg - Victoria Food")
+    assert codes(normalise(shop, REGISTERED)) == [("claim_refreshments", "warning")]
+
+
+def test_a_stored_row_whose_account_a_person_changed_is_marked_so():
+    from ledgersync.store_mongo import _stored
+    data = {"direction": "out", "gross": "56.45", "account_code": "8206", "original": {"account_code": "7403"}}
+    unchanged = {"direction": "out", "gross": "9.20", "account_code": "7406", "original": {"account_code": "7406"}}
+    chosen, kept, read = _stored([{"id": 1, "upload_id": 1, "data": data},
+                                  {"id": 2, "upload_id": 1, "position": 1, "data": unchanged},
+                                  {"id": 3, "upload_id": 1, "position": 2,
+                                   "data": {"direction": "out", "gross": "1.00", "account_code": "7406"}}])
+    assert (chosen.tx.account_chosen, kept.tx.account_chosen, read.tx.account_chosen) == (True, False, False)
+
+
 def test_a_finance_agreement_is_not_booked():
     hp = normalise(tx(gross="18000.00", account="0055", document_type="finance_agreement"), REGISTERED)
     assert not booked(hp) and only_issue(hp, "not_booked").message.startswith("A finance or loan agreement")
