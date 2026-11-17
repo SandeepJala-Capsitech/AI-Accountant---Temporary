@@ -18,6 +18,7 @@ from .accounts import (BY_CODE, CREDITORS, DEBTORS, DIRECTORS_LOANS, LOANS, LONG
 from .checks import booked, issue, long_date, normalise, registered_on
 from .coding import usual_accounts, unusual_account_text
 from .duplicates import WINDOW, possible_duplicates, renumbered_invoices
+from .materiality import Levels, year_levels
 from .errors import InvalidInput, InvalidTransactions, NotFound
 from .evidence_rules import document_rule, journal_with_rule
 from .export import file_name, workbook
@@ -172,6 +173,14 @@ def years_of(store: MongoStore, client_id: int, today: dt.date) -> list[Year]:
 # What a held row says it needs, by DocumentRule.needs.
 HELD = {"receipt_or_invoice": "Held in Suspense: needs its receipt or invoice.",
         "vat_invoice": "Held in Suspense: needs a full VAT invoice."}
+
+
+def levels_of(store: MongoStore, client_id: int, year_start: dt.date) -> Optional[Levels]:
+    """The client's materiality for the year: from its figures, or the firm's (materiality.year_levels)."""
+    b = _books(store, client_id, dt.date.today())
+    n = b.index(year_start)
+    ready, _ = _matched(b, b.settings_in(n))
+    return year_levels(ready, b.placed, b.years, n, b.client.materiality)
 
 
 def _matched(b: _Books, settings: BusinessSettings) -> tuple[list[Transaction], dict[str, DocumentStatus]]:

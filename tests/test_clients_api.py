@@ -818,3 +818,17 @@ def test_a_zero_difference_is_refused(api):
     [row] = manual(client, cid, BILL)["transactions"]
     refused = client.patch(f"/api/clients/{cid}/rows/{row['id']}", json={"total_accepted": "0.00"})
     assert refused.status_code == 422 and "There is no difference to leave." in refused.text
+
+
+def test_a_firm_sets_a_clients_materiality_and_can_clear_it(api):
+    client = api()
+    made = add(client)
+    assert made["materiality"] is None
+    changed = client.patch(f"/api/clients/{made['id']}", json={"materiality": "2000"})
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["materiality"] == "2000"
+    year = client.get(f"/api/clients/{made['id']}/years").json()[0]["start"]
+    levels = client.get(f"/api/clients/{made['id']}/years/{year}/materiality").json()
+    assert (levels["benchmark"], levels["overall"]) == ("firm", "2000.00")
+    cleared = client.patch(f"/api/clients/{made['id']}", json={"materiality": None})
+    assert cleared.json()["materiality"] is None

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextvars
 import datetime as dt
+from decimal import Decimal
 import logging
 import re
 import threading
@@ -38,7 +39,7 @@ FRESH_FOR = 5.0
 _CLIENT_FIELDS = ("name", "business_type", "contact_name", "contact_email", "contact_phone", "vat_registered",
                   "vat_from",
                   "bank_accounts", "owners", "first_year_end", "ai_review", "company_number", "utr", "vat_number",
-                  "paye_reference")
+                  "paye_reference", "materiality")
 _REFERENCES = ("company_number", "utr", "vat_number", "paye_reference")
 _CLIENT_PROJECTION = {
     "id": 1,
@@ -53,6 +54,7 @@ _CLIENT_PROJECTION = {
     "owners": 1,
     "first_year_end": 1,
     "ai_review": 1,
+    "materiality": 1,
     "company_number": 1,
     "utr": 1,
     "vat_number": 1,
@@ -88,6 +90,7 @@ def _client(doc: dict, earliest: Optional[dt.date] = None) -> Client:
         vat_registered=bool(doc.get("vat_registered", True)),
         vat_from=_date(doc.get("vat_from")),
         ai_review=doc.get("ai_review", "automatic"),
+        materiality=Decimal(doc["materiality"]) if doc.get("materiality") else None,
         **{field: doc.get(field, "") for field in _REFERENCES},
         **({"bank_accounts": doc["bank_accounts"]} if doc.get("bank_accounts") else {}),
         owners=doc.get("owners") or [],
@@ -286,6 +289,7 @@ class MongoStore:
             "owners": [o.model_dump(mode="json") for o in fields.owners],
             "first_year_end": fields.first_year_end.isoformat() if fields.first_year_end else None,
             "ai_review": fields.ai_review,
+            "materiality": str(fields.materiality) if fields.materiality is not None else None,
             **{field: getattr(fields, field) for field in _REFERENCES},
             "opening": OpeningBalances().model_dump(mode="json"),
             "closed_years": [],
@@ -326,8 +330,8 @@ class MongoStore:
             raise ClientArchived(f"Restore {client.name} to change it.")
 
         now = now_iso()
-        set_dict = {k: bool(v) if isinstance(v, bool) else v.isoformat() if isinstance(v, dt.date) else v
-                    for k, v in fields.items()}
+        set_dict = {k: bool(v) if isinstance(v, bool) else v.isoformat() if isinstance(v, dt.date)
+                    else str(v) if isinstance(v, Decimal) else v for k, v in fields.items()}
         if "bank_accounts" in set_dict:
             set_dict["bank_accounts"] = _stored_accounts(
                 [BankAccount.model_validate(a) for a in set_dict["bank_accounts"]])
@@ -335,6 +339,8 @@ class MongoStore:
             set_dict["owners"] = [Owner.model_validate(o).model_dump(mode="json") for o in set_dict["owners"]]
         if "vat_from" in changes and changes["vat_from"] is None and not client.archived:
             set_dict["vat_from"] = None   # cleared: registered throughout
+        if "materiality" in changes and changes["materiality"] is None and not client.archived:
+            set_dict["materiality"] = None   # cleared: worked out from the client's figures
         archived = changes.get("archived")
         if archived is not None and archived != client.archived:
             set_dict["archived_at"] = now if archived else None

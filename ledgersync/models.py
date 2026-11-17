@@ -394,6 +394,8 @@ class ClientFields(BaseModel):
         default_factory=lambda: [BankAccount(code=BANK, name="Bank current account", kind="current")])
     owners: list[Owner] = Field(default_factory=list)   # its directors, partners or members; none for a sole trader
     ai_review: Literal["automatic", "suggest", "off"] = "automatic"   # what the background AI review may do
+    materiality: Optional[Decimal] = None   # the firm's overall materiality for the client, in pounds; None: worked
+                                            # out from its figures (materiality.year_levels)
     # The client's references, as its papers print them: kept and shown, used by nothing yet.
     company_number: str = ""           # Companies House number
     utr: str = ""                      # Unique Taxpayer Reference
@@ -449,6 +451,7 @@ class ClientPatch(BaseModel):
     owners: Optional[list[Owner]] = None
     first_year_end: Optional[dt.date] = None
     ai_review: Optional[Literal["automatic", "suggest", "off"]] = None
+    materiality: Optional[Decimal] = None          # null clears it: worked out from the client's figures
     company_number: Optional[str] = None
     utr: Optional[str] = None
     vat_number: Optional[str] = None

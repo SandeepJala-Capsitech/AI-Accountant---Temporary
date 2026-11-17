@@ -13,6 +13,7 @@ from fastapi import BackgroundTasks, FastAPI, File, Form, Header, Request, Uploa
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from ledgersync.materiality import Levels
 from ledgersync import (accounts, adapter, books, demo, intake, ledger, ledger_book, pipeline, posting, questions,
                         resolutions, reviews, undo, upkeep)
 from ledgersync.agent.tools import AgentDeps, upload_texts
@@ -433,6 +434,11 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         """shown: for a page. While rows need fixing, the figures without them and which are left out, instead of
         the 422 a caller that needs every row in (the bank check, the evals) gets."""
         return (books.trial_balance_shown if shown else books.trial_balance)(store, client_id, start)
+
+    @app.get("/api/clients/{client_id}/years/{start}/materiality", response_model=Optional[Levels])
+    def year_materiality(client_id: int, start: dt.date):
+        """How much is too little to ask about this year, and what it was worked out from (materiality)."""
+        return books.levels_of(store, client_id, start)
 
     @app.get("/api/clients/{client_id}/years/{start}/vat", response_model=VatFigures)
     def year_vat(client_id: int, start: dt.date, period_start: Optional[dt.date] = None,

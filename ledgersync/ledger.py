@@ -311,6 +311,8 @@ def change_client(store: MongoStore, client_id: int, patch: ClientPatch) -> Clie
         changes["archived"] = sent["archived"]
     if "vat_from" in sent and sent["vat_from"] is None:
         changes["vat_from"] = None   # cleared
+    if "materiality" in sent and sent["materiality"] is None:
+        changes["materiality"] = None   # cleared: worked out from the client's figures
     return store.update_client(client_id, changes)
 
 
