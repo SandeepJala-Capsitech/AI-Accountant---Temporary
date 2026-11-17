@@ -12,8 +12,8 @@ from itertools import combinations
 from typing import Optional, Sequence
 
 from .accounts import BY_CODE, CLEARING, CREDITORS, DEBTORS, DIRECTORS_LOANS, STAFF_EXPENSES, SUSPENSE, AccountType
-from .checks import (MATCHING_ISSUES, PAYROLL_OWED, booked, is_fare, issue, long_date, reclaims_vat, registered_on,
-                     vat_implied)
+from .checks import (MATCHING_ISSUES, PAYROLL_OWED, STATEMENT_ISSUES, account_by_note, booked, is_fare, issue,
+                     long_date, normalise, reclaims_vat, registered_on, vat_implied)
 from .models import BusinessSettings, Direction, Issue, OpenItem, Settlement, Transaction
 from .payees import processor
 from .money import PENNY, ZERO, VatTreatment
@@ -563,7 +563,7 @@ def _cleared(tx: Transaction) -> Transaction:
     return tx.model_copy(update={"paid_against": None, "pays": [], "candidates": [], "owed": None, "paid_by": [],
                                  "copy_of": None, "recorded_by": None, "claimed_in": None, "vat_found": None,
                                  "date_found": None, "amount_found": None, "documented_by": None,
-                                 "recorded_by_refs": [], "left_off_claim": None,
+                                 "recorded_by_refs": [], "left_off_claim": None, "claim_note": None,
                                  "issues": [i for i in tx.issues if i.code not in MATCHING_ISSUES]})
 
 
@@ -817,10 +817,11 @@ def _with_claims(rows: list[Transaction], settings: BusinessSettings, apart: lis
             found = found + [issue("date_from_claim", f"No date on the {kind}; dated {long_date(dated)} from the "
                                                       "claim.", "info")]
         for k, r in enumerate(document.rows):
-            issues = [i for i in rows[r].issues if not dated or i.code != "date_missing"] + (found if k == 0 else [])
-            marked[r] = rows[r].model_copy(update={"claimed_in": claim, "contra_account_code": STAFF_EXPENSES,
-                                                   "issues": issues, **(vat if k == 0 else {}),
-                                                   **({"date": dated} if dated else {})})
+            noted = _noted(rows[r].model_copy(update={"date": dated}) if dated else rows[r], line, settings)
+            issues = [i for i in noted.issues if not dated or i.code != "date_missing"] + (found if k == 0 else [])
+            marked[r] = noted.model_copy(update={"claimed_in": claim, "contra_account_code": STAFF_EXPENSES,
+                                                 "issues": issues, **(vat if k == 0 and reclaims_vat(noted, settings)
+                                                                      else {})})
 
     # Those whose names agree first, so two records of the same amount and day pair by name; then the rest on the
     # amount and the date alone: names can differ (a mileage log names no one), but the amount and the date don't.
@@ -1051,9 +1052,10 @@ def _book_set(rows: list[Transaction], marked: list[Transaction], n: int, chosen
                          rows=[r for d in chosen for r in d.rows], total=total, date=last.date, open=total)
     found, vat = _claim_vat(line, together, rows, settings)
     for k, r in enumerate(together.rows):
-        marked[r] = rows[r].model_copy(update={"claimed_in": claim, "contra_account_code": STAFF_EXPENSES,
-                                               "issues": rows[r].issues + (found if k == 0 else []),
-                                               **(vat if k == 0 else {})})
+        noted = _noted(rows[r], line, settings)
+        marked[r] = noted.model_copy(update={"claimed_in": claim, "contra_account_code": STAFF_EXPENSES,
+                                             "issues": noted.issues + (found if k == 0 else []),
+                                             **(vat if k == 0 and reclaims_vat(noted, settings) else {})})
     claimant = line.counterparty or "the claimant"
     said = issue("not_claimed", (
         f"On {supplier}'s statement with {len(chosen)} charges on {claimant}'s claim, but not claimed itself. Not "
@@ -1063,6 +1065,18 @@ def _book_set(rows: list[Transaction], marked: list[Transaction], n: int, chosen
         for r in d.rows:
             marked[r] = rows[r].model_copy(update={"left_off_claim": claim, "contra_account_code": STAFF_EXPENSES,
                                                    "issues": rows[r].issues + [said]})
+
+
+def _noted(tx: Transaction, line: Transaction, settings: BusinessSettings) -> Transaction:
+    """The receipt or invoice claim line `line` is booked from, with the line's words as its claim note, on the
+    account the note names if it names one, checked again so its questions and VAT follow (checks.account_by_note).
+    What matching has already said about it is kept: checking drops it."""
+    noting = tx.model_copy(update={"claim_note": line.description})
+    if (account := account_by_note(noting)) is not None:
+        noting = noting.model_copy(update={"account_code": account})
+    checked = normalise(noting, settings)
+    said = [i for i in tx.issues if i.code in MATCHING_ISSUES or i.code in STATEMENT_ISSUES]
+    return checked.model_copy(update={"issues": checked.issues + said})
 
 
 def _shop(line: Transaction) -> str:

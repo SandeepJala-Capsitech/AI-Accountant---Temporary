@@ -1601,6 +1601,42 @@ def test_a_claim_line_is_booked_from_the_charges_that_add_up_to_it():
         assert (receipt.claimed_in.ref, receipt.contra_account_code, booked(receipt)) == ("claim", "2110", True)
 
 
+# The claim line's words go with each receipt it is booked from (claim_note): they say who a meal or drink was for.
+def test_a_receipt_takes_its_claim_lines_note_and_is_recoded_by_it():
+    line, receipt = matched(claim_line("28.15", "2026-10-08", "ExCeL London Hospitality - Coffees for team at DAS",
+                                       account="7406"),
+                            row("receipt", "out", "28.15", "2026-10-08", "ExCeL London Hospitality", "excel",
+                                account="7406", vat="3.25"))
+    assert receipt.claim_note == "Jenny Hogg - ExCeL London Hospitality - Coffees for team at DAS"
+    assert (receipt.account_code, receipt.vat_posted, receipt.contra_account_code) == ("8206", Decimal("3.25"), "2110")
+    assert "claim_note" in [c for c, _ in codes(receipt)] and "meal_check" not in [c for c, _ in codes(receipt)]
+
+
+def test_a_receipt_recoded_to_entertainment_by_its_note_posts_no_vat():
+    line, receipt = matched(claim_line("60.00", "2026-10-07", "The Gun - drinks with clients", account="7406"),
+                            row("receipt", "out", "60.00", "2026-10-07", "The Gun", "gun", account="7406", vat="10.00"))
+    assert (receipt.account_code, receipt.vat_posted) == ("7403", Decimal("0"))
+
+
+def test_a_receipt_whose_claim_says_nothing_asks_who_was_there():
+    line, receipt = matched(claim_line("28.15", "2026-10-08", "ExCeL London Hospitality", account="7406"),
+                            row("receipt", "out", "28.15", "2026-10-08", "ExCeL London Hospitality", "excel",
+                                account="7406"))
+    assert receipt.account_code == "7406" and ("meal_check", "warning") in codes(receipt)
+
+
+def test_receipts_booked_from_one_claim_line_together_take_its_note():
+    line, *charges = matched_from(*tfl_rows(merchant="Transport for London - team trip"))
+    for ref in CLAIMED:
+        assert by_ref(charges)[ref].claim_note == "Jenny Hogg - Transport for London - team trip"
+
+
+def test_matching_the_same_rows_again_gives_the_same_receipt():
+    once = matched(claim_line("28.15", "2026-10-08", "ExCeL - Coffees for team", account="7406"),
+                   row("receipt", "out", "28.15", "2026-10-08", "ExCeL", "excel", account="7406", vat="3.25"))
+    assert matched(*once)[1].model_dump() == once[1].model_dump()
+
+
 def test_a_charge_the_claim_leaves_out_is_not_booked_and_asks():
     rows, uploads = tfl_rows()
     _, *charges = matched_from(rows, uploads)
