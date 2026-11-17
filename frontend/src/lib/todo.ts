@@ -24,7 +24,8 @@ export interface TodoCard {
 // The family of each issue code, as FAMILIES in ledgersync/agent/tools.py groups them, by the name a card is tagged
 // with. Any other code is 'Other'.
 const TAGS: Record<string, string[]> = {
-  Account: ['account_unclear', 'unusual_account', 'asset_check', 'should_be_asset', 'small_asset', 'whose_account'],
+  Account: ['account_unclear', 'unusual_account', 'asset_check', 'should_be_asset', 'small_asset', 'whose_account',
+            'meal_check', 'claim_refreshments', 'sundry_check', 'claim_note'],
   'Recorded twice': ['booked_twice', 'duplicate_document', 'total_mismatch', 'possible_duplicate', 'claim_receipts_unclear'],
   Date: ['date_missing', 'date_conflict', 'date_out_of_period', 'before_first_year', 'file_date'],
   'VAT across items': ['mixed_items', 'vat_rate_mismatch'],

@@ -248,7 +248,8 @@ const ISSUE_TITLES: Record<string, string> = {
   direction_conflict: 'Direction changed', no_payroll: 'No payroll report', wages_from_bank: 'Wages from the bank',
   payroll_owed_to: 'Check the payroll line', sale_without_vat: 'Sale with no VAT', transfer: 'Transfer between accounts',
   no_vat_number: 'No VAT number on the invoice', vat_over_rate: 'VAT above 20%', reverse_charge: 'Reverse charge',
-  before_vat_registration: 'Before VAT registration', small_asset: 'Small for an asset', meal_check: 'Meal: entertaining?',
+  before_vat_registration: 'Before VAT registration', small_asset: 'Small for an asset', meal_check: 'Meal: who was there?',
+  claim_refreshments: 'Refreshments: for the workplace?', sundry_check: 'Sundry: what was it for?', claim_note: 'Coded by the claim',
   addressed_to: 'Addressed to someone else', refund_of_overpayment: 'Refund of an overpayment',
   future_date: 'Dated in a later year', journal_note: 'Journal', prepayment: 'Paid ahead?', reversed: 'Reversed',
   not_on_statement: 'Not on the statement', till_takings: 'Till takings',
@@ -298,7 +299,7 @@ const MAY_BE_ONE = new Set(['possible_duplicate', 'date_conflict', 'amount_confl
 export const canBeApart = (code: string) => MAY_BE_ONE.has(code)
 
 // Warnings that are a matter of judgement, which a person who has looked can answer It's fine (checks.ACCEPTABLE).
-const ACCEPTABLE = new Set(['no_vat_number', 'vat_over_rate', 'small_asset', 'meal_check', 'addressed_to', 'future_date',
+const ACCEPTABLE = new Set(['no_vat_number', 'vat_over_rate', 'small_asset', 'meal_check', 'claim_refreshments', 'sundry_check', 'addressed_to', 'future_date',
                             'file_date', 'unusual_account', 'asset_check', 'should_be_asset', 'whose_account', 'claim_vat', 'document_wanted'])
 export const canBeAccepted = (code: string) => ACCEPTABLE.has(code)
 // What accepting a warning is called on its button: the row stays booked as it is, and stops asking.

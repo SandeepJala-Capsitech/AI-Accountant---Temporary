@@ -315,6 +315,14 @@ test('a purchase booked without its receipt says why, with a way to hold it for 
     .filter(s => s.text.startsWith('Booked without')), [])
 })
 
+test('the claim and sundry questions are named, and can be marked as fine', () => {
+  assert.equal(issueTitle('claim_refreshments'), 'Refreshments: for the workplace?')
+  assert.equal(issueTitle('sundry_check'), 'Sundry: what was it for?')
+  assert.equal(issueTitle('claim_note'), 'Coded by the claim')
+  assert.equal(canBeAccepted('claim_refreshments'), true)
+  assert.equal(canBeAccepted('sundry_check'), true)
+})
+
 test("a judgement warning can be marked as fine, and a hard error can't", () => {
   assert.equal(canBeAccepted('no_vat_number'), true)
   assert.equal(canBeAccepted('addressed_to'), true)

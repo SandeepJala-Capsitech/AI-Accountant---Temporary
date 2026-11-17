@@ -45,6 +45,13 @@ test('a note alone, or a row left out, makes no card', () => {
   assert.deepEqual(todoCards(rows, [], [], file), [])
 })
 
+test('the sundry, refreshments and meal questions are Account cards', () => {
+  for (const code of ['sundry_check', 'claim_refreshments', 'meal_check']) {
+    const [card] = todoCards([row(1, [issue(code)])], [], [], file)
+    assert.equal(card.tag, 'Account')
+  }
+})
+
 test('a note is left off a card that has a warning', () => {
   const [card] = todoCards([row(1, [issue('asset_check', 'info'), issue('unusual_account')])], [], [], file)
   assert.deepEqual(card.issues.map(i => i.code), ['unusual_account'])
