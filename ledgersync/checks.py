@@ -111,10 +111,15 @@ def what_differs(tx: Transaction, other: Account) -> Optional[str]:
     if own is None or own.code == other.code:
         return None
     said = []
+    profit_and_loss = (AccountType.INCOME, AccountType.EXPENSE)
     if (own.code in _OWNERS) != (other.code in _OWNERS):
         said.append("one is the owner's own, not the business's cost")
     elif {own.type, other.type} == {AccountType.INCOME, AccountType.LIABILITY}:
         said.append("one is income, the other money owed back")
+    elif (own.type in profit_and_loss) != (other.type in profit_and_loss) and not (
+            {own.type, other.type} == {AccountType.EXPENSE, AccountType.ASSET}
+            and (own.code.startswith("00") or other.code.startswith("00"))):
+        said.append("one changes the profit, the other doesn't")   # cost or fixed asset: presentation
     if own.tax and other.tax and own.tax != other.tax:
         said.append(f"{own.name} is {_TAX_WORDS[own.tax.value]}, {other.name} {_TAX_WORDS[other.tax.value]}")
     if tx.vat and own.reclaim_vat != other.reclaim_vat:
@@ -148,11 +153,16 @@ def _account_choices(tx: Transaction) -> list[str]:
 
 
 def _after_year_end(tx: Transaction, year_end: dt.date) -> Decimal:
-    """The part of a year's bill dated tx.date that falls after the year end: gross x whole months after it / 12."""
+    """The part of a year's bill dated tx.date that falls after the year end: gross x the days of its year's cover
+    after the year end / 365."""
     if tx.date is None or tx.date > year_end:
         return ZERO
-    months = 12 - ((year_end.year - tx.date.year) * 12 + year_end.month - tx.date.month)
-    return (tx.gross * max(0, min(12, months)) / 12).quantize(PENNY)
+    try:
+        ends = tx.date.replace(year=tx.date.year + 1) - dt.timedelta(days=1)
+    except ValueError:   # 29 February
+        ends = tx.date.replace(year=tx.date.year + 1, day=28)
+    days = max(0, (ends - year_end).days)
+    return (tx.gross * days / 365).quantize(PENNY)
 
 
 def account_on_claim(tx: Transaction) -> Optional[str]:

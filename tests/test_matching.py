@@ -1665,6 +1665,12 @@ def test_a_supermarket_buy_on_a_claim_is_booked_to_subsistence_and_says_why():
     assert ("meal_check", "warning") in codes(receipt)
 
 
+def test_a_claim_line_booked_from_its_receipt_leaves_the_account_questions_to_the_receipt():
+    line, receipt = matched(claim_line("54.00", "2026-10-02", "Trainline", account="7400", alternatives=["7403"]),
+                            row("receipt", "out", "54.00", "2026-10-02", "Trainline", "ticket", account="7400"))
+    assert not booked(line) and "account_fact" not in [c for c, _ in codes(line)]
+
+
 def test_matching_the_same_rows_again_gives_the_same_receipt():
     once = matched(claim_line("28.15", "2026-10-08", "ExCeL - Coffees for team", account="7406"),
                    row("receipt", "out", "28.15", "2026-10-08", "ExCeL", "excel", account="7406", vat="3.25"))

@@ -709,6 +709,12 @@ def test_what_differs_between_two_accounts_is_their_tax_and_vat_not_their_name()
     assert what_differs(tx(account="7406"), CHART_BY_CODE["7403"]) is not None   # tax differs without VAT too
 
 
+def test_a_cost_or_income_against_a_balance_sheet_account_changes_the_profit():
+    assert what_differs(tx(account="7903"), CHART_BY_CODE["2300"]) is not None   # interest, or repaying the loan
+    assert what_differs(tx(account="4000", direction="in"), CHART_BY_CODE["3000"]) is not None
+    assert what_differs(tx(account="7504"), CHART_BY_CODE["0030"]) is None   # cost or fixed asset: presentation
+
+
 def test_an_alternative_account_that_changes_the_tax_is_asked():
     t = normalise(tx(gross="54.00", vat="9.00", account="7400", alternatives=["7403"]), REGISTERED)
     assert ("account_fact", "warning") in codes(t)
@@ -744,10 +750,12 @@ def test_a_journal_on_the_bank_the_vat_account_or_debtors_says_what_it_leaves_ou
 
 def test_a_cost_paid_ahead_is_pointed_out_once_the_year_end_is_known():
     year = BusinessSettings(period_start=dt.date(2026, 4, 1), period_end=dt.date(2027, 3, 31))
-    insurance = tx(gross="1260.00", account="8204", document_type="invoice")   # dated 1 Sep: 6 months after 31 Mar
-    assert presented(normalise(insurance, year)) == [("prepayment", Decimal("630.00"))]
+    insurance = tx(gross="1260.00", account="8204", document_type="invoice")   # 1 Sep: 153 of its 365 days after 31 Mar
+    assert presented(normalise(insurance, year)) == [("prepayment", Decimal("528.16"))]
     rent = tx(account="7100").model_copy(update={"description": "Rent, quarter in advance"})
-    assert presented(normalise(rent, year)) == [("prepayment", Decimal("60.00"))]
+    assert presented(normalise(rent, year)) == [("prepayment", Decimal("50.30"))]
+    whole_year = tx(gross="100.00", account="8204", date=dt.date(2026, 4, 1))   # 1 Apr to 31 Mar: all in the year
+    assert presented(normalise(whole_year, year)) == []
     assert presented(normalise(insurance, REGISTERED)) == []
     assert "prepayment" not in dict(presented(normalise(tx(), year)))
 

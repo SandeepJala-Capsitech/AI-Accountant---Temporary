@@ -103,7 +103,7 @@ def test_equipment_on_a_cost_account_is_asked_about_from_the_working_level():
 
 def test_an_annual_bill_asks_about_the_part_after_the_year_end():
     [big] = decided(bill("1200.00", "8204", date=dt.date(2026, 11, 1)))
-    assert codes(big) == [("prepayment", "warning")] and "£600.00" in big.issues[0].message
+    assert codes(big) == [("prepayment", "warning")] and "£601.64" in big.issues[0].message
     [small] = decided(bill("60.00", "8204", date=dt.date(2026, 11, 1)))
     assert codes(small) == [("left_small", "info")]
 
@@ -117,3 +117,8 @@ def test_small_items_left_on_one_account_are_asked_about_together_when_they_add_
 def test_an_accepted_question_is_neither_asked_nor_left():
     [t] = decided(bill("6.99", "8207", accepted=["sundry_check"]))
     assert codes(t) == []
+
+
+def test_small_items_a_person_said_are_fine_together_are_not_asked_again():
+    rows = decided(*(bill("40.00", "8207", accepted=["small_items_add_up"]) for _ in range(19)), bill("39.00", "8207"))
+    assert not [i for t in rows for i in t.issues if i.code == "small_items_add_up"]

@@ -132,7 +132,8 @@ def decide(rows: list[Transaction], placed: list[int],
     for (year, code), items in left.items():
         lv = levels_by_year.get(year)
         total = sum((stake for _, stake in items), Decimal(0))
-        if lv is None or len(items) < 2 or total < lv.working:
+        if (lv is None or len(items) < 2 or total < lv.working
+                or any("small_items_add_up" in rows[k].accepted for k, _ in items)):   # a person said they're fine
             continue
         biggest = max(items, key=lambda item: item[1])[0]
         account = BY_CODE.get(code)
