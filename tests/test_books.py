@@ -190,6 +190,17 @@ def test_a_closed_year_refuses_changes(store, acme_with_year_one):
         ledger.change_row(store, acme_with_year_one, first_row_id(store, acme_with_year_one), RowPatch(account_code="7502"))
 
 
+def test_a_year_with_a_fact_question_open_is_not_closed_until_it_is_answered(store, acme_with_year_one):
+    # Who was at a meal changes its VAT and tax: the year waits for the answer, or for a person to accept it.
+    add_rows(store, acme_with_year_one, row(date=date(2025, 6, 1), gross=D("28.15"), account_code="7406",
+                                            description="ExCeL London Hospitality"))
+    with pytest.raises(InvalidInput, match="1 question that changes the tax"):
+        books.close(store, acme_with_year_one, date(2025, 4, 1))
+    meal = next(t for t in books.ledger(store, acme_with_year_one, YEAR_1).transactions if t.account_code == "7406")
+    ledger.change_row(store, acme_with_year_one, meal.id, RowPatch(accepted=["meal_check"]))
+    books.close(store, acme_with_year_one, date(2025, 4, 1))
+
+
 def test_years_close_in_order_and_reopen_from_the_latest(store, acme_two_years):
     with pytest.raises(InvalidInput, match="Close the year to 31 Mar 2026 first"):
         books.close(store, acme_two_years, date(2026,4,1))

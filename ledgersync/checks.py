@@ -76,6 +76,8 @@ def vat_implied(tx: Transaction, settings: BusinessSettings) -> bool:
 
 _AHEAD = re.compile(r"\b(annual|yearly|12[- ]months?|per annum|in advance|quarter(ly)? rent)\b", re.IGNORECASE)
 _PAID_AHEAD = frozenset({"8204", "7303"})
+# Questions whose answer changes the VAT or tax: asked at any amount, and they hold up closing the year (books.close).
+FACT_QUESTIONS = frozenset({"meal_check", "account_fact"})
 # Presentation questions: found here, asked or left by the client's materiality after matching (materiality.decide).
 PRESENTATION = frozenset({"sundry_check", "account_choice", "small_asset", "asset_check", "prepayment"})
 SUBSISTENCE, ENTERTAINMENT, STAFF_WELFARE, REFRESHMENTS, SUNDRY = "7406", "7403", "8206", "8205", "8207"

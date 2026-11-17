@@ -15,7 +15,7 @@ from typing import NamedTuple, Optional
 from . import years as yr
 from .accounts import (BY_CODE, CREDITORS, DEBTORS, DIRECTORS_LOANS, LOANS, LONG_TERM, PURCHASE_VAT, SALES_VAT,
                        SUSPENSE, AccountType, owner_names, profit_split)
-from .checks import booked, issue, long_date, normalise, registered_on
+from .checks import FACT_QUESTIONS, booked, issue, long_date, normalise, registered_on
 from .coding import usual_accounts, unusual_account_text
 from .duplicates import WINDOW, possible_duplicates, renumbered_invoices
 from .materiality import Levels, decide, year_levels
@@ -860,6 +860,17 @@ def close(store: MongoStore, client_id: int, year_start: dt.date) -> Client:
                            f"{'' if count == 1 else f' (and {count - 1} more)'}") from exc
     if not tb.is_balanced:
         raise InvalidInput("The trial balance must balance before the year is closed.")
+    # A question whose answer changes the VAT or tax (who was at a meal, which account) holds the year until a
+    # person answers it or accepts the row as it is; presentation questions don't.
+    ready, _ = _matched(b, b.settings_in(n))
+    open_facts = [i.message for tx, p in zip(ready, b.placed) if p == n and booked(tx)
+                  for i in tx.issues if i.code in FACT_QUESTIONS]
+    if open_facts:
+        count = len(open_facts)
+        raise InvalidInput(f"{count} question{'' if count == 1 else 's'} that change{'s' if count == 1 else ''} the "
+                           f"tax {'is' if count == 1 else 'are'} still open: answer {'it' if count == 1 else 'them'} "
+                           f"or accept the row{'' if count == 1 else 's'} before the year is closed. {open_facts[0]}"
+                           f"{'' if count == 1 else f' (and {count - 1} more)'}")
     return store.close_year(client_id, ClosedYear(start=year.start, end=year.end, closed_at=now_iso(),
                                                   closing=_balances(tb),
                                                   rules=DOCUMENT_RULES, shares=list(_shares(b.client))))
