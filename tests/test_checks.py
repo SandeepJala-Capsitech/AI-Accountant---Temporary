@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from helpers import SETTINGS as HELPER_SETTINGS, net, normalise_and_match, only_issue, row
 
 from ledgersync.accounts import BANK, CHART
-from ledgersync.checks import booked, normalise
+from ledgersync.checks import account_by_note, booked, normalise
 from ledgersync.models import BusinessSettings, Issue, Transaction
 from ledgersync.posting import trial_balance
 from ledgersync.rows import saved_form
@@ -19,7 +19,7 @@ NOT_REGISTERED = BusinessSettings(vat_registered=False)
 
 def tx(direction="out", gross="120.00", account="7502", **kw):
     return Transaction(direction=direction, gross=gross, account_code=account,
-                       date=kw.pop("date", dt.date(2026, 9, 1)), description="t", **kw)
+                       date=kw.pop("date", dt.date(2026, 9, 1)), description=kw.pop("description", "t"), **kw)
 
 
 def codes(t):
@@ -572,6 +572,86 @@ def test_a_cheap_item_on_an_equipment_account_is_asked_about():
 def test_a_big_meal_on_subsistence_is_asked_about():
     assert codes(normalise(tx(gross="96.40", account="7406"), REGISTERED)) == [("meal_check", "warning")]
     assert codes(normalise(tx(gross="12.40", account="7406"), REGISTERED)) == []
+
+
+def test_a_big_meal_on_subsistence_that_says_it_was_for_the_team_is_pointed_at_staff_welfare():
+    t = normalise(tx(gross="96.40", account="7406", description="Dinner with the team"), REGISTERED)
+    assert codes(t) == [("meal_check", "warning")] and "Staff Welfare" in t.issues[0].message
+
+
+def test_a_team_only_bill_on_entertainment_is_asked_about_because_its_vat_could_be_reclaimed():
+    # The Gun: "Drinks for team after DAS" coded to Entertainment, where its £9.41 VAT is lost.
+    pub = normalise(tx(gross="56.45", vat="9.41", account="7403", description="The Gun - Drinks for team after DAS"),
+                    REGISTERED)
+    assert ("meal_check", "warning") in codes(pub)
+    assert "Staff Welfare" in [i for i in pub.issues if i.code == "meal_check"][0].message
+    clients = normalise(tx(gross="56.45", account="7403", description="Lunch with the team and a client"), REGISTERED)
+    assert "meal_check" not in [code for code, _ in codes(clients)]
+
+
+def test_a_big_bill_on_entertainment_that_says_nobody_is_asked_who_was_there():
+    big = normalise(tx(gross="96.40", account="7403", description="The Gun"), REGISTERED)
+    assert ("meal_check", "warning") in codes(big)
+    assert "meal_check" not in [c for c, _ in codes(normalise(tx(gross="38.20", account="7403"), REGISTERED))]
+
+
+def test_staff_welfare_that_mentions_clients_is_asked_about():
+    t = normalise(tx(gross="80.00", account="8206", description="Drinks with clients"), REGISTERED)
+    assert codes(t) == [("meal_check", "warning")] and "Entertainment" in t.issues[0].message
+    assert codes(normalise(tx(gross="80.00", account="8206", description="Team drinks"), REGISTERED)) == []
+
+
+# A receipt on an expense claim carries the claim line's words (claim_note): they say who a meal or drink was for.
+def test_a_claim_note_for_the_team_points_a_meal_at_staff_welfare():
+    t = tx(gross="28.15", account="7406", claim_note="Jenny Hogg - ExCeL - Coffees for team at DAS")
+    assert account_by_note(t) == "8206"
+
+
+def test_a_claim_note_with_guests_points_at_entertainment_even_with_staff():
+    t = tx(gross="80.00", account="8206", claim_note="Jenny Hogg - Dishoom - team and client dinner")
+    assert account_by_note(t) == "7403"
+
+
+def test_a_claim_note_does_not_recode_what_is_not_food_or_drink():
+    t = tx(gross="54.00", account="7400", claim_note="Jenny Hogg - Trainline - team away day")
+    assert account_by_note(t) is None
+
+
+def test_a_receipt_on_staff_welfare_by_its_claim_note_says_so_and_is_not_asked():
+    t = normalise(tx(gross="28.15", account="8206", claim_note="Jenny Hogg - ExCeL - Coffees for team at DAS"),
+                  REGISTERED)
+    assert codes(t) == [("claim_note", "info")] and "Coffees for team at DAS" in t.issues[0].message
+
+
+def test_a_meal_from_20_on_a_claim_with_no_note_asks_who_was_there():
+    t = normalise(tx(gross="28.15", account="7406", claim_note="Jenny Hogg - ExCeL London Hospitality"), REGISTERED)
+    assert codes(t) == [("meal_check", "warning")] and "doesn't say who" in t.issues[0].message
+
+
+def test_a_snack_under_20_on_a_claim_is_not_asked():
+    assert codes(normalise(tx(gross="8.69", account="7406", claim_note="Jenny Hogg - Bagel Factory"), REGISTERED)) == []
+
+
+def test_a_meal_under_50_not_on_a_claim_is_still_not_asked():
+    assert codes(normalise(tx(gross="28.15", account="7406"), REGISTERED)) == []
+
+
+def test_refreshments_claimed_back_ask_if_it_was_food_while_away():
+    t = normalise(tx(gross="8.19", account="8205", claim_note="Jenny Hogg - Victoria Food & Groceries"), REGISTERED)
+    assert codes(t) == [("claim_refreshments", "warning")] and "Subsistence" in t.issues[0].message
+
+
+def test_refreshments_not_on_a_claim_are_not_asked():
+    assert codes(normalise(tx(gross="8.19", account="8205"), REGISTERED)) == []
+
+
+def test_anything_on_sundry_asks_what_it_was_for():
+    assert ("sundry_check", "warning") in codes(normalise(tx(gross="6.99", account="8207"), REGISTERED))
+
+
+def test_the_claim_checks_do_not_duplicate_when_run_again():
+    once = normalise(tx(gross="8.19", account="8205", claim_note="Jenny Hogg - Victoria Food"), REGISTERED)
+    assert codes(normalise(once, REGISTERED)) == codes(once)
 
 
 def test_a_finance_agreement_is_not_booked():

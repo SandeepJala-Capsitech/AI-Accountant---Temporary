@@ -163,3 +163,10 @@ def test_suspense_and_the_directors_loan_go_on_the_side_their_balance_is_on():
 def test_the_codes_are_in_order():
     codes = [a.code for a in CHART]
     assert codes == sorted(codes)
+
+
+def test_staff_only_hospitality_is_staff_welfare_and_entertainment_is_for_guests():
+    # A team's drinks were coded to Entertainment, losing their VAT: the definitions must tell them apart.
+    welfare, entertainment = BY_CODE["8206"].definition.lower(), BY_CODE["7403"].definition.lower()
+    assert "drinks" in welfare and "staff" in welfare
+    assert "staff welfare" in entertainment
