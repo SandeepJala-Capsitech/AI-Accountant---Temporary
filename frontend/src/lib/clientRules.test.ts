@@ -6,7 +6,7 @@ import type { ClientSummary, SavedRow, Upload } from './clients.ts'
 import type { PickedFile, ReadingFile } from './clientRules.ts'
 import {
   accountList, bankAccountsLeft, changesOf, ownerError, ownersToSend, clientFormErrors, dayMonth, draftOf, emptyListText, figuresOf, lineTemplate, newRowFrom, paidFromOf, paidFromOptions, requeue,
-  readingLine, rowEditErrors, sameFileAs, searchClients, someFinished, unsent, showsInvitation, statementText, transactionCount,
+  readingLine, removeUploadsText, rowEditErrors, sameFileAs, searchClients, someFinished, unsent, showsInvitation, statementText, transactionCount,
 } from './clientRules.ts'
 
 const client = (change: Partial<ClientSummary> = {}): ClientSummary => ({
@@ -228,4 +228,11 @@ test('each listed owner can have paid a receipt themselves', () => {
   assert.deepEqual(paidFromOptions({ business_type: 'partnership', bank_accounts: bank, owners: [{ slot: 1, name: 'Raj' }] })[1],
                    { code: '3011', name: "Raj's own money or card" })
   assert.deepEqual(paidFromOptions({ business_type: 'sole_trader', bank_accounts: bank }).map(o => o.code), ['1200', '3010', '2110'])
+})
+
+test('removing several files at once asks with how many files and transactions go', () => {
+  const uploads = [{ id: 1, name: 'a.pdf', rows: 3 } as Upload, { id: 2, name: 'b.csv', rows: 1 } as Upload]
+  assert.equal(removeUploadsText(uploads),
+    "Remove 2 files and their 4 transactions? This can't be undone: analyse the files again to get them back.")
+  assert.match(removeUploadsText([uploads[1]]), /^Remove 1 file and their 1 transaction\?/)
 })

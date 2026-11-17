@@ -156,6 +156,13 @@ export const readingLine = (file: ReadingFile) => (file.status === 'queued' ? 'W
 // How many transactions an upload holds or a file gave: "1 transaction", "12 transactions".
 export const transactionCount = (n: number) => `${n} transaction${n === 1 ? '' : 's'}`
 
+// The question asked before several files are removed together.
+export const removeUploadsText = (uploads: Upload[]) => {
+  const rows = uploads.reduce((n, u) => n + u.rows, 0)
+  return `Remove ${uploads.length} file${uploads.length === 1 ? '' : 's'} and their ${transactionCount(rows)}? ` +
+    "This can't be undone: analyse the files again to get them back."
+}
+
 // Why a file that repeats a saved upload is not read again.
 export const sameFileText = (upload: Upload) => `Skipped: same file as ${upload.name}, uploaded ${dayMonth(upload.created_at)}`
 
