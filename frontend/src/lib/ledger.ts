@@ -249,7 +249,8 @@ const ISSUE_TITLES: Record<string, string> = {
   payroll_owed_to: 'Check the payroll line', sale_without_vat: 'Sale with no VAT', transfer: 'Transfer between accounts',
   no_vat_number: 'No VAT number on the invoice', vat_over_rate: 'VAT above 20%', reverse_charge: 'Reverse charge',
   before_vat_registration: 'Before VAT registration', small_asset: 'Small for an asset', meal_check: 'Meal: who was there?',
-  claim_refreshments: 'Refreshments: for the workplace?', sundry_check: 'Sundry: what was it for?', claim_note: 'Coded by the claim',
+  sundry_check: 'Sundry: what was it for?', claim_note: 'Coded by the claim', account_fact: 'Which account?',
+  account_choice: 'Another account?', left_small: 'Left: under the trivial level', small_items_add_up: 'Small items add up',
   addressed_to: 'Addressed to someone else', refund_of_overpayment: 'Refund of an overpayment',
   future_date: 'Dated in a later year', journal_note: 'Journal', prepayment: 'Paid ahead?', reversed: 'Reversed',
   not_on_statement: 'Not on the statement', till_takings: 'Till takings',
@@ -299,7 +300,8 @@ const MAY_BE_ONE = new Set(['possible_duplicate', 'date_conflict', 'amount_confl
 export const canBeApart = (code: string) => MAY_BE_ONE.has(code)
 
 // Warnings that are a matter of judgement, which a person who has looked can answer It's fine (checks.ACCEPTABLE).
-const ACCEPTABLE = new Set(['no_vat_number', 'vat_over_rate', 'small_asset', 'meal_check', 'claim_refreshments', 'sundry_check', 'addressed_to', 'future_date',
+const ACCEPTABLE = new Set(['no_vat_number', 'vat_over_rate', 'small_asset', 'meal_check', 'sundry_check', 'account_fact',
+                            'account_choice', 'small_items_add_up', 'addressed_to', 'future_date',
                             'file_date', 'unusual_account', 'asset_check', 'should_be_asset', 'whose_account', 'claim_vat', 'document_wanted'])
 export const canBeAccepted = (code: string) => ACCEPTABLE.has(code)
 // What accepting a warning is called on its button: the row stays booked as it is, and stops asking.
@@ -513,3 +515,21 @@ export function postedLedgerNote(unposted: number | null): string | null {
   if (!unposted) return null
   return `Not up to date: ${unposted} ${unposted === 1 ? 'change' : 'changes'} not posted. See Trial balance.`
 }
+
+// A client's materiality for a year, as GET .../materiality gives it (ledgersync/materiality.py); null: no figures.
+export interface Levels {
+  overall: string
+  working: string
+  trivial: string
+  benchmark: 'profit' | 'costs' | 'firm'
+  figure?: string | null
+  basis: string
+}
+
+
+const gbp = (amount: string) => `£${Number(amount).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+
+// The line above the to-do list: how much is too little to ask about, and what it was worked out from.
+export const levelsLine = (levels: Levels | null) =>
+  levels ? `Materiality ${gbp(levels.overall)} (${levels.basis}) · items under ${gbp(levels.trivial)} left as coded`
+         : 'No figures yet: every item is asked about'

@@ -46,7 +46,7 @@ test('a note alone, or a row left out, makes no card', () => {
 })
 
 test('the sundry, refreshments and meal questions are Account cards', () => {
-  for (const code of ['sundry_check', 'claim_refreshments', 'meal_check']) {
+  for (const code of ['sundry_check', 'meal_check', 'account_fact', 'account_choice', 'small_items_add_up']) {
     const [card] = todoCards([row(1, [issue(code)])], [], [], file)
     assert.equal(card.tag, 'Account')
   }

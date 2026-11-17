@@ -25,7 +25,7 @@ export interface TodoCard {
 // with. Any other code is 'Other'.
 const TAGS: Record<string, string[]> = {
   Account: ['account_unclear', 'unusual_account', 'asset_check', 'should_be_asset', 'small_asset', 'whose_account',
-            'meal_check', 'claim_refreshments', 'sundry_check', 'claim_note'],
+            'meal_check', 'sundry_check', 'claim_note', 'account_fact', 'account_choice', 'small_items_add_up'],
   'Recorded twice': ['booked_twice', 'duplicate_document', 'total_mismatch', 'possible_duplicate', 'claim_receipts_unclear'],
   Date: ['date_missing', 'date_conflict', 'date_out_of_period', 'before_first_year', 'file_date'],
   'VAT across items': ['mixed_items', 'vat_rate_mismatch'],

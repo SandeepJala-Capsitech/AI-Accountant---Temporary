@@ -2,7 +2,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Transaction } from './api.ts'
-import { filtersSet, matchesFilters, netBooked, NO_FILTERS, vatBooked } from './ledger.ts'
+import { filtersSet, levelsLine, matchesFilters, netBooked, NO_FILTERS, vatBooked } from './ledger.ts'
 import { aboutAnotherRow, acceptChange, acceptLabel, accountName, askAbout, claimLineOf, issueFixes, apartChange, apartStatus, canBeAccepted, canBeApart, checkHover, issueHeading, issueTitle, kindOf, needsReview, postedLedgerNote,
          reviewSummary, rowStatus, showLabel, takesLines, totalsOf } from './ledger.ts'
 
@@ -316,10 +316,8 @@ test('a purchase booked without its receipt says why, with a way to hold it for 
 })
 
 test('the claim and sundry questions are named, and can be marked as fine', () => {
-  assert.equal(issueTitle('claim_refreshments'), 'Refreshments: for the workplace?')
   assert.equal(issueTitle('sundry_check'), 'Sundry: what was it for?')
   assert.equal(issueTitle('claim_note'), 'Coded by the claim')
-  assert.equal(canBeAccepted('claim_refreshments'), true)
   assert.equal(canBeAccepted('sundry_check'), true)
 })
 
@@ -532,4 +530,16 @@ test('the issues about several receipts on one claim line have titles', () => {
   assert.equal(issueTitle('not_claimed'), 'Not claimed')
   assert.equal(issueTitle('claim_receipts_unclear'), "Can't tell which charges")
   assert.ok(aboutAnotherRow('claim_receipts_unclear'))
+})
+
+test('the questions asked by facts and stakes are named, and the materiality is said in a line', () => {
+  assert.equal(issueTitle('account_fact'), 'Which account?')
+  assert.equal(issueTitle('account_choice'), 'Another account?')
+  assert.equal(issueTitle('left_small'), 'Left: under the trivial level')
+  assert.equal(issueTitle('small_items_add_up'), 'Small items add up')
+  for (const code of ['account_fact', 'account_choice', 'small_items_add_up']) assert.equal(canBeAccepted(code), true)
+  assert.equal(levelsLine({ overall: '1500.00', working: '750.00', trivial: '45.00', benchmark: 'profit',
+                            figure: '30000.00', basis: '5% of profit before tax, £30,000.00, last year' }),
+               'Materiality £1,500.00 (5% of profit before tax, £30,000.00, last year) · items under £45.00 left as coded')
+  assert.equal(levelsLine(null), 'No figures yet: every item is asked about')
 })

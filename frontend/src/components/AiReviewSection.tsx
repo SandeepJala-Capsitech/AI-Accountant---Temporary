@@ -7,7 +7,8 @@ import DocumentPanel, { type PanelDocument } from '@/components/DocumentPanel'
 import ReviewHistory from '@/components/ReviewHistory'
 import TodoList from '@/components/TodoList'
 import { useRowDialogs } from '@/components/useRowDialogs'
-import { clientDecisions } from '@/lib/api'
+import { clientDecisions, getMateriality } from '@/lib/api'
+import { levelsLine, type Levels } from '@/lib/ledger'
 import { effectLine, type AnswerResult, type Decision } from '@/lib/chat'
 import { changeRow, type RowChange } from '@/lib/clients'
 import { DOCUMENT_TYPES } from '@/lib/clientRules'
@@ -43,6 +44,7 @@ export default function AiReviewSection() {
   // Try again was pressed: the newest run then, and the timer that stops waiting for a new one.
   const [asked, setAsked] = useState<{ newest: string | null } | null>(null)
   const [viewing, setViewing] = useState<string | null>(null)   // the card whose document is open beside the list
+  const [levels, setLevels] = useState<Levels | null | undefined>(undefined)   // undefined: not loaded yet
   const { edit, add, dialogs } = useRowDialogs()
   const answerer = clientAnswerer(client.id)
   const readOnly = client.archived || year.closed
@@ -52,6 +54,7 @@ export default function AiReviewSection() {
       const [reviews, waiting, decisions] = await Promise.all([
         listReviews(client.id, year.start), listSuggestions(client.id, year.start), clientDecisions(client.id, year.start),
       ])
+      getMateriality(client.id, year.start).then(setLevels, () => setLevels(undefined))
       setRuns(newestFirst(reviews))
       setSuggestions(waiting)
       setReversed(new Set(decisions.flatMap(d => (d.reverses ? [d.reverses] : []))))
@@ -236,6 +239,7 @@ export default function AiReviewSection() {
               </button>
             </div>
           ))}
+          {levels !== undefined && <p className="hint">{levelsLine(levels)}</p>}
           <div className={panelOpen ? 'todo-with-panel todo-panel-open' : 'todo-with-panel'}>
             <TodoList cards={cards} working={working} refused={problems} answerer={answerer} viewing={panelOpen ? viewing : null}
                       onView={card => setViewing(v => (v === card.key ? null : card.key))} onChange={changeARow}

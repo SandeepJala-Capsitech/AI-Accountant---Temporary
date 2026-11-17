@@ -278,6 +278,8 @@ export function trialBalance(transactions: Transaction[]): Promise<TrialBalanceR
 }
 
 // What the client pages show of the accountant chat, read from its routes (the types are in chat.ts).
+export const getMateriality = (clientId: number, yearStart: string) =>
+  request<import('./ledger.ts').Levels | null>(`/api/clients/${clientId}/years/${yearStart}/materiality`)
 export const clientDecisions = (clientId: number, yearStart: string) =>
   request<import('./chat.ts').Decision[]>(`/api/clients/${clientId}/decisions?year_start=${yearStart}`)
 export const postedTrialBalance = (clientId: number, yearStart: string) =>
