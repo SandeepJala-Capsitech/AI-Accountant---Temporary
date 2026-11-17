@@ -208,8 +208,8 @@ def _who_was_there(tx: Transaction) -> Optional[str]:
             return None
         if tx.people == "several":
             return f"A meal of {amount} on Subsistence, and the receipt looks to be for more than one person: {choices}"
-        where = "the claim" if _claim_words(tx) is not None else "nothing on it"
-        return f"A meal of {amount} on Subsistence, and {where} doesn't say who it was for: {choices}"
+        where = "the claim doesn't say" if _claim_words(tx) is not None else "nothing on it says"
+        return f"A meal of {amount} on Subsistence, and {where} who it was for: {choices}"
     if tx.account_code == ENTERTAINMENT and not guests:
         said = "says it was for staff" if staff else "doesn't say who was there"
         return (f"{amount} on Entertainment {said}: if only staff were there it is Staff Welfare, and its VAT can be "

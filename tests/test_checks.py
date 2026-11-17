@@ -643,6 +643,7 @@ def meal(account="7406", gross="3.40", **kw):
 
 def test_a_meal_with_no_evidence_of_who_was_there_is_asked_about_at_any_amount():
     assert meal() == [("meal_check", "warning")]
+    assert "and nothing on it says who it was for" in normalise(tx(gross="3.40", account="7406"), REGISTERED).issues[0].message
     assert meal(gross="96.40") == [("meal_check", "warning")]
 
 
