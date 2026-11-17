@@ -474,7 +474,8 @@ def test_an_agent_who_paid_out_more_than_it_collected_is_owed_the_difference():
 
 
 def till(gross="21.35", date="2026-02-22", who="McDonald's", ref="receipt", **kw):
-    return row("receipt", "out", gross, date, who, ref, account="7406", **kw)
+    # One person's meal (people="one"): who was there isn't these tests' question.
+    return row("receipt", "out", gross, date, who, ref, account="7406", **{"people": "one", **kw})
 
 
 def test_a_receipt_and_its_card_payment_are_booked_once():
@@ -763,7 +764,7 @@ def test_records_a_person_said_are_not_the_same_are_never_paired_or_asked_about(
     [row("receipt", "out", "14.00", "2026-09-14", "M6toll", "toll"),                        # more than one it could be
      claim_line("13.00", "2026-09-15", "M6toll")],
     [row("receipt", "out", "8.00", "2026-09-14", "M6toll", "toll"),                         # a receipt on two accounts:
-     row("receipt", "out", "6.00", "2026-09-14", "M6toll", "toll", account="7406")],        # Use can't say which row
+     row("receipt", "out", "6.00", "2026-09-14", "M6toll", "toll", account="7406", people="one")],   # Use can't say which
 ])
 def test_no_amount_is_asked_about_for_another_shop_or_when_more_than_one_record_could_be_the_one(others):
     rows = matched(claim_line("12.00", "2026-09-14", "M6toll"), *others)
@@ -843,7 +844,7 @@ def test_a_small_receipt_that_shows_vat_is_included_is_not_asked_for_a_vat_invoi
     # gives the claim's figure: booked from the receipt, with no warning that the receipt shows none.
     _, receipt = matched(claim_line("8.69", "2026-10-07", "The Bagel Factory, ExCeL London", account="7406",
                                     vat="1.45"),
-                         row("receipt", "out", "8.69", "2026-10-07", "The Bagel Factory", "bagel", account="7406",
+                         row("receipt", "out", "8.69", "2026-10-07", "The Bagel Factory", "bagel", account="7406", people="one",
                              **shows))
     assert codes(receipt) == [("vat_implied", "info")]
     assert (receipt.vat_posted, receipt.vat_from_claim) == (Decimal("1.45"), False)
@@ -1651,6 +1652,16 @@ def test_a_claim_line_booked_from_its_receipt_does_not_ask_its_receipts_question
     line, receipt = matched(claim_line("6.99", "2026-10-04", "Amazon — Stationery", account="8207"),
                             row("receipt", "out", "6.99", "2026-10-04", "Amazon", "amazon", account="8207"))
     assert "sundry_check" not in [c for c, _ in codes(line)] and ("sundry_check", "warning") in codes(receipt)
+
+
+def test_a_supermarket_buy_on_a_claim_is_booked_to_subsistence_and_says_why():
+    line, receipt = matched(claim_line("8.19", "2026-10-08", "Victoria Food & Groceries", account="8205"),
+                            row("receipt", "out", "8.19", "2026-10-08", "Victoria Food & Groceries", "vic",
+                                account="8205"))
+    assert receipt.account_code == "7406"
+    note = next(i for i in receipt.issues if i.code == "claim_note")
+    assert note.severity == "info" and "working away" in note.message
+    assert ("meal_check", "warning") in codes(receipt)
 
 
 def test_matching_the_same_rows_again_gives_the_same_receipt():

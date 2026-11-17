@@ -12,7 +12,7 @@ from itertools import combinations
 from typing import Optional, Sequence
 
 from .accounts import BY_CODE, CLEARING, CREDITORS, DEBTORS, DIRECTORS_LOANS, STAFF_EXPENSES, SUSPENSE, AccountType
-from .checks import (MATCHING_ISSUES, PAYROLL_OWED, STATEMENT_ISSUES, account_by_note, booked, is_fare, issue,
+from .checks import (MATCHING_ISSUES, PAYROLL_OWED, STATEMENT_ISSUES, REFRESHMENTS, account_on_claim, booked, is_fare, issue,
                      long_date, normalise, reclaims_vat, registered_on, vat_implied)
 from .models import BusinessSettings, Direction, Issue, OpenItem, Settlement, Transaction
 from .payees import processor
@@ -753,7 +753,7 @@ _PAYMENT_LINES = frozenset({"statement", "agent_statement"})
 _VAT_NOTES = frozenset({"vat_rate_mismatch", "vat_blocked"})
 # What a claim line booked from its receipt leaves to the receipt, which books: its VAT notes and the questions its
 # account asks (who a meal was for, refreshments claimed back, what a sundry was for).
-_RECEIPTS_SAY = _VAT_NOTES | {"meal_check", "claim_refreshments", "sundry_check", "claim_note"}
+_RECEIPTS_SAY = _VAT_NOTES | {"meal_check", "sundry_check", "claim_note"}
 
 
 def _documents(rows: list[Transaction]) -> dict[str, _Document]:
@@ -1075,10 +1075,14 @@ def _noted(tx: Transaction, line: Transaction, settings: BusinessSettings) -> Tr
     account the note names if it names one, checked again so its questions and VAT follow (checks.account_by_note).
     What matching has already said about it is kept: checking drops it."""
     noting = tx.model_copy(update={"claim_note": line.description})
-    if (account := account_by_note(noting)) is not None:
+    away = noting.account_code == REFRESHMENTS
+    if (account := account_on_claim(noting)) is not None:
         noting = noting.model_copy(update={"account_code": account})
     checked = normalise(noting, settings)
     said = [i for i in tx.issues if i.code in MATCHING_ISSUES or i.code in STATEMENT_ISSUES]
+    if away and account is not None and not any(i.code == "claim_note" for i in checked.issues):
+        said = [issue("claim_note", "Booked to Subsistence, not Refreshments: bought on an expense claim, so food or "
+                                    "drink while working away, not for the workplace.", "info"), *said]
     return checked.model_copy(update={"issues": checked.issues + said})
 
 

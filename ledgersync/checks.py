@@ -32,12 +32,11 @@ _DERIVED = {"unknown_account", "same_account", "non_gbp_currency", "vat_not_appl
             "payroll_owed_to", "before_first_year", "vat_not_booked", "needs_document", "total_worked_out",
             "cis_deducted", "personal", "possible_duplicate", "booked_without_document", "card_credit", "vat_unclaimed",
             "on_account", "no_vat_number", "vat_over_rate", "reverse_charge", "before_vat_registration", "small_asset",
-            "meal_check", "claim_note", "claim_refreshments", "sundry_check", "future_date", "journal_note", "prepayment", "unusual_account", "asset_check",
+            "meal_check", "claim_note", "sundry_check", "future_date", "journal_note", "prepayment", "unusual_account", "asset_check",
             "should_be_asset", "whose_account", "vat_confirmed", "vat_implied", "document_wanted"} | MATCHING_ISSUES | STATEMENT_ISSUES
 # Warnings that are a matter of judgement: a person who has looked can say one is fine (Transaction.accepted), and it
 # is not raised on that row again.
-ACCEPTABLE = frozenset({"no_vat_number", "vat_over_rate", "small_asset", "meal_check", "claim_refreshments",
-                        "sundry_check", "addressed_to", "future_date",
+ACCEPTABLE = frozenset({"no_vat_number", "vat_over_rate", "small_asset", "meal_check", "sundry_check", "addressed_to", "future_date",
                         "file_date", "unusual_account", "asset_check", "should_be_asset", "whose_account",
                         "claim_vat", "document_wanted"})
 # Words that say a cost was paid for time ahead, and the accounts whose bills usually are (insurance).
@@ -80,8 +79,6 @@ _PAID_AHEAD = frozenset({"8204", "7303"})
 PREPAYMENT_FROM = Decimal("300.00")   # an insurance bill from this much is asked about
 SMALL_ASSET = Decimal("100.00")   # equipment costing less is usually written off as a cost, not kept as an asset
 LARGE_COST = Decimal("500.00")    # a purchase of this much on a cost account may be equipment to keep as an asset
-MEAL_CHECK = Decimal("50.00")     # a meal from this much is asked about: with guests it is entertainment
-CLAIM_MEAL_CHECK = Decimal("20.00")   # on an expense claim that doesn't say who it was for, from this much
 SUBSISTENCE, ENTERTAINMENT, STAFF_WELFARE, REFRESHMENTS, SUNDRY = "7406", "7403", "8206", "8205", "8207"
 _FOOD_AND_DRINK = frozenset({SUBSISTENCE, ENTERTAINMENT, STAFF_WELFARE, REFRESHMENTS})
 # Who a meal or drink was for, in the row's own words: staff alone reclaim its VAT (Staff Welfare), guests block it.
@@ -103,6 +100,16 @@ def account_by_note(tx: Transaction) -> Optional[str]:
     return STAFF_WELFARE if _STAFF.search(tx.claim_note) else None
 
 
+def account_on_claim(tx: Transaction) -> Optional[str]:
+    """The account a receipt on an expense claim goes to: the one its claim note names (account_by_note), else
+    Subsistence for Refreshments, which on a claim is a buy while working away, not for the workplace; else None."""
+    if (noted := account_by_note(tx)) is not None:
+        return noted
+    if tx.account_code == REFRESHMENTS and tx.claim_note is not None and not tx.account_chosen:
+        return SUBSISTENCE
+    return None
+
+
 def _claim_words(tx: Transaction) -> Optional[str]:
     """The words of the claim a row is on: a receipt's claim note, or a claim line's own description; None when the
     row is not on an expense claim."""
@@ -112,32 +119,40 @@ def _claim_words(tx: Transaction) -> Optional[str]:
 
 
 def _who_was_there(tx: Transaction) -> Optional[str]:
-    """The question a meal or drink's account raises about who it was for, or None. The row's words, and on an
-    expense claim its claim line's, decide: staff alone is Staff Welfare (VAT reclaimed), any guest is Entertainment
-    (VAT blocked); when they say neither, a big bill is asked about, and on a claim one from £20."""
+    """The question a meal or drink's account raises about who it was for, or None, at any amount: who was there
+    decides the VAT (staff only: reclaimed; any guest: blocked) and the tax (entertaining is disallowed). The claim
+    note, the row's own words, or a receipt the reader says is one person's answer it; otherwise it is asked."""
     if account_by_note(tx) == tx.account_code:   # the claim said who it was for, and it is booked so
         return None
     words = f"{tx.description or ''} {tx.claim_note or ''}"
     staff, guests = bool(_STAFF.search(words)), bool(_GUESTS.search(words))
     amount = f"£{tx.gross:,.2f}"
-    claimed = _claim_words(tx) is not None
-    if tx.account_code == SUBSISTENCE and tx.gross >= (CLAIM_MEAL_CHECK if claimed else MEAL_CHECK):
-        if claimed and not staff and not guests:
-            return (f"A meal of {amount} on Subsistence, and the claim doesn't say who it was for: for staff only it "
-                    "is Staff Welfare (VAT reclaimed); with clients or other guests it is Entertainment (VAT can't be "
-                    "reclaimed). Recode it if so.")
-        if staff and not guests:
+    choices = ("for staff only it is Staff Welfare (VAT reclaimed); with clients or other guests it is Entertainment "
+               "(VAT can't be reclaimed). Recode it if so.")
+    if tx.account_code == SUBSISTENCE:
+        if guests:
+            return (f"A meal of {amount} on Subsistence: with clients or other guests it is entertainment, and its "
+                    "VAT can't be reclaimed. Recode it to Entertainment if so.")
+        if staff:
             return (f"A meal of {amount} on Subsistence for staff: a staff-only meal is Staff Welfare. Recode it to "
                     "Staff Welfare if so.")
-        return (f"A meal of {amount} on Subsistence: with clients or other guests it is entertainment, and its VAT "
-                "can't be reclaimed. Recode it to Entertainment if so.")
-    if tx.account_code == ENTERTAINMENT and not guests and (staff or tx.gross >= MEAL_CHECK):
+        if tx.people == "one":   # one person's meal: their own subsistence
+            return None
+        if tx.people == "several":
+            return f"A meal of {amount} on Subsistence, and the receipt looks to be for more than one person: {choices}"
+        where = "the claim" if _claim_words(tx) is not None else "nothing on it"
+        return f"A meal of {amount} on Subsistence, and {where} doesn't say who it was for: {choices}"
+    if tx.account_code == ENTERTAINMENT and not guests:
         said = "says it was for staff" if staff else "doesn't say who was there"
         return (f"{amount} on Entertainment {said}: if only staff were there it is Staff Welfare, and its VAT can be "
                 "reclaimed. Recode it to Staff Welfare if so.")
-    if tx.account_code == STAFF_WELFARE and guests:
-        return (f"{amount} on Staff Welfare mentions guests: with clients or other guests it is entertainment, and its "
-                "VAT can't be reclaimed. Recode it to Entertainment if so.")
+    if tx.account_code == STAFF_WELFARE:
+        if guests:
+            return (f"{amount} on Staff Welfare mentions guests: with clients or other guests it is entertainment, and "
+                    "its VAT can't be reclaimed. Recode it to Entertainment if so.")
+        if not staff and tx.people is not None:   # food or drink that doesn't say it was for staff
+            return (f"{amount} of food or drink on Staff Welfare doesn't say it was for staff only: with clients or "
+                    "other guests it is Entertainment (VAT can't be reclaimed). Recode it if so.")
     return None
 
 
@@ -484,10 +499,6 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
     if not journal and tx.direction == Direction.OUT and tx.document_type in ("receipt", "invoice", "expense_claim"):
         if account is not None and account_by_note(tx) == tx.account_code:
             issues.append(issue("claim_note", f"Booked to {account.name}: the claim says “{tx.claim_note}”.", "info"))
-        elif tx.account_code == REFRESHMENTS and _claim_words(tx) is not None:
-            issues.append(issue("claim_refreshments", f"£{tx.gross:,.2f} on Refreshments, claimed back on an expense "
-                                                      "claim: Refreshments is for the workplace. If it was food or "
-                                                      "drink while working away, recode it to Subsistence."))
         if tx.account_code == SUNDRY:
             issues.append(issue("sundry_check", f"£{tx.gross:,.2f} on Sundry Expenses, the account for what fits no "
                                                 "other: what was it for? Recode it if another account fits."))
