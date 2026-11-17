@@ -32,11 +32,11 @@ _DERIVED = {"unknown_account", "same_account", "non_gbp_currency", "vat_not_appl
             "payroll_owed_to", "before_first_year", "vat_not_booked", "needs_document", "total_worked_out",
             "cis_deducted", "personal", "possible_duplicate", "booked_without_document", "card_credit", "vat_unclaimed",
             "on_account", "no_vat_number", "vat_over_rate", "reverse_charge", "before_vat_registration", "small_asset",
-            "meal_check", "claim_note", "sundry_check", "future_date", "journal_note", "prepayment", "unusual_account", "asset_check",
+            "meal_check", "claim_note", "sundry_check", "account_fact", "future_date", "journal_note", "prepayment", "unusual_account", "asset_check",
             "should_be_asset", "whose_account", "vat_confirmed", "vat_implied", "document_wanted"} | MATCHING_ISSUES | STATEMENT_ISSUES
 # Warnings that are a matter of judgement: a person who has looked can say one is fine (Transaction.accepted), and it
 # is not raised on that row again.
-ACCEPTABLE = frozenset({"no_vat_number", "vat_over_rate", "small_asset", "meal_check", "sundry_check", "addressed_to", "future_date",
+ACCEPTABLE = frozenset({"no_vat_number", "vat_over_rate", "small_asset", "meal_check", "sundry_check", "account_fact", "addressed_to", "future_date",
                         "file_date", "unusual_account", "asset_check", "should_be_asset", "whose_account",
                         "claim_vat", "document_wanted"})
 # Words that say a cost was paid for time ahead, and the accounts whose bills usually are (insurance).
@@ -98,6 +98,43 @@ def account_by_note(tx: Transaction) -> Optional[str]:
     if _GUESTS.search(tx.claim_note):   # guests named: Entertainment only when the note says they were there
         return ENTERTAINMENT if _WITH_GUESTS.search(tx.claim_note) else None
     return STAFF_WELFARE if _STAFF.search(tx.claim_note) else None
+
+
+_TAX_WORDS = {"allowable": "an allowable cost", "disallowable": "not allowed for tax",
+              "check": "partly allowed for tax, depending on the facts", "non_trading": "outside trading profit"}
+_OWNERS = frozenset({*OWNER_DRAWINGS, *DIRECTORS_LOANS})
+
+
+def what_differs(tx: Transaction, other: Account) -> Optional[str]:
+    """What changes the tax or VAT between the row's account and `other`, in plain words, or None when only the
+    name differs, or cost against asset with the same tax (a presentation choice, by the client's materiality)."""
+    own = BY_CODE.get(tx.account_code)
+    if own is None or own.code == other.code:
+        return None
+    said = []
+    if (own.code in _OWNERS) != (other.code in _OWNERS):
+        said.append("one is the owner's own, not the business's cost")
+    elif {own.type, other.type} == {AccountType.INCOME, AccountType.LIABILITY}:
+        said.append("one is income, the other money owed back")
+    if own.tax and other.tax and own.tax != other.tax:
+        said.append(f"{own.name} is {_TAX_WORDS[own.tax.value]}, {other.name} {_TAX_WORDS[other.tax.value]}")
+    if tx.vat and own.reclaim_vat != other.reclaim_vat:
+        keeps = own.name if own.reclaim_vat else other.name
+        said.append(f"the VAT can be reclaimed on {keeps} only")
+    return "; ".join(said) or None
+
+
+def _account_facts(tx: Transaction) -> list[str]:
+    """The questions the reader's other accounts raise: one per account whose tax or VAT differs from the row's,
+    except between meal accounts, where the meal check asks who was there."""
+    asked = []
+    for code in tx.alternatives:
+        other = BY_CODE.get(code)
+        if other is None or {code, tx.account_code} <= _FOOD_AND_DRINK:
+            continue
+        if (difference := what_differs(tx, other)) is not None:
+            asked.append(f"Could also be {other.code} {other.name}: {difference}. Which is it?")
+    return asked
 
 
 def account_on_claim(tx: Transaction) -> Optional[str]:
@@ -496,6 +533,8 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
     if (not journal and tx.direction == Direction.OUT and tx.document_type in ("receipt", "invoice", "expense_claim")
             and (asked := _who_was_there(tx))):
         issues.append(issue("meal_check", asked))
+    if not journal and tx.document_type != "statement":
+        issues.extend(issue("account_fact", asked) for asked in _account_facts(tx))
     if not journal and tx.direction == Direction.OUT and tx.document_type in ("receipt", "invoice", "expense_claim"):
         if account is not None and account_by_note(tx) == tx.account_code:
             issues.append(issue("claim_note", f"Booked to {account.name}: the claim says “{tx.claim_note}”.", "info"))

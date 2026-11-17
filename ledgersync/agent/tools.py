@@ -58,7 +58,7 @@ FAMILIES: dict[str, Family] = {
     # The account a purchase is on: none found by the reader (parked in Suspense), another than its supplier's
     # usual one, or a cost account for equipment and a fixed asset for something small.
     "account_unclear": "coding", "unusual_account": "coding", "asset_check": "coding", "should_be_asset": "coding", "whose_account": "coding", "claim_note": "coding",
-    "sundry_check": "coding", "meal_check": "coding",
+    "sundry_check": "coding", "account_fact": "coding", "meal_check": "coding",
     "small_asset": "coding",
 }
 

@@ -8,7 +8,8 @@ from pydantic import ValidationError
 from helpers import SETTINGS as HELPER_SETTINGS, net, normalise_and_match, only_issue, row
 
 from ledgersync.accounts import BANK, CHART
-from ledgersync.checks import account_by_note, account_on_claim, booked, normalise
+from ledgersync.accounts import BY_CODE as CHART_BY_CODE
+from ledgersync.checks import account_by_note, account_on_claim, booked, normalise, what_differs
 from ledgersync.models import BusinessSettings, Issue, Transaction
 from ledgersync.posting import trial_balance
 from ledgersync.rows import saved_form
@@ -688,6 +689,32 @@ def test_the_meal_check_does_not_duplicate_when_run_again():
 def test_nothing_asks_about_refreshments_claimed_back():
     t = normalise(tx(gross="8.19", account="8205", claim_note="Jenny Hogg - Victoria Food"), REGISTERED)
     assert "claim_refreshments" not in [c for c, _ in codes(t)]
+
+
+# Another account the reader considered: a fact question when the two differ in tax or VAT, not when only in name.
+def test_what_differs_between_two_accounts_is_their_tax_and_vat_not_their_name():
+    meal = tx(gross="28.15", vat="3.25", account="7406")
+    said = what_differs(meal, CHART_BY_CODE["7403"])
+    assert "VAT" in said and "tax" in said
+    assert what_differs(tx(account="7502"), CHART_BY_CODE["7504"]) is not None   # Telephone is "check" for tax
+    assert what_differs(tx(account="8207"), CHART_BY_CODE["7504"]) is None
+    assert what_differs(tx(account="7504"), CHART_BY_CODE["7800"]) is None        # cost or asset: presentation
+    assert "owner" in what_differs(tx(account="7504"), CHART_BY_CODE["3260"])
+    assert what_differs(tx(account="7406"), CHART_BY_CODE["7403"]) is not None   # tax differs without VAT too
+
+
+def test_an_alternative_account_that_changes_the_tax_is_asked():
+    t = normalise(tx(gross="54.00", vat="9.00", account="7400", alternatives=["7403"]), REGISTERED)
+    assert ("account_fact", "warning") in codes(t)
+    assert "7403 Entertainment" in next(i.message for i in t.issues if i.code == "account_fact")
+
+
+def test_an_alternative_that_only_renames_or_is_a_meal_account_raises_no_account_fact():
+    assert "account_fact" not in [c for c, _ in codes(normalise(tx(account="8207", alternatives=["7504"]), REGISTERED))]
+    meal = normalise(tx(gross="9.00", account="7406", people="one", alternatives=["8206", "7403"]), REGISTERED)
+    assert "account_fact" not in [c for c, _ in codes(meal)]
+    own = normalise(tx(account="8207", alternatives=["8207", "9999"]), REGISTERED)
+    assert "account_fact" not in [c for c, _ in codes(own)]
 
 
 def test_a_finance_agreement_is_not_booked():
