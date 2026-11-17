@@ -265,6 +265,12 @@ def _recoded(code: str, row: dict, settings: BusinessSettings) -> str:
     return code
 
 
+def _alternatives(row: dict, code: str) -> list[str]:
+    """The other chart accounts the reader named for the row, by code: not its own, and only real ones."""
+    found = [str(a)[:4] for a in row.get("alternatives") or []]
+    return list(dict.fromkeys(a for a in found if a in BY_CODE and a != code))[:2]
+
+
 def to_transactions(rows: list[dict], source: str, settings: BusinessSettings, opening_balance=None,
                     closing_balance=None, agent=None, text: Optional[str] = None) -> list[Transaction]:
     """The model's rows as ledger rows; a bank statement's opening and closing balances, and an agent's statement's
@@ -331,6 +337,8 @@ def to_transactions(rows: list[dict], source: str, settings: BusinessSettings, o
                          not_vat_invoice=not statement and bool(row.get("not_vat_invoice")),
                          vat_stated=not statement and vat is None and bool(row.get("vat_stated")),
                          total_worked_out=_worked_out(row, printed), cis_deducted=cis,
+                         people=row.get("people") if row.get("people") in ("one", "several") else None,
+                         alternatives=_alternatives(row, code),
                          document_ref=refs[key] if key else uuid.uuid4().hex[:12],
                          balance=to_money(row.get("balance")) if statement else None,
                          opening_balance=to_money(opening_balance) if statement else None,

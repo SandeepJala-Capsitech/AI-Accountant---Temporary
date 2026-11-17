@@ -297,3 +297,13 @@ def test_a_claim_total_is_only_what_the_claim_prints():
     TransactionExtractor(client, business_name="Jo Bloggs", business_type="sole_trader").extract_accounting_data("x")
     system = client.calls[0]["messages"][0]["content"]
     assert "null when the claim prints no total" in system and "Never add the lines up to make one" in system
+
+
+def test_a_row_says_how_many_its_food_was_for_and_what_else_it_could_be_on():
+    from ledgersync.extractor import AccountingTransaction
+    base = {"description": "Bagel Factory", "amount": 8.69, "direction": "out", "account": "7406 Subsistence"}
+    row = AccountingTransaction(**base, people="One", alternatives=["8206 Staff Welfare", "7403 Entertainment",
+                                                                    "8205 Refreshments"])
+    assert (row.people, row.alternatives) == ("one", ["8206 Staff Welfare", "7403 Entertainment"])
+    assert AccountingTransaction(**base, people="a few").people is None
+    assert AccountingTransaction(**base, people=None, alternatives=None).alternatives == []

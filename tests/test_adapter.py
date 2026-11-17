@@ -602,3 +602,11 @@ def test_a_line_of_a_longer_invoice_is_not_given_a_cis_deduction_from_its_text()
         dict(OKAFOR, description="Materials", amount=200.0, account="5000 Purchases", cis_deducted=None)],
         source="text", settings=BusinessSettings(), text=OKAFOR_TEXT)
     assert (labour.cis_deducted, materials.cis_deducted) == (Decimal("200.00"), None)
+
+
+def test_how_many_a_meal_was_for_and_its_other_accounts_reach_the_row():
+    [t] = adapt({**ROW, "account": "7406 Subsistence", "people": "several",
+                 "alternatives": ["8206 Staff Welfare", "7406 Subsistence", "9999 Made Up"]})
+    assert (t.people, t.alternatives) == ("several", ["8206"])
+    [plain] = adapt(ROW)
+    assert (plain.people, plain.alternatives) == (None, [])

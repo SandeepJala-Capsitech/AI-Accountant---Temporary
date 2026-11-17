@@ -125,3 +125,25 @@ def test_the_model_reads_a_receipt_photo():
     photo = (FIXTURES / "img-train-ticket" / "input.png").read_bytes()
     result = TransactionExtractor(client).extract_accounting_data(images=[prepare_image(photo)])
     assert any(abs(abs(t.amount) - 87.50) < 0.01 for t in result.data)
+
+
+def _people(name: str, times: int = 4) -> list:
+    path = PRIVATE / "jenny" / name
+    if not path.is_file():
+        pytest.skip(f"needs {path.relative_to(PRIVATE.parent.parent)}")
+    reader = TransactionExtractor(live_client(), business_name="Jenny", business_type="limited_company")
+    photo = prepare_image(path.read_bytes())
+    with ThreadPoolExecutor(times) as pool:
+        return list(pool.map(lambda _: [t.people for t in reader.extract_accounting_data(images=[photo]).data],
+                             range(times)))
+
+
+def test_people_a_group_order_of_pastries_and_drinks_is_for_several():
+    # ExCeL, 8 Oct: fruit salad, pastries, tea, coffee: coffees for the team at DAS, booked as Jenny's lunch (2026-11-17).
+    reads = _people("ExCel_London_Hospitality-2026-10-08_08_59_00.jpg")
+    assert sum(r == ["several"] for r in reads) >= 3, reads
+
+
+def test_people_one_sandwich_is_for_one():
+    reads = _people("Bagel_Factory-2026-10-07_14_43_07.jpg")
+    assert sum(r == ["one"] for r in reads) >= 3, reads
