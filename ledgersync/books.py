@@ -18,7 +18,7 @@ from .accounts import (BY_CODE, CREDITORS, DEBTORS, DIRECTORS_LOANS, LOANS, LONG
 from .checks import booked, issue, long_date, normalise, registered_on
 from .coding import usual_accounts, unusual_account_text
 from .duplicates import WINDOW, possible_duplicates, renumbered_invoices
-from .materiality import Levels, year_levels
+from .materiality import Levels, decide, year_levels
 from .errors import InvalidInput, InvalidTransactions, NotFound
 from .evidence_rules import document_rule, journal_with_rule
 from .export import file_name, workbook
@@ -299,6 +299,10 @@ def _saved_rows(b: _Books, n: Optional[int]) -> tuple[list[SavedRow], dict[int, 
             ready[k] = ready[k].model_copy(update={"issues": [
                 *ready[k].issues, issue("unusual_account", unusual_account_text(ready[k], usual),
                                         related=usual.related)]})
+    # Presentation questions (Sundry, another account of the same tax, asset or cost, a bill past the year end):
+    # asked or left by each year's materiality (materiality.decide).
+    levels = {p: year_levels(ready, b.placed, b.years, p, b.client.materiality) for p in set(b.placed)}
+    ready = decide(ready, b.placed, levels)
     # The rows each issue is about, from their place in the rows matched to their row ids.
     rows = [SavedRow(**{**tx.model_dump(), "issues": [
                          {**i.model_dump(), "related": [b.stored[p].id for p in i.related]} for i in tx.issues]},

@@ -32,11 +32,11 @@ _DERIVED = {"unknown_account", "same_account", "non_gbp_currency", "vat_not_appl
             "payroll_owed_to", "before_first_year", "vat_not_booked", "needs_document", "total_worked_out",
             "cis_deducted", "personal", "possible_duplicate", "booked_without_document", "card_credit", "vat_unclaimed",
             "on_account", "no_vat_number", "vat_over_rate", "reverse_charge", "before_vat_registration", "small_asset",
-            "meal_check", "claim_note", "sundry_check", "account_fact", "future_date", "journal_note", "prepayment", "unusual_account", "asset_check",
+            "meal_check", "claim_note", "sundry_check", "account_fact", "account_choice", "left_small", "small_items_add_up", "future_date", "journal_note", "prepayment", "unusual_account", "asset_check",
             "should_be_asset", "whose_account", "vat_confirmed", "vat_implied", "document_wanted"} | MATCHING_ISSUES | STATEMENT_ISSUES
 # Warnings that are a matter of judgement: a person who has looked can say one is fine (Transaction.accepted), and it
 # is not raised on that row again.
-ACCEPTABLE = frozenset({"no_vat_number", "vat_over_rate", "small_asset", "meal_check", "sundry_check", "account_fact", "addressed_to", "future_date",
+ACCEPTABLE = frozenset({"no_vat_number", "vat_over_rate", "small_asset", "meal_check", "sundry_check", "account_fact", "account_choice", "small_items_add_up", "addressed_to", "future_date",
                         "file_date", "unusual_account", "asset_check", "should_be_asset", "whose_account",
                         "claim_vat", "document_wanted"})
 # Words that say a cost was paid for time ahead, and the accounts whose bills usually are (insurance).
@@ -76,9 +76,8 @@ def vat_implied(tx: Transaction, settings: BusinessSettings) -> bool:
 
 _AHEAD = re.compile(r"\b(annual|yearly|12[- ]months?|per annum|in advance|quarter(ly)? rent)\b", re.IGNORECASE)
 _PAID_AHEAD = frozenset({"8204", "7303"})
-PREPAYMENT_FROM = Decimal("300.00")   # an insurance bill from this much is asked about
-SMALL_ASSET = Decimal("100.00")   # equipment costing less is usually written off as a cost, not kept as an asset
-LARGE_COST = Decimal("500.00")    # a purchase of this much on a cost account may be equipment to keep as an asset
+# Presentation questions: found here, asked or left by the client's materiality after matching (materiality.decide).
+PRESENTATION = frozenset({"sundry_check", "account_choice", "small_asset", "asset_check", "prepayment"})
 SUBSISTENCE, ENTERTAINMENT, STAFF_WELFARE, REFRESHMENTS, SUNDRY = "7406", "7403", "8206", "8205", "8207"
 _FOOD_AND_DRINK = frozenset({SUBSISTENCE, ENTERTAINMENT, STAFF_WELFARE, REFRESHMENTS})
 # Who a meal or drink was for, in the row's own words: staff alone reclaim its VAT (Staff Welfare), guests block it.
@@ -135,6 +134,25 @@ def _account_facts(tx: Transaction) -> list[str]:
         if (difference := what_differs(tx, other)) is not None:
             asked.append(f"Could also be {other.code} {other.name}: {difference}. Which is it?")
     return asked
+
+
+def _account_choices(tx: Transaction) -> list[str]:
+    """The reader's other accounts that change only the name, not the tax or VAT: a presentation choice."""
+    said = []
+    for code in tx.alternatives:
+        other = BY_CODE.get(code)
+        if other is not None and code != tx.account_code and what_differs(tx, other) is None:
+            said.append(f"Could also be {other.code} {other.name}: the tax and VAT are the same either way. Recode it "
+                        "if that fits better.")
+    return said
+
+
+def _after_year_end(tx: Transaction, year_end: dt.date) -> Decimal:
+    """The part of a year's bill dated tx.date that falls after the year end: gross x whole months after it / 12."""
+    if tx.date is None or tx.date > year_end:
+        return ZERO
+    months = 12 - ((year_end.year - tx.date.year) * 12 + year_end.month - tx.date.month)
+    return (tx.gross * max(0, min(12, months)) / 12).quantize(PENNY)
 
 
 def account_on_claim(tx: Transaction) -> Optional[str]:
@@ -518,18 +536,16 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
                                                   f"£{reverse:,.2f} VAT is added to box 1 and reclaimed in box 4, so "
                                                   "nothing is paid. If these are goods, untick Reverse charge in "
                                                   "Edit: import VAT is on the import VAT statement.", "info"))
+    whole = max(tx.gross, tx.document_total or ZERO)   # the purchase it is part of
     if (purchase and account.type == AccountType.ASSET and account.code.startswith("00")
-            and account.vat != VatTreatment.OUTSIDE_SCOPE and tx.gross < SMALL_ASSET
-            and (tx.document_total is None or tx.document_total < SMALL_ASSET)):
-        issues.append(issue("small_asset", f"£{tx.gross:,.2f} is small to keep as {account.name}: an item under "
-                                           f"£{SMALL_ASSET:,.0f} is usually written off as a cost. Recode it to the "
-                                           "cost account of its kind, unless it is part of a bigger purchase."))
-    if (purchase and not mixed and tx.account_code in ASSET_CANDIDATES and tx.gross >= LARGE_COST
-            and (tx.document_total is None or tx.document_total >= LARGE_COST) and tx.currency == "GBP"):
-        # Only a note: whether it is equipment takes reading the document, which the coding specialist does. An
-        # amount in another currency isn't pounds yet: it is checked once a person has converted it.
-        issues.append(issue("asset_check", f"£{tx.gross:,.2f} on {account.code} {account.name}: checked for equipment "
-                                           "that should be kept as an asset.", "info"))
+            and account.vat != VatTreatment.OUTSIDE_SCOPE):
+        issues.append(issue("small_asset", f"£{tx.gross:,.2f} is small to keep as {account.name} for this client: "
+                                           "write it off as a cost. Recode it to the cost account of its kind, unless "
+                                           "it is part of a bigger purchase.", difference=whole))
+    if purchase and not mixed and tx.account_code in ASSET_CANDIDATES and tx.currency == "GBP":
+        # An amount in another currency isn't pounds yet: it is checked once a person has converted it.
+        issues.append(issue("asset_check", f"£{tx.gross:,.2f} on {account.code} {account.name} may be equipment to "
+                                           "keep as an asset.", "info", difference=tx.gross))   # by its own line
     if (not journal and tx.direction == Direction.OUT and tx.document_type in ("receipt", "invoice", "expense_claim")
             and (asked := _who_was_there(tx))):
         issues.append(issue("meal_check", asked))
@@ -540,7 +556,10 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
             issues.append(issue("claim_note", f"Booked to {account.name}: the claim says “{tx.claim_note}”.", "info"))
         if tx.account_code == SUNDRY:
             issues.append(issue("sundry_check", f"£{tx.gross:,.2f} on Sundry Expenses, the account for what fits no "
-                                                "other: what was it for? Recode it if another account fits."))
+                                                "other: what was it for? Recode it if another account fits.",
+                                difference=tx.gross))
+    if not journal and tx.document_type != "statement":
+        issues.extend(issue("account_choice", asked, difference=tx.gross) for asked in _account_choices(tx))
     if journal:   # a journal is the person's own entry: it books, and says what it leaves out of step
         sides = {tx.account_code, contra}
         if sides & set(settings.bank_accounts):
@@ -554,10 +573,15 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
                                                 "the account and the unpaid list differ by it.", "info"))
     elif (tx.direction == Direction.OUT and account is not None and account.type == AccountType.EXPENSE
           and tx.document_type in ("receipt", "invoice") and settings.period_end is not None
-          and (_AHEAD.search(tx.description) or (tx.account_code in _PAID_AHEAD and tx.gross >= PREPAYMENT_FROM))):
-        issues.append(issue("prepayment", f"May cover time after the year end ({long_date(settings.period_end)}): if "
-                                          "so, carry that part forward with a journal to 1103 Prepayments.", "info"))
+          and (_AHEAD.search(tx.description) or tx.account_code in _PAID_AHEAD)
+          and (after := _after_year_end(tx, settings.period_end)) > 0):
+        issues.append(issue("prepayment", f"May cover time after the year end ({long_date(settings.period_end)}): "
+                                          f"£{after:,.2f} of it, if it is a year's cover from its date. If so, carry "
+                                          "that part forward with a journal to 1103 Prepayments.", "info",
+                            difference=after))
     issues = [i for i in issues if i.code not in tx.accepted]
+    presentation = [i for i in issues if i.code in PRESENTATION]
+    issues = [i for i in issues if i.code not in PRESENTATION]
     net = tx.gross - posted if posted is not None else None
     cis = tx.cis_deducted if tx.cis_deducted and tx.document_type != "statement" else None
     if cis is not None and net is not None:
@@ -566,6 +590,6 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
             f"CIS £{cis:,.2f} taken off by the customer: booked to CIS Deducted, so the sale is £{net:,.2f}."
             if tx.direction == Direction.IN else
             f"CIS £{cis:,.2f} taken off for HMRC: booked to CIS Payable, so the cost is £{net:,.2f}."), "info"))
-    return tx.model_copy(update={"vat_posted": posted, "net": net, "reverse_vat": reverse,
+    return tx.model_copy(update={"vat_posted": posted, "net": net, "reverse_vat": reverse, "presentation": presentation,
                                  "contra_account_code": contra,
                                  "in_opening": in_opening, "issues": kept + issues})

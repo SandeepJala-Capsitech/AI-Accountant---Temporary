@@ -223,6 +223,8 @@ class Transaction(BaseModel):
                                                    # for (the reader's); None: unclear, or not food or drink
     alternatives: list[str] = Field(default_factory=list)   # up to two other chart accounts the reader thought it
                                                    # could fairly be on
+    presentation: list[Issue] = Field(default_factory=list)   # questions of presentation checks.normalise found:
+                                                   # asked or left by the client's materiality (materiality.decide)
     account_chosen: bool = False                   # a person changed the account from what was read (set as rows
                                                    # load): a claim note doesn't recode it
     documented_by: Optional[Settlement] = None     # the document behind a row that books instead of it, with no

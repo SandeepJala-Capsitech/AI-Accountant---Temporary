@@ -563,11 +563,17 @@ def test_a_row_dated_before_the_vat_registration_books_no_vat():
     assert (after.vat_posted, codes(after)) == (Decimal("20.00"), [])
 
 
+def presented(t):
+    """The presentation questions normalise found: asked or left by the client's levels (materiality.decide)."""
+    return [(i.code, i.difference) for i in t.presentation]
+
+
 def test_a_cheap_item_on_an_equipment_account_is_asked_about():
+    # Small for an asset is the client's trivial level, not a fixed amount (materiality.decide).
     cable = normalise(tx(gross="9.67", account="0030"), REGISTERED)
-    assert codes(cable) == [("small_asset", "warning")]
-    assert codes(normalise(tx(gross="499.00", account="0030"), REGISTERED)) == []
-    assert codes(normalise(tx(gross="9.67", account="0030", document_total="640.00"), REGISTERED)) == []
+    assert presented(cable) == [("small_asset", Decimal("9.67"))] and codes(cable) == []
+    part = normalise(tx(gross="9.67", account="0030", document_total="640.00"), REGISTERED)
+    assert presented(part) == [("small_asset", Decimal("640.00"))]   # part of a bigger purchase: judged by it
 
 
 def test_a_big_meal_on_subsistence_that_says_it_was_for_the_team_is_pointed_at_staff_welfare():
@@ -602,7 +608,7 @@ def test_a_receipt_on_staff_welfare_by_its_claim_note_says_so_and_is_not_asked()
 
 
 def test_anything_on_sundry_asks_what_it_was_for():
-    assert ("sundry_check", "warning") in codes(normalise(tx(gross="6.99", account="8207"), REGISTERED))
+    assert presented(normalise(tx(gross="6.99", account="8207"), REGISTERED)) == [("sundry_check", Decimal("6.99"))]
 
 
 def test_a_claim_note_needs_guests_to_have_been_there_to_point_at_entertainment():
@@ -738,11 +744,12 @@ def test_a_journal_on_the_bank_the_vat_account_or_debtors_says_what_it_leaves_ou
 
 def test_a_cost_paid_ahead_is_pointed_out_once_the_year_end_is_known():
     year = BusinessSettings(period_start=dt.date(2026, 4, 1), period_end=dt.date(2027, 3, 31))
-    insurance = tx(gross="1260.00", account="8204", document_type="invoice")
-    assert codes(normalise(insurance, year)) == [("prepayment", "info")]
+    insurance = tx(gross="1260.00", account="8204", document_type="invoice")   # dated 1 Sep: 6 months after 31 Mar
+    assert presented(normalise(insurance, year)) == [("prepayment", Decimal("630.00"))]
     rent = tx(account="7100").model_copy(update={"description": "Rent, quarter in advance"})
-    assert codes(normalise(rent, year)) == [("prepayment", "info")]
-    assert codes(normalise(insurance, REGISTERED)) == [] and codes(normalise(tx(), year)) == []
+    assert presented(normalise(rent, year)) == [("prepayment", Decimal("60.00"))]
+    assert presented(normalise(insurance, REGISTERED)) == []
+    assert "prepayment" not in dict(presented(normalise(tx(), year)))
 
 
 def test_a_mixed_rate_note_doesnt_call_zero_rated_goods_a_tip():
@@ -753,19 +760,20 @@ def test_a_mixed_rate_note_doesnt_call_zero_rated_goods_a_tip():
 # ─── A large purchase on a cost account: checked for equipment ─────────────────
 
 def big(gross="1800.00", account="7504", **kw):
-    return normalise(tx(gross=gross, account=account, **{"document_type": "invoice", "document_total": gross, **kw}),
-                     REGISTERED)
+    """The row with the presentation questions normalise found among its issues."""
+    t = normalise(tx(gross=gross, account=account, **{"document_type": "invoice", "document_total": gross, **kw}),
+                  REGISTERED)
+    return t.model_copy(update={"issues": t.issues + t.presentation})
 
 
 def test_a_large_purchase_on_a_candidate_account_is_marked():
     said = only_issue(big(), "asset_check")
     assert said.severity == "info"
-    assert said.message == "£1,800.00 on 7504 Office Stationery: checked for equipment that should be kept as an asset."
+    assert said.message == "£1,800.00 on 7504 Office Stationery may be equipment to keep as an asset."
 
 
-def test_under_the_figure_is_not_marked():
-    assert "asset_check" not in dict(codes(big("499.99")))
-    assert "asset_check" in dict(codes(big("500.00")))
+def test_any_amount_on_a_candidate_account_is_a_candidate_for_the_working_level():
+    assert "asset_check" in dict(codes(big("499.99")))   # materiality.decide asks it from the client's working level
 
 
 def test_an_amount_in_another_currency_is_not_marked_until_it_is_in_pounds():
@@ -780,7 +788,8 @@ def test_rent_and_stock_are_not_marked():
 
 
 def test_a_line_of_a_bigger_document_goes_by_the_line():
-    assert "asset_check" not in dict(codes(big("120.00", document_total="1800.00")))
+    line = big("120.00", document_total="1800.00")
+    assert next(i.difference for i in line.issues if i.code == "asset_check") == Decimal("120.00")
 
 
 def test_a_document_with_no_total_goes_by_the_row():

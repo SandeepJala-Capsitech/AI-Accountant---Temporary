@@ -98,3 +98,47 @@ def year_levels(rows: list[Transaction], placed: list[int], years: list[Year], n
     start = years[n].start
     months = (latest.year - start.year) * 12 + latest.month - start.month + 1
     return levels(income, costs, months=min(max(months, 1), 12), which="this year so far")
+
+
+def decide(rows: list[Transaction], placed: list[int],
+           levels_by_year: dict[int, Optional[Levels]]) -> list[Transaction]:
+    """Each presentation question checks.normalise found (checks.PRESENTATION), asked or left by the levels of the
+    row's year: asked from the trivial level (equipment kept as a cost from the working level, a small asset under
+    the trivial level), else left as coded with a note saying so. With no levels, nothing is trivial: all asked.
+    The items left on an account in a year are added up, and asked about together when they reach the working
+    level."""
+    from .checks import PRESENTATION, issue   # checks imports nothing from here; kept local for clarity
+    out = list(rows)
+    left: dict[tuple[int, str], list[tuple[int, Decimal]]] = {}
+    for k, tx in enumerate(rows):
+        lv = levels_by_year.get(placed[k])
+        kept = [i for i in tx.issues if i.code not in PRESENTATION]
+        for found in tx.presentation if booked(tx) else []:   # a row not booked (a claim line its receipt books) asks nothing
+            stake = found.difference if found.difference is not None else tx.gross
+            if found.code == "small_asset":   # an asset small for this client: asked; otherwise fine as it is
+                if lv is not None and stake < lv.trivial:
+                    kept.append(found)
+                continue
+            bar, name = ((lv.working, "working level") if found.code == "asset_check" else (lv.trivial, "trivial level")) \
+                if lv is not None else (None, "")
+            if bar is None or stake >= bar:
+                kept.append(found.model_copy(update={"severity": "warning"}))
+                continue
+            account = BY_CODE.get(tx.account_code)
+            kept.append(issue("left_small", f"£{stake:,.2f} is under this client's {name} of £{bar:,.2f}: left on "
+                                            f"{account.name if account else tx.account_code} as coded.", "info"))
+            left.setdefault((placed[k], tx.account_code), []).append((k, stake))
+        out[k] = tx.model_copy(update={"issues": kept, "presentation": []})
+    for (year, code), items in left.items():
+        lv = levels_by_year.get(year)
+        total = sum((stake for _, stake in items), Decimal(0))
+        if lv is None or len(items) < 2 or total < lv.working:
+            continue
+        biggest = max(items, key=lambda item: item[1])[0]
+        account = BY_CODE.get(code)
+        said = issue("small_items_add_up", f"{len(items)} small items left on {account.name if account else code} add "
+                                           f"up to £{total:,.2f}, over this client's working level of "
+                                           f"£{lv.working:,.2f}: check them together.",
+                     related=[k for k, _ in items if k != biggest])
+        out[biggest] = out[biggest].model_copy(update={"issues": [*out[biggest].issues, said]})
+    return out

@@ -1651,7 +1651,8 @@ def test_a_claim_line_booked_from_its_receipt_does_not_ask_its_receipts_question
     # Jenny's claim codes its lines "Other Business Expenses" (Sundry): the receipt books, and asks, not the line.
     line, receipt = matched(claim_line("6.99", "2026-10-04", "Amazon — Stationery", account="8207"),
                             row("receipt", "out", "6.99", "2026-10-04", "Amazon", "amazon", account="8207"))
-    assert "sundry_check" not in [c for c, _ in codes(line)] and ("sundry_check", "warning") in codes(receipt)
+    assert not booked(line) and booked(receipt)   # materiality.decide asks only of booked rows
+    assert "sundry_check" in [i.code for i in receipt.presentation]
 
 
 def test_a_supermarket_buy_on_a_claim_is_booked_to_subsistence_and_says_why():

@@ -467,6 +467,8 @@ def test_the_rows_trial_balance_equals_the_posted_one(mongo_store, mongo_db, acm
 
 
 def test_a_held_purchase_says_what_it_needs(mongo_store, acme_with_year_one):
+    # The firm's materiality, so the fixture's £60 stationery receipt is too small to ask about as equipment.
+    ledger.change_client(mongo_store, acme_with_year_one, ClientPatch(materiality=D("1500")))
     add_rows(mongo_store, acme_with_year_one,
              row(date=date(2025, 7, 1), gross=D("240.00"), account_code="7400", document_type="statement",
                  counterparty="Trainline", description="TRAINLINE"),
@@ -692,6 +694,7 @@ def test_a_client_registered_for_vat_part_way_through_the_year(store, acme):
 
 
 def test_a_person_can_say_a_judgement_warning_is_fine(store, acme):
+    ledger.change_client(store, acme, ClientPatch(materiality=D("1500")))   # trivial £45: a £9.67 cable is small
     add_rows(store, acme, row(date=date(2025, 6, 1), gross=D("9.67"), account_code="0030"))
     [cable] = books.ledger(store, acme, YEAR_1).transactions
     assert [i.code for i in cable.issues] == ["small_asset"]
