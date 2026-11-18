@@ -125,8 +125,9 @@ prints.
 
 **The never lists.** There are two:
 
-- **Kinds that never carry VAT.** No VAT is reclaimed on these by any route: this rule, `vat_implied`, or a claim's
-  VAT figure. Only VAT a person enters or confirms in the app overrides this (my call). The kinds are:
+- **Kinds that never carry VAT.** No VAT is added to these by this rule or by `vat_implied`, and a claim's VAT figure
+  on them isn't reclaimed. VAT that the receipt or invoice itself prints still stands: a ticket seller prints VAT on
+  its own booking fee. Only VAT a person enters or confirms in the app beats this list (my call). The kinds are:
   - fares (`checks.is_fare`);
   - postage stamps;
   - water and sewerage;
@@ -310,9 +311,9 @@ again, which the user accepted.
 
 1. A person's choice: a rate picked, VAT entered or confirmed, a row booked without its receipt, a warning
    accepted, or "No VAT on it".
-2. Then the kinds that never carry VAT.
-3. Then what the document prints: its VAT figure, VAT number or VAT wording. A VAT figure it prints is never
+2. Then what the document prints: its VAT figure, VAT number or VAT wording. A VAT figure it prints is never
    replaced by one worked out, and its words beat the reader's judgement.
+3. Then the kinds that never carry VAT, which stop VAT that is worked out or taken from a claim.
 4. Then a claim's VAT figure.
 5. Then this rule.
 
