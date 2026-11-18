@@ -456,7 +456,9 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
         VAT printed. set_vat_from_document: the document prints VAT the row doesn't book. set_date: a row with no date,
         two dates or another date in its file name; the date from another record of the same purchase
         (source_row_id), a date printed in the row's document (quote it), or the file name of a row with no date
-        (quote the file name). The services check the
+        (quote the file name). who_was_there: a meal or drink the books ask who was at; who the documents show was
+        there (the claimant alone, staff only, or any guest) moves it to Subsistence, Staff Welfare or Entertainment
+        and answers the question. The services check the
         resolution against the evidence and refuse what it doesn't support, saying
         why. Sent again once applied, it returns the same decision."""
         ctx = runtime.context
@@ -487,7 +489,8 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
                  runtime: ToolRuntime[ChatContext]) -> dict:
         """Changes a row as the person in this chat told you to: its account, its VAT (vat, or no_vat to clear it;
         reclaim_vat true when they say to reclaim VAT the books hold back, such as a row waiting for a VAT invoice), its
-        VAT treatment, date, amount, description or direction; marks warnings on it as fine (accept_warnings); or
+        VAT treatment, date, amount, description or direction; marks warnings on it as fine (accept_warnings); keeps
+        it apart from rows the person says are different purchases (not_same_as: answers a possible duplicate); or
         books a row held in Suspense without its receipt (without_document, the person's reason). Use it when the
         person says what a row should be, in a message or in their answer to a question: "put the toll to Travel",
         "use the VAT on the claim", "that warning is fine". Give only the fields to change. The person's word is the

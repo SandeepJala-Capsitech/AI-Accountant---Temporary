@@ -610,3 +610,9 @@ def test_how_many_a_meal_was_for_and_its_other_accounts_reach_the_row():
     assert (t.people, t.alternatives) == ("several", ["8206"])
     [plain] = adapt(ROW)
     assert (plain.people, plain.alternatives) == (None, [])
+
+
+def test_what_kind_of_food_was_bought_reaches_the_row():
+    [t] = adapt({**ROW, "account": "7406 Subsistence", "bought": "meal_out"})
+    assert t.bought == "meal_out"
+    assert adapt({**ROW, "bought": "banquet"})[0].bought is None

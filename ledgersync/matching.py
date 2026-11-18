@@ -753,7 +753,7 @@ _PAYMENT_LINES = frozenset({"statement", "agent_statement"})
 _VAT_NOTES = frozenset({"vat_rate_mismatch", "vat_blocked"})
 # What a claim line booked from its receipt leaves to the receipt, which books: its VAT notes and the questions its
 # account asks (who a meal was for, refreshments claimed back, what a sundry was for).
-_RECEIPTS_SAY = _VAT_NOTES | {"meal_check", "sundry_check", "claim_note", "account_fact", "account_choice"}
+_RECEIPTS_SAY = _VAT_NOTES | {"meal_check", "meal_decided", "sundry_check", "claim_note", "account_fact", "account_choice"}
 
 
 def _documents(rows: list[Transaction]) -> dict[str, _Document]:

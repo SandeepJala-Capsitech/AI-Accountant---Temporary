@@ -38,7 +38,7 @@ def _pounds(amount: Decimal) -> Decimal:
 def levels(income: Decimal, costs: Decimal, *, months: int = 12, which: str,
            firm: Optional[Decimal] = None) -> Optional[Levels]:
     """The levels from a year's booked income and costs (net of VAT) over `months` months; `which` says which year
-    ("last year", "this year so far"). None when there are no figures: then nothing is trivial."""
+    ("last year", "this year so far"). None when there are no figures (decide then waits for the firm's)."""
     if firm is not None and firm > 0:
         overall = _pounds(firm)
         return Levels(overall=overall, working=_pounds(overall * WORKING_SHARE),
@@ -85,15 +85,17 @@ def _figures(rows: list[Transaction], placed: list[int], n: int) -> tuple[Decima
 def year_levels(rows: list[Transaction], placed: list[int], years: list[Year], n: int,
                 firm: Optional[Decimal]) -> Optional[Levels]:
     """Year n's levels: from the year before when it has figures, else from year n so far, scaled to 12 months;
-    the firm's figure, when it set one, instead."""
+    the firm's figure, when it set one, instead. A year's figures say how big the business is only when they hold
+    its income: costs alone are often only what is in so far (an employee's expense claims, before the bank and
+    sales), so with no income booked there are no levels and the firm is asked for its figure."""
     if firm is not None and firm > 0:
         return levels(Decimal(0), Decimal(0), which="", firm=firm)
     if n > 0:
         income, costs, latest = _figures(rows, placed, n - 1)
-        if latest is not None:
+        if latest is not None and income > 0:
             return levels(income, costs, which="last year")
     income, costs, latest = _figures(rows, placed, n)
-    if latest is None:
+    if latest is None or income <= 0:
         return None
     start = years[n].start
     months = (latest.year - start.year) * 12 + latest.month - start.month + 1
@@ -103,25 +105,46 @@ def year_levels(rows: list[Transaction], placed: list[int], years: list[Year], n
 def decide(rows: list[Transaction], placed: list[int],
            levels_by_year: dict[int, Optional[Levels]]) -> list[Transaction]:
     """Each presentation question checks.normalise found (checks.PRESENTATION), asked or left by the levels of the
-    row's year: asked from the trivial level (equipment kept as a cost from the working level, a small asset under
-    the trivial level), else left as coded with a note saying so. With no levels, nothing is trivial: all asked.
+    row's year: asked from the trivial level (equipment kept as a cost from the working level, an asset under the
+    working level), else left as coded with a note saying so. With no levels the client's size is unknown, and
+    either answer may be right: each is left as coded, saying so and what would be asked, until the firm sets its
+    figure (the page asks for it once, not row by row).
     The items left on an account in a year are added up, and asked about together when they reach the working
-    level."""
+    level. A meal question with nothing pointing to guests (checks gives it a stake) is left the same way."""
     from .checks import PRESENTATION, issue   # checks imports nothing from here; kept local for clarity
     out = list(rows)
     left: dict[tuple[int, str], list[tuple[int, Decimal]]] = {}
     for k, tx in enumerate(rows):
         lv = levels_by_year.get(placed[k])
-        kept = [i for i in tx.issues if i.code not in PRESENTATION]
+        kept = []
+        for found in tx.issues:
+            if found.code in PRESENTATION:
+                continue
+            # Who was at a meal, when nothing points to guests (its stake is set): under the trivial level it is left
+            # as coded, as an accountant leaves a coffee; anything naming guests is asked whatever the amount.
+            if (found.code == "meal_check" and found.difference is not None and lv is not None and booked(tx)
+                    and found.difference < lv.trivial):
+                account = BY_CODE.get(tx.account_code)
+                kept.append(issue("left_small", f"£{found.difference:,.2f} is under this client's trivial level of "
+                                                f"£{lv.trivial:,.2f}, and nothing says guests were there: left on "
+                                                f"{account.name if account else tx.account_code} as coded.", "info"))
+                left.setdefault((placed[k], tx.account_code), []).append((k, found.difference))
+                continue
+            kept.append(found)
         for found in tx.presentation if booked(tx) else []:   # a row not booked (a claim line its receipt books) asks nothing
             stake = found.difference if found.difference is not None else tx.gross
-            if found.code == "small_asset":   # an asset small for this client: asked; otherwise fine as it is
-                if lv is None or stake < lv.trivial:
+            if lv is None:
+                account = BY_CODE.get(tx.account_code)
+                kept.append(issue("left_unset", f"Left on {account.name if account else tx.account_code} as coded "
+                                                f"until this client's materiality is set (in the client's details): "
+                                                f"{found.message}", "info"))
+                continue
+            if found.code == "small_asset":   # under the working level, not worth keeping as an asset: asked
+                if stake < lv.working:
                     kept.append(found)
                 continue
-            bar, name = ((lv.working, "working level") if found.code == "asset_check" else (lv.trivial, "trivial level")) \
-                if lv is not None else (None, "")
-            if bar is None or stake >= bar:
+            bar, name = (lv.working, "working level") if found.code == "asset_check" else (lv.trivial, "trivial level")
+            if stake >= bar:
                 kept.append(found.model_copy(update={"severity": "warning"}))
                 continue
             account = BY_CODE.get(tx.account_code)

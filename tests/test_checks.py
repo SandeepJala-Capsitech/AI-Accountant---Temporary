@@ -94,7 +94,8 @@ def test_odd_vat_on_a_standard_rated_account_is_flagged():
 
 def test_vat_below_the_rate_says_how_much_of_the_amount_has_none():
     # wagamama: VAT £3.88 on £25.63, as the £2.33 tip has none. "Mixed rates?" left a person guessing.
-    [found] = normalise(tx(gross="25.63", vat="3.88", account="7406", people="one"), REGISTERED).issues
+    [found] = [i for i in normalise(tx(gross="25.63", vat="3.88", account="7406", people="one"), REGISTERED).issues
+               if i.code != "meal_decided"]
     assert (found.code, found.severity) == ("vat_rate_mismatch", "info")
     assert found.message == ("£3.88 is 20% VAT on £23.28; £2.35 has no VAT (zero-rated or exempt items, a tip or "
                              "a service charge?).")
@@ -647,8 +648,43 @@ def test_a_meal_with_no_evidence_of_who_was_there_is_asked_about_at_any_amount()
     assert meal(gross="96.40") == [("meal_check", "warning")]
 
 
-def test_a_receipt_for_one_persons_meal_answers_who_was_there():
-    assert meal(people="one") == []
+def test_a_receipt_for_one_persons_meal_answers_who_was_there_and_says_so():
+    t = normalise(tx(gross="3.40", account="7406", people="one"), REGISTERED)
+    assert codes(t) == [("meal_decided", "info")]
+    assert t.issues[0].message == "The receipt is for one person: their own food or drink while working, on Subsistence."
+
+
+def test_groceries_from_a_food_shop_are_the_claimants_own_food_and_ask_nothing():
+    # Nobody entertains a client with groceries: the shop and what was bought settle who it was for.
+    for kw in ({"counterparty": "Victoria Food & Groceries", "description": "grocery purchase"},
+               {"description": "Victoria Food & Groceries - groceries and drink (2 Grocery, 1 Saka)", "people": "several"},
+               {"counterparty": "Tesco Express", "description": "meal deal"}):
+        t = normalise(tx(gross="8.19", account="7406", claim_note="Jenny Hogg claiming Victoria Food & Groceries", **kw),
+                      REGISTERED)
+        assert codes(t) == [("meal_decided", "info")], kw
+        assert t.issues[0].message.startswith("Groceries from a food shop: the claimant's own food while working")
+    with_clients = tx(gross="8.19", account="7406", counterparty="Tesco", description="snacks for client meeting")
+    assert ("meal_check", "warning") in codes(normalise(with_clients, REGISTERED))   # guests named: still asked
+
+
+def test_what_was_bought_says_who_it_was_for_as_an_accountant_reads_it():
+    # Groceries, or food or a drink to go for one, are the buyer's own; a sit-down meal, a round at the bar or a
+    # group order for several, or one whose numbers aren't known, may have had guests: asked.
+    own = [{"bought": "groceries", "people": "several"}, {"bought": "food_to_go"}, {"bought": "food_to_go", "people": "one"},
+           {"bought": "meal_out", "people": "one"}]
+    for kw in own:
+        assert meal(**kw) == [("meal_decided", "info")], kw
+    for kw in ({"bought": "food_to_go", "people": "several"}, {"bought": "meal_out"}, {"bought": "drinks_out"},
+               {"bought": "catering", "people": "several"}):
+        assert meal(**kw) == [("meal_check", "warning")], kw
+    t = normalise(tx(gross="4.20", account="7406", bought="food_to_go"), REGISTERED)
+    assert t.issues[0].message == ("Food or a drink to go: the buyer's own while working, on Subsistence, unless "
+                                   "something says others had some.")
+
+
+def test_the_reader_saying_what_was_bought_comes_before_the_shops_name():
+    # A shop's name says groceries, but the reader saw a table's meal: who was there is asked.
+    assert meal(counterparty="Tesco Cafe", bought="catering", people="several") == [("meal_check", "warning")]
 
 
 def test_a_receipt_for_several_asks_who_was_there_and_says_why():

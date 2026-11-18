@@ -92,3 +92,12 @@ decided silently (every decision without a question says why on the row).
 - Jenny's rows replayed: her meals without a note ask (none has `people` yet); her Victoria Food buys are on
   Subsistence with a note; totals unchanged at £849.34.
 - `npm test`, `tsc` and the whole Python suite pass.
+
+## Amended (2026-11-17, after Jenny's live books)
+
+- **Figures need income.** A year's figures set the levels only when they hold booked income: Jenny's year held only
+  her October expense claims, which gave 1% of £1,617.60 (trivial £0.49), and every name-only choice was asked.
+  With no income booked (this year or last) and no firm figure, there are no levels.
+- **No levels: presentation waits.** Each presentation question is left as coded with an info note (`left_unset`)
+  saying what would be asked, and the line above the to-do list asks once for the client's figure. Facts are still
+  asked at any amount. (This replaces "no levels: everything asks".)

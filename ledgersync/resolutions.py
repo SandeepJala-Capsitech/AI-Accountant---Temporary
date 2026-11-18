@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from . import books
 from .accounts import BY_CODE, FIXED_ASSETS, AccountType, choosable
-from .checks import ACCEPTABLE, long_date
+from .checks import ACCEPTABLE, ENTERTAINMENT, STAFF_WELFARE, SUBSISTENCE, long_date
 from .coding import Usual, named_account, usual_accounts, usual_text
 from .file_dates import date_in_name
 from .errors import InvalidInput, LedgerSyncError, NotFound
@@ -79,10 +79,17 @@ class ChangeAccount(BaseModel):
     account_code: str
 
 
+class WhoWasThere(BaseModel):
+    action: Literal["who_was_there"]
+    present: Literal["claimant", "staff", "guests"] = Field(description=(
+        "Who the meal or drink was for, as the documents show it: the claimant alone (Subsistence), staff only "
+        "(Staff Welfare) or any client or other guest (Entertainment)."))
+
+
 # What the accountant agent may ask for, and, with the account change the rules suggest, everything a decision holds.
-AgentResolution = Annotated[Union[KeepOne, UsePrimary, SplitVat, VatFromDocument, SetDate],
+AgentResolution = Annotated[Union[KeepOne, UsePrimary, SplitVat, VatFromDocument, SetDate, WhoWasThere],
                             Field(discriminator="action")]
-Resolution = Annotated[Union[KeepOne, UsePrimary, SplitVat, VatFromDocument, SetDate, ChangeAccount],
+Resolution = Annotated[Union[KeepOne, UsePrimary, SplitVat, VatFromDocument, SetDate, ChangeAccount, WhoWasThere],
                        Field(discriminator="action")]
 
 # Issues that say two rows are one transaction recorded twice, and the matches that pair such rows.
@@ -439,6 +446,22 @@ def _change_account(rows: dict[int, SavedRow], row_id: int, r: ChangeAccount, *,
     return _Change(rule=_RULES["change_account"], touched=[row_id], patches={row_id: {"account_code": target.code}})
 
 
+_WHO_GOES_TO = {"claimant": SUBSISTENCE, "staff": STAFF_WELFARE, "guests": ENTERTAINMENT}
+
+
+def _who_was_there(rows: dict[int, SavedRow], row_id: int, r: WhoWasThere, **_) -> _Change:
+    """R7: a meal or drink the books ask who was at (meal_check) goes to the account who was there decides, as the
+    documents quoted show it: the claimant alone to Subsistence, staff only to Staff Welfare, any guest to
+    Entertainment; the question is answered on the row (accepted), so it isn't asked again."""
+    row = rows[row_id]
+    _usable(row)
+    if "meal_check" not in {i.code for i in row.issues}:
+        raise _Refused(f"Row {row_id} has no question about who was there.")
+    target = _WHO_GOES_TO[r.present]
+    return _Change(rule=f"R7 Who was there: {named_account(target)}", touched=[row_id],
+                   patches={row_id: {"account_code": target, "accepted": sorted({*row.accepted, "meal_check"})}})
+
+
 def _account_checks(rows: dict[int, SavedRow], row: SavedRow) -> tuple[set[str], Optional[Usual]]:
     """The row's issue codes, and its supplier's usual account when unusual_account is among them."""
     said = {i.code for i in row.issues}
@@ -458,10 +481,10 @@ def _allowed_by(said: set[str], usual: Optional[Usual], target) -> Optional[str]
 
 _ACTIONS = {"keep_one": _keep_one, "use_primary": _use_primary, "split_vat": _split_vat,
             "set_vat_from_document": _vat_from_document, "set_date": _date_from_record,
-            "change_account": _change_account}
+            "change_account": _change_account, "who_was_there": _who_was_there}
 _RULES = {"keep_one": "R2 Duplicate", "use_primary": "R4 Conflict", "split_vat": "R3 Mixed VAT",
           "set_vat_from_document": "R5 VAT from the document", "set_date": "R1 Date from another record",
-          "change_account": "R6 Account changed"}
+          "change_account": "R6 Account changed", "who_was_there": "R7 Who was there"}
 
 
 def _named(row_id: int, resolution) -> list[int]:
@@ -730,6 +753,9 @@ class RowEdit(BaseModel):
     without_document: Optional[str] = Field(None, description=(
         "Book a row held in Suspense for its receipt or invoice without it, with no VAT reclaimed: the person's "
         "reason there is none."))
+    not_same_as: list[int] = Field(default_factory=list, description=(
+        "Row ids of other rows the person says are not the same purchase as this one (Not the same): a possible "
+        "duplicate about them is answered, and they are never paired or asked about again."))
 
 
 def edit_as_told(store: MongoStore, records: AgentRecords, *, client_id: int, thread_id: Optional[str], actor: str,
@@ -765,6 +791,11 @@ def edit_as_told(store: MongoStore, records: AgentRecords, *, client_id: int, th
                                        else wanted.get("vat") is not None and wanted["vat"] > 0)
         if edit.accept_warnings:
             wanted["accepted"] = sorted({*tx.accepted, *edit.accept_warnings})
+        if edit.not_same_as:
+            others = {s.id for s in b.stored} - {row_id}
+            if not set(edit.not_same_as) <= others:
+                raise _Refused("Not the same can only name other rows of this client.")
+            wanted["apart_from"] = sorted({*tx.apart_from, *edit.not_same_as})
         patch = RowPatch(**wanted)
         sent = {k for k in wanted if getattr(patch, k) != getattr(tx, k)}
         if not sent:

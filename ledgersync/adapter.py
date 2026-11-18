@@ -13,7 +13,7 @@ from typing import Optional
 from .accounts import (BY_CODE, CARDS, CLEARING, DEBTORS, LOANS, SUSPENSE, AccountType, owner_code, pays_cards)
 from .payees import card_payment, on_account, personal, processor
 from .checks import OWED_TO, issue, normalise
-from .models import DOCUMENT_TYPES, BusinessSettings, Direction, Transaction
+from .models import BOUGHT, DOCUMENT_TYPES, BusinessSettings, Direction, Transaction
 from .money import VatTreatment, to_money, vat_in_gross
 
 
@@ -338,6 +338,7 @@ def to_transactions(rows: list[dict], source: str, settings: BusinessSettings, o
                          vat_stated=not statement and vat is None and bool(row.get("vat_stated")),
                          total_worked_out=_worked_out(row, printed), cis_deducted=cis,
                          people=row.get("people") if row.get("people") in ("one", "several") else None,
+                         bought=row.get("bought") if row.get("bought") in BOUGHT else None,
                          alternatives=_alternatives(row, code),
                          document_ref=refs[key] if key else uuid.uuid4().hex[:12],
                          balance=to_money(row.get("balance")) if statement else None,

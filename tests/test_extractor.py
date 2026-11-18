@@ -307,3 +307,12 @@ def test_a_row_says_how_many_its_food_was_for_and_what_else_it_could_be_on():
     assert (row.people, row.alternatives) == ("one", ["8206 Staff Welfare", "7403 Entertainment"])
     assert AccountingTransaction(**base, people="a few").people is None
     assert AccountingTransaction(**base, people=None, alternatives=None).alternatives == []
+
+
+def test_a_row_says_what_kind_of_food_or_drink_was_bought():
+    from ledgersync.extractor import AccountingTransaction
+    base = {"description": "Tesco", "amount": 4.50, "direction": "out", "account": "7406 Subsistence"}
+    assert AccountingTransaction(**base, bought="Groceries").bought == "groceries"
+    assert AccountingTransaction(**base, bought="food to go").bought == "food_to_go"
+    assert AccountingTransaction(**base, bought="a feast").bought is None
+    assert AccountingTransaction(**base).bought is None

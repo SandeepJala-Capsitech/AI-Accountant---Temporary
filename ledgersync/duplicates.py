@@ -36,7 +36,15 @@ def possible_duplicates(rows: list[Transaction], *, uploads: list[int], ids: lis
     dated within WINDOW of it (or both undated); otherwise None. uploads and ids: each row's upload and row id.
     Rows of one upload are not compared (two equal payments on one statement are usually real), nor rows out of the
     books, a document and a bank line, rows matching linked, rows a person said are not the same, or two receipts on
-    one expense claim, which has a line for each."""
+    one expense claim, which has a line for each (claimed_in names the line; the lines of one claim are one upload)."""
+    upload_of = {row.document_ref: uploads[k] for k, row in enumerate(rows) if row.document_ref}
+
+    def claim(row: Transaction) -> Optional[object]:
+        """The expense claim the row is a receipt on: its line's upload, else the line itself."""
+        if row.claimed_in is None:
+            return None
+        return upload_of.get(row.claimed_in.ref, row.claimed_in.ref)
+
     found: list[Optional[int]] = []
     earlier: dict[tuple, list[int]] = {}   # the booked rows so far, by way and amount: only those can repeat a row
     for i, row in enumerate(rows):
@@ -57,7 +65,7 @@ def possible_duplicates(rows: list[Transaction], *, uploads: list[int], ids: lis
                 continue
             if ids[j] in row.apart_from or ids[i] in other.apart_from:
                 continue
-            if row.claimed_in is not None and other.claimed_in is not None and row.claimed_in.ref == other.claimed_in.ref:
+            if claim(row) is not None and claim(row) == claim(other):
                 continue
             if row.date is None or other.date is None:
                 if row.date is other.date:

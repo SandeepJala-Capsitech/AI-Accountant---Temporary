@@ -32,6 +32,10 @@ NOT_TRANSACTIONS = frozenset(DOCUMENT_TYPES[7:])
 
 # The kind of business a client is: a limited company's owners go through 2250 Director's Loan Account,
 # anyone else's through 3260 Drawings and 3010 Capital Introduced.
+# Food or drink, by what was bought: a shop's groceries, food or a drink to go (a coffee, a sandwich, a meal deal),
+# a sit-down meal, drinks at a pub or bar, or food ordered for a group (platters, a buffet, a hospitality order).
+Bought = Literal["groceries", "food_to_go", "meal_out", "drinks_out", "catering"]
+BOUGHT = ("groceries", "food_to_go", "meal_out", "drinks_out", "catering")
 BusinessType = Literal["limited_company", "sole_trader", "partnership", "llp"]
 BUSINESS_TYPES: tuple[str, ...] = get_args(BusinessType)
 
@@ -221,6 +225,8 @@ class Transaction(BaseModel):
                                                    # say who a meal or drink was for (set by matching)
     people: Optional[Literal["one", "several"]] = None   # food or drink: how many the receipt's items look to be
                                                    # for (the reader's); None: unclear, or not food or drink
+    bought: Optional[Bought] = None                # food or drink: what kind was bought (the reader's), which says
+                                                   # as an accountant reads it who it was likely for; None: not said
     alternatives: list[str] = Field(default_factory=list)   # up to two other chart accounts the reader thought it
                                                    # could fairly be on
     presentation: list[Issue] = Field(default_factory=list)   # questions of presentation checks.normalise found:

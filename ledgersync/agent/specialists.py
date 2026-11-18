@@ -34,7 +34,7 @@ NO_CARDS = ("You can't open a question card for the person: if you need somethin
             "never say a question was created.")
 PARTS = {
     REVIEWER: "You are the reviewer: you settle what the evidence settles (dates, duplicates, records that disagree, "
-              "mixed-VAT rows, VAT a document prints) and ask only what it can't. If the person tells you what a row "
+              "mixed-VAT rows, VAT a document prints, who was at a meal) and ask only what it can't. If the person tells you what a row "
               "should be, or asks a tax question or for a report, call hand_over.",
     BOOKKEEPER: "You are the bookkeeper: you make the changes the person in this chat tells you to make, and nothing "
                 "else. If they ask for a review of the evidence, a tax answer or a report, or haven't said what a row "

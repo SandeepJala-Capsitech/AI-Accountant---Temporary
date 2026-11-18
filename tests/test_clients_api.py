@@ -653,7 +653,9 @@ def test_a_receipt_the_statement_does_not_show_is_parked_until_a_person_says_who
     # Off the bank, in Suspense, until someone says who paid. The receipt shows no VAT, so it is the record of the
     # cost and no VAT invoice is waited for: it only notes that none is reclaimed.
     assert parked["contra_account_code"] == "9998"
-    assert sorted(i["code"] for i in parked["issues"]) == ["not_on_statement", "vat_unclaimed"]
+    # (No sales are booked, so its materiality isn't set: whether a £499 TV is kept as an asset waits for it.)
+    assert sorted(i["code"] for i in parked["issues"] if i["code"] != "left_unset") == ["not_on_statement",
+                                                                                         "vat_unclaimed"]
     bank = next(c for c in client.get(f"/api/clients/{cid}/years/{YEAR}/bank").json() if c["code"] == "1200")
     assert bank["books"] == "-29.00"           # only the two bank lines: the receipt is not on the bank
 

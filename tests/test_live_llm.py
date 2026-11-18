@@ -147,3 +147,27 @@ def test_people_a_group_order_of_pastries_and_drinks_is_for_several():
 def test_people_one_sandwich_is_for_one():
     reads = _people("Bagel_Factory-2026-10-07_14_43_07.jpg")
     assert sum(r == ["one"] for r in reads) >= 3, reads
+
+
+def _bought(case: str, times: int = 4) -> list:
+    """What the reader says was bought on a public fixture's receipt, read `times` times (generic receipts, not a
+    client's: the field must hold for any business)."""
+    reader = TransactionExtractor(live_client(), business_name="Northbridge Consulting", business_type="limited_company")
+    photo = prepare_image((FIXTURES / case / "input.png").read_bytes())
+    with ThreadPoolExecutor(times) as pool:
+        return list(pool.map(lambda _: [t.bought for t in reader.extract_accounting_data(images=[photo]).data],
+                             range(times)))
+
+
+def test_bought_goes_by_the_items_not_the_shop():
+    # Milk, bread and bananas from Sainsbury's are groceries; a meal deal, coffee and sandwich from Tesco are food to
+    # go, though Tesco is a supermarket.
+    groceries = _bought("img-supermarket-mixed-vat")
+    assert sum(bool(r) and all(b == "groceries" for b in r) for r in groceries) >= 3, groceries
+    to_go = _bought("img-tesco-receipt")
+    assert sum(r == ["food_to_go"] for r in to_go) >= 3, to_go
+
+
+def test_bought_a_cafe_receipt_is_food_out_not_groceries():
+    reads = _bought("img-cafe-receipt-vat")
+    assert sum(r and r[0] in ("food_to_go", "meal_out") for r in reads) >= 3, reads

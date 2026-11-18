@@ -48,6 +48,24 @@ def test_two_receipts_on_one_expense_claim_are_not_duplicates():
     assert possible_duplicates(rows, uploads=[1, 2], ids=[10, 11]) == [None, None]
 
 
+def test_two_receipts_on_two_lines_of_one_expense_claim_are_not_duplicates():
+    # Each receipt is matched to its own line of the claim (claimed_in names the line), and the lines are one upload.
+    booked_by = {"recorded_by": Settlement(ref="r", amount="12.88")}   # a claim line is booked from its receipt
+    lines = [tx(kind="expense_claim", ref="l1", date="2026-10-07", **booked_by),
+             tx(kind="expense_claim", ref="l2", date="2026-10-08", **booked_by)]
+    receipts = [tx(ref="r1", date="2026-10-07", claimed_in=Settlement(ref="l1", amount="12.88", kind="expense_claim")),
+                tx(ref="r2", date="2026-10-08", claimed_in=Settlement(ref="l2", amount="12.88", kind="expense_claim"))]
+    assert possible_duplicates([*lines, *receipts], uploads=[9, 9, 1, 2], ids=[1, 2, 10, 11])[2:] == [None, None]
+
+
+def test_two_receipts_on_lines_of_two_claims_are_still_compared():
+    booked_by = {"recorded_by": Settlement(ref="r", amount="12.88")}
+    lines = [tx(kind="expense_claim", ref="l1", **booked_by), tx(kind="expense_claim", ref="l2", **booked_by)]
+    receipts = [tx(ref="r1", claimed_in=Settlement(ref="l1", amount="12.88", kind="expense_claim")),
+                tx(ref="r2", claimed_in=Settlement(ref="l2", amount="12.88", kind="expense_claim"))]
+    assert possible_duplicates([*lines, *receipts], uploads=[8, 9, 1, 2], ids=[1, 2, 10, 11])[2:] == [None, 2]
+
+
 def test_a_row_out_of_the_books_is_no_ones_duplicate():
     rows = [tx(ref="a"), tx(ref="b", excluded=True), tx(ref="c", copy_of=Settlement(ref="a", amount="12.88"))]
     assert possible_duplicates(rows, uploads=[1, 2, 3], ids=[10, 11, 12]) == [None, None, None]

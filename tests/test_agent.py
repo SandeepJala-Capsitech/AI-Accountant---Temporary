@@ -829,6 +829,20 @@ def test_edit_row_refuses_what_the_books_cannot_take_and_a_background_review(mon
     assert next(r for r in mongo_store.rows(staples) if r.id == receipt.id).tx == receipt.tx
 
 
+@pytest.mark.mongo
+def test_edit_row_keeps_a_row_apart_from_one_the_person_says_is_not_the_same(mongo_store, deps, staples):
+    receipt = next(r for r in mongo_store.rows(staples) if r.tx.document_type == "receipt")
+    other = next(r for r in mongo_store.rows(staples) if r.id != receipt.id)
+    told = dict(row_id=receipt.id, change={"not_same_as": [other.id]}, reason="You said they are different purchases.")
+    stray = dict(row_id=receipt.id, change={"not_same_as": [receipt.id]}, reason="You said so.")
+    model = ScriptedChatModel(replies=[call("edit_row", **told), call("edit_row", **stray), say("Kept apart.")])
+    list(stream_turn(build_agent(SETTINGS, deps, model=model, checkpointer=InMemorySaver()), context(staples), "Do it."))
+
+    assert next(r for r in mongo_store.rows(staples) if r.id == receipt.id).tx.apart_from == [other.id]
+    assert json.loads(answered(model, 1)[0].content)["status"] == "applied"
+    assert json.loads(answered(model, 2)[0].content)["status"] == "refused"   # only another of the client's rows
+
+
 def agent_question(deps, client_id: int, row_id: int):
     """A question of the agent's own about the row, asked on the first of January 2030 (for the changes after it)."""
     from ledgersync import questions

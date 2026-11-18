@@ -536,10 +536,14 @@ test('the questions asked by facts and stakes are named, and the materiality is 
   assert.equal(issueTitle('account_fact'), 'Which account?')
   assert.equal(issueTitle('account_choice'), 'Another account?')
   assert.equal(issueTitle('left_small'), 'Left: under the trivial level')
+  assert.equal(issueTitle('left_unset'), 'Left: materiality not set')
+  assert.equal(issueTitle('meal_decided'), 'Who was there: settled')
   assert.equal(issueTitle('small_items_add_up'), 'Small items add up')
   for (const code of ['account_fact', 'account_choice', 'small_items_add_up']) assert.equal(canBeAccepted(code), true)
   assert.equal(levelsLine({ overall: '1500.00', working: '750.00', trivial: '45.00', benchmark: 'profit',
                             figure: '30000.00', basis: '5% of profit before tax, £30,000.00, last year' }),
                'Materiality £1,500.00 (5% of profit before tax, £30,000.00, last year) · items under £45.00 left as coded')
-  assert.equal(levelsLine(null), 'No figures yet: every item is asked about')
+  assert.equal(levelsLine(null), "Materiality not set: no sales booked and no earlier year to work it out from. Set it "
+                                 + "in the client's details; until then, questions where either account is right wait. "
+                                 + 'Questions that change the tax are asked now.')
 })

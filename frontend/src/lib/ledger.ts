@@ -250,7 +250,7 @@ const ISSUE_TITLES: Record<string, string> = {
   no_vat_number: 'No VAT number on the invoice', vat_over_rate: 'VAT above 20%', reverse_charge: 'Reverse charge',
   before_vat_registration: 'Before VAT registration', small_asset: 'Small for an asset', meal_check: 'Meal: who was there?',
   sundry_check: 'Sundry: what was it for?', claim_note: 'Coded by the claim', account_fact: 'Which account?',
-  account_choice: 'Another account?', left_small: 'Left: under the trivial level', small_items_add_up: 'Small items add up',
+  account_choice: 'Another account?', left_small: 'Left: under the trivial level', left_unset: 'Left: materiality not set', meal_decided: 'Who was there: settled', small_items_add_up: 'Small items add up',
   addressed_to: 'Addressed to someone else', refund_of_overpayment: 'Refund of an overpayment',
   future_date: 'Dated in a later year', journal_note: 'Journal', prepayment: 'Paid ahead?', reversed: 'Reversed',
   not_on_statement: 'Not on the statement', till_takings: 'Till takings',
@@ -532,4 +532,5 @@ const gbp = (amount: string) => `£${Number(amount).toLocaleString('en-GB', { mi
 // The line above the to-do list: how much is too little to ask about, and what it was worked out from.
 export const levelsLine = (levels: Levels | null) =>
   levels ? `Materiality ${gbp(levels.overall)} (${levels.basis}) · items under ${gbp(levels.trivial)} left as coded`
-         : 'No figures yet: every item is asked about'
+         : "Materiality not set: no sales booked and no earlier year to work it out from. Set it in the client's "
+           + 'details; until then, questions where either account is right wait. Questions that change the tax are asked now.'

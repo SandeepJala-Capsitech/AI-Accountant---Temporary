@@ -32,7 +32,7 @@ _DERIVED = {"unknown_account", "same_account", "non_gbp_currency", "vat_not_appl
             "payroll_owed_to", "before_first_year", "vat_not_booked", "needs_document", "total_worked_out",
             "cis_deducted", "personal", "possible_duplicate", "booked_without_document", "card_credit", "vat_unclaimed",
             "on_account", "no_vat_number", "vat_over_rate", "reverse_charge", "before_vat_registration", "small_asset",
-            "meal_check", "claim_note", "sundry_check", "account_fact", "account_choice", "left_small", "small_items_add_up", "future_date", "journal_note", "prepayment", "unusual_account", "asset_check",
+            "meal_check", "claim_note", "sundry_check", "account_fact", "account_choice", "left_small", "left_unset", "meal_decided", "small_items_add_up", "future_date", "journal_note", "prepayment", "unusual_account", "asset_check",
             "should_be_asset", "whose_account", "vat_confirmed", "vat_implied", "document_wanted"} | MATCHING_ISSUES | STATEMENT_ISSUES
 # Warnings that are a matter of judgement: a person who has looked can say one is fine (Transaction.accepted), and it
 # is not raised on that row again.
@@ -87,6 +87,11 @@ _STAFF = re.compile(r"\b(teams?|staff|employees?|colleagues?|(christmas|xmas|off
                     re.IGNORECASE)
 _GUESTS = re.compile(r"\b(clients?|customers?|guests?|prospects?|suppliers?|visitors?)\b", re.IGNORECASE)
 # A claim note that says guests were there, not only that a guest word is in it ("lunch at client site" is where).
+# Groceries or provisions from a food shop, by what was bought or who sold it: the buyer's own food while working.
+# Nobody entertains a client or treats staff with a shop's groceries, so who was there needs no asking.
+_PROVISIONS = re.compile(r"\b(grocer(y|ies|s)?|supermarkets?|convenience (store|shop)|food (shop|store|and wine)|"
+                         r"provisions|meal deal|tesco|sainsbury'?s|asda|morrisons|aldi|lidl|co-?op|waitrose|spar|"
+                         r"budgens|londis|nisa|one stop|iceland|m&s food|marks (&|and) spencer food)\b", re.IGNORECASE)
 _WITH_GUESTS = re.compile(r"\b(with|for|and|entertaining|hosting|treating)\b(\W+\w+){0,3}?\W+(clients?|customers?|guests?|"
                           r"prospects?|suppliers?|visitors?)\b", re.IGNORECASE)
 
@@ -186,10 +191,12 @@ def _claim_words(tx: Transaction) -> Optional[str]:
     return tx.description or "" if tx.document_type == "expense_claim" else None
 
 
-def _who_was_there(tx: Transaction) -> Optional[str]:
-    """The question a meal or drink's account raises about who it was for, or None, at any amount: who was there
-    decides the VAT (staff only: reclaimed; any guest: blocked) and the tax (entertaining is disallowed). The claim
-    note, the row's own words, or a receipt the reader says is one person's answer it; otherwise it is asked."""
+def _who_was_there(tx: Transaction) -> Optional[tuple[str, Optional[Decimal]]]:
+    """The question a meal or drink's account raises about who it was for, and what is at stake when nothing points
+    to guests (the amount, for materiality.decide to leave it under the trivial level); None when the evidence
+    answers it. Who was there decides the VAT (staff only: reclaimed; any guest: blocked) and the tax (entertaining
+    is disallowed). The claim note, the row's own words, what was bought and where (a food shop's groceries), or a
+    receipt the reader says is one person's answer it, as an accountant reads them; otherwise it is asked."""
     if account_by_note(tx) == tx.account_code:   # the claim said who it was for, and it is booked so
         return None
     words = f"{tx.description or ''} {tx.claim_note or ''}"
@@ -200,28 +207,59 @@ def _who_was_there(tx: Transaction) -> Optional[str]:
     if tx.account_code == SUBSISTENCE:
         if guests:
             return (f"A meal of {amount} on Subsistence: with clients or other guests it is entertainment, and its "
-                    "VAT can't be reclaimed. Recode it to Entertainment if so.")
+                    "VAT can't be reclaimed. Recode it to Entertainment if so."), None
         if staff:
             return (f"A meal of {amount} on Subsistence for staff: a staff-only meal is Staff Welfare. Recode it to "
-                    "Staff Welfare if so.")
-        if tx.people == "one":   # one person's meal: their own subsistence
+                    "Staff Welfare if so."), None
+        if _own_food(tx) is not None:   # what was bought, or how many it was for, says it was the buyer's own
             return None
         if tx.people == "several":
-            return f"A meal of {amount} on Subsistence, and the receipt looks to be for more than one person: {choices}"
+            return (f"A meal of {amount} on Subsistence, and the receipt looks to be for more than one person: "
+                    f"{choices}"), tx.gross
         where = "the claim doesn't say" if _claim_words(tx) is not None else "nothing on it says"
-        return f"A meal of {amount} on Subsistence, and {where} who it was for: {choices}"
+        return f"A meal of {amount} on Subsistence, and {where} who it was for: {choices}", tx.gross
     if tx.account_code == ENTERTAINMENT and not guests:
         said = "says it was for staff" if staff else "doesn't say who was there"
         return (f"{amount} on Entertainment {said}: if only staff were there it is Staff Welfare, and its VAT can be "
-                "reclaimed. Recode it to Staff Welfare if so.")
+                "reclaimed. Recode it to Staff Welfare if so."), None
     if tx.account_code == STAFF_WELFARE:
         if guests:
             return (f"{amount} on Staff Welfare mentions guests: with clients or other guests it is entertainment, and "
-                    "its VAT can't be reclaimed. Recode it to Entertainment if so.")
+                    "its VAT can't be reclaimed. Recode it to Entertainment if so."), None
         if not staff and tx.people is not None:   # food or drink that doesn't say it was for staff
             return (f"{amount} of food or drink on Staff Welfare doesn't say it was for staff only: with clients or "
-                    "other guests it is Entertainment (VAT can't be reclaimed). Recode it if so.")
+                    "other guests it is Entertainment (VAT can't be reclaimed). Recode it if so."), tx.gross
     return None
+
+
+def _groceries(tx: Transaction) -> bool:
+    """Whether the row is groceries from a food shop: as the reader says (bought), or, for a row read before the
+    reader said, by the words of the row or the seller's name."""
+    if tx.bought is not None:
+        return tx.bought == "groceries"
+    return bool(_PROVISIONS.search(f"{tx.counterparty or ''} {tx.description or ''}"))
+
+
+def _own_food(tx: Transaction) -> Optional[str]:
+    """Why food or drink was the buyer's own, as an accountant reads what was bought and for how many; None when
+    that leaves open whether others had some. Groceries are the buyer's own whoever ate them (nobody entertains with
+    a shop's groceries); so is one person's food or drink, and food or a drink to go not said to be for several."""
+    if _groceries(tx):
+        return ("Groceries from a food shop: the claimant's own food while working, on Subsistence. Nobody "
+                "entertains clients or treats staff with a shop's groceries.")
+    if tx.people == "one":
+        return "The receipt is for one person: their own food or drink while working, on Subsistence."
+    if tx.bought == "food_to_go" and tx.people != "several":
+        return ("Food or a drink to go: the buyer's own while working, on Subsistence, unless something says others "
+                "had some.")
+    return None
+
+
+def _meal_decided(tx: Transaction) -> Optional[str]:
+    """Why a meal on Subsistence asks nothing about who was there, when what was bought or the receipt settles it."""
+    if tx.account_code != SUBSISTENCE or account_by_note(tx) == tx.account_code:
+        return None
+    return _own_food(tx)
 
 
 def issue(code: str, message: str, severity: str = "warning", related: Sequence[int] = (), *,
@@ -561,8 +599,11 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
         issues.append(issue("asset_check", f"£{tx.gross:,.2f} on {account.code} {account.name} may be equipment to "
                                            "keep as an asset.", "info", difference=tx.gross))   # by its own line
     if (not journal and tx.direction == Direction.OUT and tx.document_type in ("receipt", "invoice", "expense_claim")
-            and (asked := _who_was_there(tx))):
-        issues.append(issue("meal_check", asked))
+            and tx.account_code in _FOOD_AND_DRINK):
+        if (asked := _who_was_there(tx)) is not None:
+            issues.append(issue("meal_check", asked[0], difference=asked[1]))
+        elif (why := _meal_decided(tx)) is not None:
+            issues.append(issue("meal_decided", why, "info"))
     if not journal and tx.document_type != "statement":
         issues.extend(issue("account_fact", asked) for asked in _account_facts(tx))
     if not journal and tx.direction == Direction.OUT and tx.document_type in ("receipt", "invoice", "expense_claim"):

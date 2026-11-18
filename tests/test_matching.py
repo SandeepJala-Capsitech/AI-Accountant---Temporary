@@ -121,7 +121,9 @@ def matched(*rows):
 
 
 def codes(t):
-    return [(i.code, i.severity) for i in t.issues]
+    """The row's issues, without the note saying who a meal was for (checks' meal_decided): matching's tests are about
+    what pairs with what, and test_checks covers that note."""
+    return [(i.code, i.severity) for i in t.issues if i.code != "meal_decided"]
 
 
 def about(t, code):
@@ -627,7 +629,8 @@ def test_a_receipt_dated_away_from_its_card_payment_asks_and_the_bank_line_does_
     assert (receipt.date_found, codes(receipt), about(receipt, "date_conflict")) == (dt.date(2026, 2, 23),
                                                                                       [("date_conflict", "warning")], [1])
     assert (line.date_found, codes(line)) == (None, [])
-    assert all(d in receipt.issues[0].message for d in ("23 Feb 2026", "22 Jan 2026"))
+    said = next(i.message for i in receipt.issues if i.code == "date_conflict")
+    assert all(d in said for d in ("23 Feb 2026", "22 Jan 2026"))
 
 
 def test_a_claim_line_booked_as_well_as_its_receipt_warns_that_it_counts_twice():
@@ -1662,7 +1665,9 @@ def test_a_supermarket_buy_on_a_claim_is_booked_to_subsistence_and_says_why():
     assert receipt.account_code == "7406"
     note = next(i for i in receipt.issues if i.code == "claim_note")
     assert note.severity == "info" and "working away" in note.message
-    assert ("meal_check", "warning") in codes(receipt)
+    # Groceries from a food shop: the claimant's own, as an accountant reads it; no one is asked who was there.
+    assert "meal_check" not in [c for c, _ in codes(receipt)]
+    assert "meal_decided" in [i.code for i in receipt.issues]
 
 
 def test_a_claim_line_booked_from_its_receipt_leaves_the_account_questions_to_the_receipt():

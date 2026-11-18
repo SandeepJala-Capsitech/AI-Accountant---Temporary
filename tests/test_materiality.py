@@ -50,6 +50,15 @@ def test_a_years_levels_come_from_the_year_before_when_it_has_figures():
     assert got.overall == D("1500.00") and got.basis.endswith("last year")
 
 
+def test_a_year_with_no_income_booked_says_nothing_of_the_clients_size():
+    # Only expense claims in so far: their costs aren't the business's, so the firm is asked for a figure.
+    claims = [booked(dt.date(2026, 10, 2), "62.50", "7400"), booked(dt.date(2026, 10, 8), "3.99", "7406")]
+    assert year_levels(claims, [1, 1], YEARS, 1, None) is None
+    last_year = [booked(dt.date(2025, 10, 2), "500", "7400"), *claims]
+    assert year_levels(last_year, [0, 1, 1], YEARS, 1, None) is None
+    assert year_levels(claims, [1, 1], YEARS, 1, D("1000")).overall == D("1000.00")
+
+
 def test_a_first_year_is_worked_out_from_itself_so_far():
     rows = [booked(dt.date(2026, 6, 1), "15000", "4000", "in"), booked(dt.date(2026, 10, 20), "9000", "7100")]
     got = year_levels(rows, [1, 1], YEARS, 1, None)
@@ -86,16 +95,21 @@ def test_sundry_under_the_trivial_level_is_left_and_says_so():
     assert codes(big) == [("sundry_check", "warning")]
 
 
-def test_with_no_levels_everything_is_asked():
-    [t] = decided(bill("1.00", "8207"), levels=None)
-    assert codes(t) == [("sundry_check", "warning")]
+def test_with_no_levels_a_presentation_question_waits_for_the_firms_figure():
+    [t] = decided(bill("60.00", "8207"), levels=None)
+    assert codes(t) == [("left_unset", "info")]
+    assert t.issues[0].message.startswith("Left on Sundry Expenses as coded until this client's materiality is set "
+                                          "(in the client's details): ")
     [cable] = decided(bill("9.67", "0030"), levels=None)
-    assert codes(cable) == [("small_asset", "warning")]
+    assert codes(cable) == [("left_unset", "info")]
 
 
-def test_a_small_asset_is_asked_about_only_under_the_trivial_level():
+def test_a_small_asset_is_asked_about_under_the_working_level():
+    # The line between worth keeping as an asset and not is the working level, as for equipment kept as a cost: a
+    # £12.99 mouse on Office Equipment is asked about for a client whose trivial level is £12.60 (accountant cases).
     assert codes(decided(bill("30.00", "0030"))[0]) == [("small_asset", "warning")]
-    assert codes(decided(bill("200.00", "0030"))[0]) == []
+    assert codes(decided(bill("200.00", "0030"))[0]) == [("small_asset", "warning")]
+    assert codes(decided(bill("800.00", "0030"))[0]) == []
 
 
 def test_equipment_on_a_cost_account_is_asked_about_from_the_working_level():
@@ -124,3 +138,15 @@ def test_an_accepted_question_is_neither_asked_nor_left():
 def test_small_items_a_person_said_are_fine_together_are_not_asked_again():
     rows = decided(*(bill("40.00", "8207", accepted=["small_items_add_up"]) for _ in range(19)), bill("39.00", "8207"))
     assert not [i for t in rows for i in t.issues if i.code == "small_items_add_up"]
+
+
+# Who was at a meal: asked whatever the amount when something points to guests; otherwise left under the trivial level.
+def test_a_meal_nothing_points_to_guests_on_is_left_under_the_trivial_level():
+    [coffees] = decided(bill("9.20", "7406", people="several"))
+    assert codes(coffees) == [("left_small", "info")]
+    assert coffees.issues[0].message == ("£9.20 is under this client's trivial level of £45.00, and nothing says "
+                                         "guests were there: left on Subsistence as coded.")
+    assert codes(decided(bill("60.00", "7406", people="several"))[0]) == [("meal_check", "warning")]
+    assert codes(decided(bill("9.20", "7406", people="several"), levels=None)[0]) == [("meal_check", "warning")]
+    with_clients = bill("9.20", "7406", description="coffee with clients")
+    assert codes(decided(with_clients)[0]) == [("meal_check", "warning")]

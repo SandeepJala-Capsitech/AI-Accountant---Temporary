@@ -19,7 +19,7 @@ from ledgersync.errors import InvalidInput
 from job_scoring import net_by_account
 from ledgersync.models import ClientFields, ClosedYear, Evidence, Issue, Transaction
 from ledgersync.records import AgentRecords
-from ledgersync.resolutions import (ChangeAccount, suggest_account_changes, waiting_suggestions, KeepOne, SetDate, SplitPart, SplitVat, UsePrimary, VatFromDocument, record_automatic,
+from ledgersync.resolutions import (ChangeAccount, suggest_account_changes, waiting_suggestions, KeepOne, SetDate, SplitPart, SplitVat, UsePrimary, VatFromDocument, WhoWasThere, record_automatic,
                                     resolve, set_date)
 
 pytestmark = pytest.mark.mongo
@@ -1094,3 +1094,31 @@ def test_a_decision_on_a_row_a_person_removed_is_refused(mongo_store, records, s
     mongo_store.patch_row(staples.id, staples.sheet, {"excluded": True, "removed": True})
     decision = staples_call(mongo_store, records, staples, staples.sheet, [staples.sheet])
     assert decision.status == "refused" and f"Row {staples.sheet} was removed by a person." in decision.reason
+
+
+# ─── who_was_there (R7) ────────────────────────────────────────────────────────
+
+EXCEL = """ExCeL London Hospitality
+2 Mocha        8.40
+Milk           0.80
+Total £9.20
+Table: Hall S6 stand"""
+
+
+def test_who_was_there_settles_a_meal_question_from_the_documents(mongo_store, records, pages, nb, depot):
+    [coffees] = add(mongo_store, nb.id, pages, "excel.jpg", EXCEL, row(
+        date=dt.date(2026, 10, 22), description="ExCeL London Hospitality, coffee (2 mocha)",
+        counterparty="ExCeL London Hospitality", gross=Decimal("9.20"), account_code="7406", people="several"))
+    assert "meal_check" in [i.code for i in shown(mongo_store, nb.id, coffees).issues]
+    cite = dict(upload=nb.upload("excel.jpg"))
+    staff = WhoWasThere(action="who_was_there", present="staff")
+
+    none = call(mongo_store, records, pages, nb, coffees, staff, "Lunch with clients", **cite)
+    assert none.status == "refused"   # R0: the quote isn't in the receipt
+    toner = call(mongo_store, records, pages, nb, depot, staff, "Toner", upload=nb.upload("depot.pdf"))
+    assert toner.status == "refused" and "who was there" in toner.reason
+
+    applied = call(mongo_store, records, pages, nb, coffees, staff, "2 Mocha", "Hall S6 stand", **cite)
+    assert applied.status == "applied" and applied.rule.startswith("R7")
+    after = shown(mongo_store, nb.id, coffees)
+    assert after.account_code == "8206" and "meal_check" not in [i.code for i in after.issues]
