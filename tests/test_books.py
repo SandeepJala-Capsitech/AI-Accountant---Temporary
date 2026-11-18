@@ -813,48 +813,70 @@ def test_a_closed_years_row_is_history_but_never_flagged(store, acme):
 
 @pytest.mark.mongo
 def test_vat_the_rules_do_not_reclaim_is_said_on_the_row_and_the_books_hold_none(store, acme):
-    # A £547.84 hotel receipt with £91.31 VAT typed in: over £250 with no full VAT invoice, so it is held whole in
-    # Suspense. A £9.72 receipt with the supplier's VAT number reclaims its £1.62, and says nothing.
+    # A £547.84 receipt for phones with £91.31 VAT on it: over £250 with no full VAT invoice, so it is held whole in
+    # Suspense. A £9.72 receipt with the supplier's VAT number reclaims its £1.62, and says nothing. (A hotel stay in
+    # the UK is booked with its VAT at once: the test after next.)
     add_rows(store, acme,
-             row(date=date(2025, 6, 1), gross=D("547.84"), vat=D("91.31"), account_code="7402", description="Hotel"),
+             row(date=date(2025, 6, 1), gross=D("547.84"), vat=D("91.31"), account_code="7502", description="Phones"),
              row(date=date(2025, 6, 2), gross=D("9.72"), vat=D("1.62"), account_code="7406", description="Bap",
                  supplier_vat_number="123456789"))
-    hotel, bap = books.ledger(store, acme, YEAR_1).transactions
-    assert (hotel.vat_posted, hotel.vat_not_reclaimed) == (D("91.31"), D("91.31")) and "VAT invoice" in hotel.vat_not_reclaimed_why
+    phones, bap = books.ledger(store, acme, YEAR_1).transactions
+    assert (phones.vat_posted, phones.vat_not_reclaimed) == (D("91.31"), D("91.31")) and "VAT invoice" in phones.vat_not_reclaimed_why
     assert (bap.vat_posted, bap.vat_not_reclaimed, bap.vat_not_reclaimed_why) == (D("1.62"), None, None)
     tb = books.trial_balance(store, acme, YEAR_1)
-    assert (net(tb, "9998"), net(tb, "7402"), net(tb, "2201")) == (D("547.84"), D("0"), D("1.62"))
+    assert (net(tb, "9998"), net(tb, "7502"), net(tb, "2201")) == (D("547.84"), D("0"), D("1.62"))
 
 
 @pytest.mark.mongo
 def test_vat_a_person_enters_on_a_held_row_books_it_and_reclaims_the_vat_until_they_take_it_back(store, acme):
-    add_rows(store, acme, row(date=date(2025, 6, 1), gross=D("547.84"), account_code="7402", description="Hotel",
+    add_rows(store, acme, row(date=date(2025, 6, 1), gross=D("547.84"), account_code="7502", description="Phones",
                               not_vat_invoice=True))
     rid = first_row_id(store, acme)
 
     def books_now():
-        [hotel] = books.ledger(store, acme, YEAR_1).transactions
+        [phones] = books.ledger(store, acme, YEAR_1).transactions
         tb = books.trial_balance(store, acme, YEAR_1)
-        return hotel, (net(tb, "9998"), net(tb, "7402"), net(tb, "2201"))
+        return phones, (net(tb, "9998"), net(tb, "7502"), net(tb, "2201"))
 
-    hotel, figures = books_now()
+    phones, figures = books_now()
     assert figures == (D("0"), D("547.84"), D("0"))             # shows no VAT: booked whole, none to reclaim
-    assert [(i.code, i.severity) for i in hotel.issues] == [("vat_unclaimed", "info")]
+    assert [(i.code, i.severity) for i in phones.issues] == [("vat_unclaimed", "info")]
     ledger.change_row(store, acme, rid, RowPatch(vat=D("91.31")))                # the person types the VAT
-    hotel, figures = books_now()
-    assert figures == (D("0"), D("456.53"), D("91.31"))                          # on Hotels, VAT reclaimed
-    assert hotel.vat_confirmed and hotel.vat_not_reclaimed is None
-    assert [i.code for i in hotel.issues if i.severity != "info"] == [] and "vat_confirmed" in [i.code for i in hotel.issues]
+    phones, figures = books_now()
+    assert figures == (D("0"), D("456.53"), D("91.31"))                          # on its account, VAT reclaimed
+    assert phones.vat_confirmed and phones.vat_not_reclaimed is None
+    assert [i.code for i in phones.issues if i.severity != "info"] == [] and "vat_confirmed" in [i.code for i in phones.issues]
     ledger.change_row(store, acme, rid, RowPatch(vat_confirmed=False))           # Don't reclaim it
-    hotel, figures = books_now()
-    assert figures == (D("547.84"), D("0"), D("0")) and hotel.vat_not_reclaimed == D("91.31")
+    phones, figures = books_now()
+    assert figures == (D("547.84"), D("0"), D("0")) and phones.vat_not_reclaimed == D("91.31")
     ledger.change_row(store, acme, rid, RowPatch(vat_confirmed=True))            # Reclaim it
     assert books_now()[1] == (D("0"), D("456.53"), D("91.31"))
     ledger.change_row(store, acme, rid, RowPatch(revert=True))                   # as read: nobody vouches for VAT
-    hotel, figures = books_now()
-    assert figures == (D("0"), D("547.84"), D("0")) and not hotel.vat_confirmed and hotel.vat is None
+    phones, figures = books_now()
+    assert figures == (D("0"), D("547.84"), D("0")) and not phones.vat_confirmed and phones.vat is None
     with pytest.raises(InvalidInput):                                            # no VAT on the row to reclaim
         ledger.change_row(store, acme, rid, RowPatch(vat_confirmed=True))
+
+
+@pytest.mark.mongo
+def test_a_uk_hotel_stay_is_booked_with_its_vat_until_a_person_says_it_carries_none(store, acme):
+    # Booking.com's receipt for a London hotel, £785.60, "not a VAT invoice": a stay in the UK carries 20% VAT, so the
+    # books reclaim it at once and ask for the property's VAT invoice (the accountant's ruling, 2026-11-18).
+    add_rows(store, acme, row(date=date(2025, 6, 1), gross=D("785.60"), account_code="7402", not_vat_invoice=True,
+                              description="Booking.com - hotel stay at Bermonds Locke, Tower Bridge"))
+    rid = first_row_id(store, acme)
+
+    def books_now():
+        [stay] = books.ledger(store, acme, YEAR_1).transactions
+        tb = books.trial_balance(store, acme, YEAR_1)
+        return stay, (net(tb, "9998"), net(tb, "7402"), net(tb, "2201"))
+
+    stay, figures = books_now()
+    assert figures == (D("0"), D("654.67"), D("130.93")) and stay.vat_not_reclaimed is None
+    assert [(i.code, i.severity) for i in stay.issues] == [("hotel_vat", "warning")]
+    ledger.change_row(store, acme, rid, RowPatch(vat=D("0.00")))                 # No VAT on it
+    stay, figures = books_now()
+    assert figures == (D("0"), D("785.60"), D("0")) and "hotel_vat" not in [i.code for i in stay.issues]
 
 
 def test_a_years_figures_are_worked_out_from_one_read_of_the_client(store, acme, monkeypatch):

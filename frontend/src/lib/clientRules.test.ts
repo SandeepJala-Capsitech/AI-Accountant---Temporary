@@ -7,6 +7,7 @@ import type { PickedFile, ReadingFile } from './clientRules.ts'
 import {
   accountList, bankAccountsLeft, changesOf, ownerError, ownersToSend, clientFormErrors, dayMonth, draftOf, emptyListText, figuresOf, lineTemplate, newRowFrom, paidFromOf, paidFromOptions, requeue,
   readingLine, removeUploadsText, rowEditErrors, sameFileAs, searchClients, someFinished, unsent, showsInvitation, statementText, transactionCount,
+  vatWorkedOut,
 } from './clientRules.ts'
 
 const client = (change: Partial<ClientSummary> = {}): ClientSummary => ({
@@ -94,6 +95,17 @@ test('the edit form checks the amount, the VAT and the description', () => {
   assert.deepEqual(rowEditErrors({ ...draft, vat: '12000' }), { vat: 'VAT must be below the amount' })
   assert.deepEqual(rowEditErrors({ ...draft, vat: '-1', description: ' ' }),
                    { vat: "VAT can't be negative", description: 'Enter a description' })
+})
+
+test("the edit form says what VAT is booked when the document prints none, so an empty VAT box doesn't read as none", () => {
+  // Detroit City Burger, £13.55: the receipt prints the supplier's VAT number and no VAT amount; £2.26 is worked out.
+  const burger = row({ description: 'Detroit City Burger', gross: '13.55', vat: null, vat_posted: '2.26', net: '11.29',
+                       account_code: '7406', document_type: 'receipt' })
+  assert.equal(vatWorkedOut(burger),
+               '£2.26 VAT is booked, worked out from the total: the receipt prints no VAT amount. Leave this empty to keep it.')
+  assert.equal(vatWorkedOut(row()), null)                                              // the invoice prints its VAT
+  assert.equal(vatWorkedOut({ ...burger, vat_posted: '0.00', net: '13.55' }), null)   // none booked
+  assert.equal(vatWorkedOut({ ...burger, vat_not_reclaimed: '2.26' }), null)          // held for its VAT invoice
 })
 
 test('an edit sends only what changed, with empty text as none', () => {

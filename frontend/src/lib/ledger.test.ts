@@ -364,6 +364,14 @@ test('VAT only the claim shows can be booked as claimed, or left out', () => {
   assert.deepEqual(issueFixes(tx(), warning('document_wanted')), [{ label: 'Add the document', documents: true }])
 })
 
+test("a UK hotel stay booked with its VAT asks for the property's invoice, or takes the VAT off", () => {
+  assert.equal(issueHeading('hotel_vat'), 'Invoice needed.')
+  assert.deepEqual(issueFixes(tx(), warning('hotel_vat')),
+                   [{ label: 'Add the document', documents: true }, { label: 'No VAT on it', change: { vat: '0.00' } }])
+  assert.equal(canBeAccepted('hotel_vat'), true)
+  assert.equal(acceptLabel('hotel_vat'), "It's fine without one")
+})
+
 test('a date, a currency, VAT and a missing document each say where they are fixed; a note offers nothing', () => {
   assert.deepEqual(issueFixes(tx(), warning('date_missing')), [{ label: 'Set the date', edit: true }])
   assert.deepEqual(issueFixes(tx(), { ...warning('non_gbp_currency'), severity: 'error' }), [{ label: 'Enter it in pounds', edit: true }])

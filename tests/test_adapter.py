@@ -616,3 +616,9 @@ def test_what_kind_of_food_was_bought_reaches_the_row():
     [t] = adapt({**ROW, "account": "7406 Subsistence", "bought": "meal_out"})
     assert t.bought == "meal_out"
     assert adapt({**ROW, "bought": "banquet"})[0].bought is None
+
+
+def test_a_purchase_the_reader_saw_was_made_abroad_says_so_on_the_row():
+    [t] = adapt({**ROW, "account": "7402 Hotels", "abroad": True})
+    assert t.abroad is True
+    assert adapt(ROW)[0].abroad is False

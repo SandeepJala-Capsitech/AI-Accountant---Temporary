@@ -316,3 +316,16 @@ def test_a_row_says_what_kind_of_food_or_drink_was_bought():
     assert AccountingTransaction(**base, bought="food to go").bought == "food_to_go"
     assert AccountingTransaction(**base, bought="a feast").bought is None
     assert AccountingTransaction(**base).bought is None
+
+
+def test_a_row_says_when_it_was_bought_abroad():
+    # A hotel stay in the UK carries UK VAT the ledger books before its invoice is in; one abroad carries none.
+    from ledgersync.extractor import AccountingTransaction
+    base = {"description": "Hotel Lutetia, Paris", "amount": 410.0, "direction": "out", "account": "7402 Hotels"}
+    assert AccountingTransaction(**base, abroad="true").abroad is True
+    assert AccountingTransaction(**base).abroad is False
+    assert "abroad" in AccountingTransaction.model_json_schema()["properties"]
+    client = FakeModel([transactions_json(ROW)])
+    TransactionExtractor(client, business_name="Jo Bloggs", business_type="sole_trader").extract_accounting_data("x")
+    system = client.calls[0]["messages"][0]["content"]
+    assert "set abroad to true" in system and '"abroad": false' in system

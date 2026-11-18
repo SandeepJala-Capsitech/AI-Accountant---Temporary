@@ -33,12 +33,12 @@ _DERIVED = {"unknown_account", "same_account", "non_gbp_currency", "vat_not_appl
             "cis_deducted", "personal", "possible_duplicate", "booked_without_document", "card_credit", "vat_unclaimed",
             "on_account", "no_vat_number", "vat_over_rate", "reverse_charge", "before_vat_registration", "small_asset",
             "meal_check", "claim_note", "sundry_check", "account_fact", "account_choice", "left_small", "left_unset", "meal_decided", "small_items_add_up", "future_date", "journal_note", "prepayment", "unusual_account", "asset_check",
-            "should_be_asset", "whose_account", "vat_confirmed", "vat_implied", "document_wanted"} | MATCHING_ISSUES | STATEMENT_ISSUES
+            "should_be_asset", "whose_account", "vat_confirmed", "vat_implied", "document_wanted", "hotel_vat"} | MATCHING_ISSUES | STATEMENT_ISSUES
 # Warnings that are a matter of judgement: a person who has looked can say one is fine (Transaction.accepted), and it
 # is not raised on that row again.
 ACCEPTABLE = frozenset({"no_vat_number", "vat_over_rate", "small_asset", "meal_check", "sundry_check", "account_fact", "account_choice", "small_items_add_up", "addressed_to", "future_date",
                         "file_date", "unusual_account", "asset_check", "should_be_asset", "whose_account",
-                        "claim_vat", "document_wanted"})
+                        "claim_vat", "document_wanted", "hotel_vat"})
 # Words that say a cost was paid for time ahead, and the accounts whose bills usually are (insurance).
 # Fares that carry no VAT whoever sells them (passenger transport is zero-rated): a ticket seller prints its VAT
 # number for its own booking fee, which says nothing about the fare.
@@ -56,22 +56,51 @@ def is_fare(tx: Transaction) -> bool:
 IMPLIED_LIMIT = Decimal("250.00")   # up to this a receipt needn't print its VAT: its total and the rate give it
 
 
-def vat_implied(tx: Transaction, settings: BusinessSettings) -> bool:
+def _vat_in_total(tx: Transaction, settings: BusinessSettings) -> bool:
     """Whether a purchase's document shows VAT is in its amount without printing how much: it prints the supplier's
-    VAT number, or says VAT is charged or included (vat_stated), shows no VAT amount, and nobody chose a VAT treatment.
-    Up to £250 such a receipt is a VAT invoice in its own right (the total and the rate give the VAT), so the VAT is
-    worked out of the amount at the account's rate. Not when the document says it is not a VAT invoice, on an account
-    that carries no VAT or can't reclaim it, on a fare (zero-rated), on one row holding items of different kinds, or
-    on a bank line or a claim line, which print neither."""
+    VAT number, or says VAT is charged or included (vat_stated), and shows no VAT amount. Up to £250 such a receipt is
+    a VAT invoice in its own right: its total and the rate give the VAT. Not when the document says it is not a VAT
+    invoice, on an account that carries no VAT or can't reclaim it, on a fare (zero-rated), or on a bank line or a
+    claim line, which print neither."""
     account = BY_CODE.get(tx.account_code)
     return (tx.direction == Direction.OUT and tx.document_type in ("receipt", "invoice")
-            and tx.vat is None and tx.vat_treatment is None and not tx.not_vat_invoice
+            and tx.vat is None and not tx.not_vat_invoice
             and (tx.supplier_vat_number is not None or tx.vat_stated)
             and ZERO < tx.gross <= IMPLIED_LIMIT and tx.currency == "GBP"
             and reclaims_vat(tx, settings) and account is not None
             and account.vat in (VatTreatment.STANDARD, VatTreatment.REDUCED)
-            and not any(i.code == "mixed_items" for i in tx.issues)
             and not is_fare(tx))
+
+
+def _shows_vat(tx: Transaction) -> str:
+    """How a document _vat_in_total holds for shows that VAT is in its amount."""
+    return "prints the supplier's VAT number" if tx.supplier_vat_number is not None else "says VAT is included"
+
+
+def vat_implied(tx: Transaction, settings: BusinessSettings) -> bool:
+    """Whether a purchase's VAT is worked out of its amount at the account's rate with nobody asked: its document gives
+    the VAT by its total and rate (_vat_in_total), nobody chose a VAT treatment, and the row doesn't hold items of
+    different kinds, which may be at different rates."""
+    return (tx.vat_treatment is None and not any(i.code == "mixed_items" for i in tx.issues)
+            and _vat_in_total(tx, settings))
+
+
+def hotel_vat(tx: Transaction, settings: BusinessSettings) -> bool:
+    """Whether a hotel stay's VAT is booked and reclaimed before the property's VAT invoice is in, the row asking for
+    it (hotel_vat). The accountant's ruling (2026-11-18): "if the VAT is obvious add it, and then you can get the
+    invoice"; a stay in the UK carries 20% VAT, and a booking site's receipt or confirmation isn't the property's VAT
+    invoice. A receipt for money out on Hotels, in pounds, not abroad, on a day the business is registered, that a
+    person hasn't booked without its invoice (without_document), and that either prints no VAT amount (worked out at
+    20%; none chosen by a person, and not a VAT invoice already: vat_implied) or prints its VAT on a stay over £250,
+    which only the property's full VAT invoice backs. Not the property's own invoice, which prints no VAT only when it
+    charged none."""
+    if not (tx.direction == Direction.OUT and tx.account_code == HOTELS and tx.document_type == "receipt"
+            and tx.currency == "GBP" and not tx.abroad and not tx.reverse_charge and not tx.without_document
+            and ZERO < tx.gross and reclaims_vat(tx, settings)):
+        return False
+    if tx.vat is None:
+        return tx.vat_treatment is None and not vat_implied(tx, settings)
+    return tx.vat > 0 and tx.gross > IMPLIED_LIMIT
 
 
 _AHEAD = re.compile(r"\b(annual|yearly|12[- ]months?|per annum|in advance|quarter(ly)? rent)\b", re.IGNORECASE)
@@ -470,14 +499,26 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
         elif vat_implied(tx, settings):
             # The document shows VAT is in the amount (a VAT number, or it says so) but not how much: worked out.
             posted = vat_in_gross(tx.gross, treatment)
-            shows = ("prints the supplier's VAT number" if tx.supplier_vat_number is not None
-                     else "says VAT is included")
             issues.append(issue("vat_implied", (
-                f"VAT £{posted:,.2f} worked out at the {treatment.value} rate: the {tx.document_type} {shows} but "
-                "not the VAT amount. If part of it carries no VAT, enter the VAT it does carry."), "info"))
+                f"VAT £{posted:,.2f} worked out at the {treatment.value} rate: the {tx.document_type} {_shows_vat(tx)} "
+                "but not the VAT amount. If part of it carries no VAT, enter the VAT it does carry."), "info"))
+        elif hotel_vat(tx, settings):
+            # A hotel stay in the UK whose receipt isn't the property's VAT invoice: the VAT is plain, so it is booked
+            # now and the VAT invoice asked for (the accountant's ruling).
+            posted = vat_in_gross(tx.gross, treatment)
+            why = ("the receipt says VAT is included but isn't a VAT invoice" if tx.vat_stated
+                   else "a hotel stay in the UK carries VAT, but the receipt isn't a VAT invoice")
+            issues.append(issue("hotel_vat", f"VAT £{posted:,.2f} booked at 20%: {why}. Get the VAT invoice from the "
+                                             "property."))
     elif vat is None:   # a person chose the rate: split the VAT out of the gross at that rate
         posted = vat_in_gross(tx.gross, treatment)
-        if posted > 0:
+        if posted > 0 and _vat_in_total(tx, settings):
+            # A VAT invoice up to £250 with no VAT amount: the total and the rate the person chose give its VAT, so
+            # their choice is the answer, not an estimate to check against the document again.
+            issues.append(issue("vat_implied", (
+                f"VAT £{posted:,.2f} worked out at the {treatment.value} rate you chose: the {tx.document_type} "
+                f"{_shows_vat(tx)} but not the VAT amount."), "info"))
+        elif posted > 0:
             issues.append(issue("vat_estimated", f"£{posted} estimated at the {treatment.value} rate. Check the invoice."))
     elif most_vat(tx.gross) < vat <= tx.gross / 5:
         # More than 20% of the net paid, yet no more than a fifth of what was paid: a voucher or a promotion taken off
@@ -498,6 +539,10 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
                 f"£{vat} is 20% VAT on £{untaxed[0]}; £{untaxed[1]} has no VAT (zero-rated or exempt items, a tip or a "
                 "service charge?)." if untaxed
                 else f"£{vat} isn't {treatment.value}-rate VAT on £{tx.gross}."), "info"))
+    if vat and posted and hotel_vat(tx, settings):
+        # A UK hotel stay over £250 whose receipt prints its VAT: booked now, the property's full VAT invoice asked for.
+        issues.append(issue("hotel_vat", f"VAT £{posted:,.2f} booked as the receipt shows it, but a stay over £250 needs "
+                                         "the property's full VAT invoice. Get the VAT invoice from the property."))
     if mixed:
         kept = [i for i in kept if i.code != "mixed_items"]
         issues.append(_mixed_items(account, vat, tx.gross, untaxed))

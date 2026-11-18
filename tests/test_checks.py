@@ -41,6 +41,106 @@ def test_a_vat_rate_chosen_by_a_person_is_applied_and_flagged():
     assert codes(t) == [("vat_estimated", "warning")]
 
 
+def test_a_rate_chosen_on_a_receipt_that_prints_a_vat_number_books_its_vat_and_asks_nothing():
+    # Detroit City Burger, £13.55: the receipt prints the supplier's VAT number and no VAT amount. The person chose the
+    # standard rate, which with the total gives the VAT, as the account's rate would unasked: nothing is left to check
+    # on the receipt, so their answer must not come back as a "VAT estimated" warning.
+    t = normalise(tx(gross="13.55", account="7406", people="one", supplier_vat_number="516176005",
+                     vat_treatment="standard"), REGISTERED)
+    assert (t.vat_posted, t.net) == (Decimal("2.26"), Decimal("11.29"))
+    vat = [c for c in codes(t) if c[0] in ("vat_implied", "vat_estimated")]
+    assert vat == [("vat_implied", "info")]
+    assert "rate you chose" in next(i.message for i in t.issues if i.code == "vat_implied")
+
+
+@pytest.mark.parametrize("fields, flagged", [
+    ({"supplier_vat_number": "516176005"}, False),                      # prints the VAT number
+    ({"vat_stated": True}, False),                                      # says VAT is included
+    ({}, True),                                                         # nothing says VAT was charged
+    ({"supplier_vat_number": "516176005", "gross": "300.00"}, True),    # over £250 a VAT invoice prints its VAT
+    ({"supplier_vat_number": "516176005", "not_vat_invoice": True}, True),
+    ({"supplier_vat_number": "516176005", "document_type": "statement"}, True),   # a bank line prints neither
+])
+def test_a_chosen_rate_is_an_estimate_to_check_only_when_the_document_leaves_the_vat_open(fields, flagged):
+    t = normalise(tx(**{"gross": "13.55", "account": "7406", "people": "one", "vat_treatment": "standard", **fields}),
+                  REGISTERED)
+    assert t.vat_posted > 0
+    vat = [c for c in codes(t) if c[0] in ("vat_implied", "vat_estimated")]
+    assert vat == ([("vat_estimated", "warning")] if flagged else [("vat_implied", "info")])
+
+
+# ─── A hotel stay in the UK: its VAT is plain, so it is booked now and the VAT invoice asked for ──────────────────────
+# The accountant's ruling (2026-11-18): "if the VAT is obvious add it, and then you can get the invoice". A UK hotel
+# charges 20% VAT on a stay; a booking site's receipt or confirmation isn't the property's VAT invoice.
+
+def hotel(**kw):
+    return tx(**{"gross": "785.60", "account": "7402", "document_type": "receipt", "date": dt.date(2026, 10, 6),
+                 "description": "Booking.com - hotel stay at Bermonds Locke, Tower Bridge, 6-8 Oct 2026", **kw})
+
+
+def test_a_uk_hotel_stay_on_a_receipt_that_is_not_a_vat_invoice_books_its_vat_and_asks_for_the_invoice():
+    # Booking.com's receipt for Bermonds Locke, London, £785.60: "it can't be used to claim VAT ... a valid invoice for
+    # tax purposes can only be issued by the property".
+    t = normalise(hotel(not_vat_invoice=True), REGISTERED)
+    assert (t.vat_posted, t.net) == (Decimal("130.93"), Decimal("654.67"))
+    assert codes(t) == [("hotel_vat", "warning")]
+    assert "Get the VAT invoice from the property" in t.issues[0].message
+
+
+def test_a_hotel_booking_that_says_vat_is_included_books_it_and_says_so():
+    # The Spacious 2 bedroom flat by the Tower, £547.84: "20 % VAT is included", no amount and no VAT number.
+    t = normalise(hotel(gross="547.84", vat_stated=True), REGISTERED)
+    assert t.vat_posted == Decimal("91.31") and codes(t) == [("hotel_vat", "warning")]
+    assert "says VAT is included" in t.issues[0].message
+
+
+@pytest.mark.parametrize("change", [
+    {"abroad": True},                 # a stay outside the UK carries no UK VAT
+    {"currency": "EUR"},              # read in another currency: not pounds yet
+    {"document_type": "invoice"},     # the property's own invoice shows no VAT: it charged none
+    {"vat": "0.00"},                  # it prints VAT of nothing, or a person said there is none (No VAT on it)
+    {"vat_treatment": "exempt"},      # a person chose how VAT applies
+    {"account": "7400"},              # not a hotel stay
+    {"direction": "in"},              # a refund
+    {"without_document": "The host issues no invoices"},   # a person booked it without one: no VAT reclaimed
+])
+def test_hotel_vat_is_worked_out_only_for_a_uk_stay_whose_receipt_is_silent_on_it(change):
+    assert "hotel_vat" not in [code for code, _ in codes(normalise(hotel(**change), REGISTERED))]
+
+
+def test_hotel_vat_is_not_booked_for_a_business_not_registered_for_vat():
+    t = normalise(hotel(), NOT_REGISTERED)
+    assert t.vat_posted == Decimal("0.00") and "hotel_vat" not in [code for code, _ in codes(t)]
+
+
+def test_a_small_hotel_receipt_with_the_vat_number_is_a_vat_invoice_and_asks_nothing():
+    t = normalise(hotel(gross="120.00", supplier_vat_number="GB123456789"), REGISTERED)
+    assert t.vat_posted == Decimal("20.00") and codes(t) == [("vat_implied", "info")]
+
+
+def test_a_hotel_stay_said_fine_without_its_invoice_keeps_its_vat_and_stops_asking():
+    t = normalise(hotel(accepted=["hotel_vat"]), REGISTERED)
+    assert t.vat_posted == Decimal("130.93") and codes(t) == []
+
+
+def test_a_uk_hotel_receipt_over_250_that_prints_its_vat_books_it_and_asks_for_the_full_invoice():
+    # A booking site's receipt printing "includes VAT £130.93": over £250 only the property's full VAT invoice backs
+    # it. The ruling again: book the VAT now and get the invoice, rather than hold the stay in Suspense for it.
+    t = normalise(hotel(vat="130.93", not_vat_invoice=True), REGISTERED)
+    assert (t.vat_posted, codes(t)) == (Decimal("130.93"), [("hotel_vat", "warning")])
+    assert "as the receipt shows it" in t.issues[0].message
+    assert "Get the VAT invoice from the property" in t.issues[0].message
+
+
+@pytest.mark.parametrize("change", [
+    {"gross": "120.00", "vat": "20.00"},                                  # up to £250 the receipt will do
+    {"vat": "130.93", "without_document": "The hotel won't issue one"},   # a person booked it without the invoice
+    {"vat": "130.93", "abroad": True},                                    # a stay abroad: not UK VAT
+])
+def test_a_hotel_receipt_that_prints_its_vat_asks_nothing_where_the_rules_or_a_person_settle_it(change):
+    assert "hotel_vat" not in [code for code, _ in codes(normalise(hotel(**change), REGISTERED))]
+
+
 def test_vat_shown_on_the_document_wins():
     t = normalise(tx(gross="7.95", account="8205", vat="0.70"), REGISTERED)
     assert (t.vat_posted, t.net, codes(t)) == (Decimal("0.70"), Decimal("7.25"), [])
@@ -107,7 +207,8 @@ MIXED = Issue(code="mixed_items", severity="warning", message="This document mix
 def test_a_hotel_bill_of_mixed_items_is_one_note_with_its_vat():
     # Fawsley Hall: the stay, a conference room and meals with one VAT total, £62.35 on £381.86. It showed Mixed items
     # and Unusual VAT, two messages for one cause, and a warning for a bill booked to Hotels as a hotel bill usually is.
-    t = normalise(tx(gross="381.86", vat="62.35", account="7402", issues=[MIXED]), REGISTERED)
+    t = normalise(tx(gross="381.86", vat="62.35", account="7402", document_type="invoice",
+                     supplier_vat_number="GB123456789", issues=[MIXED]), REGISTERED)   # the hotel's own VAT invoice
     assert codes(t) == [("mixed_items", "info")]
     assert t.issues[0].message == "Kept as one row on Hotels. VAT £62.35 is on £374.10; £7.76 has none."
     assert normalise(t, REGISTERED).issues == t.issues      # worked out the same on every pass

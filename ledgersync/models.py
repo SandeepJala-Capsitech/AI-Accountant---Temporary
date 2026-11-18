@@ -176,6 +176,8 @@ class Transaction(BaseModel):
                                                    # code (checks.ACCEPTABLE): not raised on the row again
     reverse_charge: bool = False                   # a service bought from abroad with no VAT charged: the business
                                                    # accounts for the VAT itself, due and reclaimed (boxes 1 and 4)
+    abroad: bool = False                           # bought or supplied outside the UK, as the reader saw (a hotel
+                                                   # stay abroad): it carries no UK VAT (checks.hotel_vat)
     # The difference between its document's printed total and its lines that a person said to leave as it is (kept
     # on every row of the document): while the difference is this much, the total raises a note, not a warning.
     total_accepted: Optional[Decimal] = None

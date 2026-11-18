@@ -54,7 +54,7 @@ FAMILIES: dict[str, Family] = {
     "vat_not_booked": "missing_vat", "not_vat_invoice": "missing_vat",
     # A document that isn't a transaction, or that is missing.
     "not_booked": "documents", "open_document": "documents", "no_payroll": "documents",
-    "needs_document": "documents", "document_wanted": "documents", "not_claimed": "documents",
+    "needs_document": "documents", "document_wanted": "documents", "not_claimed": "documents", "hotel_vat": "documents",
     # The account a purchase is on: none found by the reader (parked in Suspense), another than its supplier's
     # usual one, or a cost account for equipment and a fixed asset for something small.
     "account_unclear": "coding", "unusual_account": "coding", "asset_check": "coding", "should_be_asset": "coding", "whose_account": "coding", "claim_note": "coding",

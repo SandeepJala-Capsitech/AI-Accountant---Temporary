@@ -3,7 +3,7 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import type { Transaction } from '@/lib/api'
 import { listAccounts, type AccountChoice, type Client, type RowChange, type SavedRow } from '@/lib/clients'
-import { accountList, changesOf, DOCUMENT_TYPES, draftOf, paidFromOf, paidFromOptions, rowEditErrors, VAT_TREATMENTS, type EditDraft, type EditErrors } from '@/lib/clientRules'
+import { accountList, changesOf, DOCUMENT_TYPES, draftOf, paidFromOf, paidFromOptions, rowEditErrors, VAT_TREATMENTS, vatWorkedOut, type EditDraft, type EditErrors } from '@/lib/clientRules'
 
 // Corrects what the model read on one row (counterparty and document type change for the whole document), or, with
 // onAdd, adds a row: a new transaction, or a line of an existing document from a template (clientRules.lineTemplate).
@@ -25,6 +25,8 @@ export default function EditRowDialog({ row, client, onCancel, onSave, onAdd, ti
   const [error, setError] = useState('')
   const errors: EditErrors = rowEditErrors(draft)
   const foreign = row.currency && row.currency !== 'GBP' ? row.currency : ''
+  // VAT booked that the document doesn't print: said under the empty VAT box, which holds only VAT it prints.
+  const workedOut = vatWorkedOut(row)
 
   useEffect(() => {
     listAccounts(client.id).then(setAccounts).catch(e => setError(e instanceof Error ? e.message : String(e)))
@@ -129,6 +131,7 @@ export default function EditRowDialog({ row, client, onCancel, onSave, onAdd, ti
             <input className="input" inputMode="decimal" value={draft.vat} onChange={e => set('vat', e.target.value)}
                    placeholder="None shown" />
             {fieldError('vat')}
+            {!onAdd && draft.vat === '' && workedOut && <span className="hint">{workedOut}</span>}
           </label>
           <label className="field">
             <span>Account</span>

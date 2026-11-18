@@ -31,7 +31,7 @@ const TAGS: Record<string, string[]> = {
   'VAT across items': ['mixed_items', 'vat_rate_mismatch'],
   'VAT not booked': ['vat_not_booked', 'not_vat_invoice'],
   'Records disagree': ['amount_conflict', 'claim_vat'],
-  Documents: ['not_booked', 'open_document', 'no_payroll', 'needs_document', 'document_wanted', 'not_claimed'],
+  Documents: ['not_booked', 'open_document', 'no_payroll', 'needs_document', 'document_wanted', 'not_claimed', 'hotel_vat'],
 }
 const TAG_OF = new Map(Object.entries(TAGS).flatMap(([tag, codes]) => codes.map(code => [code, tag] as const)))
 export const tagOf = (code: string): string => TAG_OF.get(code) ?? 'Other'

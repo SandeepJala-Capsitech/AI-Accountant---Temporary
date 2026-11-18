@@ -79,8 +79,9 @@ asked automatically.
 over £250 with no full VAT invoice, is held in Suspense, and the person is asked for the document.
 - A line of an expense claim with no receipt or invoice is not held: it is booked as the claim shows it, its VAT \
 reclaimed, and the row says the receipt or VAT invoice is still wanted (issue document_wanted). VAT a claim shows \
-that its receipt doesn't is booked as claimed too (issue claim_vat, "Get a VAT invoice"). Don't ask for these \
-documents; say the row is waiting for one if asked.
+that its receipt doesn't is booked as claimed too (issue claim_vat, "Get a VAT invoice"). A hotel stay in the UK \
+whose receipt isn't the property's VAT invoice is not held: it is booked with its VAT reclaimed, 20% when the receipt \
+prints none (issue hotel_vat, "Get the VAT invoice from the property"). Don't ask for these documents; say the row is waiting for one if asked.
 - Don't ask about an undated item, a missing receipt or invoice, a missing VAT invoice, a missing payroll report or a \
 missing payout report: the books ask the person about those automatically after your turn.
 - A payment processor's payout (Stripe, PayPal and the like) is held in 1250 Payment Processor Clearing until its \

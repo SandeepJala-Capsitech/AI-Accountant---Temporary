@@ -157,5 +157,6 @@ test('waitingSuggestions lists each suggestion once', () => {
 
 test('a charge left off a claim is about documents, and an unclear set about a purchase recorded twice', () => {
   assert.equal(tagOf('not_claimed'), 'Documents')
+  assert.equal(tagOf('hotel_vat'), 'Documents')   // a UK hotel stay waiting for the property's VAT invoice
   assert.equal(tagOf('claim_receipts_unclear'), 'Recorded twice')
 })

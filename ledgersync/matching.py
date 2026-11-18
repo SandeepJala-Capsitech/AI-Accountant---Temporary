@@ -822,7 +822,8 @@ def _with_claims(rows: list[Transaction], settings: BusinessSettings, apart: lis
             found = found + [issue("date_from_claim", f"No date on the {kind}; dated {long_date(dated)} from the "
                                                       "claim.", "info")]
         for k, r in enumerate(document.rows):
-            issues = [i for i in noted[r].issues if not dated or i.code != "date_missing"] + (found if k == 0 else [])
+            issues = [i for i in noted[r].issues if not dated or i.code != "date_missing"]
+            issues = _with_claim_vat(issues, vat) + found if k == 0 else issues
             marked[r] = noted[r].model_copy(update={"claimed_in": claim, "contra_account_code": STAFF_EXPENSES,
                                                     "issues": issues, **(vat if k == 0 else {})})
 
@@ -1057,7 +1058,8 @@ def _book_set(rows: list[Transaction], marked: list[Transaction], n: int, chosen
     found, vat = _claim_vat(line, together, [noted.get(k, t) for k, t in enumerate(rows)], settings)
     for k, r in enumerate(together.rows):
         marked[r] = noted[r].model_copy(update={"claimed_in": claim, "contra_account_code": STAFF_EXPENSES,
-                                                "issues": noted[r].issues + (found if k == 0 else []),
+                                                "issues": (_with_claim_vat(noted[r].issues, vat) + found if k == 0
+                                                           else noted[r].issues),
                                                 **(vat if k == 0 else {})})
     claimant = line.counterparty or "the claimant"
     said = issue("not_claimed", (
@@ -1095,6 +1097,12 @@ def _shop(line: Transaction) -> str:
 
 def _claim_name(line: Transaction) -> str:
     return f"{line.counterparty}'s expense claim" if line.counterparty else "the expense claim"
+
+
+def _with_claim_vat(issues: list[Issue], vat: dict) -> list[Issue]:
+    """A document's issues once its claim line's VAT is booked on it (vat_from_claim): a hotel stay's own 20%
+    (checks.hotel_vat) gives way to the claim's figure, which asks for the VAT invoice itself (claim_vat)."""
+    return [i for i in issues if i.code != "hotel_vat"] if vat.get("vat_from_claim") else issues
 
 
 def _claim_vat(line: Transaction, document: _Document, rows: list[Transaction],

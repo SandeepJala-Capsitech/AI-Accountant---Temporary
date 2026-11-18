@@ -330,6 +330,7 @@ def to_transactions(rows: list[dict], source: str, settings: BusinessSettings, o
                          supplier_vat_number=None if statement else _vat_number(row),
                          addressed_to=None if statement else str(row.get("addressed_to") or "").strip() or None,
                          reverse_charge=_reverse_charge(row, kind, vat),
+                         abroad=bool(row.get("abroad")),
                          agent=str(row.get("agent") or "").strip() or None,
                          owed_to=row.get("owed_to") if kind == "payroll" and row.get("owed_to") in OWED_TO else None,
                          document_total=_printed_total(row) if key else None,

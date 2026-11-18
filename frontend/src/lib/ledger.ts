@@ -257,7 +257,7 @@ const ISSUE_TITLES: Record<string, string> = {
   unusual_account: "Not this supplier's usual account", asset_check: 'Checked for equipment', should_be_asset: 'Equipment?', whose_account: 'Whose account?',
   vat_not_booked: 'VAT not booked', needs_document: 'Needs its document', booked_without_document: 'Booked without a receipt', claimed_less: 'Claimed less than its bill', total_worked_out: 'Total not printed',
   card_credit: 'Money in on a card', vat_unclaimed: 'VAT not reclaimed', on_account: 'Payment on account',
-  vat_confirmed: 'VAT reclaimed on your say', vat_implied: 'VAT worked out', document_wanted: 'Invoice needed',
+  vat_confirmed: 'VAT reclaimed on your say', vat_implied: 'VAT worked out', document_wanted: 'Invoice needed', hotel_vat: 'Invoice needed',
   payroll_person: 'Check this person\'s pay', cis_deducted: 'CIS deducted', payout_report: 'Payout report needed', personal: 'Looks personal', subtotal_only: 'Total not printed',
   not_claimed: 'Not claimed', claim_receipts_unclear: "Can't tell which charges",
 }
@@ -302,10 +302,12 @@ export const canBeApart = (code: string) => MAY_BE_ONE.has(code)
 // Warnings that are a matter of judgement, which a person who has looked can answer It's fine (checks.ACCEPTABLE).
 const ACCEPTABLE = new Set(['no_vat_number', 'vat_over_rate', 'small_asset', 'meal_check', 'sundry_check', 'account_fact',
                             'account_choice', 'small_items_add_up', 'addressed_to', 'future_date',
-                            'file_date', 'unusual_account', 'asset_check', 'should_be_asset', 'whose_account', 'claim_vat', 'document_wanted'])
+                            'file_date', 'unusual_account', 'asset_check', 'should_be_asset', 'whose_account', 'claim_vat', 'document_wanted',
+                            'hotel_vat'])
 export const canBeAccepted = (code: string) => ACCEPTABLE.has(code)
 // What accepting a warning is called on its button: the row stays booked as it is, and stops asking.
-export const acceptLabel = (code: string) => (code === 'document_wanted' ? "It's fine without one" : "It's fine")
+export const acceptLabel = (code: string) =>
+  (code === 'document_wanted' || code === 'hotel_vat' ? "It's fine without one" : "It's fine")
 
 // A way to fix an issue, offered on the issue itself: a change made at once, a list to choose from there on the
 // row, the Edit dialog, or the Documents page for a file that is missing.
@@ -364,6 +366,9 @@ export function issueFixes(tx: Transaction, issue: Issue, claimLine?: Transactio
   if (code === 'non_gbp_currency') return [{ label: 'Enter it in pounds', edit: true }]
   if (DATE_ISSUES.has(code)) return [{ label: 'Set the date', edit: true }]
   if (VAT_ISSUES.has(code)) return [{ label: 'Correct the VAT', edit: true }]
+  // A UK hotel stay booked with its 20% VAT before the property's VAT invoice is in: add the invoice, or say it
+  // carries none (a stay abroad, or a host not registered for VAT).
+  if (code === 'hotel_vat') return [{ label: 'Add the document', documents: true }, { label: 'No VAT on it', change: { vat: '0.00' } }]
   if (DOCUMENT_ISSUES.has(code)) {
     // A row held for its VAT invoice with VAT on it: the person can vouch for the VAT, which books the row.
     // or say it carries none, which books it whole.

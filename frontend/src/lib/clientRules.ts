@@ -2,7 +2,7 @@
 import type { Transaction } from './api'
 import type { AccountChoice, BankAccount, BankAccountKind, BusinessType, ClientFields, ClientSummary, EditableField, Owner, RowChange, SavedRow, StatementCheck,
               Upload } from './clients'
-import { money, needsReview, totalsOf } from './ledger.ts'
+import { money, needsReview, totalsOf, vatBooked } from './ledger.ts'
 
 export const BUSINESS_TYPES: Record<BusinessType, string> = {
   limited_company: 'Limited company', sole_trader: 'Sole trader', partnership: 'Partnership', llp: 'LLP',
@@ -194,6 +194,16 @@ export function draftOf(row: Transaction): EditDraft {
     direction: row.direction, gross: row.gross, vat: row.vat ?? '', account_code: row.account_code,
     document_type: row.document_type ?? 'receipt', vat_treatment: row.vat_treatment ?? '',
   }
+}
+
+// What Edit says under its VAT box when the row books VAT its document doesn't print (worked out from the total, at
+// the rate a person chose or the account's), so an empty box doesn't read as no VAT; null when it prints its VAT or
+// none is booked. The box holds only a VAT amount the document prints.
+export function vatWorkedOut(row: Transaction): string | null {
+  const booked = vatBooked(row)
+  if (row.vat != null || !(Number(booked) > 0)) return null
+  const kind = (DOCUMENT_TYPES[row.document_type ?? 'receipt'] ?? 'document').toLowerCase()
+  return `${money(booked)} VAT is booked, worked out from the total: the ${kind} prints no VAT amount. Leave this empty to keep it.`
 }
 
 // How VAT applies to a row, as a person can say it. '' leaves it to the document and the account.

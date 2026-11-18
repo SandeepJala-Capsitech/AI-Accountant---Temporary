@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from .accounts import ALL_BANK_CODES, BY_CODE, SUSPENSE, Account, AccountType
 from .models import BusinessSettings, Direction, JournalLine, Transaction
-from .checks import is_fare
+from .checks import hotel_vat, is_fare
 from .money import ZERO, VatTreatment
 from .payees import part_payment
 from .posting import journal_for, withheld
@@ -105,6 +105,11 @@ def document_rule(tx: Transaction, settings: BusinessSettings) -> DocumentRule:
         # The VAT is the expense claim's, the receipt showing none: booked as claimed (matching says an invoice is wanted).
         return DocumentRule(action="book", reclaim_vat=True,
                             reason="VAT as the expense claim shows it: reclaimed, with a VAT invoice still wanted.")
+    if hotel_vat(tx, settings) and (tx.vat_posted or ZERO) > 0 and not rule.reclaim_vat:
+        # A hotel stay in the UK: its VAT is plain, so it is reclaimed now and the row asks for the property's VAT
+        # invoice (the accountant's ruling), rather than booked whole or held in Suspense for it.
+        return DocumentRule(action="book", reclaim_vat=True,
+                            reason="VAT a hotel stay in the UK carries: reclaimed, with the VAT invoice still wanted.")
     if rule.action == "hold" and tx.without_document:
         return DocumentRule(action="book", reclaim_vat=False, waived=True,
                             reason=f"Booked without a receipt: {tx.without_document}; no VAT reclaimed.")
