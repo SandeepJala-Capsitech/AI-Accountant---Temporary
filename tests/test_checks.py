@@ -515,6 +515,24 @@ def test_what_a_decision_set_and_the_suppliers_vat_number_survive_saving():
         True, "d2", ["d1", "d2"], "GB123456789")
 
 
+def test_a_stay_the_reader_saw_was_abroad_is_still_abroad_once_saved_and_books_no_uk_vat():
+    # Every pass after the first reads the row back from what was saved: a stay abroad that came back as one in the UK
+    # would have 20% VAT booked on it (checks.hotel_vat).
+    stay = normalise(hotel(abroad=True), REGISTERED)
+    again = normalise(Transaction(**saved_form(stay)), REGISTERED)
+    assert again.abroad is True
+    assert (again.vat_posted, "hotel_vat" in [code for code, _ in codes(again)]) == (Decimal("0.00"), False)
+
+
+def test_every_field_the_reader_gives_a_row_is_kept_when_it_is_saved():
+    # What the reader saw is an input, worked out from nothing else: a field it gives that saving drops is lost on the
+    # next pass. A new reader field needs adding to rows.INPUTS.
+    from ledgersync.extractor import AccountingTransaction
+    from ledgersync.rows import INPUTS
+    read = set(AccountingTransaction.model_fields) & set(Transaction.model_fields)
+    assert read - INPUTS == set()
+
+
 def test_owed_to_decides_the_other_side_on_every_pass():
     line = row(gross=Decimal("3000.00"), account_code="7000", document_type="payroll", owed_to="pension")
     first = normalise(line, HELPER_SETTINGS)
