@@ -1271,6 +1271,30 @@ def test_the_payout_report_books_the_sales_and_fees_and_clears_the_payout():
     assert "payout_report" not in [i.code for i in line.issues]
 
 
+def _stripe_charges(month):
+    """A month of Stripe's balance export as the reader saves it: each charge and its fee a document of their own."""
+    return [row("agent_statement", direction, gross, f"2023-{month:02d}-{day:02d}", "Stripe Payments UK",
+                f"{month}-{day}", account=account, agent="Stripe")
+            for day, sale, fee in ((4, "720.00", "11.00"), (5, "1080.00", "16.40"), (6, "540.00", "8.30"),
+                                   (7, "900.00", "13.70"))
+            for direction, gross, account in (("in", sale, "4000"), ("out", fee, "7901"))]
+
+
+def _stripe_payout(gross, date, ref):
+    return bank(gross, date, "STRIPE PAYMENTS UK", ref, direction="in", account="1250")
+
+
+def test_a_processor_payout_pays_out_what_it_holds_oldest_first():
+    # The test books' agency year: Stripe paid out the £640 it held at the year start, then £3,190.60, the four
+    # days' charges after fees. The £640 was taken as part of the first day's £709, so the four days no longer added
+    # up to £3,190.60, and every later payout was asked about.
+    *charges, opening, payout = matched(*_stripe_charges(4), _stripe_payout("640.00", "2023-04-04", "po-1"),
+                                        _stripe_payout("3190.60", "2023-04-11", "po-2"))
+    assert opening.pays == [] and "part_payment" not in [i.code for i in opening.issues]   # what it held before
+    assert sorted(p.ref for p in payout.pays) == ["4-4", "4-5", "4-6", "4-7"] and codes(payout) == []
+    assert {t.owed for t in charges} == {Decimal("0.00")}
+
+
 # ─── A receipt cut off before its total ───────────────────────────────────────
 
 def _cut_off_receipt(gross="72.00"):

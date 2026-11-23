@@ -1480,6 +1480,14 @@ def _decide(line: Transaction, docs: list[_Document]) -> tuple[str, list[list[_D
     (same_payee) are ever paid automatically, and only those within 120 days unless they owe exactly what the line
     pays. A document whose name only resembles the line's is suggested (_outcome), for a person to Link."""
     named = [d for d in docs if line.counterparty and same_payee(line.counterparty, d.counterparty)]
+    # A payment processor's or agent's statements only (Stripe's balance export saves a document a charge): it pays
+    # out what it holds, oldest first, so a payout pays the oldest of them that add up to it. Never part of one: a
+    # payout that is not a run of them is of what it held before (the year's opening balance), or one a person links.
+    held = named and all(d.kind == "agent_statement" for d in named)
+    if held:
+        run = _oldest_adding_up_to(line.gross, named)
+        if run:
+            return "pay", [run]
     exact = _exact(line, named)
     if len(exact) == 1:
         return "pay", [exact]
@@ -1495,7 +1503,7 @@ def _decide(line: Transaction, docs: list[_Document]) -> tuple[str, list[list[_D
     sets = _sets_adding_up_to(line.gross, named)
     if sets:
         return ("pay", sets) if len(sets) == 1 else ("choose", sets)
-    if named:      # a part payment or an overpayment, when only one document can be meant
+    if named and not held:      # a part payment or an overpayment, when only one document can be meant
         return ("pay", [named]) if len(named) == 1 else ("choose", [[d] for d in named])
     same_amount = [d for d in docs if d.open == line.gross]
     # One document for exactly this amount, dated in the week before, whose name shares a name (not just a trade
@@ -1530,6 +1538,17 @@ def _same_month(line_text: Optional[str], document_text: Optional[str]) -> bool:
     """Whether a bank line names the month a document is for, the year agreeing where both print one."""
     return any(m == m2 and (y is None or y2 is None or y == y2)
                for m, y in _months(line_text) for m2, y2 in _months(document_text))
+
+
+def _oldest_adding_up_to(amount: Decimal, docs: list[_Document]) -> list[_Document]:
+    """The oldest documents, in order, whose open amounts add up to exactly the amount; none if no run of them does."""
+    run, total = [], ZERO
+    for d in sorted(docs, key=lambda d: (d.date or dt.date.max, d.ref)):
+        run.append(d)
+        total += d.open
+        if total >= amount:
+            break
+    return run if total == amount else []
 
 
 def _sets_adding_up_to(amount: Decimal, docs: list[_Document]) -> list[list[_Document]]:
