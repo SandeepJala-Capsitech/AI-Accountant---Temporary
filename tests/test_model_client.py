@@ -102,7 +102,7 @@ def test_images_are_sent_as_jpeg_parts_of_the_last_message():
 
 
 def test_reasoning_effort_is_left_out_when_blank():
-    client, http, _, _ = make_client(chat_answer(), settings=Settings(groq_api_key=KEY, groq_reasoning_effort=""))
+    client, http, _, _ = make_client(chat_answer(), settings=Settings(groq_api_key=KEY, reasoning_effort=""))
     client.chat_json(MSG, SCHEMA)
     assert "reasoning_effort" not in http.payload()
 

@@ -30,8 +30,7 @@ def test_env_overrides():
 def test_groq_settings_have_working_defaults():
     s = Settings.from_env({})
     assert (s.groq_base_url, s.groq_model) == ("https://api.groq.com/openai/v1", "qwen/qwen3.8-27b")
-    assert (s.groq_timeout, s.groq_max_output_tokens, s.groq_reasoning_effort, s.groq_max_images) == (
-        60.0, 8192, "high", 3)
+    assert (s.model_timeout, s.groq_max_output_tokens, s.reasoning_effort, s.max_images) == (60.0, 8192, "high", 3)
     assert (s.groq_api_key, s.openrouter_api_key, s.business_name, s.health_ttl) == ("", "", "", 300.0)
 
 
@@ -41,7 +40,19 @@ def test_groq_settings_use_groqs_own_names():
         "GROQ_REASONING_EFFORT": "", "LEDGERSYNC_BUSINESS_NAME": "Northbridge Consulting Ltd",
     })
     assert (s.groq_api_key, s.groq_model, s.groq_base_url) == ("gsk-test", "some/model", "https://example.test/v1")
-    assert (s.groq_reasoning_effort, s.business_name) == ("", "Northbridge Consulting Ltd")
+    assert (s.reasoning_effort, s.business_name) == ("", "Northbridge Consulting Ltd")   # the name it had before
+
+
+def test_how_a_document_is_read_has_openrouter_names_and_still_reads_the_old_groq_ones():
+    # The app runs on OpenRouter, yet the timeout on every reader call was set with GROQ_TIMEOUT.
+    new = Settings.from_env({"OPENROUTER_TIMEOUT": "600", "OPENROUTER_REASONING_EFFORT": "low",
+                             "OPENROUTER_MAX_IMAGES": "1"})
+    assert (new.model_timeout, new.reasoning_effort, new.max_images) == (600.0, "low", 1)
+    old = Settings.from_env({"GROQ_TIMEOUT": "600", "GROQ_REASONING_EFFORT": "low", "GROQ_MAX_IMAGES": "1"})
+    assert old == new
+    both = Settings.from_env({"OPENROUTER_TIMEOUT": "120", "GROQ_TIMEOUT": "600",
+                              "OPENROUTER_REASONING_EFFORT": "", "GROQ_REASONING_EFFORT": "low"})
+    assert (both.model_timeout, both.reasoning_effort) == (120.0, "")   # the new name wins, even when blank
 
 
 def test_without_an_openrouter_key_groq_reads_the_documents():
@@ -138,14 +149,17 @@ def test_the_old_agent_model_variable_changes_nothing():
 def test_a_blank_number_setting_uses_its_default():
     blank = {name: "" for name in ("LEDGERSYNC_PORT", "LEDGERSYNC_MAX_UPLOAD_MB", "LEDGERSYNC_MAX_PDF_PAGES",
                                    "LEDGERSYNC_MAX_PARALLEL_JOBS", "OPENROUTER_MAX_OUTPUT_TOKENS", "GROQ_TIMEOUT",
-                                   "GROQ_MAX_OUTPUT_TOKENS", "GROQ_MAX_IMAGES")}
+                                   "GROQ_MAX_OUTPUT_TOKENS", "GROQ_MAX_IMAGES", "OPENROUTER_TIMEOUT",
+                                   "OPENROUTER_MAX_IMAGES")}
     assert Settings.from_env(blank) == Settings.from_env({})
     assert Settings.from_env({"LEDGERSYNC_PORT": " 9000 "}).port == 9000
 
 
 def test_env_names_are_the_variables_from_env_reads():
     source = inspect.getsource(Settings.from_env)
-    assert set(ENV_NAMES) == set(re.findall(r'(?:env\.get\(|_number\(env, )"([A-Z][A-Z0-9_]+)"', source))
+    read = re.findall(r'(?:env\.get\(|_number\(env, |_named\(env, )"([A-Z][A-Z0-9_]+)"', source)
+    old = re.findall(r'_named\(env, "[A-Z0-9_]+", "([A-Z][A-Z0-9_]+)"\)', source)   # a setting's earlier name
+    assert set(ENV_NAMES) == set(read + old)
 
 
 def example_values() -> dict[str, str]:

@@ -272,7 +272,7 @@ apart for good (with Undo).
 ## The AI model (OpenRouter or Groq)
 
 The app asks OpenRouter when `OPENROUTER_API_KEY` is set, and Groq otherwise; both serve the same model
-under the same name, and the other model settings (`GROQ_TIMEOUT` and the rest) apply to either, apart
+under the same name, and the other model settings (`OPENROUTER_TIMEOUT` and the rest) apply to either, apart
 from the longest answer: OpenRouter counts the model's thinking in it, so it has its own, larger limit.
 OpenRouter passes each request to one of the companies hosting the model, and only to one that honours
 the strict JSON schema below; the account's [privacy settings](https://openrouter.ai/settings/privacy)
@@ -335,13 +335,13 @@ Settings come from environment variables or `.env` (environment variables win).
 | `OPENROUTER_MAX_OUTPUT_TOKENS` | `32768` | Longest answer on OpenRouter, thinking included: a 60-row statement thinks for about 4,000 tokens and answers in about 9,000 |
 | `OPENROUTER_PROVIDERS` | `deepinfra/bf16` | Hosts asked first, in order, comma-separated; blank lets OpenRouter choose |
 | `OPENROUTER_QUANTIZATIONS` | `bf16,fp16,fp32,fp8` | Precisions a host may run the model at; blank allows any, 4-bit (`fp4`) hosts included |
+| `OPENROUTER_TIMEOUT` | `60` | Seconds to wait for one model call, on either provider (as are the next two); a long bank or card statement can take several minutes. Was `GROQ_TIMEOUT`, still read when this isn't set |
+| `OPENROUTER_REASONING_EFFORT` | `high` | The model's "thinking" (`none`, `low`, `high`); thinking keeps it to the receipt rules, `none` is about 10x faster than `low`. Was `GROQ_REASONING_EFFORT` |
+| `OPENROUTER_MAX_IMAGES` | `3` | Scanned pages per request, Groq's most; on Groq's free plan set `1`, as 3 overflow its 8K tokens a minute. Was `GROQ_MAX_IMAGES` |
 | `GROQ_API_KEY` | — | Your Groq key; put it in `.env`. Used when there is no OpenRouter key |
 | `GROQ_MODEL` | `qwen/qwen3.8-27b` | Groq model; it must read images |
 | `GROQ_BASE_URL` | `https://api.groq.com/openai/v1` | Groq's OpenAI-compatible API |
-| `GROQ_TIMEOUT` | `60` | Seconds to wait for one model call (on either provider, as are `GROQ_REASONING_EFFORT` and `GROQ_MAX_IMAGES`) |
 | `GROQ_MAX_OUTPUT_TOKENS` | `8192` | Longest answer on Groq; a 60-row statement needs over 4,000 tokens |
-| `GROQ_REASONING_EFFORT` | `high` | The model's "thinking" (`none`, `low`, `high`); thinking keeps it to the receipt rules, `none` is about 10x faster than `low` |
-| `GROQ_MAX_IMAGES` | `3` | Scanned pages per request, Groq's most; on the free plan set `1`, as 3 overflow its 8K tokens a minute |
 | `LEDGERSYNC_BUSINESS_NAME` | — | Whose books these are; tells sales invoices from purchases |
 | `LEDGERSYNC_HOST` / `LEDGERSYNC_PORT` | `127.0.0.1` / `8085` | API bind address |
 | `LEDGERSYNC_RELOAD` | `0` | Auto-reload on code changes (development) |

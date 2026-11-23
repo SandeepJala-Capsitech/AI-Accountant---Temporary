@@ -113,7 +113,7 @@ class ModelClient:
 
     @property
     def max_images(self) -> int:
-        return self._s.groq_max_images
+        return self._s.max_images
 
     def health(self, force: bool = False) -> ModelHealth:
         with self._health_lock:
@@ -149,8 +149,8 @@ class ModelClient:
             "response_format": {"type": "json_schema", "json_schema": {
                 "name": "transactions", "schema": strict_schema(schema), "strict": True}},
         }
-        if self._s.groq_reasoning_effort:
-            payload["reasoning_effort"] = self._s.groq_reasoning_effort
+        if self._s.reasoning_effort:
+            payload["reasoning_effort"] = self._s.reasoning_effort
         if self._openrouter:
             # Only to providers that honour every parameter above, the strict schema above all;
             # otherwise OpenRouter may pick one that ignores it.
@@ -183,8 +183,8 @@ class ModelClient:
             "temperature": 0,
             "max_tokens" if self._openrouter else "max_completion_tokens": self._s.max_output_tokens,
         }
-        if self._s.groq_reasoning_effort:
-            payload["reasoning_effort"] = self._s.groq_reasoning_effort
+        if self._s.reasoning_effort:
+            payload["reasoning_effort"] = self._s.reasoning_effort
         if self._openrouter and (route := self._route()):
             payload["provider"] = route   # a transcript is kept for good: not from a low-precision host
         response = self._chat(payload)
@@ -242,7 +242,7 @@ class ModelClient:
         waited, retried = 0.0, False
         while True:
             try:
-                return self._request("POST", "/chat/completions", payload, timeout=self._s.groq_timeout)
+                return self._request("POST", "/chat/completions", payload, timeout=self._s.model_timeout)
             except urllib.error.HTTPError as exc:
                 if exc.code == 429:
                     wait = self._retry_after(exc)
@@ -315,8 +315,8 @@ class ModelClient:
             return DEFAULT_RETRY_AFTER
 
     def _timeout_message(self) -> str:
-        return (f"{self._s.provider} did not answer within {self._s.groq_timeout:.0f} seconds. "
-                "Try again, or raise GROQ_TIMEOUT.")
+        return (f"{self._s.provider} did not answer within {self._s.model_timeout:.0f} seconds. "
+                "Try again, or raise OPENROUTER_TIMEOUT.")
 
     def _request(self, method: str, path: str, payload: Optional[dict], timeout: float) -> dict:
         data = json.dumps(payload).encode("utf-8") if payload is not None else None

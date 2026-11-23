@@ -14,8 +14,10 @@ ENV_NAMES = (
     "LEDGERSYNC_BUSINESS_NAME",
     "OPENROUTER_API_KEY", "OPENROUTER_MODEL", "OPENROUTER_CHAT_MODEL", "OPENROUTER_BASE_URL", "OPENROUTER_MAX_OUTPUT_TOKENS",
     "OPENROUTER_PROVIDERS", "OPENROUTER_QUANTIZATIONS",
-    "GROQ_API_KEY", "GROQ_MODEL", "GROQ_BASE_URL", "GROQ_TIMEOUT", "GROQ_MAX_OUTPUT_TOKENS",
-    "GROQ_REASONING_EFFORT", "GROQ_MAX_IMAGES",
+    "OPENROUTER_TIMEOUT", "OPENROUTER_REASONING_EFFORT", "OPENROUTER_MAX_IMAGES",
+    "GROQ_API_KEY", "GROQ_MODEL", "GROQ_BASE_URL", "GROQ_MAX_OUTPUT_TOKENS",
+    # The names the three settings above had while the app ran on Groq: still read when the new name isn't set.
+    "GROQ_TIMEOUT", "GROQ_REASONING_EFFORT", "GROQ_MAX_IMAGES",
     "MONGODB_URI", "MONGODB_DB_NAME", "LEDGERSYNC_MONGO_MAX_POOL",
     "LEDGERSYNC_AGENT_TIMEOUT", "LEDGERSYNC_DEMO", "LEDGERSYNC_REVIEW_WAIT", "LEDGERSYNC_REVIEW_DAILY_LIMIT",
     "LEDGERSYNC_REVIEW_WORKER",
@@ -26,6 +28,11 @@ def _number(env: Mapping[str, str], name: str, default, kind=int):
     """A number setting: unset or blank gives the default."""
     value = env.get(name, "").strip()
     return kind(value) if value else default
+
+
+def _named(env: Mapping[str, str], name: str, old: str) -> str:
+    """The variable a setting is read from: its own name, or else the name it had before, if only that is set."""
+    return old if name not in env and old in env else name
 
 
 def _flag(value: str) -> bool:
@@ -79,13 +86,15 @@ class Settings:
     openrouter_max_output_tokens: int = 32768
     openrouter_providers: tuple[str, ...] = ("deepinfra/bf16",)
     openrouter_quantizations: tuple[str, ...] = ("bf16", "fp16", "fp32", "fp8")
+    # How a document is read, on either provider: seconds to wait for one model call, the model's thinking,
+    # and scanned pages per request.
+    model_timeout: float = 60.0
+    reasoning_effort: str = "high"
+    max_images: int = 3
     groq_api_key: str = field(default="", repr=False)   # never printed or logged
     groq_model: str = "qwen/qwen3.8-27b"
     groq_base_url: str = "https://api.groq.com/openai/v1"
-    groq_timeout: float = 60.0
     groq_max_output_tokens: int = 8192
-    groq_reasoning_effort: str = "high"
-    groq_max_images: int = 3
     health_ttl: float = 300.0
     business_name: str = ""
     # Everything is kept in MongoDB; the API refuses to start without the address.
@@ -155,13 +164,14 @@ class Settings:
             openrouter_max_output_tokens=_number(env, "OPENROUTER_MAX_OUTPUT_TOKENS", d.openrouter_max_output_tokens),
             openrouter_providers=_names(env.get("OPENROUTER_PROVIDERS"), d.openrouter_providers),
             openrouter_quantizations=_names(env.get("OPENROUTER_QUANTIZATIONS"), d.openrouter_quantizations),
+            model_timeout=_number(env, _named(env, "OPENROUTER_TIMEOUT", "GROQ_TIMEOUT"), d.model_timeout, float),
+            reasoning_effort=env.get(_named(env, "OPENROUTER_REASONING_EFFORT", "GROQ_REASONING_EFFORT"),
+                                     d.reasoning_effort).strip(),
+            max_images=_number(env, _named(env, "OPENROUTER_MAX_IMAGES", "GROQ_MAX_IMAGES"), d.max_images),
             groq_api_key=env.get("GROQ_API_KEY", "").strip(),
             groq_model=env.get("GROQ_MODEL", d.groq_model).strip(),
             groq_base_url=env.get("GROQ_BASE_URL", d.groq_base_url).strip().rstrip("/"),
-            groq_timeout=_number(env, "GROQ_TIMEOUT", d.groq_timeout, float),
             groq_max_output_tokens=_number(env, "GROQ_MAX_OUTPUT_TOKENS", d.groq_max_output_tokens),
-            groq_reasoning_effort=env.get("GROQ_REASONING_EFFORT", d.groq_reasoning_effort).strip(),
-            groq_max_images=_number(env, "GROQ_MAX_IMAGES", d.groq_max_images),
             business_name=env.get("LEDGERSYNC_BUSINESS_NAME", "").strip(),
             mongodb_uri=env.get("MONGODB_URI", "").strip(),
             mongodb_db_name=env.get("MONGODB_DB_NAME", "ledgersync").strip(),
