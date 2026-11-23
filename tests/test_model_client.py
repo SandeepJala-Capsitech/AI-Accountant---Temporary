@@ -101,6 +101,13 @@ def test_images_are_sent_as_jpeg_parts_of_the_last_message():
     ]
 
 
+def test_chat_json_can_ask_for_less_thinking():
+    # A statement read in code only needs its lines coded: that needs little thinking.
+    client, http, _, _ = make_client(chat_answer())
+    client.chat_json(MSG, SCHEMA, reasoning_effort="low")
+    assert http.payload()["reasoning_effort"] == "low"
+
+
 def test_reasoning_effort_is_left_out_when_blank():
     client, http, _, _ = make_client(chat_answer(), settings=Settings(groq_api_key=KEY, reasoning_effort=""))
     client.chat_json(MSG, SCHEMA)

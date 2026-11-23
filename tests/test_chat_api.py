@@ -827,8 +827,10 @@ def test_a_chat_file_with_rows_in_two_years_leaves_both_posted(make, mongo_store
     later = {**PAYMENT, "description": "BRIGHTLINE PRINT", "date": "2027-05-04"}
     api = make(say("Read both months."), reads=[transactions_json(PAYMENT, later)])
     thread = new_thread(api, client_id)
+    # A statement with a line in each year: its dates are read from the file.
+    both = (STATEMENT[0], STATEMENT[1] + "04/05/2027,-240.00,BRIGHTLINE PRINT\n")
 
-    send(api, thread["id"], "Review the statement.", STATEMENT)
+    send(api, thread["id"], "Review the statement.", both)
 
     records = AgentRecords(mongo_store.db)
     years = [y.start for y in books.years_of(mongo_store, client_id, dt.date(2027, 6, 1))]

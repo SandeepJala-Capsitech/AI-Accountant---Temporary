@@ -3,13 +3,16 @@ and per-row validation."""
 import json
 import logging
 import re
-from typing import List, Literal, Optional
+from typing import TYPE_CHECKING, List, Literal, Optional
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from .accounts import choosable, model_accounts
 from .errors import ModelError
 from .models import BOUGHT, DOCUMENT_TYPES, Bought
+
+if TYPE_CHECKING:
+    from .tables import Statement
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +194,31 @@ class TransactionExtractionResult(BaseModel):
         return len(self.data)
 
 
+_FIELDS = AccountingTransaction.model_fields
+CODING_BATCH = 50   # lines of a statement read in code per coding request
+
+
+class CodedLine(BaseModel):
+    """How one line of a statement read in code is coded: its figures are the file's, never the model's."""
+    n: int = Field(..., description="The line's number, as given")
+    account: str = Field(..., description=_FIELDS["account"].description,
+                         json_schema_extra={"enum": list(ACCOUNT_CHOICES)})
+    counterparty: Optional[str] = Field(None, description="Who was paid or who paid, as the line names them")
+    alternatives: list[str] = Field(default_factory=list, description=_FIELDS["alternatives"].description,
+                                    json_schema_extra={"items": {"type": "string", "enum": list(ACCOUNT_CHOICES)}})
+    bought: Optional[Bought] = Field(None, description=_FIELDS["bought"].description)
+    people: Optional[Literal["one", "several"]] = Field(None, description=_FIELDS["people"].description)
+
+
+class CodedLines(BaseModel):
+    """Top-level shape of a coding answer."""
+    lines: List[CodedLine]
+
+
+_ACCOUNT_WORDS = {"current": "a current account", "savings": "a savings account", "credit_card": "a credit card",
+                  "petty_cash": "petty cash"}
+
+
 class TransactionExtractor:
     """Builds the prompt, calls the model through the model client and validates each row.
 
@@ -211,6 +239,64 @@ class TransactionExtractor:
                     {"role": "user", "content": self._document(text_input, images)}]
         raw_output = self.client.chat_json(messages, ExtractedTransactions.model_json_schema(), images=images)
         return self._validate_and_parse_json(raw_output)
+
+    def code_statement(self, statement: "Statement", account_kind: Optional[str]) -> TransactionExtractionResult:
+        """The rows of a statement read in code (tables.statement): each line's date, amount, direction, balance and
+        currency as the file states them, and only its account, payee and alternatives from the model, CODING_BATCH
+        lines a request at low thinking. A line the answer leaves out is on Suspense, with a warning."""
+        lines, rows, warnings, model = statement.lines, [], [], self.client.model
+        for start in range(0, len(lines), CODING_BATCH):
+            batch = list(enumerate(lines[start:start + CODING_BATCH], start=start + 1))
+            listed = "\n".join(f"{n} | {line.date.isoformat()} | {line.direction} | {line.amount:.2f} | "
+                               f"{f'{line.kind} ' if line.kind else ''}{line.text}" for n, line in batch)
+            whose = _ACCOUNT_WORDS.get(account_kind or "", "the business's bank account")
+            heading = f"{statement.heading}\n" if statement.heading else ""
+            messages = [{"role": "system", "content": self._coding_instructions()},
+                        {"role": "user", "content": f"A statement of {whose}.\n{heading}"
+                                                    f"<lines>\nn | date | in/out | amount | text\n{listed}\n</lines>"}]
+            raw = self.client.chat_json(messages, CodedLines.model_json_schema(), reasoning_effort="low")
+            host = getattr(raw, "host", None)
+            model = f"{self.client.model} via {host}" if host else self.client.model
+            coded = self._coded(raw)
+            for n, line in batch:
+                answer = coded.get(n)
+                if answer is None:
+                    warnings.append(f"Line {n} ({line.date:%d %b %Y}, {line.amount:,.2f}) was not coded by the AI "
+                                    "model: it is on Suspense for a person to code.")
+                rows.append(AccountingTransaction(
+                    description=line.text, date=line.date.isoformat(), amount=float(line.amount),
+                    direction=line.direction, account=answer.account if answer else "9998", currency=line.currency,
+                    document_type="statement", counterparty=answer.counterparty if answer else None,
+                    alternatives=answer.alternatives if answer else [], bought=answer.bought if answer else None,
+                    people=answer.people if answer else None,
+                    balance=float(line.balance) if line.balance is not None else None))
+        return TransactionExtractionResult(
+            data=rows, warnings=warnings, model=model,
+            opening_balance=float(statement.opening_balance) if statement.opening_balance is not None else None,
+            closing_balance=float(statement.closing_balance) if statement.closing_balance is not None else None)
+
+    def _coding_instructions(self) -> str:
+        return ("The lines of a bank or card statement are listed below, each with its number, date, direction and "
+                "amount read exactly from the file: never change them. For each line give only its account, its "
+                "counterparty (who was paid or who paid), alternatives, bought and people, by the rules below, as "
+                '{"lines": [{"n": 1, "account": "...", "counterparty": "...", "alternatives": [], "bought": null, '
+                '"people": null}]}, one object per line, n as given. The "transactions" shape the rules end with is '
+                "not used here.\n\n" + self._instructions())
+
+    def _coded(self, raw: str) -> dict[int, CodedLine]:
+        """The coding answer's lines by number; a line that doesn't validate is left out (and so goes to Suspense)."""
+        try:
+            parsed = json.loads(str(raw).strip())
+        except json.JSONDecodeError:
+            raise ModelError("The AI model's answer was not valid JSON.", code="ai_output_invalid") from None
+        found = {}
+        for item in (parsed.get("lines") if isinstance(parsed, dict) else None) or []:
+            try:
+                line = CodedLine.model_validate(item)
+            except ValidationError:
+                continue
+            found.setdefault(line.n, line)
+        return found
 
     def _instructions(self) -> str:
         """What to extract and how; the document itself travels in a separate message."""

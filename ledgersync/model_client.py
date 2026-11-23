@@ -129,9 +129,11 @@ class ModelClient:
         if not health.model_available:
             raise ModelUnavailable(health.error or self._unreachable_message())
 
-    def chat_json(self, messages: list[dict], schema: dict, images: Optional[list[str]] = None) -> ModelAnswer:
+    def chat_json(self, messages: list[dict], schema: dict, images: Optional[list[str]] = None,
+                  reasoning_effort: Optional[str] = None) -> ModelAnswer:
         """The model's JSON text, held to `schema` by strict structured outputs, with the host that wrote it.
-        Images are base64 JPEGs (pipeline.prepare_image), added to the last message."""
+        Images are base64 JPEGs (pipeline.prepare_image), added to the last message. reasoning_effort, when given,
+        replaces the setting for this call (coding lines read in code needs little thinking)."""
         messages = [dict(m) for m in messages]
         if images:
             messages[-1]["content"] = [
@@ -149,8 +151,9 @@ class ModelClient:
             "response_format": {"type": "json_schema", "json_schema": {
                 "name": "transactions", "schema": strict_schema(schema), "strict": True}},
         }
-        if self._s.reasoning_effort:
-            payload["reasoning_effort"] = self._s.reasoning_effort
+        effort = self._s.reasoning_effort if reasoning_effort is None else reasoning_effort
+        if effort:
+            payload["reasoning_effort"] = effort
         if self._openrouter:
             # Only to providers that honour every parameter above, the strict schema above all;
             # otherwise OpenRouter may pick one that ignores it.

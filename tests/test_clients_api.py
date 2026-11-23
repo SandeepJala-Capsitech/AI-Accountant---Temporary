@@ -225,7 +225,7 @@ class GatedModel(FakeModel):
         super().__init__(replies)
         self.gate = gate
 
-    def chat_json(self, messages, schema, images=None):
+    def chat_json(self, messages, schema, images=None, reasoning_effort=None):
         self.gate.wait(5)
         return super().chat_json(messages, schema, images)
 
@@ -834,3 +834,17 @@ def test_a_firm_sets_a_clients_materiality_and_can_clear_it(api):
     assert (levels["benchmark"], levels["overall"]) == ("firm", "2000.00")
     cleared = client.patch(f"/api/clients/{made['id']}", json={"materiality": None})
     assert cleared.json()["materiality"] is None
+
+
+def test_a_card_export_uploaded_for_the_card_books_its_spending_as_money_out(api):
+    # Amex exports spending as a positive amount: read in code, it must be money out on the card.
+    coded = json.dumps({"lines": [{"n": 1, "account": "7502", "counterparty": "Streamflix", "alternatives": [],
+                                   "bought": None, "people": None}]})
+    client = api(FakeModel([coded]))
+    cid = client_with_two_accounts(client)
+    data = b"Date,Description,Amount\n09/09/2026,STREAMFLIX.COM,10.99\n"
+    resp = client.post("/api/analyze", data={"client_id": str(cid), "bank_account": "1240"},
+                       files={"file": ("amex.csv", data, "text/csv")})
+    assert finish(client, resp.json()["job_id"])["status"] == "succeeded"
+    [line] = client.get(f"/api/clients/{cid}/years/{YEAR}/ledger").json()["transactions"]
+    assert (line["direction"], line["gross"], line["contra_account_code"]) == ("out", "10.99", "1240")

@@ -329,3 +329,59 @@ def test_a_row_says_when_it_was_bought_abroad():
     TransactionExtractor(client, business_name="Jo Bloggs", business_type="sole_trader").extract_accounting_data("x")
     system = client.calls[0]["messages"][0]["content"]
     assert "set abroad to true" in system and '"abroad": false' in system
+
+
+# ─── Coding a statement read in code (design of 2026-11-23) ───────────────────
+
+import datetime as _dt  # noqa: E402
+import json as _json  # noqa: E402
+from decimal import Decimal as _D  # noqa: E402
+
+from ledgersync.extractor import CODING_BATCH  # noqa: E402
+from ledgersync.tables import Line, Statement  # noqa: E402
+
+
+def _statement(count):
+    lines = [Line(date=_dt.date(2023, 4, 28), text=f"PAYEE {n}", amount=_D("10.00") + n, direction="out",
+                  balance=None, currency="GBP", kind="BP") for n in range(1, count + 1)]
+    return Statement(lines=lines, opening_balance=_D("100.00"), closing_balance=_D("50.00"), heading="HSBC Business")
+
+
+def _coded(numbers, account="7502"):
+    return _json.dumps({"lines": [{"n": n, "account": account, "counterparty": f"Payee {n}", "alternatives": [],
+                                   "bought": None, "people": None} for n in numbers]})
+
+
+def test_coding_a_statement_asks_only_for_accounts_and_keeps_the_figures():
+    fake = FakeModel([_json.dumps({"lines": [
+        {"n": 1, "account": "2220", "counterparty": "Leah Morgan", "alternatives": [], "bought": None, "people": None},
+        {"n": 2, "account": "7502", "counterparty": "BT", "alternatives": ["7503"], "bought": None, "people": None}]})])
+    statement = Statement(lines=[
+        Line(date=_dt.date(2023, 4, 28), text="LEAH MORGAN SALARY", amount=_D("3149.87"), direction="out",
+             balance=_D("8263.46"), currency="GBP", kind="BP"),
+        Line(date=_dt.date(2023, 4, 29), text="BT GROUP", amount=_D("72.00"), direction="out", balance=None,
+             currency="GBP", kind=None)], opening_balance=_D("11413.33"), closing_balance=_D("8191.46"), heading="")
+    result = TransactionExtractor(fake).code_statement(statement, "current")
+    first, second = result.data
+    assert (first.date, first.amount, first.direction, first.account, first.counterparty, first.balance) == (
+        "2023-04-28", 3149.87, "out", "2220", "Leah Morgan", 8263.46)
+    assert {r.document_type for r in result.data} == {"statement"} and second.alternatives == ["7503"]
+    assert (result.opening_balance, result.closing_balance) == (11413.33, 8191.46)
+    [call] = fake.calls
+    assert call["reasoning_effort"] == "low"
+    assert "1 | 2023-04-28 | out | 3149.87 | BP LEAH MORGAN SALARY" in call["messages"][-1]["content"]
+    assert set(call["schema"]["properties"]) == {"lines"}
+
+
+def test_a_long_statement_is_coded_fifty_lines_a_request():
+    assert CODING_BATCH == 50
+    fake = FakeModel([_coded(range(1, 51)), _coded(range(51, 101)), _coded(range(101, 121))])
+    result = TransactionExtractor(fake).code_statement(_statement(120), "current")
+    assert len(fake.calls) == 3 and len(result.data) == 120 and result.data[119].counterparty == "Payee 120"
+
+
+def test_a_line_the_answer_leaves_out_goes_to_suspense():
+    fake = FakeModel([_coded([1, 3, 9])])
+    result = TransactionExtractor(fake).code_statement(_statement(3), "current")
+    assert [r.account for r in result.data] == ["7502", "9998", "7502"]
+    assert len(result.warnings) == 1 and "Line 2" in result.warnings[0]

@@ -8,14 +8,38 @@ import io
 import logging
 from typing import Optional
 
+from . import tables
 from .intake import PYMUPDF_LOCK, Intake
 from .jobs import JobContext
 
 logger = logging.getLogger(__name__)
 
 
-def analyze(intake: Intake, extractor, ctx: JobContext):
-    """Runs one analysis and returns the extractor's TransactionExtractionResult."""
+def analyze(intake: Intake, extractor, ctx: JobContext, name: str = "", account: Optional[str] = None):
+    """Runs one analysis and returns the extractor's TransactionExtractionResult. A table whose columns are
+    recognised (tables.parse) is read in code: a payment processor's export outright, a bank or card statement with
+    only its lines' coding asked of the model. account: the client's bank account or card the upload is for, if
+    known, which says how a card's amounts are signed."""
+    if intake.kind == "table":
+        table = tables.parse(intake.text or "")
+        if table is not None:
+            made = tables.processor(table, name)
+            kind = tables.account_kind(account)
+            if made is None and not (kind != "credit_card" and tables.names_a_card(name, table.heading)):
+                statement = tables.statement(table, kind)
+                if statement is not None:
+                    ctx.report(f"Asking the AI model ({extractor.client.model}) to code {len(statement.lines)} lines")
+                    made = extractor.code_statement(statement, kind)
+            if made is not None:
+                return made.model_copy(update={"warnings": [f"Read in code: {len(made.data)} lines", *made.warnings]})
+        result = _analyze(intake, extractor, ctx)
+        return result.model_copy(update={"warnings": ["Columns not recognised: read by the model",
+                                                      *result.warnings]})
+    return _analyze(intake, extractor, ctx)
+
+
+def _analyze(intake: Intake, extractor, ctx: JobContext):
+    """Today's reading: the whole document to the model (a table as its text)."""
     text = intake.text
     if intake.kind == "image":
         return _read_pages([intake.data], extractor, ctx)

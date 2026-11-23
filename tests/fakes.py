@@ -17,6 +17,21 @@ def transactions_json(*rows: dict) -> str:
     return json.dumps({"transactions": list(rows)})
 
 
+def as_coding(reply):
+    """A reader's answer (a "transactions" list) as the answer to coding a statement read in code (a "lines" list):
+    the same accounts and payees, line by line. A reply already in that shape is left as it is."""
+    try:
+        parsed = json.loads(reply)
+    except (TypeError, ValueError):
+        return reply
+    if not isinstance(parsed, dict) or "transactions" not in parsed:
+        return reply
+    return json.dumps({"lines": [{"n": n, "account": t.get("account", "9998"), "counterparty": t.get("counterparty"),
+                                  "alternatives": t.get("alternatives", []), "bought": t.get("bought"),
+                                  "people": t.get("people")}
+                                 for n, t in enumerate(parsed["transactions"], start=1)]})
+
+
 class FakeModel:
     """Stands in for ModelClient: chat_json returns (or raises) `replies` in order."""
 
@@ -35,12 +50,13 @@ class FakeModel:
         if not self.healthy:
             raise ModelUnavailable(OFFLINE)
 
-    def chat_json(self, messages, schema, images=None) -> str:
-        self.calls.append({"messages": messages, "schema": schema, "images": images})
+    def chat_json(self, messages, schema, images=None, reasoning_effort=None) -> str:
+        self.calls.append({"messages": messages, "schema": schema, "images": images,
+                           "reasoning_effort": reasoning_effort})
         reply = self.replies.pop(0)
         if isinstance(reply, Exception):
             raise reply
-        return reply
+        return as_coding(reply) if "lines" in schema.get("properties", {}) else reply
 
     def warm_up(self) -> None:
         pass

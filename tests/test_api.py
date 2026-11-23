@@ -162,7 +162,7 @@ def test_cancel_running_job_via_api(make_client):
             super().__init__()
             self.entered, self.release = threading.Event(), threading.Event()
 
-        def chat_json(self, messages, schema, images=None):
+        def chat_json(self, messages, schema, images=None, reasoning_effort=None):
             self.entered.set()
             self.release.wait(5)
             return transactions_json(ROW)

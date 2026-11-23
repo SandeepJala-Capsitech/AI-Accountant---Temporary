@@ -197,7 +197,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
             reader = TransactionExtractor(model_client, business_name=client.name, business_type=client.business_type,
                                           bank_codes=ledger.bank_choices(client, own or rules.bank_account),
                                           owners=ledger.owners_of(client))
-        extraction = pipeline.analyze(item, reader, ctx)
+        extraction = pipeline.analyze(item, reader, ctx, name=name, account=own)
         # What the file prints, when it has a text layer; an image or a scanned PDF has none to check a total against.
         printed = item.text if item.data is None else pipeline.pdf_text(item.data) if item.kind == "pdf" else None
         # A line coded to the statement's own account goes to Suspense; one coded to another is a transfer.
