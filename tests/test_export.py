@@ -93,6 +93,14 @@ def test_a_row_a_person_removed_says_so(store):
     assert [txs[f"P{n}"].value for n in (3, 4)] == [None, "Removed by a person"]
 
 
+def test_vat_a_receipt_does_not_reclaim_stays_in_the_amount(store):
+    # The test books' live run: a till receipt that isn't a VAT invoice made the export fail with a server error.
+    client = store.create_client(CUBE)
+    store.add_upload(client.id, "a.pdf", "pdf", [receipt(not_vat_invoice=True)])
+    _, txs, _ = sheets(store, client.id)
+    assert [txs[f"{c}3"].value for c in "FGH"] == [72, 0, 72]   # amount, VAT, net: as the books hold it
+
+
 def test_the_file_name_drops_characters_file_names_cannot_hold():
     # Review focus: a client name with characters a file name can't hold, or letters outside ASCII.
     assert file_name('A/B: "Trading" Ltd', DAY) == "A B Trading Ltd 2026-10-06.xlsx"

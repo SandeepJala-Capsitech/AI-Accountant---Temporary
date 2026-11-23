@@ -14,6 +14,7 @@ from openpyxl.styles import Font
 
 from .accounts import BY_CODE, Heading, TaxTreatment
 from .models import Direction, Ledger, Transaction, TrialBalance
+from .money import ZERO
 
 MONEY = '"£"#,##0.00'
 DATE = "dd/mm/yyyy"
