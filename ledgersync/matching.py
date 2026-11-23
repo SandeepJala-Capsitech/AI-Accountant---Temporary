@@ -7,7 +7,7 @@ import datetime as dt
 import re
 from collections import Counter
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from itertools import combinations
 from typing import Optional, Sequence
 
@@ -21,6 +21,7 @@ from .money import PENNY, ZERO, VatTreatment
 WINDOW = dt.timedelta(days=31)   # a payment may be suggested for a document dated within 31 days of it
 NEAR_PAYMENT = dt.timedelta(days=7)   # a payment of a document's exact amount this soon after it, to a like name
 PART_WINDOW = dt.timedelta(days=120)  # a part payment, an overpayment or a set of documents: at most 120 days after
+CONVERT_BEFORE, CONVERT_AFTER = dt.timedelta(days=7), dt.timedelta(days=14)   # a foreign bill's payment, around its date
 CARD_DAYS = dt.timedelta(days=3)  # a card payment reaches the bank within a few days of its receipt
 TRANSFER_DAYS = dt.timedelta(days=3)  # money moved between two of the client's accounts arrives within a few days
 YEAR = dt.timedelta(days=366)     # records further apart than this are different purchases, whatever else agrees
@@ -254,6 +255,7 @@ def match_documents(rows: list[Transaction], settings: BusinessSettings,
                                         upload_ids),
                            read, left_out or {})
     rows = _with_till_takings(rows, settings)
+    rows = _in_pounds(rows, settings)
     documents = {**_brought_forward(open_items), **_documents(rows)}
     changes: list[dict] = [{} for _ in rows]
     # Both sides of a transfer between the client's own accounts are the transfer's, never a payment of a document.
@@ -487,6 +489,66 @@ def _settled_since(changes: list[dict], documents: dict[str, _Document]) -> None
             if i.code == "part_payment" else
             issue("overpayment", i.message.split(" over")[0] + " over; it has been refunded since.", "info")
             if i.code == "overpayment" else i for i in found]
+
+
+def _in_pounds(rows: list[Transaction], settings: BusinessSettings) -> list[Transaction]:
+    """The rows, each document in another currency booked at the pounds its payment took: the one bank or card line
+    in pounds, the same way, surely to the same payee, nearest its date (a week before to a fortnight after) and paying
+    no document in pounds exactly. Its rows are scaled by that rate and checked again. With no such line, or two as
+    near, the document stays as read, for a person to enter the pounds."""
+    out = list(rows)
+    groups: dict[str, list[int]] = {}
+    for n, tx in enumerate(rows):
+        if (tx.currency != "GBP" and tx.date and tx.document_type not in ("statement", "payroll", "journal")
+                and booked(tx)):
+            groups.setdefault(tx.document_ref or f"row-{n}", []).append(n)
+    if not groups:
+        return out
+    pounds = [tx for tx in rows if tx.currency == "GBP" and tx.document_type not in ("statement", "journal")
+              and booked(tx)]
+    used: set[int] = set()
+    for members in sorted(groups.values(), key=lambda m: (rows[m[0]].date, m[0])):
+        first = rows[members[0]]
+        total = sum((rows[n].gross if rows[n].direction == first.direction else -rows[n].gross for n in members),
+                    ZERO)
+        if total <= ZERO:
+            continue
+
+        def fits(n: int, line: Transaction) -> bool:
+            return (n not in used and line.document_type == "statement" and line.currency == "GBP"
+                    and line.direction == first.direction and line.date is not None and line.link is None
+                    and booked_line(line) and line.counterparty is not None
+                    and same_payee(line.counterparty, first.counterparty)
+                    and first.date - CONVERT_BEFORE <= line.date <= first.date + CONVERT_AFTER
+                    and Decimal("0.2") <= line.gross / total <= 5
+                    and not any(d.gross == line.gross and d.counterparty
+                                and same_payee(line.counterparty, d.counterparty) for d in pounds))
+
+        near = sorted((abs((line.date - first.date).days), n) for n, line in enumerate(rows) if fits(n, line))
+        if not near or (len(near) > 1 and near[0][0] == near[1][0]):
+            continue
+        k = near[0][1]
+        used.add(k)
+        line, rate, left = rows[k], rows[k].gross / total, rows[k].gross
+
+        def scaled(value: Optional[Decimal]) -> Optional[Decimal]:
+            return None if value is None else (value * rate).quantize(PENNY, rounding=ROUND_HALF_UP)
+
+        for j, n in enumerate(members):
+            tx = rows[n]
+            sign = 1 if tx.direction == first.direction else -1
+            gross = sign * left if j == len(members) - 1 else scaled(tx.gross)
+            left -= sign * gross
+            converted = normalise(tx.model_copy(update={
+                "currency": "GBP", "gross": gross, "vat": scaled(tx.vat), "document_total": scaled(tx.document_total),
+                "document_net": scaled(tx.document_net)}), settings)
+            if j == 0:
+                converted = converted.model_copy(update={"issues": converted.issues + [issue(
+                    "converted_currency", f"Read as {tx.currency} {total:,.2f}; booked at the {_gbp(line.gross)} the "
+                                          f"bank paid on {line.date:%d %b %Y}. If that payment was for something "
+                                          "else, edit the row.", "info")]})
+            out[n] = converted
+    return out
 
 
 def _with_payout_report(tx: Transaction) -> Transaction:

@@ -140,16 +140,37 @@ def test_a_bank_line_pays_the_one_bill_it_matches():
     assert codes(line) == []
 
 
-def test_a_bill_in_another_currency_is_paid_by_nothing_until_it_is_converted():
+def test_a_bill_in_another_currency_is_booked_at_the_pounds_its_payment_took():
+    # The test books' agency year: a $49 analytics invoice stayed "edit the row and enter the pounds" although the
+    # bank paid £38.31 for it two days later, and one such error stops the whole year being posted.
     usd = bill(gross="500.00", who="Amazon Web Services EMEA SARL", ref="aws", currency="USD")
     card = bank(gross="396.42", who="AMAZON WEB SERVICES", ref="card")
     fee = bank(gross="7.00", date="2026-10-20", who="Starling Bank", ref="fee", account="7901")
     foreign, card_line, fee_line = matched(usd, card, fee)
-    assert (card_line.pays, fee_line.pays, foreign.paid_by) == ([], [], [])
-    assert "part_payment" not in [c for c, _ in codes(card_line) + codes(fee_line)]
+    assert (foreign.currency, foreign.gross, foreign.owed) == ("GBP", Decimal("396.42"), Decimal("0.00"))
+    assert [p.ref for p in card_line.pays] == ["aws"] and fee_line.pays == []
+    assert [c for c, _ in codes(foreign)] == ["converted_currency"]
+    assert "USD 500.00" in foreign.issues[0].message and "£396.42" in foreign.issues[0].message
+    lonely, = matched(usd)   # with no payment to go by, a person enters the pounds
+    assert lonely.currency == "USD" and ("non_gbp_currency", "error") in codes(lonely)
     converted, card_line, fee_line = matched(usd.model_copy(update={"gross": Decimal("396.42"), "currency": "GBP"}),
                                              card, fee)
     assert [p.ref for p in card_line.pays] == ["aws"] and converted.owed == Decimal("0.00") and fee_line.pays == []
+
+
+def test_a_reverse_charge_invoice_in_dollars_books_its_vat_on_the_pounds():
+    usd = bill(gross="49.00", date="2023-04-15", who="Tallgrass Metrics Inc.", ref="tm", currency="USD",
+               account="7502", reverse_charge=True)
+    foreign, line = matched(usd, bank("38.31", "2023-04-17", "Tallgrass Metrics Inc", account="7502"))
+    assert (foreign.gross, foreign.reverse_vat, [p.ref for p in line.pays]) == (
+        Decimal("38.31"), Decimal("7.66"), ["tm"])
+
+
+def test_a_bill_in_another_currency_with_two_payments_as_near_stays_for_a_person():
+    usd = bill(gross="49.00", date="2023-04-15", who="Tallgrass Metrics Inc.", ref="tm", currency="USD")
+    foreign, *_ = matched(usd, bank("38.31", "2023-04-13", "Tallgrass Metrics Inc", ref="a"),
+                          bank("38.90", "2023-04-17", "Tallgrass Metrics Inc", ref="b"))
+    assert foreign.currency == "USD" and ("non_gbp_currency", "error") in codes(foreign)
 
 
 def test_an_unpaid_bill_is_still_owed():
