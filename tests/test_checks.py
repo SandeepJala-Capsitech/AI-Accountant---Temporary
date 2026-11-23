@@ -467,6 +467,18 @@ def test_a_payroll_report_keeps_the_account_it_is_owed_on_and_is_never_paid_as_a
     assert not [i for i in line_after.issues if i.code in ("open_document", "possible_payment", "choose_payment")]
 
 
+def test_a_summary_of_what_payroll_owes_hmrc_is_not_booked_again():
+    # The test books' agency year: each month's P32 from the payroll bureau, read as a payroll report on 2210 PAYE
+    # and NI, posted to and from 2210, an error on four rows that stopped the whole year being posted. The payroll
+    # report books what is owed to HMRC and the bank payment clears it: the P32 only shows it.
+    p32 = row(date=dt.date(2023, 4, 28), gross=Decimal("3321.37"), account_code="2210", owed_to="paye_ni",
+              document_type="payroll", counterparty="HMRC")
+    [after] = normalise_and_match([p32])
+    assert not booked(after) and not [i for i in after.issues if i.severity == "error"]
+    assert [i.code for i in after.issues] == ["not_booked"] and "already owed" in after.issues[0].message
+    assert booked(normalise_and_match([p32.model_copy(update={"include": True})])[0])   # a person can still book it
+
+
 def test_a_payroll_line_without_owed_to_is_owed_not_paid_and_flagged():
     line = row(date=dt.date(2026, 3, 28), gross=Decimal("3000.00"), account_code="7000", document_type="payroll")
     [checked] = normalise_and_match([line])

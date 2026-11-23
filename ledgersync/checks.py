@@ -325,9 +325,15 @@ def booked(tx: Transaction) -> bool:
     is never booked, whatever else is true of it."""
     if tx.excluded or tx.superseded_by:
         return False
-    if tx.recorded_by is not None or tx.left_off_claim is not None or tx.in_opening:
+    if tx.recorded_by is not None or tx.left_off_claim is not None or tx.in_opening or payroll_summary(tx):
         return tx.include
     return tx.include or (tx.document_type not in NOT_TRANSACTIONS and tx.copy_of is None)
+
+
+def payroll_summary(tx: Transaction) -> bool:
+    """A payroll row on the account that holds what payroll owes (a P32 of what is due to HMRC, say): the payroll
+    report books that, and the bank payment clears it, so booking this too would post the account to itself."""
+    return tx.document_type == "payroll" and tx.account_code in PAYROLL_OWED
 
 
 # Where a payroll report's rows are held until the bank pays them, by what each is owed to.
@@ -451,7 +457,7 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
         issues.append(issue("unknown_account", "This account isn't in the chart.", "error"))
     if contra not in BY_CODE:
         issues.append(issue("unknown_account", "Its other account isn't in the chart.", "error"))
-    if contra == tx.account_code:
+    if contra == tx.account_code and not (payroll_summary(tx) and not tx.include):
         issues.append(issue("same_account", "Posts to and from the same account.", "error"))
     if tx.currency != "GBP":
         issues.append(issue("non_gbp_currency", f"Read as {tx.currency} {tx.gross:,.2f}. Edit the row and enter the "
@@ -605,6 +611,10 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
                                           "there will be none.", "info"))
     if tx.document_type == "statement" and tx.account_code in WAGES:
         issues.append(issue("wages_from_bank", "Book wages from the payroll report: code net pay to 2220 Net Wages."))
+    if payroll_summary(tx) and not tx.include:
+        issues.append(issue("not_booked", f"A summary of what is already owed on {account.name}: not booked. The "
+                                          "payroll report books it and the bank payment clears it. Tick Include to "
+                                          "book it.", "info"))
     if tx.document_type in NOT_TRANSACTIONS and not tx.include:   # copies and card payments: matching says so
         issues.append(issue("not_booked", (
             "A finance or loan agreement: not booked. The money it lent and its repayments are booked from the bank "

@@ -132,10 +132,11 @@ def test_a_bank_line_that_pays_a_bill_clears_creditors_and_counts_the_rent_once(
 
 
 def test_a_payment_waiting_for_a_choice_blocks_the_trial_balance():
-    bills = [tx("out", "500.00", "7100", document_type="invoice", counterparty="Landmark Properties",
-                document_ref=ref) for ref in ("a", "b")]
+    # Part of one of two bills: which one is for a person (two of the same amount pay the oldest).
+    bills = [tx("out", gross, "7100", document_type="invoice", counterparty="Landmark Properties",
+                document_ref=ref) for ref, gross in (("a", "500.00"), ("b", "450.00"))]
     with pytest.raises(InvalidTransactions, match="Choose one"):
-        trial_balance([*bills, bank_line("500.00", "LANDMARK PROPERTIES", 5)], REGISTERED)
+        trial_balance([*bills, bank_line("300.00", "LANDMARK PROPERTIES", 5)], REGISTERED)
 
 
 def test_a_reminder_of_an_unpaid_bill_is_owed_once():

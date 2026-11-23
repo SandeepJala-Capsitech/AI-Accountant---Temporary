@@ -294,9 +294,11 @@ def test_validate_matches_a_payment_to_its_bill(make_client):
 
 
 def test_trial_balance_waits_for_a_person_to_choose_a_payment(make_client):
-    bills = [{**BT, "document_type": "invoice", "counterparty": "BT Business", "document_ref": r} for r in "ab"]
+    # Part of one of two bills: which one is for a person (two of the same amount pay the oldest).
+    bills = [{**BT, "document_type": "invoice", "counterparty": "BT Business", "document_ref": r, "gross": g}
+             for r, g in (("a", "500.00"), ("b", "450.00"))]
     line = {**BT, "date": "2026-09-05", "document_type": "statement", "counterparty": "BT BUSINESS",
-            "document_ref": "l"}
+            "document_ref": "l", "gross": "300.00"}
     resp = make_client().post("/api/trial-balance", json={"transactions": [*bills, line]})
     assert resp.status_code == 422 and "Choose one" in resp.json()["detail"]["message"]
 
