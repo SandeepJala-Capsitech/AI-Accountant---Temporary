@@ -173,6 +173,33 @@ def test_a_bill_in_another_currency_with_two_payments_as_near_stays_for_a_person
     assert foreign.currency == "USD" and ("non_gbp_currency", "error") in codes(foreign)
 
 
+def _northgate(month, name):
+    return row("invoice", "in", "4800.00", f"2023-{month:02d}-01", "Northgate Dental Group", f"inv-{month}",
+               account="4000", description=f"Northgate Dental Group, retainer {name} 2023")
+
+
+def test_a_credit_note_comes_off_the_invoice_it_credits_and_the_payment_of_the_rest_clears_it():
+    # The test books' agency year: £720 was credited on September's £4,800 and the customer paid £4,080. The credit
+    # note stayed open as £720 the business owed, so the £4,080 was asked about, which stopped the year being posted.
+    credit = row("invoice", "out", "720.00", "2023-10-06", "Northgate Dental Group", "cn", account="4000",
+                 description="Credit to Northgate Dental Group: September 2023 retainer, hours disputed",
+                 document_number="CN-0007")
+    august, september, credited, line = matched(
+        _northgate(8, "August"), _northgate(9, "September"), credit,
+        bank("4080.00", "2023-10-10", "Northgate Dental Group", direction="in", account="4000"))
+    assert [p.ref for p in line.pays] == ["inv-9"] and codes(line) == []
+    assert (september.owed, credited.owed, august.owed) == (Decimal("0.00"), Decimal("0.00"), Decimal("4800.00"))
+    assert [p.ref for p in september.paid_by] == ["cn", "line-1"]
+    assert "Takes £720.00 off" in next(i.message for i in credited.issues if i.code == "credited")
+
+
+def test_a_supplier_credit_note_comes_off_the_only_bill_it_can_be_for():
+    bill_, credit = matched(bill("500.00"), row("invoice", "in", "100.00", "2026-10-08",
+                                                "Business Cube Management Solutions", "cn", account="7100",
+                                                description="Credit note: damaged stock"))
+    assert (bill_.owed, credit.owed) == (Decimal("400.00"), Decimal("0.00"))
+
+
 def test_an_unpaid_bill_is_still_owed():
     [open_bill] = matched(bill())
     assert open_bill.owed == Decimal("12000.00") and open_bill.paid_by == []

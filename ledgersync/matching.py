@@ -258,6 +258,7 @@ def match_documents(rows: list[Transaction], settings: BusinessSettings,
     rows = _in_pounds(rows, settings)
     documents = {**_brought_forward(open_items), **_documents(rows)}
     changes: list[dict] = [{} for _ in rows]
+    _credit_notes(rows, documents, changes)
     # Both sides of a transfer between the client's own accounts are the transfer's, never a payment of a document.
     transfers = _pair_transfers(rows, settings, changes, apart)
     lines = sorted((n for n, tx in enumerate(rows) if tx.document_type in _PAYMENT_LINES and n not in transfers
@@ -415,6 +416,47 @@ def _with_addressee(tx: Transaction, settings: BusinessSettings) -> Transaction:
     return tx.model_copy(update={"issues": tx.issues + [issue(
         "addressed_to", f"Addressed to {to}, not {name}. If it is their own spending, recode it to Director's Loan "
                         "Account; if the business bought it, say it is fine.")]})
+
+
+_USUAL_WAY = {DEBTORS: "in", CREDITORS: "out"}   # an invoice to a customer, a bill from a supplier
+
+
+def _credit_notes(rows: list[Transaction], documents: dict[str, _Document], changes: list[dict]) -> None:
+    """Each credit note taken off the invoice it credits, before any payment is matched, so a payment of what is left
+    clears that invoice. A credit note is an invoice going the other way on Debtors or Creditors. Its invoice is an
+    open one to or from the same payee, dated on or before it, with at least its amount open: the one whose number it
+    names, else whose month it names, else the only one. Otherwise it stays open, for a person to link or refund."""
+    for credit in sorted((d for d in documents.values() if d.kind == "invoice" and d.account in _USUAL_WAY
+                          and d.direction != _USUAL_WAY[d.account] and d.open > ZERO and d.rows),
+                         key=lambda d: (d.date or dt.date.max, d.ref)):
+        text = " ".join(f"{rows[n].description} {rows[n].document_number or ''}" for n in credit.rows)
+        owed = [d for d in documents.values() if d.kind == "invoice" and d.account == credit.account
+                and d.direction == _USUAL_WAY[d.account] and d.open >= credit.open and d.counterparty
+                and credit.counterparty and same_payee(credit.counterparty, d.counterparty)
+                and (d.date is None or credit.date is None or d.date <= credit.date)]
+
+        def number(d: _Document) -> Optional[str]:
+            return next((rows[n].document_number for n in d.rows if rows[n].document_number), None)
+
+        for pick in (lambda d: bool(number(d)) and re.search(rf"\b{re.escape(number(d))}\b", text, re.I),
+                     lambda d: _same_month(text, d.description), lambda d: True):
+            chosen = [d for d in owed if pick(d)]
+            if chosen:
+                break
+        if len(chosen) != 1:
+            continue
+        invoice, amount = chosen[0], credit.open
+        invoice.open -= amount
+        credit.open = ZERO
+        invoice.paid_by.append(Settlement(ref=credit.ref, amount=amount, date=credit.date,
+                                          description=credit.description, kind=credit.kind))
+        credit.paid_by.append(Settlement(ref=invoice.ref, amount=amount, date=invoice.date,
+                                         description=invoice.description, kind=invoice.kind))
+        n = credit.rows[0]
+        changes[n]["issues"] = changes[n].get("issues", rows[n].issues) + [issue(
+            "credited", f"Takes {_gbp(amount)} off {invoice.description}"
+                        f"{f', {invoice.date:%d %b %Y}' if invoice.date else ''}: {_gbp(invoice.open)} is left to "
+                        "pay on it.", "info")]
 
 
 def _refunds(rows: list[Transaction], changes: list[dict], documents: dict[str, _Document], lines: list[int]) -> None:
