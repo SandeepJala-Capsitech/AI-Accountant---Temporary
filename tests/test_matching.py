@@ -157,11 +157,36 @@ def test_an_unpaid_bill_is_still_owed():
     assert open_bill.owed == Decimal("12000.00") and open_bill.paid_by == []
 
 
-def test_two_bills_that_fit_ask_a_person_to_choose():
+def test_of_two_bills_for_the_payment_it_pays_the_oldest_and_says_so():
+    # The test books' agency year: a customer's £7,200 a month met two open items of £7,200 (the balance brought
+    # forward and April's invoice). Asking which one held the payment back, so the next one met three, then four,
+    # and none of the year's 25 payments from two customers settled anything; nothing could be posted.
     october, later, line = matched(bill(), bill(date="2026-10-10", ref="bill-later"), bank(date="2026-10-20"))
-    assert codes(line) == [("choose_payment", "error")] and line.pays == []
-    assert [[c.ref for c in option] for option in line.candidates] == [["bill-oct"], ["bill-later"]]
-    assert october.owed == later.owed == Decimal("12000.00")
+    assert [p.ref for p in line.pays] == ["bill-oct"] and codes(line) == [("paid_oldest", "warning")]
+    assert (october.owed, later.owed) == (Decimal("0.00"), Decimal("12000.00"))
+    assert "the oldest" in line.issues[0].message
+
+
+def test_a_customer_paying_the_same_each_month_clears_the_invoices_in_order():
+    months = [row("invoice", "in", "7200.00", f"2023-{m:02d}-01", "Brightwater Homes Ltd", f"inv-{m}", account="4000",
+                  description=f"Brightwater Homes Ltd, retainer {name} 2023")
+              for m, name in ((4, "April"), (5, "May"), (6, "June"))]
+    pays = [bank("7200.00", day, "Brightwater Homes Ltd", ref=f"line-{n}", direction="in", account="4000",
+                 description="Brightwater Homes Ltd payment received")
+            for n, day in enumerate(("2023-05-02", "2023-05-24", "2023-06-26"))]
+    *invoices, first, second, third = matched(*months, *pays)
+    assert [[p.ref for p in line.pays] for line in (first, second, third)] == [["inv-4"], ["inv-5"], ["inv-6"]]
+    assert not [i for line in (first, second, third) for i in line.issues if i.severity == "error"]
+    assert [i.owed for i in invoices] == [Decimal("0.00")] * 3
+
+
+def test_a_payment_that_names_the_month_pays_that_months_invoice():
+    months = [row("invoice", "in", "720.00", f"2023-{m:02d}-01", "Moss & Pine Florists", f"inv-{m}", account="4000",
+                  description=f"Moss & Pine Florists – Retainer, {name} 2023")
+              for m, name in ((4, "April"), (5, "May"), (6, "June"))]
+    *_, line = matched(*months, bank("720.00", "2023-06-06", "Moss & Pine Florists", direction="in", account="4000",
+                                     description="Moss & Pine Florists retainer Jun 2023"))
+    assert [p.ref for p in line.pays] == ["inv-6"] and codes(line) == []
 
 
 def test_a_payment_before_the_bill_is_not_matched():
@@ -343,7 +368,7 @@ def test_a_reminder_of_a_bill_is_not_booked_again():
 
 def test_a_copy_a_person_includes_is_booked_as_well():
     _, reminder, line = matched(*reminder_pair(include=True), bank("610.63", "2026-04-23", "HML PM Ltd"))
-    assert booked(reminder) and codes(line) == [("choose_payment", "error")]
+    assert booked(reminder) and codes(line) == [("paid_oldest", "warning")]   # booked twice: two owed, the oldest paid
 
 
 @pytest.mark.parametrize("change", [{"document_number": "SC-2026-00719"}, {"gross": "650.00"},

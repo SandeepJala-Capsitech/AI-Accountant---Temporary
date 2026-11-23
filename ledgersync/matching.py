@@ -1447,6 +1447,10 @@ def _settle(n: int, line: Transaction, documents: dict[str, _Document], change: 
     kind, options, why = _outcome(line, documents)
     if kind == "pay":
         _pay(n, line, options[0], change, found)
+    elif kind == "oldest":
+        _pay(n, line, options[0], change, found)
+        found.append(issue("paid_oldest", f"Paid the oldest of {len(options)} open items of {_gbp(line.gross)}: "
+                                          f"{options[0][0].label()}. If it was for another, Link that one."))
     elif kind == "choose":
         found.append(issue("choose_payment", f"Could pay: {_choices(options)}. Choose one.", "error"))
         change["candidates"] = [[d.settlement(d.open) for d in option] for option in options]
@@ -1477,8 +1481,15 @@ def _decide(line: Transaction, docs: list[_Document]) -> tuple[str, list[list[_D
     pays. A document whose name only resembles the line's is suggested (_outcome), for a person to Link."""
     named = [d for d in docs if line.counterparty and same_payee(line.counterparty, d.counterparty)]
     exact = _exact(line, named)
+    if len(exact) == 1:
+        return "pay", [exact]
     if exact:
-        return ("pay", [exact]) if len(exact) == 1 else ("choose", [[d] for d in exact])
+        # Several owe exactly this, as when a customer pays the same each month: the one whose month the line names,
+        # else the oldest, as an accountant allocates a payment. Asking held every later payment back as well.
+        meant = [d for d in exact if _same_month(line.description, d.description)]
+        if len(meant) == 1:
+            return "pay", [meant]
+        return "oldest", [[d] for d in sorted(exact, key=lambda d: (d.date or dt.date.max, d.ref))]
     named = [d for d in named if _recent(line, d)]
     docs = [d for d in docs if line.date <= d.date + WINDOW]
     sets = _sets_adding_up_to(line.gross, named)
@@ -1493,6 +1504,32 @@ def _decide(line: Transaction, docs: list[_Document]) -> tuple[str, list[list[_D
             and _share_a_name(line.counterparty, same_amount[0].counterparty)):
         return "pay", [same_amount]
     return ("suggest", [[d] for d in same_amount]) if same_amount else ("none", [])
+
+
+_MONTH = re.compile(r"\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|(may)|june?|july?|aug(?:ust)?|"
+                    r"sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?,?\s*('?\d{4}|'?\d{2}\b)?",
+                    re.IGNORECASE)
+_MONTH_NUMBERS = {name: n for n, name in enumerate(
+    ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"), start=1)}
+
+
+def _months(text: Optional[str]) -> set[tuple[int, Optional[int]]]:
+    """The months a text names, with the year beside each if any: "retainer Jun 2023" is (6, 2023). "May" counts
+    only with a year beside it, as it is also a word."""
+    found = set()
+    for m in _MONTH.finditer(text or ""):
+        year = m.group(3).lstrip("'") if m.group(3) else None
+        if m.group(2) and not year:
+            continue
+        found.add((_MONTH_NUMBERS[m.group(1)[:3].lower()],
+                   None if year is None else int(year) + (2000 if len(year) == 2 else 0)))
+    return found
+
+
+def _same_month(line_text: Optional[str], document_text: Optional[str]) -> bool:
+    """Whether a bank line names the month a document is for, the year agreeing where both print one."""
+    return any(m == m2 and (y is None or y2 is None or y == y2)
+               for m, y in _months(line_text) for m2, y2 in _months(document_text))
 
 
 def _sets_adding_up_to(amount: Decimal, docs: list[_Document]) -> list[list[_Document]]:
