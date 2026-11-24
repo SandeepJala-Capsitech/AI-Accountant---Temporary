@@ -2196,3 +2196,20 @@ def test_a_receipt_pairs_with_its_bank_line_across_a_weekend():
     taxi, line = matched(row("receipt", "out", "16.07", "2023-11-09", "Avon Street Taxis", "t", account="7400"),
                          bank("16.07", "2023-11-13", "AVON STREET TAXIS", "l", account="7400"))
     assert line.recorded_by is not None and booked(taxi) and not booked(line)
+
+
+# ─── A card payment made before its invoice was dated ─────────────────────────
+
+def test_a_card_payment_days_before_its_invoice_pays_it():
+    # The test books' agency year (EC-0208): Shelfwise charged the card £89.99 on 12 June at the order; its invoice is
+    # dated 19 June. Only suggested, both were booked: the cost twice, and Creditors £89.99 too high.
+    invoice, line = matched(row("invoice", "out", "89.99", "2023-06-19", "Shelfwise Online", "swi", account="7504"),
+                            bank("89.99", "2023-06-12", "Shelfwise Online", "card", account="7504", bank_account="1240"))
+    assert [p.ref for p in line.pays] == ["swi"] and invoice.owed == Decimal("0.00")
+    assert "paid_before_invoice" in [c for c, _ in codes(line)]
+
+
+def test_a_payment_weeks_before_the_invoice_is_only_suggested():
+    invoice, line = matched(row("invoice", "out", "89.99", "2023-06-30", "Shelfwise Online", "swi", account="7504"),
+                            bank("89.99", "2023-06-05", "Shelfwise Online", "card", account="7504", bank_account="1240"))
+    assert line.pays == [] and ("possible_payment", "warning") in codes(line)

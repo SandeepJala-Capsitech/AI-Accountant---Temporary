@@ -11,7 +11,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from itertools import combinations
 from typing import Optional, Sequence
 
-from .accounts import (BY_CODE, CLEARING, CREDITORS, DEBTORS, DIRECTORS_LOANS, PAYE, STAFF_EXPENSES, SUSPENSE,
+from .accounts import (BY_CODE, CARDS, CLEARING, CREDITORS, DEBTORS, DIRECTORS_LOANS, PAYE, STAFF_EXPENSES, SUSPENSE,
                        AccountType)
 from .checks import (MATCHING_ISSUES, PAYROLL_OWED, STATEMENT_ISSUES, REFRESHMENTS, account_on_claim, booked, is_fare, issue,
                      long_date, normalise, reclaims_vat, registered_on, vat_implied)
@@ -24,6 +24,7 @@ NEAR_PAYMENT = dt.timedelta(days=7)   # a payment of a document's exact amount t
 PART_WINDOW = dt.timedelta(days=120)  # a part payment, an overpayment or a set of documents: at most 120 days after
 CONVERT_BEFORE, CONVERT_AFTER = dt.timedelta(days=7), dt.timedelta(days=14)   # a foreign bill's payment, around its date
 CARD_DAYS = dt.timedelta(days=3)  # a card payment reaches the bank within a few days of its receipt
+CHARGED_BEFORE = dt.timedelta(days=14)   # a card charged at the order: the invoice dated up to a fortnight later
 CARD_WORKING_DAYS = 3             # counted in working days: a payment on a Thursday may reach the bank on the Monday
 
 
@@ -1747,7 +1748,12 @@ def _outcome(line: Transaction, documents: dict[str, _Document]) -> tuple[str, l
             f"the amount differs and the line is on {account.name}")
     if kind == "none" and not owed_elsewhere:
         early = [d for d in documents.values() if _paid_before(line, d) and d.open == line.gross]
-        if early:
+        sure = [d for d in early if line.bank_account in CARDS and line.counterparty and d.counterparty
+                and same_payee(line.counterparty, d.counterparty) and d.date - line.date <= CHARGED_BEFORE]
+        if len(early) == 1 and sure:
+            # A card charged at the order, the invoice dated days later (an online shop's): the invoice's payment.
+            kind, options, why = "early", [sure], ""
+        elif early:
             kind, options, why = "suggest", [[d] for d in early], "the payment is dated before the document"
     if kind == "none":     # never silent: someone this line is paid to or from has an open document
         open_documents = [d for d in documents.values() if _another(line, d) and line.date and line.counterparty
@@ -1775,6 +1781,12 @@ def _settle(n: int, line: Transaction, documents: dict[str, _Document], change: 
     kind, options, why = _outcome(line, documents)
     if kind == "pay":
         _pay(n, line, options[0], change, found)
+    elif kind == "early":
+        _pay(n, line, options[0], change, found)
+        doc = options[0][0]
+        found.append(issue("paid_before_invoice", f"Pays {doc.description} ({_gbp(line.gross)}), dated "
+                                                  f"{long_date(doc.date)}: the card was charged before the invoice "
+                                                  "was dated, as at an order.", "info"))
     elif kind == "oldest":
         _pay(n, line, options[0], change, found)
         found.append(issue("paid_oldest", f"Paid the oldest of {len(options)} open items of {_gbp(line.gross)}: "
