@@ -2186,3 +2186,13 @@ def test_a_payment_dated_before_the_write_off_settles_first():
                                                                   direction="in", account="4000"))
     assert [p.ref for p in paid.pays] == ["kf-1017"] and invoice.owed == Decimal("0.00")
     assert "write_off_more_than_owed" in [c for c, _ in codes(off)]   # it wrote off £1,200 more than was left
+
+
+# ─── A card payment reaching the bank over a weekend ──────────────────────────
+
+def test_a_receipt_pairs_with_its_bank_line_across_a_weekend():
+    # The test books' agency year: a £16.07 taxi on Thursday 9 November 2023 reached the bank on Monday 13 November;
+    # four days apart, the two were never paired, so the taxi was booked twice.
+    taxi, line = matched(row("receipt", "out", "16.07", "2023-11-09", "Avon Street Taxis", "t", account="7400"),
+                         bank("16.07", "2023-11-13", "AVON STREET TAXIS", "l", account="7400"))
+    assert line.recorded_by is not None and booked(taxi) and not booked(line)

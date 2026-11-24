@@ -24,6 +24,16 @@ NEAR_PAYMENT = dt.timedelta(days=7)   # a payment of a document's exact amount t
 PART_WINDOW = dt.timedelta(days=120)  # a part payment, an overpayment or a set of documents: at most 120 days after
 CONVERT_BEFORE, CONVERT_AFTER = dt.timedelta(days=7), dt.timedelta(days=14)   # a foreign bill's payment, around its date
 CARD_DAYS = dt.timedelta(days=3)  # a card payment reaches the bank within a few days of its receipt
+CARD_WORKING_DAYS = 3             # counted in working days: a payment on a Thursday may reach the bank on the Monday
+
+
+def card_days_apart(a: dt.date, b: dt.date) -> bool:
+    """Whether a card payment and its bank line are close enough to be one payment: no more than CARD_WORKING_DAYS
+    working days apart (a weekend in between doesn't count)."""
+    earlier, later = sorted((a, b))
+    working = sum(1 for k in range(1, (later - earlier).days + 1)
+                  if (earlier + dt.timedelta(days=k)).weekday() < 5)
+    return working <= CARD_WORKING_DAYS
 TRANSFER_DAYS = dt.timedelta(days=3)  # money moved between two of the client's accounts arrives within a few days
 YEAR = dt.timedelta(days=366)     # records further apart than this are different purchases, whatever else agrees
 MAX_SET = 5                      # one payment clears at most five documents from one counterparty
@@ -907,7 +917,7 @@ def _pair_receipts(rows: list[Transaction], changes: list[dict], lines: list[int
             if (line.link is not None or line.date is None or change.get("pays") or change.get("candidates")
                     or change.get("recorded_by")):
                 continue
-            fits = [r for r in receipts if r.date is not None and abs(line.date - r.date) <= CARD_DAYS
+            fits = [r for r in receipts if r.date is not None and card_days_apart(line.date, r.date)
                     and r.total == line.gross and r.direction == line.direction.value
                     and (not by_name or names_match(line.counterparty, r.counterparty)) and not kept_apart(n, r)]
             if not fits:
@@ -949,7 +959,7 @@ def _pair_receipts(rows: list[Transaction], changes: list[dict], lines: list[int
 
     def differs(receipt: _Document, n: int) -> bool:
         line = rows[n]
-        return (len(receipt.rows) == 1 and receipt.date is not None and abs(line.date - receipt.date) <= CARD_DAYS
+        return (len(receipt.rows) == 1 and receipt.date is not None and card_days_apart(line.date, receipt.date)
                 and receipt.direction == line.direction.value and names_match(line.counterparty, receipt.counterparty)
                 and not kept_apart(n, receipt))
 
@@ -1298,7 +1308,7 @@ def _pair_sets(rows: list[Transaction], marked: list[Transaction], lines: list[i
             and booked_line(tx)]
     card_paid = {d.ref for d in documents if d.date is not None and any(
         rows[k].gross == d.total and rows[k].direction.value == d.direction
-        and abs(rows[k].date - d.date) <= CARD_DAYS for k in bank)}
+        and card_days_apart(rows[k].date, d.date) for k in bank)}
     # Every open line's sets first, so which line claims which charges never depends on which was looked at first.
     open_lines = sorted((n for n in lines if n not in paired_lines), key=lambda n: (rows[n].date, n))
     found: dict[int, list[tuple[int, list[_Document], Optional[list[int]]]]] = {}

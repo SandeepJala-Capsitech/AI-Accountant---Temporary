@@ -22,7 +22,7 @@ from .coding import Usual, named_account, usual_accounts, usual_text
 from .file_dates import date_in_name
 from .errors import InvalidInput, LedgerSyncError, NotFound
 from .ledger import _check_edit, bank_choices, ensure_open, owners_of, require_active
-from .matching import CARD_DAYS, names_match, same_payee
+from .matching import CARD_DAYS, card_days_apart, names_match, same_payee
 from .models import ChangeDraft, Decision, DecisionDraft, Direction, Evidence, RowPatch, SavedRow, Transaction
 from .money import PENNY, ZERO, VatTreatment, vat_in_gross
 from .records import AgentRecords
@@ -146,7 +146,7 @@ def _who(tx: Transaction) -> str:
 
 def _near(a: SavedRow, b: SavedRow) -> bool:
     """The same counterparty, and dated within a few days of each other."""
-    return (a.date is not None and b.date is not None and abs(a.date - b.date) <= CARD_DAYS
+    return (a.date is not None and b.date is not None and card_days_apart(a.date, b.date)
             and names_match(_who(a), _who(b)))
 
 
