@@ -564,27 +564,63 @@ def _hmrc_references(rows: list[Transaction], settings: BusinessSettings) -> lis
     return out
 
 
+EMPLOYERS_NI = "7006"
+_ALLOWANCE = re.compile(r"employment allowance[^£\d]{0,30}£?\s*(\d[\d,]*\.\d{2})", re.I)
+
+
 def _payroll_summaries(rows: list[Transaction], settings: BusinessSettings,
                        upload_ids: Optional[list[Optional[int]]]) -> list[Transaction]:
-    """The rows, those of an upload whose payroll rows are all owed to HMRC (paye_ni, and no net pay or pension) held on
-    PAYE and NI: such a file is a summary of what payroll owes HMRC (a P32), which the payroll report books and the
-    bank payment clears. Read onto a wages account it would book the wages again; on PAYE and NI it is not booked
-    (checks.payroll_summary). Rows a person changed or ticked Include stay as they are."""
+    """The rows, those of an upload whose payroll rows are all owed to HMRC (paye_ni, and no net pay or pension) taken
+    as what they are: a summary of what payroll owes HMRC (a P32), which the payroll report books and the bank payment
+    clears. Such a file is held on PAYE and NI, where it is not booked (checks.payroll_summary): read onto a wages
+    account it would book the wages again. All but one thing on it: the Employment Allowance it claims, which only
+    the P32 shows, comes off employer's NI and what is owed to HMRC. A one-row P32 is booked as that allowance when
+    it prints it, or when what it says is due is the payroll report's tax and NI for the same pay date less an amount
+    no more than that report's employer's NI. Rows a person changed or ticked Include stay as they are."""
     if not upload_ids:
         return rows
     by_upload: dict[int, list[int]] = {}
     for n, tx in enumerate(rows):
         if tx.document_type == "payroll" and upload_ids[n] is not None:
             by_upload.setdefault(upload_ids[n], []).append(n)
+    def to_hmrc(tx: Transaction) -> bool:   # owed to HMRC: said so, or on PAYE and NI with nothing said
+        return tx.owed_to == "paye_ni" or (tx.owed_to is None and tx.account_code == PAYE)
+
+    summaries = {u: members for u, members in by_upload.items() if all(to_hmrc(rows[n]) for n in members)}
+    reports = [n for u, members in by_upload.items() if u not in summaries for n in members]
     out = list(rows)
-    for members in by_upload.values():
-        if any(rows[n].owed_to != "paye_ni" for n in members):
-            continue   # a payroll report: it has net pay, or pension
+    for members in summaries.values():
         for n in members:
             tx = rows[n]
-            if tx.account_code != PAYE and not (tx.account_chosen or tx.include):
+            if tx.account_chosen or tx.include:
+                continue
+            allowance = _allowance(tx, [rows[k] for k in reports if rows[k].date == tx.date]) if len(members) == 1 \
+                else None
+            if allowance is not None:
+                amount, how = allowance
+                checked = normalise(tx.model_copy(update={"account_code": EMPLOYERS_NI, "direction": Direction.IN,
+                                                          "gross": amount, "vat": None}), settings)
+                out[n] = checked.model_copy(update={"issues": checked.issues + [issue(
+                    "employment_allowance", f"Employment Allowance claimed: {_gbp(amount)} off employer's National "
+                                            f"Insurance and what is owed to HMRC, as the P32 shows ({how}). The rest of "
+                                            "the P32 is what the payroll report books.", "info")]})
+            elif tx.account_code != PAYE:
                 out[n] = normalise(tx.model_copy(update={"account_code": PAYE}), settings)
     return out
+
+
+def _allowance(p32: Transaction, report: list[Transaction]) -> Optional[tuple[Decimal, str]]:
+    """The Employment Allowance a P32 claims, and how it is known; None when it claims none or it can't be told."""
+    printed = _ALLOWANCE.search(p32.description or "")
+    if printed:
+        amount = Decimal(printed.group(1).replace(",", ""))
+        return (amount, "it prints it") if amount > ZERO else None
+    owed = sum((t.gross for t in report if t.owed_to == "paye_ni"), ZERO)
+    employers = sum((t.gross for t in report if t.account_code == EMPLOYERS_NI), ZERO)
+    less = owed - p32.gross
+    if report and ZERO < less <= employers:
+        return less, f"what it says is due, {_gbp(p32.gross)}, is the payroll report's {_gbp(owed)} of tax and NI less it"
+    return None
 
 
 def _in_pounds(rows: list[Transaction], settings: BusinessSettings) -> list[Transaction]:

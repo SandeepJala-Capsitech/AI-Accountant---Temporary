@@ -2057,3 +2057,47 @@ def test_a_paye_reference_is_paye_and_a_line_a_person_coded_stays():
     assert kept.account_code == "2202"   # a person chose it
     [other] = matched(bank("13987.00", "2023-12-29", "Acme", account="7100", description="ACME 8126043571A00123A"))
     assert other.account_code == "7100"   # not to HMRC
+
+
+def _month_of_payroll(p32_gross, p32_description="PAYE income tax and National Insurance due to HMRC", p32_account="2210"):
+    report = [_payroll("7000", "net_pay", "12095.01", "r1", "Net pay to employees"),
+              _payroll("7000", "paye_ni", "3321.37", "r2", "Employees' income tax and National Insurance"),
+              _payroll("7006", "paye_ni", "1776.40", "r3", "Employer's National Insurance")]
+    return [*report, _payroll(p32_account, "paye_ni", p32_gross, "p", p32_description)], [1, 1, 1, 2]
+
+
+def test_the_employment_allowance_a_p32_claims_comes_off_employers_ni():
+    # The test books' agency year: only the P32 shows the Employment Allowance (£5,000 over April to June), as what is
+    # due to HMRC less than the payroll report's tax and NI; employer's NI and PAYE owed were both £5,000 too high.
+    rows, uploads = _month_of_payroll("3321.37")
+    ready = matched_from(rows, uploads)
+    allowance = ready[-1]
+    assert booked(allowance) and (allowance.account_code, allowance.direction, allowance.gross) == (
+        "7006", Direction.IN, Decimal("1776.40"))
+    assert "Employment Allowance" in only_issue(allowance, "employment_allowance").message
+    lines = [line for n, t in enumerate(ready) if booked(t) for line in journal_for(t, n)]
+    balance = lambda code: sum((l.debit - l.credit for l in lines if l.code == code), Decimal(0))   # noqa: E731
+    assert (balance("7006"), balance("2210")) == (0, Decimal("-3321.37"))
+
+
+def test_the_allowance_the_p32_prints_is_taken_as_printed():
+    rows, uploads = _month_of_payroll("3650.57", "PAYE and NI to HMRC (Employment Allowance of £1,447.20 applied)")
+    *_, allowance = matched_from(rows, uploads)
+    assert (allowance.account_code, allowance.gross) == ("7006", Decimal("1447.20"))
+
+
+def test_a_p32_that_claims_no_allowance_is_not_booked():
+    rows, uploads = _month_of_payroll("5097.77")
+    *_, summary = matched_from(rows, uploads)
+    assert not booked(summary) and summary.account_code == "2210"
+    rows, uploads = _month_of_payroll("1000.00")   # more off than employer's NI: not an allowance, left as read
+    *_, odd = matched_from(rows, uploads)
+    assert not booked(odd) and odd.account_code == "2210"
+
+
+def test_a_p32_read_on_paye_with_no_owed_to_still_gives_its_allowance():
+    # June's P32 in the agency year was read on 2210 with owed_to left empty.
+    rows, uploads = _month_of_payroll("3650.57", "PAYE and NI to HMRC (Employment Allowance of £1,447.20 applied)")
+    rows[-1] = rows[-1].model_copy(update={"owed_to": None})
+    *_, allowance = matched_from(rows, uploads)
+    assert (allowance.account_code, allowance.gross) == ("7006", Decimal("1447.20"))
