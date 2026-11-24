@@ -8,7 +8,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional, Sequence
 
 from .accounts import (ASSET_CANDIDATES, BY_CODE, CAPITALS, CARDS, CREDITORS, DEBTORS, DIRECTORS_LOANS, DIVIDENDS,
-                       HALF_VAT_RECLAIMED, HOTELS, MEMBERS_CURRENT, OWNER_DRAWINGS, OWNER_WORDS, SHARES, owner_codes, owner_slots,
+                       HALF_VAT_RECLAIMED, HOTELS, SMALL_EQUIPMENT_COST, MEMBERS_CURRENT, OWNER_DRAWINGS, OWNER_WORDS, SHARES, owner_codes, owner_slots,
                        NET_WAGES, PAYE, PENSION, PURCHASE_VAT, SALES_VAT, STAFF_EXPENSES, SUSPENSE, WAGES, Account,
                        AccountType)
 from .models import NOT_TRANSACTIONS, BusinessSettings, Direction, Issue, Transaction
@@ -28,7 +28,7 @@ MATCHING_ISSUES = {"choose_payment", "paid_oldest", "converted_currency", "credi
 STATEMENT_ISSUES = {"statement_gap", "statement_total", "file_date"}
 _DERIVED = {"unknown_account", "same_account", "non_gbp_currency", "vat_not_applicable", "vat_estimated",
             "vat_arithmetic", "vat_rate_mismatch", "date_missing", "date_out_of_period", "unusual_direction",
-            "not_booked", "vat_blocked", "vat_half_blocked", "director_loan", "wages_from_bank",
+            "not_booked", "vat_blocked", "vat_half_blocked", "under_capitalisation", "director_loan", "wages_from_bank",
             "payroll_owed_to", "before_first_year", "vat_not_booked", "needs_document", "total_worked_out",
             "cis_deducted", "personal", "possible_duplicate", "booked_without_document", "card_credit", "vat_unclaimed",
             "on_account", "no_vat_number", "vat_over_rate", "reverse_charge", "before_vat_registration", "small_asset",
@@ -656,6 +656,16 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
                                                   f"£{reverse:,.2f} VAT is added to box 1 and reclaimed in box 4, so "
                                                   "nothing is paid. If these are goods, untick Reverse charge in "
                                                   "Edit: import VAT is on the import VAT statement.", "info"))
+    small = SMALL_EQUIPMENT_COST.get(account.code) if account is not None else None
+    if (purchase and small and settings.capitalise_from and not tx.account_chosen and posted is not None
+            and tx.gross - posted < settings.capitalise_from):
+        # Under the client's capitalisation policy: a cost, as its accounts treat it, not equipment kept as an asset.
+        cost = BY_CODE[small]
+        issues.append(issue("under_capitalisation", f"£{tx.gross - posted:,.2f} net is under this client's "
+                                                    f"£{settings.capitalise_from:,.0f} capitalisation threshold: booked "
+                                                    f"to {cost.name} as a cost, not kept as {account.name}. Change the "
+                                                    "account to keep it as an asset.", "info"))
+        account = cost
     whole = max(tx.gross, tx.document_total or ZERO)   # the purchase it is part of
     if (purchase and account.type == AccountType.ASSET and account.code.startswith("00")
             and account.vat != VatTreatment.OUTSIDE_SCOPE):
@@ -715,5 +725,5 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
             if tx.direction == Direction.IN else
             f"CIS £{cis:,.2f} taken off for HMRC: booked to CIS Payable, so the cost is £{net:,.2f}."), "info"))
     return tx.model_copy(update={"vat_posted": posted, "net": net, "reverse_vat": reverse, "presentation": presentation,
-                                 "contra_account_code": contra,
+                                 "contra_account_code": contra, "account_code": account.code if account else tx.account_code,
                                  "in_opening": in_opening, "issues": kept + issues})

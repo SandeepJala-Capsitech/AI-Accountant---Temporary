@@ -24,7 +24,7 @@ export default function ClientDialog({ client, taken, onCancel, onSave }: {
     vat_from: client.vat_from ?? '',
     first_year_end: client.first_year_end, bank_accounts: client.bank_accounts.map(a => ({ ...a })),
     owners: (client.owners ?? []).map(o => ({ ...o, share: o.share ?? '' })),
-    ai_review: client.ai_review ?? 'automatic', materiality: client.materiality ?? '', company_number: client.company_number ?? '', utr: client.utr ?? '',
+    ai_review: client.ai_review ?? 'automatic', materiality: client.materiality ?? '', capitalise_from: client.capitalise_from ?? '', company_number: client.company_number ?? '', utr: client.utr ?? '',
     vat_number: client.vat_number ?? '', paye_reference: client.paye_reference ?? '',
   } : NEW_CLIENT))
   const [showErrors, setShowErrors] = useState(false)
@@ -48,7 +48,7 @@ export default function ClientDialog({ client, taken, onCancel, onSave }: {
     setSaving(true)
     setError('')
     try {
-      await onSave({ ...fields, owners: ownersToSend(fields.business_type, fields.owners), materiality: fields.materiality || null })
+      await onSave({ ...fields, owners: ownersToSend(fields.business_type, fields.owners), materiality: fields.materiality || null, capitalise_from: fields.capitalise_from || null })
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
       setSaving(false)
@@ -195,6 +195,12 @@ export default function ClientDialog({ client, taken, onCancel, onSave }: {
           <input className="input" type="number" min="0" step="0.01" value={fields.materiality ?? ''}
                  onChange={e => set('materiality', e.target.value)} />
           <span className="hint">Leave empty to work it out from the client's figures (5% of profit, or 1% of costs). Items under 3% of it are left as coded and said so; facts that change the tax are always asked.</span>
+        </label>
+        <label className="field">
+          <span>Capitalise equipment from (£ net, optional)</span>
+          <input className="input" type="number" min="0" step="0.01" value={fields.capitalise_from ?? ''}
+                 onChange={e => set('capitalise_from', e.target.value)} />
+          <span className="hint">The client&apos;s policy: equipment and furniture costing less, net of the VAT reclaimed, is booked as a cost, with a note. Leave empty for no threshold.</span>
         </label>
         <label className="switch">
           <input type="checkbox" checked={fields.vat_registered} onChange={e => set('vat_registered', e.target.checked)} />

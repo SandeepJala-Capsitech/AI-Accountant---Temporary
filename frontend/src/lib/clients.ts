@@ -35,6 +35,7 @@ export interface ClientFields {
   owners?: Owner[]           // its directors, partners or members; none for a sole trader
   ai_review?: AiReviewMode   // what the background review may do; automatic when not given
   materiality?: string | null   // the firm's overall materiality in pounds; '' or null: worked out from the figures
+  capitalise_from?: string | null   // its capitalisation threshold in pounds net; '' or null: none
   // The client's references, as its papers print them; '' when not known.
   company_number?: string
   utr?: string

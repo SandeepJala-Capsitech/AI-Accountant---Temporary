@@ -848,3 +848,17 @@ def test_a_card_export_uploaded_for_the_card_books_its_spending_as_money_out(api
     assert finish(client, resp.json()["job_id"])["status"] == "succeeded"
     [line] = client.get(f"/api/clients/{cid}/years/{YEAR}/ledger").json()["transactions"]
     assert (line["direction"], line["gross"], line["contra_account_code"]) == ("out", "10.99", "1240")
+
+
+def test_a_firm_sets_a_clients_capitalisation_threshold_and_it_books_small_equipment_as_a_cost(api):
+    model = FakeModel([transactions_json(dict(ROW, description="Cabot Office Supplies, 27-inch monitor", amount=420.0,
+                                              vat=None, account="0030", document_type="invoice"))])   # under £500
+    client = api(model)
+    made = add(client)
+    assert made["capitalise_from"] is None
+    assert client.patch(f"/api/clients/{made['id']}", json={"capitalise_from": "500"}).json()["capitalise_from"] == "500"
+    job = client.post("/api/analyze", data={"client_id": str(made["id"]), "text": "Monitor invoice"}).json()
+    assert finish(client, job["job_id"])["status"] == "succeeded"
+    [line] = client.get(f"/api/clients/{made['id']}/years/{YEAR}/ledger").json()["transactions"]
+    assert line["account_code"] == "7504"
+    assert client.patch(f"/api/clients/{made['id']}", json={"capitalise_from": None}).json()["capitalise_from"] is None

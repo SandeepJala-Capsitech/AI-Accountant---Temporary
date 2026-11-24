@@ -329,6 +329,8 @@ ALL_BANK_CODES = frozenset(code for codes in BANK_SLOTS.values() for code in cod
 CARDS = frozenset(BANK_SLOTS["credit_card"])
 # Accounts where only half the VAT on a purchase can be reclaimed: a car lease (contract hire) with private use available.
 HALF_VAT_RECLAIMED = frozenset({"7304"})
+# Equipment under a client's capitalisation threshold is a cost: the account it is booked to instead.
+SMALL_EQUIPMENT_COST = {"0020": "7504", "0030": "7504", "0040": "7504"}
 
 
 # Each owner's own accounts, by their slot (0 to 3): a company's directors, a partnership's partners, an LLP's

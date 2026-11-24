@@ -36,7 +36,8 @@ def settings_for(client: Client) -> BusinessSettings:
                             vat_from=client.vat_from if client.vat_registered else None,
                             business_type=client.business_type, bank_accounts=codes, bank_account=default,
                             owners=owner_slots_of(client),
-                            books_start=year_bounds(client.first_year_end, 0)[0])
+                            books_start=year_bounds(client.first_year_end, 0)[0],
+                            capitalise_from=client.capitalise_from)
 
 
 def bank_choices(client: Client, upload_bank: Optional[str] = None) -> tuple[str, ...]:
@@ -313,6 +314,8 @@ def change_client(store: MongoStore, client_id: int, patch: ClientPatch) -> Clie
         changes["vat_from"] = None   # cleared
     if "materiality" in sent and sent["materiality"] is None:
         changes["materiality"] = None   # cleared: worked out from the client's figures
+    if "capitalise_from" in sent and sent["capitalise_from"] is None:
+        changes["capitalise_from"] = None   # cleared: no capitalisation threshold
     return store.update_client(client_id, changes)
 
 

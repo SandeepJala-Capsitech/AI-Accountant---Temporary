@@ -1011,3 +1011,36 @@ def test_a_van_lease_whose_vat_rate_a_person_chose_reclaims_it_all():
               counterparty="Avon Vehicle Leasing", description="Van lease", vat_treatment="standard")
     checked = normalise(van, HELPER_SETTINGS)
     assert checked.vat_posted == Decimal("84.00") and not [i for i in checked.issues if i.code == "vat_half_blocked"]
+
+
+# ─── A client's capitalisation threshold ──────────────────────────────────────
+
+POLICY = HELPER_SETTINGS.model_copy(update={"capitalise_from": Decimal("500")})
+
+
+def equipment(gross, vat, account, **kw):
+    return row(gross=Decimal(gross), vat=Decimal(vat), account_code=account, document_type="invoice",
+               counterparty="Cabot Office Supplies", description="Office kit", **kw)
+
+
+def test_equipment_under_the_clients_threshold_is_booked_as_a_cost():
+    # The test books' agency year: capitalise from £500 net. The £576 monitor (£480 net) and £320 of task chairs
+    # stayed on fixed assets; the £1,299 laptop was called "small" by materiality although well over the policy.
+    monitor = normalise(equipment("576.00", "96.00", "0030"), POLICY)
+    assert monitor.account_code == "7504" and "£500" in only_issue(monitor, "under_capitalisation").message
+    assert not [i for i in monitor.issues if i.code == "small_asset"]
+    for gross, vat, account in (("1299.00", "216.50", "0030"), ("624.00", "104.00", "0040")):   # £1,082.50 and £520 net
+        kept = normalise(equipment(gross, vat, account), POLICY)
+        assert kept.account_code == account and not [i for i in kept.issues if i.code in ("small_asset",
+                                                                                          "under_capitalisation")]
+
+
+def test_without_vat_registration_the_threshold_is_on_the_whole_price():
+    kept = normalise(equipment("576.00", "96.00", "0030"), POLICY.model_copy(update={"vat_registered": False}))
+    assert kept.account_code == "0030"   # £576 paid, no VAT back: over £500
+
+
+def test_an_account_a_person_chose_is_kept_and_no_threshold_means_no_change():
+    chosen = normalise(equipment("576.00", "96.00", "0030", account_chosen=True), POLICY)
+    assert chosen.account_code == "0030"
+    assert normalise(equipment("576.00", "96.00", "0030"), HELPER_SETTINGS).account_code == "0030"

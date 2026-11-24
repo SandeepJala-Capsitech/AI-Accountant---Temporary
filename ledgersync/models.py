@@ -91,6 +91,9 @@ class Issue(BaseModel):
 
 class BusinessSettings(BaseModel):
     business_name: str = ""
+    # The client's capitalisation threshold: equipment that costs less, net of the VAT reclaimed, is a cost, not an
+    # asset. None: no policy given, equipment is judged against the client's materiality (small_asset).
+    capitalise_from: Optional[Decimal] = None
     vat_registered: bool = True
     vat_from: Optional[dt.date] = None             # the day the VAT registration started: a row dated before it
                                                    # books no VAT; None: registered throughout
@@ -410,6 +413,7 @@ class ClientFields(BaseModel):
     ai_review: Literal["automatic", "suggest", "off"] = "automatic"   # what the background AI review may do
     materiality: Optional[Decimal] = None   # the firm's overall materiality for the client, in pounds; None: worked
                                             # out from its figures (materiality.year_levels)
+    capitalise_from: Optional[Decimal] = None   # its capitalisation threshold, in pounds net; None: no policy
     # The client's references, as its papers print them: kept and shown, used by nothing yet.
     company_number: str = ""           # Companies House number
     utr: str = ""                      # Unique Taxpayer Reference
@@ -466,6 +470,7 @@ class ClientPatch(BaseModel):
     first_year_end: Optional[dt.date] = None
     ai_review: Optional[Literal["automatic", "suggest", "off"]] = None
     materiality: Optional[Decimal] = None          # null clears it: worked out from the client's figures
+    capitalise_from: Optional[Decimal] = None      # null clears it: no capitalisation threshold
     company_number: Optional[str] = None
     utr: Optional[str] = None
     vat_number: Optional[str] = None
