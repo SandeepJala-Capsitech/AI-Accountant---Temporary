@@ -410,3 +410,12 @@ def test_a_claim_line_with_no_receipt_is_booked_as_the_claim_shows_it_and_says_a
     assert document_rule(ready(document_type="expense_claim", gross=D("20.00"), vat=D("3.33"), account_code="7500"),
                          SETTINGS).unbacked is True
     assert verdict(document_rule(statement_line("457.20"), SETTINGS)) == ("hold", False, "vat_invoice")   # a bank line waits
+
+
+def test_a_document_over_250_that_says_it_is_not_a_vat_invoice_waits_for_one():
+    # The test books' agency year (EC-0346): £320 of chairs on a till receipt saying "not a VAT invoice", read as an
+    # invoice: booked with its VAT in the cost and never asked about, although the full VAT invoice came later.
+    chairs = ready(document_type="invoice", gross=D("320.00"), vat=D("53.33"), not_vat_invoice=True)
+    assert verdict(document_rule(chairs, SETTINGS)) == ("hold", False, "vat_invoice")
+    small = ready(document_type="invoice", gross=D("200.00"), vat=D("33.33"), not_vat_invoice=True)
+    assert verdict(document_rule(small, SETTINGS)) == ("book", False, None)   # up to £250 a receipt will do
