@@ -907,3 +907,37 @@ def test_vat_a_rule_keeps_in_the_cost_is_not_in_box_7(store, acme):
                  document_type="invoice", counterparty="Avon Vehicle Leasing", description="Car lease"))
     v = books.vat_figures(store, acme, date(2025, 4, 1), date(2025, 6, 1), date(2025, 6, 30))
     assert (v.box4, v.box7) == (D("42.00"), D("158.96") + D("420.00"))
+
+
+# ─── A VAT quarter across the year end ────────────────────────────────────────
+
+def sale(day, gross="1200.00", vat="200.00"):
+    return row(date=day, direction="in", gross=D(gross), vat=D(vat), account_code="4000", document_type="invoice",
+               counterparty="Brightline Print Ltd", description="Design work", document_ref=f"s-{day}")
+
+
+def test_a_vat_quarter_across_the_year_end_adds_up_both_years(store, acme):
+    # The test books' agency year: its VAT quarters run March to May, and a quarter crossing the year end was
+    # refused ("Choose a period inside this year"), so March to May had no figures at all.
+    add_rows(store, acme, sale(date(2026, 3, 20)), sale(date(2026, 4, 15), "600.00", "100.00"))
+    v = books.vat_figures(store, acme, date(2025, 4, 1), date(2026, 3, 1), date(2026, 5, 31))
+    assert (v.start, v.end, v.box1, v.box6) == (date(2026, 3, 1), date(2026, 5, 31), D("300.00"), D("1500.00"))
+
+
+def test_a_vat_quarter_starting_before_the_books_says_what_it_leaves_out(store, acme):
+    add_rows(store, acme, sale(date(2025, 4, 15)))
+    v = books.vat_figures(store, acme, date(2025, 4, 1), date(2025, 3, 1), date(2025, 5, 31))
+    assert v.box1 == D("200.00")
+    assert any("1 Mar 2025 to 31 Mar 2025 is before these books start" in note for note in v.notes)
+
+
+def test_the_vat_before_the_books_start_comes_from_the_opening_vat_balances(store, acme):
+    # The agency's March to May 2023: March is before its books, but the VAT booked for it and not yet returned is in
+    # the opening balances on Sales VAT and Purchase VAT (£10,560 and £1,980 there).
+    books.set_opening(store, acme, OpeningBalances(lines=[
+        OpeningLine(code="1200", debit=D("10000.00")), OpeningLine(code="2201", debit=D("300.00")),
+        OpeningLine(code="2200", credit=D("1000.00")), OpeningLine(code="3200", credit=D("9300.00"))]))
+    add_rows(store, acme, sale(date(2025, 4, 15)))
+    v = books.vat_figures(store, acme, date(2025, 4, 1), date(2025, 3, 1), date(2025, 5, 31))
+    assert (v.box1, v.box4, v.box5) == (D("1200.00"), D("300.00"), D("900.00"))
+    assert any("opening balances" in note and "boxes 6 and 7" in note for note in v.notes)

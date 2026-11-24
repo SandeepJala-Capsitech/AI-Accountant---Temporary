@@ -442,6 +442,47 @@ def _shown(b: _Books, n: int) -> TrialBalance:
 
 def vat_figures(store: MongoStore, client_id: int, year_start: dt.date, start: Optional[dt.date] = None,
                 end: Optional[dt.date] = None) -> VatFigures:
+    """The VAT return boxes for a period (the year's own when none is given). A VAT quarter often crosses the year end
+    (March to May for a year to 31 March): each year's part is worked out from its own rows and the parts added up.
+    A part before the books start, or after their last year, is not in them, and the notes say so."""
+    b = _books(store, client_id)
+    year = b.years[b.index(year_start)]
+    start, end = start or year.start, end or year.end
+    if start > end:
+        raise InvalidInput("Choose a period that ends on or after the day it starts.")
+    if year.start <= start and end <= year.end:
+        return _vat_in_year(store, client_id, year_start, start, end)
+    if end < year.start or start > year.end:
+        raise InvalidInput("Choose a period that includes some of this year.")
+    notes: list[str] = []
+    first, last = b.years[0].start, b.years[-1].end
+    before_sales, before_purchases = ZERO, ZERO
+    if start < first:
+        # The VAT of the part before the books, booked by the previous accountant and not yet returned, is what the
+        # opening balances hold on Sales VAT and Purchase VAT; its sales and purchases are not in the books.
+        opening = _opening(b, 0) if end >= first else {}
+        before_sales, before_purchases = -opening.get(SALES_VAT, ZERO), opening.get(PURCHASE_VAT, ZERO)
+        span = f"{long_date(start)} to {long_date(min(end, first - yr.DAY))} is before these books start"
+        notes.append(f"{span}: its VAT is the opening balances on Sales VAT ({_gbp(before_sales)}) and Purchase VAT "
+                     f"({_gbp(before_purchases)}); add its sales and purchases (boxes 6 and 7) from the previous "
+                     "accountant's figures." if before_sales or before_purchases else
+                     f"{span}: add those figures from the previous accountant's.")
+    if end > last:
+        notes.append(f"{long_date(max(start, last + yr.DAY))} to {long_date(end)} is after these books' last year: "
+                     "not in these figures.")
+    parts = [_vat_in_year(store, client_id, y.start, max(start, y.start), min(end, y.end))
+             for y in b.years if max(start, y.start) <= min(end, y.end)]
+    for part in parts:
+        notes += [note for note in part.notes if note not in notes]
+    add = lambda box: sum((getattr(part, box) for part in parts), ZERO)   # noqa: E731
+    box1, box4 = add("box1") + before_sales, add("box4") + before_purchases
+    return VatFigures(start=start, end=end, box1=box1, box2=add("box2"), box3=box1 + add("box2"), box4=box4,
+                      box5=box1 + add("box2") - box4, box6=add("box6"), box7=add("box7"), box8=add("box8"),
+                      box9=add("box9"), notes=notes)
+
+
+def _vat_in_year(store: MongoStore, client_id: int, year_start: dt.date, start: Optional[dt.date] = None,
+                 end: Optional[dt.date] = None) -> VatFigures:
     """The VAT return boxes for a period of the year (the whole year when none is given), from the lines the year's
     rows post, each by its row's date: the VAT booked to Sales VAT and Purchase VAT, and the net booked to income
     accounts and to costs and equipment that VAT covers (not wages, rates, fines and the like, which are outside its
