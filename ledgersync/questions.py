@@ -215,9 +215,12 @@ def _wanted(store: MongoStore, client_id: int,
             want(tx, rule.needs, asks,
                  f"{_gbp(tx.gross)} to {tx.counterparty or tx.description}{when}. {_OVER[rule.needs]}, so I need it. "
                  "Held in Suspense as Documentation required until then.")
-    by = min(dt.date.today(), built.year.end)
+    # Unpaid only as far as the statements in the books show: an invoice whose payment may be on a statement not yet
+    # uploaded is not a bad debt. No statement at all: none can be told unpaid.
+    statements = [t.date for t in built.transactions if booked(t) and t.document_type == "statement" and t.date]
+    by = min(dt.date.today(), built.year.end, max(statements)) if statements else None
     seen: set[str] = set()
-    for tx in _sales_owed(store, client_id, built):
+    for tx in _sales_owed(store, client_id, built) if by else []:
         ref = tx.document_ref or f"row-{tx.id}"
         overdue = _overdue_from(tx)
         if overdue is not None and overdue <= by and ref not in seen:

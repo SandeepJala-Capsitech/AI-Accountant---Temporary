@@ -641,7 +641,13 @@ def unpaid_sale(store, client_id):
     add_rows(store, client_id, row(date=date(2025, 5, 1), direction="in", gross=D("4800.00"), vat=D("800.00"),
                                    account_code="4000", document_type="invoice", document_ref="KF-1017",
                                    document_number="KF-1017", counterparty="Lowther Interiors Ltd",
-                                   description="Showroom website build"))
+                                   description="Showroom website build"),
+             bank_line(date(2026, 3, 31)))
+
+
+def bank_line(day):
+    """A bank charge on the statement: the books' statements reach that day."""
+    return row(date=day, gross=D("5.00"), account_code="7901", document_type="statement", description="Charges")
 
 
 def debt_question(store, records, client_id):
@@ -689,12 +695,30 @@ def test_an_invoice_overdue_only_in_the_next_year_is_asked_about_there(store, re
     add_rows(store, acme, row(date=date(2026, 2, 1), direction="in", gross=D("1200.00"), vat=D("200.00"),
                               account_code="4000", document_type="invoice", document_ref="KF-2001",
                               counterparty="Brightline Print Ltd", description="Brochure design"),
-             row(date=date(2026, 5, 1), gross=D("25.00"), account_code="7502"))   # the second year
+             bank_line(date(2026, 3, 31)), bank_line(date(2026, 9, 30)))   # the second year
     assert not [q for q in refresh(store, records, acme) if q.kind == "bad_debt"]
     [q] = [q for q in questions.refresh(store, records, acme, YEAR_2) if q.kind == "bad_debt"]
     questions.answer(store, records, client_id=acme, thread_id="t1", question_id=q.id,
                      answer=WriteOffAnswer(kind="write_off", date=date(2026, 9, 30)))
     assert net(books.trial_balance(store, acme, YEAR_2), "8100") == D("1000.00")
+
+
+def test_an_invoice_whose_payment_may_be_on_a_statement_not_yet_in_is_not_asked_about(store, records, acme):
+    # The agency run: invoices of April asked to be written off in May, before the statements that paid them came.
+    add_rows(store, acme, row(date=date(2025, 5, 1), direction="in", gross=D("4800.00"), vat=D("800.00"),
+                              account_code="4000", document_type="invoice", document_ref="KF-1017",
+                              counterparty="Northgate Dental Group", description="Retainer"),
+             bank_line(date(2025, 11, 29)))   # six months past due is 30 Nov 2025: the statements stop before it
+    assert not [q for q in refresh(store, records, acme) if q.kind == "bad_debt"]
+    add_rows(store, acme, bank_line(date(2025, 11, 30)))
+    assert [q.kind for q in refresh(store, records, acme) if q.kind == "bad_debt"] == ["bad_debt"]
+
+
+def test_without_a_bank_statement_no_invoice_is_asked_about(store, records, acme):
+    add_rows(store, acme, row(date=date(2025, 5, 1), direction="in", gross=D("4800.00"), vat=D("800.00"),
+                              account_code="4000", document_type="invoice", document_ref="KF-1017",
+                              counterparty="Lowther Interiors Ltd", description="Showroom website build"))
+    assert not [q for q in refresh(store, records, acme) if q.kind == "bad_debt"]
 
 
 def test_a_supplier_credit_note_is_not_a_bad_debt(store, records, acme):
