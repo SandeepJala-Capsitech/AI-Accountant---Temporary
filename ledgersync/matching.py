@@ -11,7 +11,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from itertools import combinations
 from typing import Optional, Sequence
 
-from .accounts import (BY_CODE, CARDS, CLEARING, CREDITORS, DEBTORS, DIRECTORS_LOANS, PAYE, STAFF_EXPENSES, SUSPENSE,
+from .accounts import (BY_CODE, CARDS, CLEARING, CREDITORS, DEBTORS, DIRECTORS_LOANS, OWNER_CODES, PAYE, STAFF_EXPENSES, SUSPENSE,
                        AccountType)
 from .checks import (MATCHING_ISSUES, PAYROLL_OWED, STATEMENT_ISSUES, REFRESHMENTS, account_on_claim, booked, is_fare, issue,
                      long_date, normalise, reclaims_vat, registered_on, vat_implied)
@@ -1737,6 +1737,13 @@ def _outcome(line: Transaction, documents: dict[str, _Document]) -> tuple[str, l
     documents it concerns, and why a suggestion or open_document was not a match."""
     kind, options = _decide(line, [d for d in documents.values() if _could_pay(line, d)])
     why = "the names do not match"
+    if kind in ("none", "suggest") and line.direction == Direction.OUT and line.account_code in OWNER_CODES:
+        # A payment to a director or partner, read onto their own account, for exactly what one expense claim that
+        # names no claimant owes: the claim's payment (its claimant is often only in the file's name).
+        claims = [d for d in documents.values() if _could_pay(line, d) and d.kind == "expense_claim"
+                  and not d.counterparty and d.open == line.gross]
+        if len(claims) == 1:
+            return "claim_paid", [claims], ""
     account = BY_CODE.get(line.account_code)
     owed_elsewhere = account is not None and line.account_code != SUSPENSE and account.type in (
         AccountType.LIABILITY, AccountType.EQUITY)   # tax, wages, a loan, the owner: never a supplier's bill
@@ -1781,6 +1788,11 @@ def _settle(n: int, line: Transaction, documents: dict[str, _Document], change: 
     kind, options, why = _outcome(line, documents)
     if kind == "pay":
         _pay(n, line, options[0], change, found)
+    elif kind == "claim_paid":
+        _pay(n, line, options[0], change, found)
+        found.append(issue("claim_paid", f"Pays the expense claim of {long_date(options[0][0].date)} "
+                                         f"({_gbp(line.gross)}): the claim names no claimant, and this payment to "
+                                         f"{line.counterparty or 'them'} is exactly its total.", "info"))
     elif kind == "early":
         _pay(n, line, options[0], change, found)
         doc = options[0][0]

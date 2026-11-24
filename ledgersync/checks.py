@@ -17,7 +17,7 @@ from .payees import personal
 
 _NO_VAT = {AccountType.LIABILITY, AccountType.EQUITY}
 # Issues matching.match adds; listed here so validating again replaces them instead of adding copies.
-MATCHING_ISSUES = {"choose_payment", "paid_oldest", "converted_currency", "credited", "hmrc_reference", "employment_allowance", "bad_debt_recovered", "write_off_more_than_owed", "paid_before_invoice", "part_payment", "overpayment", "possible_payment", "stale_link",
+MATCHING_ISSUES = {"choose_payment", "paid_oldest", "converted_currency", "credited", "hmrc_reference", "employment_allowance", "bad_debt_recovered", "write_off_more_than_owed", "paid_before_invoice", "claim_paid", "part_payment", "overpayment", "possible_payment", "stale_link",
                    "mixed_link", "duplicate_document", "total_mismatch", "total_accepted", "claim_vat", "vat_worked_out",
                    "not_vat_invoice", "date_conflict", "date_from_claim", "date_from_bank", "booked_twice",
                    "amount_conflict", "open_document", "no_payroll", "transfer", "sale_without_vat",

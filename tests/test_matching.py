@@ -2213,3 +2213,18 @@ def test_a_payment_weeks_before_the_invoice_is_only_suggested():
     invoice, line = matched(row("invoice", "out", "89.99", "2023-06-30", "Shelfwise Online", "swi", account="7504"),
                             bank("89.99", "2023-06-05", "Shelfwise Online", "card", account="7504", bank_account="1240"))
     assert line.pays == [] and ("possible_payment", "warning") in codes(line)
+
+
+# ─── A director's expense claim paid to them ──────────────────────────────────
+
+def test_a_payment_to_a_director_of_exactly_an_unnamed_claim_pays_it():
+    # The test books' agency year: Omar Kestrel's £212.40 claim named no claimant (only its file did); the bank's
+    # £212.40 to him, read onto his director's loan account, paid nothing, so the claim stayed owed to staff.
+    claim = [row("expense_claim", "out", gross, "2023-10-20", None, "omar-oct", account=account,
+                 description=description)
+             for gross, account, description in (("86.40", "7400", "Train to London"),
+                                                 ("34.80", "7406", "Lunch while travelling"),
+                                                 ("91.20", "7400", "Car park"))]
+    *lines, paid = matched(*claim, bank("212.40", "2023-11-15", "Omar Kestrel", "pay", account="2251"))
+    assert [p.ref for p in paid.pays] == ["omar-oct"] and {t.owed for t in lines} == {Decimal("0.00")}
+    assert paid.paid_against == "2110"
