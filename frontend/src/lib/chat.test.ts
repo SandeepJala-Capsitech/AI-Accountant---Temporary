@@ -89,6 +89,9 @@ test('an opening balance question says how much is to be split, and the lines ar
   const q = { ...question('opening_prepayments'), text: 'Opening prepayments of £6,558.46: which costs are they for?' }
   assert.equal(openingAmount(q), '6558.46')
   assert.equal(openingAmount(question('date')), null)
+  const vat = { ...question('opening_vat'), text: 'The VAT payment of £27,412.00 on 13 Apr 2023 is £312.00 more than the £27,100.00 owed when the year began: what was the difference for?' }
+  assert.equal(openingAmount(vat), '312.00')
+  assert.equal(questionControl(vat), 'split')
   assert.equal(splitTotal([{ amount: '1020' }, { amount: '5538.46' }]), '6558.46')
   assert.equal(splitTotal([{ amount: '0.1' }, { amount: '0.2' }]), '0.30')   // no floating point pence
   assert.equal(splitTotal([{ amount: '' }, { amount: 'abc' }]), '0.00')

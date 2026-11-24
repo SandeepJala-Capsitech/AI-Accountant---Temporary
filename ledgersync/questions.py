@@ -104,7 +104,7 @@ def _on(tx: Transaction) -> str:
 def _key(kind: str, row_id: Optional[int]) -> str:
     """The key a rule question is kept under: one date question and one document question per row, and one question
     for each opening balance to release."""
-    if kind in _OPENING:
+    if kind in _OPENING or kind == "opening_vat":
         return f"open:{kind}"
     if kind == "bad_debt":
         return f"debt:{row_id}"
@@ -145,6 +145,27 @@ def _released(tx: Transaction, code: str, sign: int) -> Decimal:
     debits = (tx.account_code == code) == (tx.direction.value == "out")
     touches = code in (tx.account_code, tx.contra_account_code)
     return tx.gross if touches and debits == (sign < 0) else ZERO
+
+
+def _vat_difference(store: MongoStore, client_id: int, year_start: dt.date,
+                    built: Ledger) -> Optional[tuple[Transaction, Decimal, Decimal]]:
+    """When the year opens owing VAT and its first VAT payment differs from it: that payment, the VAT owed, and the
+    difference still to account for (positive when more was paid), less what journals on the payment's day already
+    take. None otherwise."""
+    owed = -books.opening(store, client_id, year_start).get("2202", ZERO)
+    if owed <= ZERO:
+        return None
+    paid = sorted((t for t in built.transactions if booked(t) and t.document_type == "statement"
+                   and t.direction.value == "out" and t.account_code == "2202" and t.date), key=lambda t: t.date)
+    if not paid:
+        return None
+    first = paid[0]
+    difference = first.gross - owed
+    sign = 1 if difference > ZERO else -1
+    done = sum((_released(t, "2202", sign) for t in built.transactions if booked(t) and t.date == first.date),
+               ZERO)
+    left = difference - sign * done
+    return (first, owed, left) if left != ZERO else None
 
 
 def _opening_left(store: MongoStore, client_id: int, year_start: dt.date, built: Ledger) -> dict[str, Decimal]:
@@ -206,6 +227,16 @@ def _wanted(store: MongoStore, client_id: int,
                  f"Invoice {tx.document_number or tx.description} of {long_date(tx.date)} is unpaid more than six "
                  "months after it fell due. Written off, it is a cost (Bad Debts), and the VAT on it can be claimed "
                  "back as VAT bad debt relief.")
+    vat = _vat_difference(store, client_id, year_start, built)
+    if vat is not None:
+        payment, owed, left = vat
+        wanted[_key("opening_vat", None)] = QuestionDraft(
+            client_id=client_id, year_start=year_start, kind="opening_vat", source="rules", row_ids=[payment.id],
+            text=f"The VAT payment of {_gbp(payment.gross)} on {long_date(payment.date)} is {_gbp(abs(left))} "
+                 f"{'more' if left > ZERO else 'less'} than the {_gbp(owed)} owed when the year began: what was "
+                 "the difference for?",
+            why="It pays the VAT owed brought forward; the difference is this year's (a VAT figure corrected, "
+                "interest or a penalty): choose the account for it.")
     for kind, amount in _opening_left(store, client_id, year_start, built).items():
         code, word, _ = _OPENING[kind]
         wanted[_key(kind, None)] = QuestionDraft(
@@ -327,7 +358,7 @@ def refresh(store: MongoStore, records: AgentRecords, client_id: int, year_start
     wanted, _ = _wanted(store, client_id, year_start)
     stored = {_key(q.kind, q.row_ids[0] if q.row_ids else None): q for q in records.questions(
         client_id, year_start, statuses=("open", "waiting", "resolved"))
-        if q.source == "rules" and (q.row_ids or q.kind in _OPENING)}
+        if q.source == "rules" and (q.row_ids or q.kind in _OPENING or q.kind == "opening_vat")}
     for key, draft in wanted.items():
         asked = stored.get(key)
         if asked is None or not _same(asked, draft):
@@ -393,7 +424,8 @@ def answer(store: MongoStore, records: AgentRecords, *, client_id: int, thread_i
         said = _write_off(store, client_id, q, answer)
         records.set_question(q.id, "resolved", said)
     elif isinstance(answer, SplitAnswer):
-        said = _release(store, client_id, q, answer)
+        said = _release_vat(store, client_id, q, answer) if q.kind == "opening_vat" else _release(store, client_id,
+                                                                                                    q, answer)
         records.set_question(q.id, "resolved", said)
     elif isinstance(answer, NoDocumentAnswer):
         if q.kind not in DOCUMENT_KINDS:
@@ -444,6 +476,31 @@ def _write_off(store: MongoStore, client_id: int, q: Question, answer: WriteOffA
     ledger.add_manual(store, client_id, ManualUpload(name="Bad debt written off", transactions=[off],
                                                      year_start=q.year_start))
     return f"Written off on {long_date(day)}: {_gbp(tx.owed)}"
+
+
+def _release_vat(store: MongoStore, client_id: int, q: Question, answer: SplitAnswer) -> str:
+    """Posts the journal of a VAT payment's difference from the VAT owed brought forward, on the payment's day."""
+    built = books.ledger(store, client_id, q.year_start)
+    found = _vat_difference(store, client_id, q.year_start, built)
+    if found is None:
+        raise InvalidInput("The VAT payment no longer differs from the VAT owed.")
+    payment, _, left = found
+    if not answer.lines or any(line.amount <= ZERO for line in answer.lines):
+        raise InvalidInput("Give each account an amount above zero.")
+    if any(line.account not in BY_CODE or line.account in ("2202", *ALL_BANK_CODES) for line in answer.lines):
+        raise InvalidInput("Choose an account for each line, not the VAT liability or a bank.")
+    total = sum((line.amount for line in answer.lines), ZERO)
+    if total != abs(left):
+        raise InvalidInput(f"The lines add up to {_gbp(total)}; the difference is {_gbp(abs(left))}.")
+    more = left > ZERO   # paid more: Dr the account, Cr VAT Liability; paid less: the other way
+    journals = [Transaction(date=payment.date, direction="out", gross=line.amount, document_type="journal",
+                            description=f"VAT payment's difference from the VAT owed: {BY_CODE[line.account].name}",
+                            account_code=line.account if more else "2202",
+                            contra_account_code="2202" if more else line.account) for line in answer.lines]
+    ledger.add_manual(store, client_id, ManualUpload(name="VAT difference", transactions=journals,
+                                                     year_start=q.year_start))
+    return "Booked to " + "; ".join(f"{line.account} {BY_CODE[line.account].name} {_gbp(line.amount)}"
+                                    for line in answer.lines)
 
 
 def _release(store: MongoStore, client_id: int, q: Question, answer: SplitAnswer) -> str:

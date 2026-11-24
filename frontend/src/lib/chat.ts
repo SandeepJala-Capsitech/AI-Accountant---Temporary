@@ -47,7 +47,7 @@ export interface Decision {
 }
 
 export type QuestionKind = 'date' | 'receipt_or_invoice' | 'vat_invoice' | 'payout_report' | 'payroll_report'
-  | 'opening_prepayments' | 'opening_accruals' | 'bad_debt' | 'other'
+  | 'opening_prepayments' | 'opening_accruals' | 'opening_vat' | 'bad_debt' | 'other'
 
 // A question for the person: open until answered, waiting when they have no answer yet, resolved once answered.
 export interface Question {
@@ -229,7 +229,7 @@ export function groupThreads(threads: ChatThread[], now: Date):
 // How a question is answered: a date (or Not sure), a document (or I don't have it), or in words.
 export function questionControl(q: Question): 'date' | 'upload' | 'split' | 'write_off' | 'text' {
   if (q.kind === 'date') return 'date'
-  if (q.kind === 'opening_prepayments' || q.kind === 'opening_accruals') return 'split'
+  if (q.kind === 'opening_prepayments' || q.kind === 'opening_accruals' || q.kind === 'opening_vat') return 'split'
   if (q.kind === 'bad_debt') return 'write_off'
   if (['receipt_or_invoice', 'vat_invoice', 'payout_report', 'payroll_report'].includes(q.kind)) return 'upload'
   return 'text'
@@ -237,7 +237,8 @@ export function questionControl(q: Question): 'date' | 'upload' | 'split' | 'wri
 
 // What an opening balance question asks to be split, as a decimal string ("6558.46"), from its text; null for others.
 export const openingAmount = (q: Question): string | null =>
-  /of £([\d,]+\.\d{2})/.exec(q.text)?.[1].replace(/,/g, '') ?? null
+  (q.kind === 'opening_vat' ? /is £([\d,]+\.\d{2}) (?:more|less)/ : /of £([\d,]+\.\d{2})/).exec(q.text)?.[1]
+    .replace(/,/g, '') ?? null
 
 // The lines' amounts added up in pence, as a decimal string; a line that isn't an amount counts as nothing.
 export function splitTotal(lines: { amount: string }[]): string {

@@ -702,3 +702,30 @@ def test_a_supplier_credit_note_is_not_a_bad_debt(store, records, acme):
                               document_type="invoice", document_ref="CN-1", counterparty="Paper Co",
                               description="Credit note"))
     assert not [q for q in refresh(store, records, acme) if q.kind == "bad_debt"]
+
+
+# ─── A VAT payment that differs from the VAT owed when the year began ─────────
+
+def opened_owing_vat(store, client_id, paid="27412.00"):
+    books.set_opening(store, client_id, OpeningBalances(lines=[
+        OpeningLine(code="1200", debit=D("30000.00")), OpeningLine(code="2202", credit=D("27100.00")),
+        OpeningLine(code="3200", credit=D("2900.00"))]))
+    add_rows(store, client_id, row(date=date(2025, 4, 13), gross=D(paid), account_code="2202",
+                                   document_type="statement", counterparty="HMRC", description="HMRC VAT"))
+
+
+def test_a_vat_payment_more_than_the_vat_owed_asks_what_the_difference_was(store, records, acme):
+    # The test books' agency year (EC-0512): £27,412 paid for the £27,100 owed, never asked about.
+    opened_owing_vat(store, acme)
+    [q] = [q for q in refresh(store, records, acme) if q.kind == "opening_vat"]
+    assert q.text == ("The VAT payment of £27,412.00 on 13 Apr 2025 is £312.00 more than the £27,100.00 owed when the "
+                      "year began: what was the difference for?")
+    answer(store, records, acme, q, SplitAnswer(kind="split", lines=[SplitLine(account="8250", amount=D("312.00"))]))
+    tb = books.trial_balance(store, acme, YEAR_1)
+    assert (net(tb, "2202"), net(tb, "8250")) == (0, D("312.00"))
+    assert not [q for q in refresh(store, records, acme) if q.kind == "opening_vat"]
+
+
+def test_a_vat_payment_of_what_was_owed_asks_nothing(store, records, acme):
+    opened_owing_vat(store, acme, paid="27100.00")
+    assert not [q for q in refresh(store, records, acme) if q.kind == "opening_vat"]
