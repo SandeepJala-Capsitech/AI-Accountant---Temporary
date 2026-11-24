@@ -9,6 +9,7 @@ import logging
 from typing import Optional
 
 from . import tables
+from .extractor import TransactionExtractionResult
 from .intake import PYMUPDF_LOCK, Intake
 from .jobs import JobContext
 
@@ -27,7 +28,12 @@ def analyze(intake: Intake, extractor, ctx: JobContext, name: str = "", account:
             kind = tables.account_kind(account)
             if made is None and not (kind != "credit_card" and tables.names_a_card(name, table.heading)):
                 statement = tables.statement(table, kind)
-                if statement is not None:
+                if statement is not None and not statement.lines:
+                    made = TransactionExtractionResult(data=[], opening_balance=None if statement.opening_balance
+                                                       is None else float(statement.opening_balance),
+                                                       closing_balance=None if statement.closing_balance is None
+                                                       else float(statement.closing_balance))
+                elif statement is not None:
                     ctx.report(f"Asking the AI model ({extractor.client.model}) to code {len(statement.lines)} lines")
                     made = extractor.code_statement(statement, kind)
             if made is not None:

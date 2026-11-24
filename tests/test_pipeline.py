@@ -238,3 +238,10 @@ def test_a_card_issuers_export_on_a_bank_account_is_left_to_the_model():
     analyze(Intake("table", text="Date,Description,Amount\n09/04/2023,STREAMFLIX.COM,10.99\n"), extractor, ctx(),
             name="amex-statement.csv", account="1200")
     assert len(extractor.calls) == 1
+
+
+def test_an_empty_statement_needs_no_model():
+    extractor = RecordingExtractor()
+    result = analyze(Intake("table", text="Date,Type,Description,Amount,Balance\n"), extractor, ctx(),
+                     name="savings-statement.csv", account="1210")
+    assert extractor.calls == [] and result.data == [] and result.warnings == ["Read in code: 0 lines"]

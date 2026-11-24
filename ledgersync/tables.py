@@ -144,8 +144,8 @@ def parse(text: str) -> Optional[Table]:
                 continue   # a total or a balance line: not a transaction
             return None
         rows.append(row)
-    if not rows or parse_date([row[date_at] for row in rows]) is None:
-        return None
+    if rows and parse_date([row[date_at] for row in rows]) is None:
+        return None   # no rows is an empty statement (a month with no movement), not an unreadable one
     return Table(heading=heading, header=header, roles=roles, rows=rows)
 
 
@@ -224,8 +224,8 @@ def statement(table: Table, account_kind: Optional[str]) -> Optional[Statement]:
                 opening = balances[n]
             continue
         keep.append(n)
-    if not keep:
-        return None
+    if not keep:   # nothing moved: an empty statement, at its brought-forward balance if it shows one
+        return Statement(lines=[], opening_balance=opening, closing_balance=opening, heading="\n".join(table.heading))
 
     # A column saying debit or credit ("Debit/Credit", or a type column of DR and CR) gives the sign outright.
     explicit = "amount" not in roles

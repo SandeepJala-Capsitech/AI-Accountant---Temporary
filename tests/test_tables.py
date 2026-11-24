@@ -273,3 +273,17 @@ def test_an_undated_line_named_like_a_total_is_not_dropped():
 def test_an_amount_with_a_decimal_comma_is_not_read():
     assert [parse_amount(a) for a in ("12,5", "1.234,56", "1,234.56", "12,345,678.90")] == [
         None, None, Decimal("1234.56"), Decimal("12345678.90")]
+
+
+def test_a_statement_with_no_lines_is_read_as_empty():
+    # The agency year's savings account: months with no movement export only the heading row. Sent to the model,
+    # one ran to its output limit for 16 minutes and failed.
+    table = parse("Date,Type,Description,Amount,Balance\n")
+    assert table is not None and table.rows == []
+    s = statement(table, "savings")
+    assert (s.lines, s.opening_balance, s.closing_balance) == ([], None, None)
+    brought = statement(parse("Date,Description,Amount,Balance\n01/04/2023,BALANCE BROUGHT FORWARD,,500.00\n"),
+                        None)
+    assert (brought.lines, brought.opening_balance, brought.closing_balance) == ([], Decimal("500.00"),
+                                                                                 Decimal("500.00"))
+    assert processor(parse(STRIPE_HEADER + "\n"), "stripe.csv").data == []
