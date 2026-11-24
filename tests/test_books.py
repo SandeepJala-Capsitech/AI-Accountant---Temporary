@@ -896,3 +896,14 @@ def test_a_years_figures_are_worked_out_from_one_read_of_the_client(store, acme,
     reads.clear()
     books.years_of(store, acme, date(2025, 6, 1))
     assert reads == ["find"]
+
+
+def test_vat_a_rule_keeps_in_the_cost_is_not_in_box_7(store, acme):
+    # The test books' EC-0330: a £190.75 client dinner (VAT £31.79, not reclaimable) put £190.75 in box 7; box 7 is
+    # purchases excluding VAT, reclaimable or not, so £158.96. A car lease's blocked half is VAT too.
+    add_rows(store, acme, row(date=date(2025, 6, 10), gross=D("190.75"), vat=D("31.79"), account_code="7403",
+                              document_type="invoice", counterparty="Harbour Kitchen", description="Client dinner"),
+             row(date=date(2025, 6, 12), gross=D("504.00"), vat=D("84.00"), account_code="7304",
+                 document_type="invoice", counterparty="Avon Vehicle Leasing", description="Car lease"))
+    v = books.vat_figures(store, acme, date(2025, 4, 1), date(2025, 6, 1), date(2025, 6, 30))
+    assert (v.box4, v.box7) == (D("42.00"), D("158.96") + D("420.00"))

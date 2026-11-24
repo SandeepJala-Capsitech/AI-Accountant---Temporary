@@ -496,7 +496,21 @@ def vat_figures(store: MongoStore, client_id: int, year_start: dt.date, start: O
         notes.append(f"{len(tb.left_out)} row{'' if len(tb.left_out) == 1 else 's'} of the year with a problem to fix "
                      f"{'is' if len(tb.left_out) == 1 else 'are'} left out.")
     return VatFigures(start=start, end=end, box1=box1, box2=ZERO, box3=box1, box4=box4, box5=box1 - box4,
-                      box6=-on(sales) + reverse_net, box7=on(costs), box8=ZERO, box9=ZERO, notes=notes)
+                      box6=-on(sales) + reverse_net, box7=on(costs) - _vat_kept_in_cost(b, tb, costs, covered, settings),
+                      box8=ZERO, box9=ZERO, notes=notes)
+
+
+def _vat_kept_in_cost(b: _Books, tb: TrialBalance, costs: set[str], covered, settings: BusinessSettings) -> Decimal:
+    """The VAT on the period's purchases that a rule keeps in the cost (entertainment, a car, the blocked half of a car
+    lease): still VAT, so not in box 7, which is purchases excluding VAT whether it is reclaimed or not."""
+    rows = {line.transaction for line in tb.journal if line.code in costs and covered(line)}
+    kept = ZERO
+    for n in rows:
+        tx = b.stored[n].tx
+        checked = normalise(tx, settings)
+        if {i.code for i in checked.issues} & {"vat_blocked", "vat_half_blocked"}:
+            kept += (tx.vat or ZERO) - (checked.vat_posted or ZERO)
+    return kept
 
 
 def _trial_balance(b: _Books, n: int) -> TrialBalance:
