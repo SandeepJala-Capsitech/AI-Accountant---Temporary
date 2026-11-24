@@ -1,7 +1,7 @@
 'use client'
 
 import { useRef, useState } from 'react'
-import { answerQuestion, canBookWithout, questionControl, questionState, uploadForQuestion, type Answer, type AnswerResult, type Question } from '@/lib/chat'
+import { answerQuestion, canBookWithout, formatMoney, openingAmount, questionControl, questionState, splitTotal, uploadForQuestion, type Answer, type AnswerResult, type Question } from '@/lib/chat'
 import type { Answerer } from '@/lib/reviews'
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
@@ -21,6 +21,7 @@ export default function QuestionCard({ question, number, threadId, answerer, onA
   const [date, setDate] = useState('')
   const [words, setWords] = useState('')
   const [reason, setReason] = useState<string | null>(null)   // why it is booked without its document, while typed
+  const [lines, setLines] = useState([{ account: '', amount: '' }])   // the costs an opening balance goes to
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
   const fileInput = useRef<HTMLInputElement>(null)
@@ -47,6 +48,12 @@ export default function QuestionCard({ question, number, threadId, answerer, onA
   const upload = (file: File | undefined) => {
     if (file) run(`Reading ${file.name}…`, () => how.upload(question.id, file))
   }
+  const needed = openingAmount(question)
+  const total = splitTotal(lines)
+  const codes = lines.map(l => /^\d{4}/.exec(l.account.trim())?.[0] ?? '')
+  const splitReady = needed !== null && total === needed && codes.every(Boolean)
+  const setLine = (n: number, change: Partial<{ account: string; amount: string }>) =>
+    setLines(ls => ls.map((l, k) => (k === n ? { ...l, ...change } : l)))
   const say = () => {
     if (!words.trim()) return
     onSay(`Answer to "${question.text}": ${words.trim()}`)
@@ -94,6 +101,35 @@ export default function QuestionCard({ question, number, threadId, answerer, onA
               Book with no VAT
             </button>
             <button type="button" className="btn btn-small" onClick={() => setReason(null)}>Cancel</button>
+          </form>
+        )}
+        {control === 'split' && (
+          <form className="question-split" onSubmit={e => {
+            e.preventDefault()
+            if (splitReady) answer({ kind: 'split', lines: lines.map((l, n) => ({ account: codes[n], amount: l.amount.trim() })) }, 'Releasing…')
+          }}>
+            {lines.map((l, n) => (
+              <div className="question-row" key={n}>
+                <input className="input" value={l.account} onChange={e => setLine(n, { account: e.target.value })}
+                       aria-label={`Cost account ${n + 1}`} placeholder="Account, e.g. 7100" disabled={!!busy || working} />
+                <input className="input" value={l.amount} onChange={e => setLine(n, { amount: e.target.value })}
+                       aria-label={`Amount ${n + 1}`} placeholder="Amount" inputMode="decimal" disabled={!!busy || working} />
+                {lines.length > 1 && (
+                  <button type="button" className="btn btn-small" aria-label={`Remove line ${n + 1}`}
+                          onClick={() => setLines(ls => ls.filter((_, k) => k !== n))}>Remove</button>
+                )}
+              </div>
+            ))}
+            <div className="question-row">
+              <button type="button" className="btn btn-small" disabled={!!busy || working}
+                      onClick={() => setLines(ls => [...ls, { account: '', amount: '' }])}>Add a cost</button>
+              <span className={total === needed ? 'muted' : 'field-error'}>
+                {formatMoney(total)} of {needed ? formatMoney(needed) : '—'}
+              </span>
+              <button type="submit" className="btn btn-primary btn-small" disabled={!splitReady || !!busy || working}>
+                Release
+              </button>
+            </div>
           </form>
         )}
         {control === 'text' && (

@@ -753,7 +753,8 @@ class QuestionDraft(BaseModel):
     client_id: int
     year_start: dt.date
     row_ids: list[int] = Field(default_factory=list)
-    kind: Literal["date", "receipt_or_invoice", "vat_invoice", "payout_report", "payroll_report", "other"]
+    kind: Literal["date", "receipt_or_invoice", "vat_invoice", "payout_report", "payroll_report", "opening_prepayments",
+                  "opening_accruals", "other"]
     text: str                                  # "When was this taxi?"
     why: str                                   # "£50 or more, so I need ..."
     source: Literal["rules", "agent"]

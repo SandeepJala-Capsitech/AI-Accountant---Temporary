@@ -568,3 +568,65 @@ def test_an_agent_question_about_a_claim_line_goes_once_a_person_changes_its_rec
     person_changed(records, acme, receipt.id)   # the person settles it on the receipt, the other record of the pair
     assert asked.id not in [q.id for q in refresh(store, records, acme)]
     assert records.question(asked.id).answer == "You changed this row after it was asked."
+
+
+# ─── Opening prepayments and accruals ─────────────────────────────────────────
+
+from ledgersync.models import OpeningBalances, OpeningLine  # noqa: E402
+from ledgersync.questions import SplitAnswer, SplitLine  # noqa: E402
+
+
+def opened_with_prepayments_and_an_accrual(store, client_id):
+    # The test books' agency year: £6,558.46 prepaid (rent and insurance) and £2,400 of accountancy accrued, from the
+    # previous accountant's trial balance; the app never released them, so rent and insurance were short and
+    # accountancy booked twice.
+    books.set_opening(store, client_id, OpeningBalances(lines=[
+        OpeningLine(code="1200", debit=D("10000.00")), OpeningLine(code="1103", debit=D("6558.46")),
+        OpeningLine(code="2109", credit=D("2400.00")), OpeningLine(code="3200", credit=D("14158.46"))]))
+
+
+def opening_question(store, records, client_id, kind):
+    return next(q for q in refresh(store, records, client_id) if q.kind == kind)
+
+
+def test_opening_prepayments_and_accruals_ask_which_costs_they_are_for(store, records, acme):
+    opened_with_prepayments_and_an_accrual(store, acme)
+    asked = {q.kind: q for q in refresh(store, records, acme) if q.kind.startswith("opening_")}
+    assert set(asked) == {"opening_prepayments", "opening_accruals"}
+    assert asked["opening_prepayments"].text == "Opening prepayments of £6,558.46: which costs are they for?"
+    assert asked["opening_accruals"].text == "Opening accruals of £2,400.00: which costs are they for?"
+    assert asked["opening_prepayments"].row_ids == []
+
+
+def test_the_split_answer_releases_them_on_the_first_day(store, records, acme):
+    opened_with_prepayments_and_an_accrual(store, acme)
+    q = opening_question(store, records, acme, "opening_prepayments")
+    left = answer(store, records, acme, q, SplitAnswer(kind="split", lines=[
+        SplitLine(account="8204", amount=D("1020.00")), SplitLine(account="7100", amount=D("5538.46"))]))
+    assert "opening_prepayments" not in {x.kind for x in left}
+    a = opening_question(store, records, acme, "opening_accruals")
+    answer(store, records, acme, a, SplitAnswer(kind="split", lines=[SplitLine(account="7601", amount=D("2400.00"))]))
+    tb = books.trial_balance(store, acme, YEAR_1)
+    assert (net(tb, "1103"), net(tb, "2109"), net(tb, "7100"), net(tb, "8204"), net(tb, "7601")) == (
+        0, 0, D("5538.46"), D("1020.00"), D("-2400.00"))
+    journals = [r.tx for r in store.rows(acme) if r.tx.document_type == "journal"]
+    assert {j.date for j in journals} == {YEAR_1} and len(journals) == 3
+    assert not [q for q in refresh(store, records, acme) if q.kind.startswith("opening_")]
+
+
+def test_a_split_that_does_not_add_up_is_refused(store, records, acme):
+    opened_with_prepayments_and_an_accrual(store, acme)
+    q = opening_question(store, records, acme, "opening_prepayments")
+    with pytest.raises(InvalidInput, match="add up to £1,020.00.*£6,558.46"):
+        answer(store, records, acme, q, SplitAnswer(kind="split", lines=[SplitLine(account="8204", amount=D("1020.00"))]))
+    with pytest.raises(InvalidInput):
+        answer(store, records, acme, q, SplitAnswer(kind="split", lines=[SplitLine(account="1103", amount=D("6558.46"))]))
+    assert not [r for r in store.rows(acme) if r.tx.document_type == "journal"]
+
+
+def test_journals_a_person_enters_by_hand_settle_the_question(store, records, acme):
+    opened_with_prepayments_and_an_accrual(store, acme)
+    add_rows(store, acme, row(date=YEAR_1, gross=D("6558.46"), account_code="7100", contra_account_code="1103",
+                              document_type="journal", description="Prepayments released"))
+    kinds = {q.kind for q in refresh(store, records, acme)}
+    assert "opening_prepayments" not in kinds and "opening_accruals" in kinds

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { ApiError } from './api.ts'
 import {
   agentDecisions, answerQuestion, attentionHref, changedFields, effectLine, fileStatus, formatMoney, groupThreads, hasResult, looksLikeStatement, parseEvents,
-  canBookWithout, questionControl, questionState, shouldPoll, readStatus, ruleBadge, retryFiles, shownAccounts, streamMessage, suspenseLabel, uploadForQuestion,
+  canBookWithout, openingAmount, questionControl, questionState, splitTotal, shouldPoll, readStatus, ruleBadge, retryFiles, shownAccounts, streamMessage, suspenseLabel, uploadForQuestion,
   withQuestion, afterDelete, deleteQuestion, deleteThread, newTitle, renameThread,
   type AnswerResult, type ChatEvent, type ChatThread, type Decision, type PostResult, type PostedTrialBalance, type Question,
 } from './chat.ts'
@@ -80,6 +80,17 @@ test('each kind of question gets its control', () => {
   assert.equal(questionControl(question('payout_report')), 'upload')
   assert.equal(questionControl(question('payroll_report')), 'upload')
   assert.equal(questionControl(question('other')), 'text')
+  assert.equal(questionControl(question('opening_prepayments')), 'split')
+  assert.equal(questionControl(question('opening_accruals')), 'split')
+})
+
+test('an opening balance question says how much is to be split, and the lines are added up in pence', () => {
+  const q = { ...question('opening_prepayments'), text: 'Opening prepayments of £6,558.46: which costs are they for?' }
+  assert.equal(openingAmount(q), '6558.46')
+  assert.equal(openingAmount(question('date')), null)
+  assert.equal(splitTotal([{ amount: '1020' }, { amount: '5538.46' }]), '6558.46')
+  assert.equal(splitTotal([{ amount: '0.1' }, { amount: '0.2' }]), '0.30')   // no floating point pence
+  assert.equal(splitTotal([{ amount: '' }, { amount: 'abc' }]), '0.00')
 })
 
 test('the rule badge is the rule number', () => {

@@ -14,13 +14,16 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from decimal import Decimal
+
 from . import books, ledger, ledger_book
+from .accounts import ALL_BANK_CODES, BY_CODE
 from .checks import booked, long_date
 from .errors import InvalidInput, NotFound
 from .evidence_rules import document_rule
 from .ledger import settings_for
-from .models import (ChangeDraft, Decision, DecisionDraft, Evidence, Ledger, PostResult, Question, QuestionDraft,
-                     RowPatch, Transaction)
+from .models import (ChangeDraft, Decision, DecisionDraft, Evidence, Ledger, ManualUpload, PostResult, Question,
+                     QuestionDraft, RowPatch, Transaction)
 from .money import ZERO
 from .payees import processor
 from .records import AgentRecords
@@ -53,8 +56,23 @@ class WithoutDocumentAnswer(BaseModel):
     reason: str
 
 
-Answer = Annotated[Union[DateAnswer, NoDocumentAnswer, NotSureAnswer, WithoutDocumentAnswer],
+class SplitLine(BaseModel):
+    account: str
+    amount: Decimal
+
+
+class SplitAnswer(BaseModel):
+    """Which costs an opening prepayment or accrual is for: the lines add up to what is still to be released."""
+    kind: Literal["split"]
+    lines: list[SplitLine]
+
+
+Answer = Annotated[Union[DateAnswer, NoDocumentAnswer, NotSureAnswer, WithoutDocumentAnswer, SplitAnswer],
                    Field(discriminator="kind")]
+# An opening balance on Prepayments or Accruals is last year's: this year it is released, on the year's first day, to
+# the costs it is for (a prepayment becomes a cost of this year; an accrual comes off the cost when its bill comes).
+# The trial balance it came from doesn't say which costs, so the person is asked. kind: (account, word, its sign).
+_OPENING = {"opening_prepayments": ("1103", "prepayments", 1), "opening_accruals": ("2109", "accruals", -1)}
 BOOKED_WITHOUT = "Booked without a receipt: "
 
 
@@ -76,9 +94,35 @@ def _on(tx: Transaction) -> str:
     return f" on {long_date(tx.date)}" if tx.date else ""
 
 
-def _key(kind: str, row_id: int) -> str:
-    """The key a rule question is kept under: one date question and one document question per row."""
+def _key(kind: str, row_id: Optional[int]) -> str:
+    """The key a rule question is kept under: one date question and one document question per row, and one question
+    for each opening balance to release."""
+    if kind in _OPENING:
+        return f"open:{kind}"
     return f"{'date' if kind == 'date' else 'doc'}:{row_id}"
+
+
+def _released(tx: Transaction, code: str, sign: int) -> Decimal:
+    """What a journal takes off an opening balance on `code`: a prepayment (a debit) is released by crediting it, an
+    accrual (a credit) by debiting it."""
+    if tx.document_type != "journal":
+        return ZERO
+    debits = (tx.account_code == code) == (tx.direction.value == "out")
+    touches = code in (tx.account_code, tx.contra_account_code)
+    return tx.gross if touches and debits == (sign < 0) else ZERO
+
+
+def _opening_left(store: MongoStore, client_id: int, year_start: dt.date, built: Ledger) -> dict[str, Decimal]:
+    """Each opening prepayment or accrual still to be released, by question kind: the opening balance less what the
+    journals of the year's first day already release."""
+    opening = books.opening(store, client_id, year_start)
+    left = {}
+    for kind, (code, _, sign) in _OPENING.items():
+        balance = sign * opening.get(code, ZERO)
+        done = sum((_released(t, code, sign) for t in built.transactions if booked(t) and t.date == year_start), ZERO)
+        if balance - done > ZERO:
+            left[kind] = balance - done
+    return left
 
 
 def _wanted(store: MongoStore, client_id: int,
@@ -115,6 +159,15 @@ def _wanted(store: MongoStore, client_id: int,
             want(tx, rule.needs, asks,
                  f"{_gbp(tx.gross)} to {tx.counterparty or tx.description}{when}. {_OVER[rule.needs]}, so I need it. "
                  "Held in Suspense as Documentation required until then.")
+    for kind, amount in _opening_left(store, client_id, year_start, built).items():
+        code, word, _ = _OPENING[kind]
+        wanted[_key(kind, None)] = QuestionDraft(
+            client_id=client_id, year_start=year_start, kind=kind, source="rules",
+            text=f"Opening {word} of {_gbp(amount)}: which costs are they for?",
+            why=(f"{BY_CODE[code].name} carried in from last year: this year it is released on "
+                 f"{long_date(year_start)} to the costs it is for, and the trial balance it came from doesn't say "
+                 "which." + (" A prepayment becomes a cost of this year." if code == "1103" else
+                             " An accrual comes off the cost when its bill arrives.")))
     return wanted, built
 
 
@@ -225,8 +278,9 @@ def refresh(store: MongoStore, records: AgentRecords, client_id: int, year_start
     The year's questions are read once and only those that are new or have changed are written, so settling after
     every change costs a read when nothing moved. Returns the year's open and waiting questions, oldest first."""
     wanted, _ = _wanted(store, client_id, year_start)
-    stored = {_key(q.kind, q.row_ids[0]): q for q in records.questions(
-        client_id, year_start, statuses=("open", "waiting", "resolved")) if q.source == "rules" and q.row_ids}
+    stored = {_key(q.kind, q.row_ids[0] if q.row_ids else None): q for q in records.questions(
+        client_id, year_start, statuses=("open", "waiting", "resolved"))
+        if q.source == "rules" and (q.row_ids or q.kind in _OPENING)}
     for key, draft in wanted.items():
         asked = stored.get(key)
         if asked is None or not _same(asked, draft):
@@ -288,6 +342,9 @@ def answer(store: MongoStore, records: AgentRecords, *, client_id: int, thread_i
             ledger.change_row(store, client_id, row_id, RowPatch(without_document=reason))
         said = f"{BOOKED_WITHOUT}{reason}"
         records.set_question(q.id, "resolved", said)
+    elif isinstance(answer, SplitAnswer):
+        said = _release(store, client_id, q, answer)
+        records.set_question(q.id, "resolved", said)
     elif isinstance(answer, NoDocumentAnswer):
         if q.kind not in DOCUMENT_KINDS:
             raise InvalidInput("This question isn't asking for a document.")
@@ -308,6 +365,32 @@ def answer(store: MongoStore, records: AgentRecords, *, client_id: int, thread_i
         refresh(store, records, client_id, year)
         posts.append(ledger_book.post(store, records, client_id, year, decision_ids=decision_ids))
     return Answered(records.questions(client_id, q.year_start), posts[0])
+
+
+def _release(store: MongoStore, client_id: int, q: Question, answer: SplitAnswer) -> str:
+    """Posts the journals that release an opening prepayment or accrual to the costs the answer gives, on the year's
+    first day; what the person said. The lines must add up to what is still to be released."""
+    if q.kind not in _OPENING:
+        raise InvalidInput("This question isn't asking which costs an opening balance is for.")
+    code, word, sign = _OPENING[q.kind]
+    if not answer.lines or any(line.amount <= ZERO for line in answer.lines):
+        raise InvalidInput("Give each cost an amount above zero.")
+    if any(line.account not in BY_CODE or line.account == code or line.account in ALL_BANK_CODES
+           for line in answer.lines):
+        raise InvalidInput("Choose a cost account for each line.")
+    left = _opening_left(store, client_id, q.year_start, books.ledger(store, client_id, q.year_start)).get(q.kind,
+                                                                                                           ZERO)
+    total = sum((line.amount for line in answer.lines), ZERO)
+    if total != left:
+        raise InvalidInput(f"The lines add up to {_gbp(total)}; the opening {word} still to release are {_gbp(left)}.")
+    journals = [Transaction(date=q.year_start, direction="out", gross=line.amount, document_type="journal",
+                            description=f"Opening {word} released: {BY_CODE[line.account].name}",
+                            account_code=line.account if sign > 0 else code,
+                            contra_account_code=code if sign > 0 else line.account) for line in answer.lines]
+    ledger.add_manual(store, client_id, ManualUpload(name=f"Opening {word} released", transactions=journals,
+                                                     year_start=q.year_start))
+    return "Released to " + "; ".join(f"{line.account} {BY_CODE[line.account].name} {_gbp(line.amount)}"
+                                      for line in answer.lines)
 
 
 CLOSED_BY_THE_AI = "Closed by the AI: "
