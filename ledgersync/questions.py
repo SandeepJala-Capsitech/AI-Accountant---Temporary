@@ -14,10 +14,10 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from . import books, ledger, ledger_book
-from .accounts import ALL_BANK_CODES, BY_CODE
+from .accounts import ALL_BANK_CODES, BY_CODE, AccountType
 from .checks import booked, long_date
 from .errors import InvalidInput, NotFound
 from .evidence_rules import document_rule
@@ -56,6 +56,12 @@ class WithoutDocumentAnswer(BaseModel):
     reason: str
 
 
+class WriteOffAnswer(BaseModel):
+    """Write the invoice off as a bad debt, on the date given (by default the day its six months overdue end)."""
+    kind: Literal["write_off"]
+    date: Optional[dt.date] = None
+
+
 class SplitLine(BaseModel):
     account: str
     amount: Decimal
@@ -67,7 +73,8 @@ class SplitAnswer(BaseModel):
     lines: list[SplitLine]
 
 
-Answer = Annotated[Union[DateAnswer, NoDocumentAnswer, NotSureAnswer, WithoutDocumentAnswer, SplitAnswer],
+Answer = Annotated[Union[DateAnswer, NoDocumentAnswer, NotSureAnswer, WithoutDocumentAnswer, SplitAnswer,
+                         WriteOffAnswer],
                    Field(discriminator="kind")]
 # An opening balance on Prepayments or Accruals is last year's: this year it is released, on the year's first day, to
 # the costs it is for (a prepayment becomes a cost of this year; an accrual comes off the cost when its bill comes).
@@ -99,7 +106,35 @@ def _key(kind: str, row_id: Optional[int]) -> str:
     for each opening balance to release."""
     if kind in _OPENING:
         return f"open:{kind}"
+    if kind == "bad_debt":
+        return f"debt:{row_id}"
     return f"{'date' if kind == 'date' else 'doc'}:{row_id}"
+
+
+DUE_DAYS = 30   # an invoice records no due date: taken as 30 days after it
+
+
+def _sales_owed(store: MongoStore, client_id: int, built: Ledger) -> list[Transaction]:
+    """The booked sales invoices still owed as the year sees them: the year's own, and an earlier year's still unpaid,
+    whose six months overdue may end in this one. A sale is on an income account (a supplier's credit note is not)."""
+    def sale(tx: Transaction) -> bool:
+        account = BY_CODE.get(tx.account_code)
+        return (booked(tx) and tx.document_type == "invoice" and tx.direction.value == "in" and account is not None
+                and account.type == AccountType.INCOME and bool(tx.owed) and tx.owed > ZERO)
+
+    earlier = [r for r in books.all_rows(store, client_id) if r.date is not None and r.date < built.year.start]
+    return [t for t in built.transactions if sale(t)] + [t for t in earlier if sale(t)]
+
+
+def _overdue_from(tx: Transaction) -> Optional[dt.date]:
+    """The day an invoice has been unpaid six months past its due date (its date plus DUE_DAYS)."""
+    if tx.date is None:
+        return None
+    due = tx.date + dt.timedelta(days=DUE_DAYS)
+    month = due.month + 6
+    year, month = due.year + (month - 1) // 12, (month - 1) % 12 + 1
+    last = (dt.date(year + month // 12, month % 12 + 1, 1) - dt.timedelta(days=1)).day
+    return dt.date(year, month, min(due.day, last))
 
 
 def _released(tx: Transaction, code: str, sign: int) -> Decimal:
@@ -159,6 +194,18 @@ def _wanted(store: MongoStore, client_id: int,
             want(tx, rule.needs, asks,
                  f"{_gbp(tx.gross)} to {tx.counterparty or tx.description}{when}. {_OVER[rule.needs]}, so I need it. "
                  "Held in Suspense as Documentation required until then.")
+    by = min(dt.date.today(), built.year.end)
+    seen: set[str] = set()
+    for tx in _sales_owed(store, client_id, built):
+        ref = tx.document_ref or f"row-{tx.id}"
+        overdue = _overdue_from(tx)
+        if overdue is not None and overdue <= by and ref not in seen:
+            seen.add(ref)
+            want(tx, "bad_debt", f"Write off the {_gbp(tx.owed)} {tx.counterparty or 'the customer'} owes as a bad "
+                                 "debt?",
+                 f"Invoice {tx.document_number or tx.description} of {long_date(tx.date)} is unpaid more than six "
+                 "months after it fell due. Written off, it is a cost (Bad Debts), and the VAT on it can be claimed "
+                 "back as VAT bad debt relief.")
     for kind, amount in _opening_left(store, client_id, year_start, built).items():
         code, word, _ = _OPENING[kind]
         wanted[_key(kind, None)] = QuestionDraft(
@@ -342,6 +389,9 @@ def answer(store: MongoStore, records: AgentRecords, *, client_id: int, thread_i
             ledger.change_row(store, client_id, row_id, RowPatch(without_document=reason))
         said = f"{BOOKED_WITHOUT}{reason}"
         records.set_question(q.id, "resolved", said)
+    elif isinstance(answer, WriteOffAnswer):
+        said = _write_off(store, client_id, q, answer)
+        records.set_question(q.id, "resolved", said)
     elif isinstance(answer, SplitAnswer):
         said = _release(store, client_id, q, answer)
         records.set_question(q.id, "resolved", said)
@@ -365,6 +415,35 @@ def answer(store: MongoStore, records: AgentRecords, *, client_id: int, thread_i
         refresh(store, records, client_id, year)
         posts.append(ledger_book.post(store, records, client_id, year, decision_ids=decision_ids))
     return Answered(records.questions(client_id, q.year_start), posts[0])
+
+
+def _write_off(store: MongoStore, client_id: int, q: Question, answer: WriteOffAnswer) -> str:
+    """Adds the row that writes off what is still owed on the question's invoice as a bad debt, with the VAT on it as
+    relief (checks books it only when the client was VAT registered); what the person said."""
+    if q.kind != "bad_debt" or not q.row_ids:
+        raise InvalidInput("This question isn't asking about a bad debt.")
+    built = books.ledger(store, client_id, q.year_start)
+    tx = next((t for t in _sales_owed(store, client_id, built) if t.id == q.row_ids[0]), None)
+    if tx is None:
+        raise InvalidInput("This invoice is no longer owed.")
+    overdue = _overdue_from(tx)
+    # By default today, or the day the six months end if later: never a VAT quarter already filed. Kept in the year.
+    day = answer.date or max(overdue, min(dt.date.today(), built.year.end))
+    if not (built.year.start <= day <= built.year.end):
+        raise InvalidInput(f"Choose a date in the year, {long_date(built.year.start)} to {long_date(built.year.end)}.")
+    if day < overdue:
+        raise InvalidInput(f"Bad debt relief can be claimed from {long_date(overdue)}, six months after the invoice "
+                           "fell due: choose that day or later.")
+    parts = [t for t in books.all_rows(store, client_id) if booked(t) and (t.document_ref or f"row-{t.id}") == (tx.document_ref or f"row-{tx.id}")]
+    gross = sum((t.gross for t in parts), ZERO)
+    vat = sum((t.vat_posted or ZERO for t in parts), ZERO)
+    share = (tx.owed * vat / gross).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if gross else ZERO
+    off = Transaction(date=day, direction="out", gross=tx.owed, vat=share, account_code="8100",
+                      document_type="write_off", counterparty=tx.counterparty, writes_off=tx.document_ref,
+                      description=f"Bad debt written off: {tx.description}")
+    ledger.add_manual(store, client_id, ManualUpload(name="Bad debt written off", transactions=[off],
+                                                     year_start=q.year_start))
+    return f"Written off on {long_date(day)}: {_gbp(tx.owed)}"
 
 
 def _release(store: MongoStore, client_id: int, q: Question, answer: SplitAnswer) -> str:

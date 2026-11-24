@@ -2101,3 +2101,88 @@ def test_a_p32_read_on_paye_with_no_owed_to_still_gives_its_allowance():
     rows[-1] = rows[-1].model_copy(update={"owed_to": None})
     *_, allowance = matched_from(rows, uploads)
     assert (allowance.account_code, allowance.gross) == ("7006", Decimal("1447.20"))
+
+
+# ─── Bad debts (design of 2026-11-24) ─────────────────────────────────────────
+
+def _lowther(gross="4800.00", vat="800.00"):
+    return row("invoice", "in", gross, "2023-06-05", "Lowther Interiors Ltd", "kf-1017", account="4000", vat=vat,
+               description="Lowther Interiors Ltd – Showroom website build")
+
+
+def _written_off(gross="4800.00", vat="800.00"):
+    return row("write_off", "out", gross, "2024-01-31", "Lowther Interiors Ltd", "wo-1", account="8100", vat=vat,
+               writes_off="kf-1017", description="Bad debt written off: Showroom website build")
+
+
+def test_a_write_off_settles_its_invoice():
+    invoice, off = matched(_lowther(), _written_off())
+    assert invoice.owed == Decimal("0.00") and [p.kind for p in invoice.paid_by] == ["write_off"]
+    assert booked(off) and off.vat_posted == Decimal("800.00")
+
+
+def test_a_part_paid_invoice_is_written_off_for_what_is_owed():
+    invoice, paid, off = matched(_lowther(), bank("1200.00", "2023-07-10", "Lowther Interiors Ltd", direction="in",
+                                                  account="4000"), _written_off("3600.00", "600.00"))
+    assert [p.ref for p in paid.pays] == ["kf-1017"] and invoice.owed == Decimal("0.00")
+
+
+def test_a_later_payment_from_the_customer_is_a_recovery():
+    # The administrator's dividend of £1,200 on 20 March 2024: booked as a sale with no VAT before.
+    *_, back = matched(_lowther(), _written_off(), bank("1200.00", "2024-03-20", "Lowther Interiors Ltd",
+                                                        direction="in", account="4000"))
+    assert (back.account_code, back.vat_posted, back.recovers) == ("8100", Decimal("200.00"), "wo-1")
+    assert "bad_debt_recovered" in [c for c, _ in codes(back)] and "sale_without_vat" not in [c for c, _ in codes(back)]
+
+
+def test_a_payment_bigger_than_the_write_off_is_not_a_recovery():
+    *_, back = matched(_lowther(), _written_off(), bank("6000.00", "2024-03-20", "Lowther Interiors Ltd",
+                                                        direction="in", account="4000"))
+    assert back.recovers is None and back.account_code == "4000"
+
+
+def test_a_recovery_from_the_customers_administrators_name_is_still_a_recovery():
+    # The agency year's dividend came from "Lowther Interiors in Admin".
+    invoice, off, back = matched(_lowther(), _written_off(), bank("1200.00", "2024-03-20", "Lowther Interiors in Admin",
+                                                                  direction="in", account="4000"))
+    assert back.recovers == "wo-1" and off.owed is None   # the write-off is not itself a document owed
+
+
+def test_a_recovery_is_found_once_the_customers_earlier_balance_is_paid():
+    # The agency year: Lowther's £8,400 brought forward was paid in April, but the recovery was looked for before
+    # payments were matched, so the balance still looked open and the dividend stayed a sale.
+    from ledgersync.models import OpenItem
+    rows = [_lowther(), _written_off(),
+            bank("8400.00", "2023-04-27", "Lowther Interiors Ltd", "april", direction="in", account="4000"),
+            bank("1200.00", "2024-03-20", "Lowther Interiors in Admin", "march", direction="in", account="4000")]
+    ready = match([normalise(t, SETTINGS) for t in rows], SETTINGS,
+                  open_items=[OpenItem(id="1", direction="in", counterparty="Lowther Interiors Ltd",
+                                       amount=Decimal("8400.00"), date=dt.date(2023, 3, 31))])
+    april, march = ready[2], ready[3]
+    assert [p.ref for p in april.pays] == ["ob-1"] and march.recovers == "wo-1" and march.account_code == "8100"
+
+
+def test_another_customer_sharing_a_word_is_not_a_recovery():
+    *_, other = matched(_lowther(), _written_off(), bank("500.00", "2024-05-01", "Pinecrest Interiors",
+                                                         direction="in", account="4000"))
+    assert other.recovers is None
+
+
+def test_two_write_offs_for_one_customer_recover_each_line_once():
+    second = row("invoice", "in", "1200.00", "2023-07-05", "Lowther Interiors Ltd", "kf-1018", account="4000",
+                 vat="200.00", description="Second invoice")
+    off2 = row("write_off", "out", "1200.00", "2024-01-31", "Lowther Interiors Ltd", "wo-2", account="8100",
+               vat="200.00", writes_off="kf-1018", description="Bad debt written off: second")
+    *_, small, big = matched(_lowther(), second, _written_off(), off2,
+                             bank("1000.00", "2024-03-20", "Lowther Interiors Ltd", "l1", direction="in", account="4000"),
+                             bank("4000.00", "2024-03-27", "Lowther Interiors Ltd", "l2", direction="in", account="4000"))
+    # pooled: £5,000 unrecovered between them, so both lines are recoveries, oldest write-off first
+    assert small.recovers == big.recovers == "wo-1" and (small.vat_posted, big.vat_posted) == (
+        Decimal("166.67"), Decimal("666.67"))
+
+
+def test_a_payment_dated_before_the_write_off_settles_first():
+    invoice, off, paid = matched(_lowther(), _written_off(), bank("1200.00", "2023-08-01", "Lowther Interiors Ltd",
+                                                                  direction="in", account="4000"))
+    assert [p.ref for p in paid.pays] == ["kf-1017"] and invoice.owed == Decimal("0.00")
+    assert "write_off_more_than_owed" in [c for c, _ in codes(off)]   # it wrote off £1,200 more than was left

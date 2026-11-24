@@ -181,6 +181,7 @@ class _Document:
     date: Optional[dt.date] = None
     open: Decimal = ZERO
     paid_by: list[Settlement] = field(default_factory=list)
+    written_off: Optional[dt.date] = None   # the day a bad debt write-off of it takes effect: no payment after it
 
     def settlement(self, amount: Decimal) -> Settlement:
         return Settlement(ref=self.ref, amount=amount, date=self.date, description=self.description, kind=self.kind)
@@ -262,6 +263,9 @@ def match_documents(rows: list[Transaction], settings: BusinessSettings,
     documents = {**_brought_forward(open_items), **_documents(rows)}
     changes: list[dict] = [{} for _ in rows]
     _credit_notes(rows, documents, changes)
+    for tx in rows:   # a write-off takes what is still owed once the payments dated before it are matched
+        if tx.document_type == "write_off" and booked(tx) and tx.writes_off in documents and tx.date:
+            documents[tx.writes_off].written_off = tx.date
     # Both sides of a transfer between the client's own accounts are the transfer's, never a payment of a document.
     transfers = _pair_transfers(rows, settings, changes, apart)
     lines = sorted((n for n, tx in enumerate(rows) if tx.document_type in _PAYMENT_LINES and n not in transfers
@@ -296,6 +300,7 @@ def match_documents(rows: list[Transaction], settings: BusinessSettings,
     _off_statement(rows, changes, settings)
     _refunds(rows, changes, documents, statement_lines)
     _reversals(rows, changes, statement_lines)
+    _recoveries(rows, settings, _write_offs(rows, documents, changes), documents, changes)
     _settled_since(changes, documents)
     for doc in documents.values():
         for n in doc.rows:
@@ -419,6 +424,78 @@ def _with_addressee(tx: Transaction, settings: BusinessSettings) -> Transaction:
     return tx.model_copy(update={"issues": tx.issues + [issue(
         "addressed_to", f"Addressed to {to}, not {name}. If it is their own spending, recode it to Director's Loan "
                         "Account; if the business bought it, say it is fine.")]})
+
+
+def _write_offs(rows: list[Transaction], documents: dict[str, _Document],
+                changes: list[dict]) -> list[tuple[int, Transaction]]:
+    """Each bad debt written off: its write_off row settles the invoice it writes off (writes_off), so the invoice is
+    no longer owed. The write-offs found, by place."""
+    found: list[tuple[int, Transaction]] = []
+    for n, tx in enumerate(rows):
+        doc = documents.get(tx.writes_off or "")
+        if tx.document_type != "write_off" or doc is None or not booked(tx):
+            continue
+        take = min(tx.gross, doc.open)
+        doc.open -= take
+        doc.paid_by.append(Settlement(ref=tx.document_ref or f"row-{n}", amount=take, date=tx.date,
+                                      description=tx.description, kind="write_off"))
+        changes[n]["pays"] = [doc.settlement(take)]
+        if tx.gross > take:   # paid in part before the write-off: it writes off more than was left
+            changes[n]["issues"] = changes[n].get("issues", tx.issues) + [issue(
+                "write_off_more_than_owed", f"Writes off {_gbp(tx.gross)}, but only {_gbp(take)} was still owed on "
+                                            f"{doc.description} on {long_date(tx.date)}: remove it and answer again "
+                                            "to write off what is owed.")]
+        found.append((n, tx))
+    return found
+
+
+def _recoveries(rows: list[Transaction], settings: BusinessSettings, written_off: list[tuple[int, Transaction]],
+                documents: dict[str, _Document], changes: list[dict]) -> None:
+    """After the payments are matched: each bank line in from a customer whose debt was written off, dated after the
+    write-off, that pays nothing else, while none of that customer's documents is open, and for no more than is still
+    unrecovered, is a recovery (recovers): booked against Bad Debts, with the share of it the write-off claimed back
+    as VAT paid over again, not as a sale. The customer is surely the same, or their name is in the line's (an
+    administrator pays in the company's name: "Lowther Interiors in Admin"); a name only sharing a word is not."""
+    # A customer's write-offs are pooled: a recovery comes out of what is unrecovered on any of them, oldest first.
+    pools: list[list[tuple[int, Transaction]]] = []
+    for w, off in written_off:
+        pool = next((p for p in pools if off.counterparty and p[0][1].counterparty
+                     and same_payee(off.counterparty, p[0][1].counterparty)), None)
+        if pool is None:
+            pools.append([(w, off)])
+        else:
+            pool.append((w, off))
+    for pool in pools:
+        pool.sort(key=lambda p: (p[1].date or dt.date.max, p[0]))
+        first = pool[0][1]
+        left = {w: off.gross for w, off in pool}
+        gross = sum((off.gross for _, off in pool), ZERO)
+        vat = sum((off.vat_posted or ZERO for _, off in pool), ZERO)
+        for n, tx in sorted(enumerate(rows), key=lambda p: (p[1].date or dt.date.max, p[0])):
+            change = changes[n]
+            if (tx.document_type != "statement" or tx.direction != Direction.IN or tx.link or tx.account_chosen
+                    or not booked_line(tx) or change.get("pays") or change.get("recorded_by") or change.get("recovers")
+                    or change.get("paid_against") or tx.date is None or first.date is None or tx.date <= first.date
+                    or tx.gross > sum(left.values(), ZERO)
+                    or not (tx.counterparty and first.counterparty and (same_payee(tx.counterparty, first.counterparty)
+                                                                         or _named_in(first.counterparty, tx.counterparty)))
+                    or any(d.open > ZERO and d.direction == "in" and d.counterparty
+                           and same_payee(first.counterparty, d.counterparty) for d in documents.values())):
+                continue
+            w, off = next((w, off) for w, off in pool if left[w] > ZERO)
+            share = (tx.gross * vat / gross).quantize(PENNY, rounding=ROUND_HALF_UP)
+            ref = off.document_ref or f"row-{w}"
+            checked = normalise(tx.model_copy(update={"account_code": "8100", "vat": share, "recovers": ref}), settings)
+            change.update(account_code="8100", vat=share, vat_posted=checked.vat_posted, net=checked.net, recovers=ref,
+                          candidates=[], issues=[i for i in checked.issues if i.code not in MATCHING_ISSUES] + [issue(
+                              "bad_debt_recovered", f"Recovers {_gbp(tx.gross)} of the bad debt written off on "
+                                                    f"{long_date(off.date)}: booked against Bad Debts, its "
+                                                    f"£{share:,.2f} VAT paid over again, not as a sale.", "info")])
+            taken = tx.gross
+            for k, _ in pool:   # what it recovers, from the oldest write-off on
+                part = min(left[k], taken)
+                left[k] -= part
+                taken -= part
 
 
 _USUAL_WAY = {DEBTORS: "in", CREDITORS: "out"}   # an invoice to a customer, a bill from a supplier
@@ -804,7 +881,7 @@ def _cleared(tx: Transaction) -> Transaction:
     return tx.model_copy(update={"paid_against": None, "pays": [], "candidates": [], "owed": None, "paid_by": [],
                                  "copy_of": None, "recorded_by": None, "claimed_in": None, "vat_found": None,
                                  "date_found": None, "amount_found": None, "documented_by": None,
-                                 "recorded_by_refs": [], "left_off_claim": None, "claim_note": None,
+                                 "recorded_by_refs": [], "left_off_claim": None, "claim_note": None, "recovers": None,
                                  "issues": [i for i in tx.issues if i.code not in MATCHING_ISSUES]})
 
 
@@ -1001,7 +1078,7 @@ def _documents(rows: list[Transaction]) -> dict[str, _Document]:
     """The open documents: booked invoices, claims and included documents. A claim still asks for the lines its
     receipts book; an invoice on a claim is owed to the claimant, on the claim, not to its supplier. A payroll
     report is not one: what it owes is on 2220, 2210 and 2230, which the bank payments clear."""
-    return _grouped(rows, lambda tx: tx.document_type not in ("receipt", "statement", "payroll", "journal")
+    return _grouped(rows, lambda tx: tx.document_type not in ("receipt", "statement", "payroll", "journal", "write_off")
                     and tx.claimed_in is None
                     and tx.currency == "GBP"   # nothing in pounds pays an amount in another currency: convert it first
                     and (booked(tx) or (tx.document_type == "expense_claim" and tx.recorded_by is not None)))
@@ -1603,7 +1680,7 @@ def _could_pay(line: Transaction, doc: _Document) -> bool:
     """Another open document the same way, and the payment dated on or after it, however long after. A payment of
     exactly what is owed clears the document whenever it comes; other payments also need to be within PART_WINDOW."""
     return (_another(line, doc) and doc.date is not None and line.date is not None
-            and doc.date <= line.date)
+            and doc.date <= line.date and not (doc.written_off and line.date > doc.written_off))
 
 
 def _recent(line: Transaction, doc: _Document) -> bool:

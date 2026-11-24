@@ -98,3 +98,14 @@ def test_the_same_number_at_the_same_total_or_kept_apart_or_the_other_way_is_not
     ways = [invoice("7", "50.00", "2026-05-10", "a"), invoice("7", "60.00", "2026-05-12", "b", direction="in")]
     for rows in (same_total, apart, ways):
         assert renumbered_invoices(rows, ids=[10, 11]) == [None, None]
+
+
+def test_two_write_offs_of_the_same_amount_are_not_duplicates():
+    from decimal import Decimal
+    import datetime as dt
+    from ledgersync.duplicates import possible_duplicates
+    from ledgersync.models import Transaction
+    off = dict(date=dt.date(2024, 1, 31), direction="out", gross=Decimal("600.00"), account_code="8100",
+               document_type="write_off", description="Bad debt written off")
+    assert possible_duplicates([Transaction(**off, writes_off="a"), Transaction(**off, writes_off="b")],
+                               uploads=[1, 2], ids=[1, 2]) == [None, None]

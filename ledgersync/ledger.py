@@ -480,7 +480,7 @@ def add_manual(store: MongoStore, client_id: int, upload: ManualUpload) -> Ledge
     if any(tx.date is not None and tx.date > dt.date.today() + AHEAD for tx in upload.transactions):
         raise InvalidInput("That date is more than a year ahead: check the year.")
     if any(tx.account_code not in _choosable_codes(client) for tx in upload.transactions
-           if tx.document_type != "journal"):
+           if tx.document_type not in ("journal", "write_off")):   # a bad debt goes to 8100, offered for no row
         raise InvalidInput(f"This account can't be chosen for {client.name}.")
     if any(tx.bank_account is not None and tx.bank_account not in bank_codes(client) for tx in upload.transactions):
         raise InvalidInput(f"Choose one of {client.name}'s bank accounts.")

@@ -25,10 +25,10 @@ class Direction(str, Enum):
 # "journal" is an entry a person makes between two accounts (depreciation, an accrual, a tax charge): money out
 # debits its account and credits its contra account, with no VAT and no document.
 DocumentType = Literal["receipt", "invoice", "expense_claim", "statement", "agent_statement", "payroll", "journal",
-                       "quote", "pro_forma", "purchase_order", "remittance_advice", "supplier_statement",
+                       "write_off", "quote", "pro_forma", "purchase_order", "remittance_advice", "supplier_statement",
                        "finance_agreement", "other"]
 DOCUMENT_TYPES: tuple[str, ...] = get_args(DocumentType)
-NOT_TRANSACTIONS = frozenset(DOCUMENT_TYPES[7:])
+NOT_TRANSACTIONS = frozenset(DOCUMENT_TYPES[8:])   # after "write_off": quote, pro forma and the rest
 
 # The kind of business a client is: a limited company's owners go through 2250 Director's Loan Account,
 # anyone else's through 3260 Drawings and 3010 Capital Introduced.
@@ -200,6 +200,10 @@ class Transaction(BaseModel):
     # the row is held in Suspense or its document is not a VAT invoice, and why. The books then hold the whole
     # amount with no VAT, so a page shows that, and says where the VAT went.
     vat_not_reclaimed: Optional[Decimal] = None
+    # A bad debt (design of 2026-11-24): a write_off row writes off the invoice with this document_ref; a bank line in
+    # from that customer afterwards recovers part of it (the write-off's ref), booked against Bad Debts.
+    writes_off: Optional[str] = None
+    recovers: Optional[str] = None
     vat_not_reclaimed_why: Optional[str] = None
     link: Optional[list[str]] = None               # a person's decision on a bank line: None automatic,
                                                    # [] not a payment of any document, refs: pays these
@@ -754,7 +758,7 @@ class QuestionDraft(BaseModel):
     year_start: dt.date
     row_ids: list[int] = Field(default_factory=list)
     kind: Literal["date", "receipt_or_invoice", "vat_invoice", "payout_report", "payroll_report", "opening_prepayments",
-                  "opening_accruals", "other"]
+                  "opening_accruals", "bad_debt", "other"]
     text: str                                  # "When was this taxi?"
     why: str                                   # "£50 or more, so I need ..."
     source: Literal["rules", "agent"]

@@ -103,6 +103,18 @@ export default function QuestionCard({ question, number, threadId, answerer, onA
             <button type="button" className="btn btn-small" onClick={() => setReason(null)}>Cancel</button>
           </form>
         )}
+        {control === 'write_off' && (
+          <form className="question-row" onSubmit={e => {
+            e.preventDefault()
+            answer(date ? { kind: 'write_off', date } : { kind: 'write_off' }, 'Writing off…')
+          }}>
+            <input className="input question-date" type="date" value={date} onChange={e => setDate(e.target.value)}
+                   aria-label="Write-off date (blank: when six months overdue)" disabled={!!busy || working} />
+            <button type="submit" className="btn btn-primary btn-small" disabled={!!busy || working}>Write it off</button>
+            <button type="button" className="btn btn-small" disabled={!!busy || working}
+                    onClick={() => answer({ kind: 'not_sure' }, 'Saving…')}>Not sure</button>
+          </form>
+        )}
         {control === 'split' && (
           <form className="question-split" onSubmit={e => {
             e.preventDefault()

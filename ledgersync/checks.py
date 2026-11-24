@@ -17,7 +17,7 @@ from .payees import personal
 
 _NO_VAT = {AccountType.LIABILITY, AccountType.EQUITY}
 # Issues matching.match adds; listed here so validating again replaces them instead of adding copies.
-MATCHING_ISSUES = {"choose_payment", "paid_oldest", "converted_currency", "credited", "hmrc_reference", "employment_allowance", "part_payment", "overpayment", "possible_payment", "stale_link",
+MATCHING_ISSUES = {"choose_payment", "paid_oldest", "converted_currency", "credited", "hmrc_reference", "employment_allowance", "bad_debt_recovered", "write_off_more_than_owed", "part_payment", "overpayment", "possible_payment", "stale_link",
                    "mixed_link", "duplicate_document", "total_mismatch", "total_accepted", "claim_vat", "vat_worked_out",
                    "not_vat_invoice", "date_conflict", "date_from_claim", "date_from_bank", "booked_twice",
                    "amount_conflict", "open_document", "no_payroll", "transfer", "sale_without_vat",
@@ -349,6 +349,8 @@ def other_side(tx: Transaction, settings: BusinessSettings) -> str:
     collected and paid for the business is held by the agent (Debtors) until it pays over the net."""
     if tx.document_type == "expense_claim":
         return STAFF_EXPENSES
+    if tx.document_type == "write_off":   # what the customer owed comes off Debtors
+        return DEBTORS
     if tx.document_type == "agent_statement":
         return DEBTORS
     if tx.document_type == "payroll":   # never the bank: the bank payment clears what is owed
@@ -474,7 +476,11 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
     mixed = any(i.code == "mixed_items" for i in kept)
     untaxed: Optional[tuple[Decimal, Decimal]] = None
     registered = registered_on(settings, tx.date)
-    if not registered or journal:
+    if tx.document_type == "write_off" or tx.recovers:
+        # A bad debt's VAT: the relief a write-off claims back, or the share of it a recovery pays over again. Only a
+        # client registered for VAT when it happened paid that VAT over, so only one has it to claim.
+        posted = (vat or ZERO) if registered else ZERO
+    elif not registered or journal:
         if vat and settings.vat_registered and not journal:
             issues.append(issue("before_vat_registration", (
                 f"Dated before the VAT registration started on {long_date(settings.vat_from)}: its £{vat:,.2f} VAT is "

@@ -27,7 +27,8 @@ def journal_for(tx: Transaction, index: int) -> list[JournalLine]:
     holding what was owed (paid_against); its VAT is nil, because it was booked with the document."""
     code = tx.paid_against or tx.account_code
     account = BY_CODE[code]
-    vat_account = SALES_VAT if account.type == AccountType.INCOME else PURCHASE_VAT
+    # A recovery of a bad debt pays its VAT share over again, as output VAT; other VAT goes by the account.
+    vat_account = SALES_VAT if account.type == AccountType.INCOME or tx.recovers else PURCHASE_VAT
     out = tx.direction == Direction.OUT
     lines = [JournalLine(transaction=index, code=leg, description=tx.description,
                          debit=amount if out else ZERO, credit=ZERO if out else amount)

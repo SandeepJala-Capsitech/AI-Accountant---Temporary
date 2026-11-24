@@ -21,7 +21,7 @@ DATE = "dd/mm/yyyy"
 COLUMNS = ("Date", "Description", "Counterparty", "Document type", "In/Out", "Amount", "VAT", "Net", "Account",
            "Account name", "Other side", "Still owed", "Issues", "Upload", "Edited", "Left out")
 _TYPE_NAMES = {"receipt": "Receipt", "invoice": "Invoice", "expense_claim": "Expense claim",
-               "statement": "Bank statement", "quote": "Quote", "pro_forma": "Pro forma",
+               "statement": "Bank statement", "write_off": "Bad debt written off", "quote": "Quote", "pro_forma": "Pro forma",
                "purchase_order": "Purchase order", "remittance_advice": "Remittance advice",
                "supplier_statement": "Supplier statement", "other": "Other"}
 # How the trial balance sheet marks an account's tax treatment: an allowable one is left blank.

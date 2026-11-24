@@ -47,7 +47,7 @@ export interface Decision {
 }
 
 export type QuestionKind = 'date' | 'receipt_or_invoice' | 'vat_invoice' | 'payout_report' | 'payroll_report'
-  | 'opening_prepayments' | 'opening_accruals' | 'other'
+  | 'opening_prepayments' | 'opening_accruals' | 'bad_debt' | 'other'
 
 // A question for the person: open until answered, waiting when they have no answer yet, resolved once answered.
 export interface Question {
@@ -182,6 +182,7 @@ export type ChatEvent =
 export type Answer = { kind: 'date'; date: string } | { kind: 'no_document' } | { kind: 'not_sure' }
   | { kind: 'without_document'; reason: string }   // book it with no VAT reclaimed: a person only, never the AI
   | { kind: 'split'; lines: { account: string; amount: string }[] }   // the costs an opening balance is released to
+  | { kind: 'write_off'; date?: string }   // write the invoice off as a bad debt, by default when six months overdue
 
 const EVENT_TYPES = new Set<string>(['status', 'step', 'token', 'result', 'error', 'done'])
 
@@ -226,9 +227,10 @@ export function groupThreads(threads: ChatThread[], now: Date):
 }
 
 // How a question is answered: a date (or Not sure), a document (or I don't have it), or in words.
-export function questionControl(q: Question): 'date' | 'upload' | 'split' | 'text' {
+export function questionControl(q: Question): 'date' | 'upload' | 'split' | 'write_off' | 'text' {
   if (q.kind === 'date') return 'date'
   if (q.kind === 'opening_prepayments' || q.kind === 'opening_accruals') return 'split'
+  if (q.kind === 'bad_debt') return 'write_off'
   if (['receipt_or_invoice', 'vat_invoice', 'payout_report', 'payroll_report'].includes(q.kind)) return 'upload'
   return 'text'
 }

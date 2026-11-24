@@ -17,7 +17,8 @@ INPUTS = {"date", "description", "direction", "gross", "vat", "vat_treatment", "
           "total_worked_out", "cis_deducted",
           "include", "apart_from", "link", "balance", "opening_balance", "closing_balance", "supplier_vat_number",
           "addressed_to", "reverse_charge", "abroad", "accepted", "vat_confirmed", "vat_stated",
-          "excluded", "removed", "superseded_by", "decision_ids", "total_accepted", "people", "bought", "alternatives"}
+          "excluded", "removed", "superseded_by", "decision_ids", "total_accepted", "people", "bought", "alternatives",
+          "writes_off"}
 # The fields a person can edit; a row's first edit keeps what they held as `original`.
 EDITABLE = ("date", "description", "counterparty", "direction", "gross", "vat", "account_code", "document_type",
             "currency", "vat_treatment", "bank_account", "reverse_charge")

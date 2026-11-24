@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 # for the business being read.
 ACCOUNT_CHOICES: tuple[str, ...] = tuple(f"{a.code} {a.name}" for a in model_accounts())
 # The document types a model may give; anything else becomes "other" in the adapter.
-MODEL_DOCUMENT_TYPES: tuple[str, ...] = tuple(t for t in DOCUMENT_TYPES if t not in ("other", "journal"))
+MODEL_DOCUMENT_TYPES: tuple[str, ...] = tuple(t for t in DOCUMENT_TYPES if t not in ("other", "journal", "write_off"))
 # How the prompt names each kind of business (models.BusinessType).
 BUSINESS_WORDS = {"limited_company": "limited company", "sole_trader": "sole trader",
                   "partnership": "partnership", "llp": "limited liability partnership"}

@@ -49,7 +49,7 @@ def possible_duplicates(rows: list[Transaction], *, uploads: list[int], ids: lis
     earlier: dict[tuple, list[int]] = {}   # the booked rows so far, by way and amount: only those can repeat a row
     for i, row in enumerate(rows):
         found.append(None)
-        if not booked(row) or row.document_type == "journal":   # a journal moves no money: it repeats no payment
+        if not booked(row) or row.document_type in ("journal", "write_off"):   # they move no money: repeat no payment
             continue
         same = earlier.setdefault((row.direction, row.gross), [])
         candidates = list(same)   # the earlier ones, oldest first

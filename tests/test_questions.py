@@ -630,3 +630,75 @@ def test_journals_a_person_enters_by_hand_settle_the_question(store, records, ac
                               document_type="journal", description="Prepayments released"))
     kinds = {q.kind for q in refresh(store, records, acme)}
     assert "opening_prepayments" not in kinds and "opening_accruals" in kinds
+
+
+# ─── Bad debts ────────────────────────────────────────────────────────────────
+
+from ledgersync.questions import WriteOffAnswer  # noqa: E402
+
+
+def unpaid_sale(store, client_id):
+    add_rows(store, client_id, row(date=date(2025, 5, 1), direction="in", gross=D("4800.00"), vat=D("800.00"),
+                                   account_code="4000", document_type="invoice", document_ref="KF-1017",
+                                   document_number="KF-1017", counterparty="Lowther Interiors Ltd",
+                                   description="Showroom website build"))
+
+
+def debt_question(store, records, client_id):
+    return next(q for q in refresh(store, records, client_id) if q.kind == "bad_debt")
+
+
+def test_an_invoice_six_months_overdue_asks_to_be_written_off(store, records, acme):
+    unpaid_sale(store, acme)
+    q = debt_question(store, records, acme)
+    assert q.text == "Write off the £4,800.00 Lowther Interiors Ltd owes as a bad debt?"
+    assert "VAT bad debt relief" in q.why and len(q.row_ids) == 1
+
+
+def test_writing_it_off_settles_it_and_claims_the_relief_in_that_quarter(store, records, acme):
+    unpaid_sale(store, acme)
+    q = debt_question(store, records, acme)
+    left = answer(store, records, acme, q, WriteOffAnswer(kind="write_off", date=date(2026, 1, 31)))
+    assert "bad_debt" not in {x.kind for x in left}
+    tb = books.trial_balance(store, acme, YEAR_1)
+    assert (net(tb, "8100"), net(tb, "1100"), net(tb, "4000")) == (D("4000.00"), 0, D("-4000.00"))
+    assert books.vat_figures(store, acme, YEAR_1, date(2025, 12, 1), date(2026, 2, 28)).box4 == D("800.00")
+
+
+def test_a_write_off_date_outside_the_year_or_before_the_six_months_is_refused(store, records, acme):
+    unpaid_sale(store, acme)
+    q = debt_question(store, records, acme)
+    for day in (date(2026, 5, 1), date(2025, 9, 1)):
+        with pytest.raises(InvalidInput):
+            answer(store, records, acme, q, WriteOffAnswer(kind="write_off", date=day))
+    assert not [r for r in store.rows(acme) if r.tx.document_type == "write_off"]
+
+
+def test_removing_the_write_off_asks_again(store, records, acme):
+    from ledgersync import ledger
+    unpaid_sale(store, acme)
+    answer(store, records, acme, debt_question(store, records, acme), WriteOffAnswer(kind="write_off"))
+    [off] = [r for r in store.rows(acme) if r.tx.document_type == "write_off"]
+    assert off.tx.date == date(2026, 3, 31)   # by default today, kept in the year: a past year's end
+    ledger.remove_row(store, acme, off.id)
+    assert debt_question(store, records, acme).status == "open"
+
+
+def test_an_invoice_overdue_only_in_the_next_year_is_asked_about_there(store, records, acme):
+    # Review: an invoice of February whose six months end after the year was never asked about in either year.
+    add_rows(store, acme, row(date=date(2026, 2, 1), direction="in", gross=D("1200.00"), vat=D("200.00"),
+                              account_code="4000", document_type="invoice", document_ref="KF-2001",
+                              counterparty="Brightline Print Ltd", description="Brochure design"),
+             row(date=date(2026, 5, 1), gross=D("25.00"), account_code="7502"))   # the second year
+    assert not [q for q in refresh(store, records, acme) if q.kind == "bad_debt"]
+    [q] = [q for q in questions.refresh(store, records, acme, YEAR_2) if q.kind == "bad_debt"]
+    questions.answer(store, records, client_id=acme, thread_id="t1", question_id=q.id,
+                     answer=WriteOffAnswer(kind="write_off", date=date(2026, 9, 30)))
+    assert net(books.trial_balance(store, acme, YEAR_2), "8100") == D("1000.00")
+
+
+def test_a_supplier_credit_note_is_not_a_bad_debt(store, records, acme):
+    add_rows(store, acme, row(date=date(2025, 5, 1), direction="in", gross=D("120.00"), account_code="7500",
+                              document_type="invoice", document_ref="CN-1", counterparty="Paper Co",
+                              description="Credit note"))
+    assert not [q for q in refresh(store, records, acme) if q.kind == "bad_debt"]

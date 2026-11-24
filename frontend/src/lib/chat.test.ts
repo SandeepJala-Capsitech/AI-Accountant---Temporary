@@ -82,6 +82,7 @@ test('each kind of question gets its control', () => {
   assert.equal(questionControl(question('other')), 'text')
   assert.equal(questionControl(question('opening_prepayments')), 'split')
   assert.equal(questionControl(question('opening_accruals')), 'split')
+  assert.equal(questionControl(question('bad_debt')), 'write_off')
 })
 
 test('an opening balance question says how much is to be split, and the lines are added up in pence', () => {

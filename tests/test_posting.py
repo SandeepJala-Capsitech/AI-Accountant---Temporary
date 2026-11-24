@@ -340,3 +340,21 @@ def test_a_journal_debits_one_account_and_credits_another_with_no_vat_and_no_doc
     # An accrual credits Accruals, which the rules otherwise work out afresh: a journal's accounts are kept.
     accrual = check(tx("out", "300.00", "7601", document_type="journal", contra_account_code="2109"), REGISTERED)
     assert accrual.contra_account_code == "2109"
+
+
+# ─── Bad debts (design of 2026-11-24) ─────────────────────────────────────────
+
+def test_a_write_off_books_the_bad_debt_and_its_vat_relief_against_debtors():
+    # The test books' agency year: Lowther Interiors Ltd's £4,800 (VAT £800), written off on 31 January 2024.
+    off = tx("out", "4800.00", "8100", vat="800.00", document_type="write_off", writes_off="inv")
+    assert lines(off) == [("8100", "4000.00", "0.00"), ("2201", "800.00", "0.00"), ("1100", "0.00", "4800.00")]
+
+
+def test_without_vat_registration_a_write_off_has_no_relief():
+    off = tx("out", "4800.00", "8100", vat="800.00", document_type="write_off", writes_off="inv")
+    assert lines(off, BusinessSettings(vat_registered=False)) == [("8100", "4800.00", "0.00"), ("1100", "0.00", "4800.00")]
+
+
+def test_a_recovery_credits_bad_debts_and_sales_vat():
+    back = tx("in", "1200.00", "8100", vat="200.00", document_type="statement", recovers="wo")
+    assert lines(back) == [("8100", "0.00", "1000.00"), ("2200", "0.00", "200.00"), ("1200", "1200.00", "0.00")]
