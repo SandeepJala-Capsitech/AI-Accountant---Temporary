@@ -2005,3 +2005,32 @@ def test_two_charges_on_one_day_are_named_in_the_same_order_whatever_the_rows_or
     backward = by_ref(matched_from(rows[::-1], uploads[::-1]))["claim"]
     assert forward.recorded_by_refs == backward.recorded_by_refs
     assert forward.recorded_by.ref == backward.recorded_by.ref
+
+
+# ─── A P32 read as wages ──────────────────────────────────────────────────────
+
+def _payroll(account, owed_to, gross, ref, description):
+    return row("payroll", "out", gross, "2023-07-28", "HMRC" if owed_to == "paye_ni" else "Staff", ref,
+               account=account, owed_to=owed_to, description=description)
+
+
+def test_a_p32_read_as_wages_is_a_summary_of_what_payroll_owes_and_is_not_booked():
+    # The test books' agency year: in seven months the P32 was read onto 7000 Gross wages, so on top of the payroll
+    # report it booked £5,097.77 more wages and as much more owed to HMRC: £35,041 over the year.
+    report = [_payroll("7000", "net_pay", "12095.01", "r1", "Net pay to employees"),
+              _payroll("7000", "paye_ni", "3321.37", "r2", "Employees' income tax and National Insurance"),
+              _payroll("7006", "paye_ni", "1776.40", "r3", "Employer's National Insurance")]
+    p32 = _payroll("7000", "paye_ni", "5097.77", "p", "PAYE income tax and National Insurance due to HMRC")
+    *kept, summary = matched_from([*report, p32], [1, 1, 1, 2])
+    assert not booked(summary) and summary.account_code == "2210"
+    assert [i.code for i in summary.issues] == ["not_booked"]
+    assert all(booked(t) for t in kept) and [t.account_code for t in kept] == ["7000", "7000", "7006"]
+
+
+def test_a_payroll_report_is_never_taken_for_a_p32():
+    report = [_payroll("7000", "paye_ni", "3321.37", "r2", "Employees' income tax and National Insurance"),
+              _payroll("7006", "paye_ni", "1776.40", "r3", "Employer's National Insurance")]
+    with_pay = matched_from([*report, _payroll("7000", "net_pay", "12095.01", "r1", "Net pay")], [1, 1, 1])
+    assert all(booked(t) for t in with_pay)
+    alone = matched_from(report, None)   # with no uploads to go by, nothing is changed
+    assert all(booked(t) for t in alone) and [t.account_code for t in alone] == ["7000", "7006"]

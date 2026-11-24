@@ -11,7 +11,8 @@ from decimal import ROUND_HALF_UP, Decimal
 from itertools import combinations
 from typing import Optional, Sequence
 
-from .accounts import BY_CODE, CLEARING, CREDITORS, DEBTORS, DIRECTORS_LOANS, STAFF_EXPENSES, SUSPENSE, AccountType
+from .accounts import (BY_CODE, CLEARING, CREDITORS, DEBTORS, DIRECTORS_LOANS, PAYE, STAFF_EXPENSES, SUSPENSE,
+                       AccountType)
 from .checks import (MATCHING_ISSUES, PAYROLL_OWED, STATEMENT_ISSUES, REFRESHMENTS, account_on_claim, booked, is_fare, issue,
                      long_date, normalise, reclaims_vat, registered_on, vat_implied)
 from .models import BusinessSettings, Direction, Issue, OpenItem, Settlement, Transaction
@@ -256,6 +257,7 @@ def match_documents(rows: list[Transaction], settings: BusinessSettings,
                            read, left_out or {})
     rows = _with_till_takings(rows, settings)
     rows = _in_pounds(rows, settings)
+    rows = _payroll_summaries(rows, settings, upload_ids)
     documents = {**_brought_forward(open_items), **_documents(rows)}
     changes: list[dict] = [{} for _ in rows]
     _credit_notes(rows, documents, changes)
@@ -531,6 +533,29 @@ def _settled_since(changes: list[dict], documents: dict[str, _Document]) -> None
             if i.code == "part_payment" else
             issue("overpayment", i.message.split(" over")[0] + " over; it has been refunded since.", "info")
             if i.code == "overpayment" else i for i in found]
+
+
+def _payroll_summaries(rows: list[Transaction], settings: BusinessSettings,
+                       upload_ids: Optional[list[Optional[int]]]) -> list[Transaction]:
+    """The rows, those of an upload whose payroll rows are all owed to HMRC (paye_ni, and no net pay or pension) held on
+    PAYE and NI: such a file is a summary of what payroll owes HMRC (a P32), which the payroll report books and the
+    bank payment clears. Read onto a wages account it would book the wages again; on PAYE and NI it is not booked
+    (checks.payroll_summary). Rows a person changed or ticked Include stay as they are."""
+    if not upload_ids:
+        return rows
+    by_upload: dict[int, list[int]] = {}
+    for n, tx in enumerate(rows):
+        if tx.document_type == "payroll" and upload_ids[n] is not None:
+            by_upload.setdefault(upload_ids[n], []).append(n)
+    out = list(rows)
+    for members in by_upload.values():
+        if any(rows[n].owed_to != "paye_ni" for n in members):
+            continue   # a payroll report: it has net pay, or pension
+        for n in members:
+            tx = rows[n]
+            if tx.account_code != PAYE and not (tx.account_chosen or tx.include):
+                out[n] = normalise(tx.model_copy(update={"account_code": PAYE}), settings)
+    return out
 
 
 def _in_pounds(rows: list[Transaction], settings: BusinessSettings) -> list[Transaction]:
