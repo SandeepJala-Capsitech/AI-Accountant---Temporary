@@ -169,11 +169,6 @@ def _rule(tx: Transaction, settings: BusinessSettings) -> DocumentRule:
         # order summary's) counts as printed: the accountant's ruling.
         return DocumentRule(action="book", reclaim_vat=True, reason="Receipt shows the VAT: VAT reclaimed.")
     if tx.document_type == "invoice":
-        if tx.not_vat_invoice and tx.gross > SIMPLIFIED_LIMIT and (tx.vat or ZERO) > 0 and not is_fare(tx):
-            # It says it is not a VAT invoice (a till receipt read as an invoice), and over the limit only a full VAT
-            # invoice reclaims the VAT it shows: asked for, as a receipt over the limit is.
-            return _hold("vat_invoice", "It says it is not a VAT invoice, and a purchase this size needs a full VAT "
-                                        "invoice: held in Suspense until it is uploaded.")
         if tx.not_vat_invoice:
             return DocumentRule(action="book", reclaim_vat=False, reason="Not a VAT invoice: VAT kept in the cost.")
         return DocumentRule(action="book", reclaim_vat=True, reason="Invoice: VAT reclaimed.")
