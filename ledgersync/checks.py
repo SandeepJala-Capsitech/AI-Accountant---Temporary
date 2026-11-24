@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import datetime as dt
 import re
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional, Sequence
 
 from .accounts import (ASSET_CANDIDATES, BY_CODE, CAPITALS, CARDS, CREDITORS, DEBTORS, DIRECTORS_LOANS, DIVIDENDS,
-                       HOTELS, MEMBERS_CURRENT, OWNER_DRAWINGS, OWNER_WORDS, SHARES, owner_codes, owner_slots,
+                       HALF_VAT_RECLAIMED, HOTELS, MEMBERS_CURRENT, OWNER_DRAWINGS, OWNER_WORDS, SHARES, owner_codes, owner_slots,
                        NET_WAGES, PAYE, PENSION, PURCHASE_VAT, SALES_VAT, STAFF_EXPENSES, SUSPENSE, WAGES, Account,
                        AccountType)
 from .models import NOT_TRANSACTIONS, BusinessSettings, Direction, Issue, Transaction
@@ -28,7 +28,7 @@ MATCHING_ISSUES = {"choose_payment", "paid_oldest", "converted_currency", "credi
 STATEMENT_ISSUES = {"statement_gap", "statement_total", "file_date"}
 _DERIVED = {"unknown_account", "same_account", "non_gbp_currency", "vat_not_applicable", "vat_estimated",
             "vat_arithmetic", "vat_rate_mismatch", "date_missing", "date_out_of_period", "unusual_direction",
-            "not_booked", "vat_blocked", "director_loan", "wages_from_bank",
+            "not_booked", "vat_blocked", "vat_half_blocked", "director_loan", "wages_from_bank",
             "payroll_owed_to", "before_first_year", "vat_not_booked", "needs_document", "total_worked_out",
             "cis_deducted", "personal", "possible_duplicate", "booked_without_document", "card_credit", "vat_unclaimed",
             "on_account", "no_vat_number", "vat_over_rate", "reverse_charge", "before_vat_registration", "small_asset",
@@ -545,6 +545,14 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
                 f"£{vat} is 20% VAT on £{untaxed[0]}; £{untaxed[1]} has no VAT (zero-rated or exempt items, a tip or a "
                 "service charge?)." if untaxed
                 else f"£{vat} isn't {treatment.value}-rate VAT on £{tx.gross}."), "info"))
+    if (posted and account is not None and account.code in HALF_VAT_RECLAIMED and tx.direction == Direction.OUT
+            and tx.vat_treatment is None):
+        # A car lease: only half its VAT can be reclaimed; the other half stays in the cost. A van's can all be.
+        half = (posted / 2).quantize(PENNY, rounding=ROUND_HALF_UP)
+        issues.append(issue("vat_half_blocked", f"Half the £{posted:,.2f} VAT reclaimed (£{half:,.2f}), as on a car lease: "
+                                                "the rest stays in the cost. If it is a van or another commercial "
+                                                "vehicle, all of it can be: choose its VAT rate.", "info"))
+        posted = half
     if vat and posted and hotel_vat(tx, settings):
         # A UK hotel stay over £250 whose receipt prints its VAT: booked now, the property's full VAT invoice asked for.
         issues.append(issue("hotel_vat", f"VAT £{posted:,.2f} booked as the receipt shows it, but a stay over £250 needs "

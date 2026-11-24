@@ -327,6 +327,8 @@ BANK_SLOTS: dict[str, tuple[str, ...]] = {"current": ("1200", "1201", "1202"), "
                                           "credit_card": ("1240", "1241"), "petty_cash": ("1230",)}
 ALL_BANK_CODES = frozenset(code for codes in BANK_SLOTS.values() for code in codes)
 CARDS = frozenset(BANK_SLOTS["credit_card"])
+# Accounts where only half the VAT on a purchase can be reclaimed: a car lease (contract hire) with private use available.
+HALF_VAT_RECLAIMED = frozenset({"7304"})
 
 
 # Each owner's own accounts, by their slot (0 to 3): a company's directors, a partnership's partners, an LLP's

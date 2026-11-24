@@ -993,3 +993,21 @@ def test_money_in_is_not_marked():
 def test_an_accepted_candidate_is_not_marked():
     quiet = big(accepted=["asset_check"])
     assert "asset_check" not in dict(codes(quiet))
+
+
+def test_only_half_the_vat_on_a_car_lease_is_reclaimed():
+    # The test books' agency year: each month's £504 car lease (VAT £84) reclaimed all £84, £126 too much a quarter.
+    lease = row(gross=Decimal("504.00"), vat=Decimal("84.00"), account_code="7304", document_type="invoice",
+                counterparty="Avon Vehicle Leasing", description="Car lease, April")
+    checked = normalise(lease, HELPER_SETTINGS)
+    assert (checked.vat_posted, checked.net) == (Decimal("42.00"), Decimal("462.00"))
+    assert "van" in only_issue(checked, "vat_half_blocked").message
+    tb = trial_balance([lease], HELPER_SETTINGS)
+    assert (net(tb, "7304"), net(tb, "2201")) == (Decimal("462.00"), Decimal("42.00"))
+
+
+def test_a_van_lease_whose_vat_rate_a_person_chose_reclaims_it_all():
+    van = row(gross=Decimal("504.00"), vat=Decimal("84.00"), account_code="7304", document_type="invoice",
+              counterparty="Avon Vehicle Leasing", description="Van lease", vat_treatment="standard")
+    checked = normalise(van, HELPER_SETTINGS)
+    assert checked.vat_posted == Decimal("84.00") and not [i for i in checked.issues if i.code == "vat_half_blocked"]
