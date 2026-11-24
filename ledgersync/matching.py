@@ -258,6 +258,7 @@ def match_documents(rows: list[Transaction], settings: BusinessSettings,
     rows = _with_till_takings(rows, settings)
     rows = _in_pounds(rows, settings)
     rows = _payroll_summaries(rows, settings, upload_ids)
+    rows = _hmrc_references(rows, settings)
     documents = {**_brought_forward(open_items), **_documents(rows)}
     changes: list[dict] = [{} for _ in rows]
     _credit_notes(rows, documents, changes)
@@ -533,6 +534,34 @@ def _settled_since(changes: list[dict], documents: dict[str, _Document]) -> None
             if i.code == "part_payment" else
             issue("overpayment", i.message.split(" over")[0] + " over; it has been refunded since.", "info")
             if i.code == "overpayment" else i for i in found]
+
+
+# HMRC's own payment references, which say what tax a payment is (GOV.UK's bank details pages): corporation tax a
+# 17-character reference (the 10-digit UTR, A, five digits, A), PAYE the 13-character accounts office reference.
+_HMRC_REFERENCES = ((re.compile(r"\b\d{10}A\d{5}A\b", re.I), "2320", "a corporation tax"),
+                    (re.compile(r"\b\d{3}P[A-Z]\d{7}[0-9X]\b", re.I), PAYE, "a PAYE accounts office"))
+
+
+def _hmrc_references(rows: list[Transaction], settings: BusinessSettings) -> list[Transaction]:
+    """The rows, each bank line to or from HMRC that quotes one of its payment references on the account that reference
+    is for, whatever the line was read as, and checked again. A line a person coded or linked stays as it is."""
+    out = list(rows)
+    for n, tx in enumerate(rows):
+        text = f"{tx.description or ''} {tx.counterparty or ''}"
+        if tx.document_type != "statement" or tx.account_chosen or tx.link or "hmrc" not in text.lower():
+            continue
+        for pattern, code, what in _HMRC_REFERENCES:
+            found = pattern.search(text)
+            if found and tx.account_code != code and code in BY_CODE:
+                was = BY_CODE.get(tx.account_code)
+                checked = normalise(tx.model_copy(update={"account_code": code}), settings)
+                out[n] = checked.model_copy(update={"issues": checked.issues + [issue(
+                    "hmrc_reference", f"Recoded from {was.name if was else tx.account_code} to {BY_CODE[code].name}: "
+                                      f"{found.group(0)} is {what} payment reference.", "info")]})
+                break
+            if found:
+                break
+    return out
 
 
 def _payroll_summaries(rows: list[Transaction], settings: BusinessSettings,

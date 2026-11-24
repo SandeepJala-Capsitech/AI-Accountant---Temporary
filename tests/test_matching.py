@@ -2034,3 +2034,26 @@ def test_a_payroll_report_is_never_taken_for_a_p32():
     assert all(booked(t) for t in with_pay)
     alone = matched_from(report, None)   # with no uploads to go by, nothing is changed
     assert all(booked(t) for t in alone) and [t.account_code for t in alone] == ["7000", "7006"]
+
+
+# ─── HMRC's payment references ────────────────────────────────────────────────
+
+def test_a_payment_with_a_corporation_tax_reference_is_corporation_tax_however_it_was_read():
+    # The test books' agency year: "HMRC CUMBERNAULD 8126043571A00123A" was read as a VAT payment, so £13,987 of
+    # corporation tax went to VAT Liability.
+    [line] = matched(bank("13987.00", "2023-12-29", "HMRC", account="2202",
+                          description="HMRC CUMBERNAULD 8126043571A00123A"))
+    assert line.account_code == "2320"
+    [note] = [i for i in line.issues if i.code == "hmrc_reference"]
+    assert "8126043571A00123A" in note.message and "corporation tax" in note.message
+
+
+def test_a_paye_reference_is_paye_and_a_line_a_person_coded_stays():
+    [paye] = matched(bank("5097.77", "2023-08-22", "HMRC", account="2202",
+                          description="HMRC CUMBERNAULD 120PA00048215"))
+    assert paye.account_code == "2210"
+    [kept] = matched(bank("13987.00", "2023-12-29", "HMRC", account="2202", account_chosen=True,
+                          description="HMRC CUMBERNAULD 8126043571A00123A"))
+    assert kept.account_code == "2202"   # a person chose it
+    [other] = matched(bank("13987.00", "2023-12-29", "Acme", account="7100", description="ACME 8126043571A00123A"))
+    assert other.account_code == "7100"   # not to HMRC
