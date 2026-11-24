@@ -1195,6 +1195,50 @@ def test_a_transfer_line_is_not_taken_as_a_payment_of_an_invoice():
     assert ready["a"].pays == [] and ready["i"].owed == Decimal("5000.00")
 
 
+BANK_AND_CARD = HELPER_SETTINGS.model_copy(update={"bank_accounts": ("1200", "1240")})
+
+
+def _card_payoff(bank_account="7501"):
+    """The card paid off from the current account: the card's statement codes its payment in to 1200; the bank's
+    direct debit to the card company was coded as something else."""
+    out = helper_row(gross=Decimal("1749.40"), account_code=bank_account, bank_account="1200",
+                     document_type="statement", description="Calder Express delivery", counterparty="Calder Express",
+                     document_ref="dd", date=dt.date(2023, 4, 25))
+    into = helper_row(direction="in", gross=Decimal("1749.40"), account_code="1200", bank_account="1240",
+                      document_type="statement", description="Payment received - thank you", document_ref="pay",
+                      date=dt.date(2023, 4, 25))
+    return out, into
+
+
+def test_a_card_paid_off_from_the_bank_is_a_transfer_when_one_side_says_so():
+    # The test books' agency year: every month's direct debit to the card company was coded as courier costs, though
+    # the card's statement showed the payment in from the bank; the money left the bank twice (about £12,850).
+    out, into = _card_payoff()
+    ready = {tx.document_ref: tx for tx in normalise_and_match([out, into], BANK_AND_CARD)}
+    assert ready["dd"].account_code == "1240" and booked(ready["dd"]) and ready["pay"].recorded_by.ref == "dd"
+    assert "Recoded" in only_issue(ready["dd"], "transfer").message
+    assert not [i for t in ready.values() for i in t.issues if i.severity == "error" or i.code == "needs_document"]
+    tb = trial_balance([out, into], BANK_AND_CARD)
+    assert (net(tb, "1200"), net(tb, "1240"), net(tb, "7501")) == (Decimal("-1749.40"), Decimal("1749.40"), 0)
+
+
+def test_the_card_side_is_recoded_when_the_bank_side_says_so():
+    out, into = _card_payoff(bank_account="1240")
+    into = into.model_copy(update={"account_code": "4000"})   # the card's payment in, read as a sale
+    ready = {tx.document_ref: tx for tx in normalise_and_match([out, into], BANK_AND_CARD)}
+    assert ready["pay"].account_code == "1200" and ready["pay"].recorded_by.ref == "dd" and booked(ready["dd"])
+    [note] = [i for i in ready["pay"].issues if i.code == "transfer"]
+    assert "Recoded from" in note.message and "booked once" in note.message
+
+
+def test_a_line_coded_to_another_of_the_clients_accounts_is_not_recoded():
+    # Both sides on own accounts but not each other's: not this case, nothing changes.
+    out, into = _card_payoff(bank_account="1210")
+    ready = {tx.document_ref: tx for tx in normalise_and_match(
+        [out, into], HELPER_SETTINGS.model_copy(update={"bank_accounts": ("1200", "1210", "1240")}))}
+    assert ready["dd"].account_code == "1210" and ready["pay"].recorded_by is None
+
+
 def test_a_transfer_for_a_client_with_one_account_is_not_paired():
     out, into = transfer()
     ready = normalise_and_match([out, into], HELPER_SETTINGS)

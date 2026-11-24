@@ -643,7 +643,54 @@ def _pair_transfers(rows: list[Transaction], settings: BusinessSettings, changes
         changes[b]["issues"] = rows[b].issues + [issue(
             "transfer", f"The other side of {out.description} on {long_date(out.date)}: booked once, from that line.",
             "info", related=[a])]
-    return paired
+    return paired | _one_sided_transfers(rows, settings, changes, apart, paired)
+
+
+def _one_sided_transfers(rows: list[Transaction], settings: BusinessSettings, changes: list[dict],
+                         apart: list[set[int]], paired: set[int]) -> set[int]:
+    """Transfers only one side of which was coded as one: a line on one of the client's accounts coded to another of
+    them (a card's statement showing the payment in from the bank), and on that other account a line the other way,
+    for the same amount and within a few days, coded to an account that is none of them (the bank's direct debit to
+    the card company read as a cost). That line is recoded to the first line's account and checked again; then the
+    two pair as any transfer does. A line a person linked, or said is not the same as the other, stays apart."""
+    own = set(settings.bank_accounts)
+
+    def bank(tx: Transaction) -> str:
+        return tx.bank_account or settings.bank_account
+
+    def free(n: int) -> bool:
+        tx = rows[n]
+        return (n not in paired and tx.document_type == "statement" and not tx.link and tx.date is not None
+                and booked_line(tx))
+
+    sure = [n for n in range(len(rows)) if free(n) and rows[n].account_code in own and bank(rows[n]) in own
+            and rows[n].account_code != bank(rows[n])]
+    loose = [n for n in range(len(rows)) if free(n) and rows[n].account_code not in own and bank(rows[n]) in own]
+    pairs = sorted((abs(rows[s].date - rows[k].date), rows[s].date, s, k) for s in sure for k in loose
+                   if bank(rows[k]) == rows[s].account_code and rows[k].direction != rows[s].direction
+                   and rows[k].gross == rows[s].gross and abs(rows[s].date - rows[k].date) <= TRANSFER_DAYS
+                   and k not in apart[s])
+    found: set[int] = set()
+    for _, _, s, k in pairs:
+        if s in found or k in found:
+            continue
+        found |= {s, k}
+        was = BY_CODE.get(rows[k].account_code)
+        rows[k] = normalise(rows[k].model_copy(update={"account_code": bank(rows[s])}), settings)
+        out, into = (k, s) if rows[k].direction == Direction.OUT else (s, k)
+        line = rows[out]
+        changes[into]["recorded_by"] = Settlement(ref=line.document_ref or f"row-{out}", amount=line.gross,
+                                                  date=line.date, description=line.description, kind=line.document_type)
+        recoded = (f"Recoded from {was.name if was else 'its account'} to {BY_CODE[bank(rows[s])].name}: it moves "
+                   f"money between the client's accounts, as the {BY_CODE[bank(rows[s])].name} statement shows on "
+                   f"{long_date(rows[s].date)}.")
+        other = f"The other side of {line.description} on {long_date(line.date)}: booked once, from that line."
+        if k == out:
+            changes[k]["issues"] = rows[k].issues + [issue("transfer", recoded, "info", related=[s])]
+            changes[into]["issues"] = rows[into].issues + [issue("transfer", other, "info", related=[out])]
+        else:
+            changes[k]["issues"] = rows[k].issues + [issue("transfer", f"{recoded} {other}", "info", related=[out])]
+    return found
 
 
 def _without_payroll(rows: list[Transaction]) -> list[Transaction]:
