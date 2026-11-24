@@ -96,7 +96,7 @@ from helpers import row as helper_row
 from ledgersync.checks import booked, issue, normalise
 from ledgersync.evidence_rules import document_rule
 from ledgersync.matching import match
-from ledgersync.models import BusinessSettings, Direction, Transaction
+from ledgersync.models import BusinessSettings, Direction, Issue, Transaction
 from ledgersync.posting import journal_for, trial_balance
 
 SETTINGS = BusinessSettings()
@@ -2228,3 +2228,31 @@ def test_a_payment_to_a_director_of_exactly_an_unnamed_claim_pays_it():
     *lines, paid = matched(*claim, bank("212.40", "2023-11-15", "Omar Kestrel", "pay", account="2251"))
     assert [p.ref for p in paid.pays] == ["omar-oct"] and {t.owed for t in lines} == {Decimal("0.00")}
     assert paid.paid_against == "2110"
+
+
+def omar_claim():
+    return [row("expense_claim", "out", gross, "2023-10-20", None, "omar-oct", account=account, description=description)
+            for gross, account, description in (("86.40", "7400", "Train to London"),
+                                                ("34.80", "7406", "Lunch while travelling"),
+                                                ("91.20", "7400", "Car park"))]
+
+
+def parked(who):
+    """The bank's £212.40 to someone, which the reader parked in Suspense because it found no account."""
+    return bank("212.40", "2023-11-15", who, "pay", account="9998", description="O KESTREL EXPENSES",
+                issues=[Issue(code="account_unclear", message="Not sure which account.", severity="warning")])
+
+
+def test_a_director_s_payment_parked_in_suspense_pays_their_unnamed_claim():
+    # The agency run: "O KESTREL EXPENSES" was read into Suspense, so the claim stayed owed and the payment was held
+    # for a receipt.
+    settings = BusinessSettings(owner_names=("Hannah Finch", "Omar Kestrel"))
+    *lines, paid = match([normalise(t, settings) for t in (*omar_claim(), parked("Omar Kestrel"))], settings)
+    assert [p.ref for p in paid.pays] == ["omar-oct"] and {t.owed for t in lines} == {Decimal("0.00")}
+    assert paid.paid_against == "2110" and codes(paid) == [("claim_paid", "info")]
+
+
+def test_someone_else_s_payment_parked_in_suspense_pays_no_claim():
+    settings = BusinessSettings(owner_names=("Hannah Finch", "Omar Kestrel"))
+    *_, paid = match([normalise(t, settings) for t in (*omar_claim(), parked("Kestrel Joinery"))], settings)
+    assert not paid.pays and paid.paid_against is None

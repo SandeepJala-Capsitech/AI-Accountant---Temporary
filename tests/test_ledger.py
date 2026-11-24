@@ -411,6 +411,14 @@ def test_a_client_starts_with_one_current_account():
     assert (settings.bank_accounts, settings.bank_account) == (("1200",), "1200")
 
 
+def test_a_clients_settings_name_its_owners():
+    from ledgersync.models import Owner
+    client = Client(**CUBE.model_dump(exclude={"owners"}), id=1, created_at="", updated_at="",
+                    owners=[Owner(slot=0, name="Hannah Finch"), Owner(slot=1, name="Omar Kestrel")])
+    settings = ledger.settings_for(client)
+    assert (settings.owners, settings.owner_names) == ((0, 1), ("Hannah Finch", "Omar Kestrel"))
+
+
 def test_new_accounts_get_the_next_free_code_of_their_kind():
     got = assign_codes([BankAccount(name="Main", kind="current", code="1200"), BankAccount(name="Second", kind="current"),
                         BankAccount(name="Amex", kind="credit_card")], kept=[])

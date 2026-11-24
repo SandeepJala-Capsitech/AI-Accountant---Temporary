@@ -299,12 +299,12 @@ def match_documents(rows: list[Transaction], settings: BusinessSettings,
     # A card payment that a receipt records is that receipt's, not a part payment, a set, an overpayment or a payment
     # to an open account: pair those lines first. Lines that exact amounts or a person's choice decide stay as they are.
     card_lines = [n for n in automatic if rows[n].document_type == "statement"
-                  and _outcome(rows[n], documents)[0] in ("pay", "none", "open_document")]
+                  and _outcome(rows[n], documents, settings.owner_names)[0] in ("pay", "none", "open_document")]
     _pair_receipts(rows, changes, card_lines, apart, first_pass_only=True)
     for n in [n for n in automatic if changes[n].get("recorded_by")]:
         _note(changes[n], rows[n], automatic.pop(n))
     for n, found in automatic.items():
-        _settle(n, rows[n], documents, changes[n], found)
+        _settle(n, rows[n], documents, changes[n], found, settings.owner_names)
     statement_lines = [n for n in lines if rows[n].document_type == "statement"]
     _pair_receipts(rows, changes, statement_lines, apart)
     _paid_again(rows, changes, statement_lines, apart)
@@ -1732,14 +1732,22 @@ def _exact(line: Transaction, docs: list[_Document]) -> list[_Document]:
             and d.open == line.gross]
 
 
-def _outcome(line: Transaction, documents: dict[str, _Document]) -> tuple[str, list[list[_Document]], str]:
+def _to_owner(line: Transaction, owners: Sequence[str]) -> bool:
+    """Whether the line pays one of the client's owners: read onto their own account, or parked in Suspense with one
+    of them as its payee."""
+    return line.account_code in OWNER_CODES or (line.account_code == SUSPENSE and any(
+        same_payee(line.counterparty, name) for name in owners))
+
+
+def _outcome(line: Transaction, documents: dict[str, _Document],
+             owners: Sequence[str] = ()) -> tuple[str, list[list[_Document]], str]:
     """What _settle does with an automatic line: its kind (pay, choose, suggest, open_document or none), the
-    documents it concerns, and why a suggestion or open_document was not a match."""
+    documents it concerns, and why a suggestion or open_document was not a match. Owners: the client's owners' names."""
     kind, options = _decide(line, [d for d in documents.values() if _could_pay(line, d)])
     why = "the names do not match"
-    if kind in ("none", "suggest") and line.direction == Direction.OUT and line.account_code in OWNER_CODES:
-        # A payment to a director or partner, read onto their own account, for exactly what one expense claim that
-        # names no claimant owes: the claim's payment (its claimant is often only in the file's name).
+    if kind in ("none", "suggest") and line.direction == Direction.OUT and _to_owner(line, owners):
+        # A payment to a director or partner (_to_owner) for exactly what one expense claim that names no claimant
+        # owes: the claim's payment (its claimant is often only in the file's name).
         claims = [d for d in documents.values() if _could_pay(line, d) and d.kind == "expense_claim"
                   and not d.counterparty and d.open == line.gross]
         if len(claims) == 1:
@@ -1784,11 +1792,15 @@ def _outcome(line: Transaction, documents: dict[str, _Document]) -> tuple[str, l
     return kind, options, why
 
 
-def _settle(n: int, line: Transaction, documents: dict[str, _Document], change: dict, found: list[Issue]) -> None:
-    kind, options, why = _outcome(line, documents)
+def _settle(n: int, line: Transaction, documents: dict[str, _Document], change: dict, found: list[Issue],
+            owners: Sequence[str] = ()) -> None:
+    kind, options, why = _outcome(line, documents, owners)
     if kind == "pay":
         _pay(n, line, options[0], change, found)
     elif kind == "claim_paid":
+        # Paying the claim is its account: one the reader could not find no longer needs asking.
+        line = line.model_copy(update={"issues": [i for i in line.issues if i.code != "account_unclear"]})
+        change["issues"] = line.issues
         _pay(n, line, options[0], change, found)
         found.append(issue("claim_paid", f"Pays the expense claim of {long_date(options[0][0].date)} "
                                          f"({_gbp(line.gross)}): the claim names no claimant, and this payment to "

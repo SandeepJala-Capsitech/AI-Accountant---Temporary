@@ -35,7 +35,7 @@ def settings_for(client: Client) -> BusinessSettings:
     return BusinessSettings(business_name=client.name, vat_registered=client.vat_registered,
                             vat_from=client.vat_from if client.vat_registered else None,
                             business_type=client.business_type, bank_accounts=codes, bank_account=default,
-                            owners=owner_slots_of(client),
+                            owners=owner_slots_of(client), owner_names=tuple(name for _, name in owners_of(client)),
                             books_start=year_bounds(client.first_year_end, 0)[0],
                             capitalise_from=client.capitalise_from)
 

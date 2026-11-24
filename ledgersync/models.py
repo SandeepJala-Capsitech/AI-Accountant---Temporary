@@ -106,6 +106,7 @@ class BusinessSettings(BaseModel):
     bank_accounts: tuple[str, ...] = (BANK,)   # the client's bank accounts and cards, by code
     owners: tuple[int, ...] = ()               # the slots of its directors, partners or members, in order; () when
                                                # none are listed: the first owner's accounts (slot 0) are used
+    owner_names: tuple[str, ...] = ()          # their names, as the client lists them
 
 
 class Settlement(BaseModel):
