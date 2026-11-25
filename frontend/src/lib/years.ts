@@ -22,9 +22,15 @@ export const sectionHref = (clientId: number, yearStart: string, slug: SectionSl
 // The year that ends last (ISO dates compare as text).
 export const latestYear = (years: Year[]): Year => years.reduce((a, b) => (b.end > a.end ? b : a))
 
-// The year that holds the day (an ISO date), or the latest when none does.
-export const currentYear = (years: Year[], today: string): Year =>
-  years.find(y => y.start <= today && today <= y.end) ?? latestYear(years)
+// The year being worked on: the one that holds the day (an ISO date) when it holds rows; else, books being caught up,
+// the earliest open year that does (years are closed in order, and a few papers dated after its end are in the next);
+// else the one that holds the day, or the latest when none does.
+export function currentYear(years: Year[], today: string): Year {
+  const holding = years.find(y => y.start <= today && today <= y.end)
+  if (holding && (holding.rows ?? 0) > 0) return holding
+  const worked = years.filter(y => !y.closed && (y.rows ?? 0) > 0)
+  return worked.length ? worked.reduce((a, b) => (b.start < a.start ? b : a)) : holding ?? latestYear(years)
+}
 
 // "Year to 31 Mar 2026", and " · closed" once the year is closed.
 export const yearOption = (year: Year): string => (year.closed ? `${year.label} · closed` : year.label)

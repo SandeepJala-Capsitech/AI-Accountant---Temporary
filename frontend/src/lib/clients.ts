@@ -99,6 +99,7 @@ export interface Year {
   label: string              // "Year to 31 Mar 2026"
   closed: boolean
   changed_since_closed?: boolean   // a closed year whose rows now work out to other balances than it closed with
+  rows?: number              // how many of the client's rows it holds
 }
 
 // One year of a client: its rows, and the uploads that hold them or were added to it.

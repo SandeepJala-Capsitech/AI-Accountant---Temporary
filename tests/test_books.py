@@ -76,6 +76,12 @@ def test_the_years_run_to_the_latest_row_or_today(store, acme):
     assert len(books.years_of(store, acme, date(2026, 10, 25))) == 3
 
 
+def test_each_year_says_how_many_rows_it_holds(store, acme):
+    # The website: the client list opened the empty year holding today, not the year being worked on.
+    add_rows(store, acme, row(date=date(2025, 6, 1), gross=D("5.00")), row(date=date(2025, 7, 1), gross=D("6.00")))
+    assert [(y.start, y.rows) for y in books.years_of(store, acme, date(2026, 10, 25))] == [(YEAR_1, 2), (YEAR_2, 0)]
+
+
 def test_an_unknown_year_is_not_found(store, acme):
     with pytest.raises(NotFound, match="That year was not found."):
         books.ledger(store, acme, date(2025, 4, 2))

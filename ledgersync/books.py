@@ -7,7 +7,7 @@ the accountant closes keeps the balances it closed with, which the next year ope
 from __future__ import annotations
 
 import datetime as dt
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import NamedTuple, Optional
@@ -167,8 +167,11 @@ def _books(store: MongoStore, client_id: int, today: Optional[dt.date] = None) -
 
 
 def years_of(store: MongoStore, client_id: int, today: dt.date) -> list[Year]:
-    """The client's years: the first through the latest that holds a row, or holds today, whichever is later."""
-    return _books(store, client_id, today).years
+    """The client's years: the first through the latest that holds a row, or holds today, whichever is later; each
+    with how many rows it holds, so a page can open the year being worked on."""
+    b = _books(store, client_id, today)
+    held = Counter(b.placed)
+    return [y.model_copy(update={"rows": held.get(n, 0)}) for n, y in enumerate(b.years)]
 
 # What a held row says it needs, by DocumentRule.needs.
 HELD = {"receipt_or_invoice": "Held in Suspense: needs its receipt or invoice.",

@@ -525,6 +525,7 @@ class Year(BaseModel):
     label: str                 # "Year to 31 Mar 2026"
     closed: bool = False
     changed_since_closed: bool = False   # a closed year whose rows now work out to other balances than it closed with
+    rows: int = 0                        # how many of the client's rows it holds (books.years_of)
 
 
 def _money(value) -> Decimal:
