@@ -124,6 +124,7 @@ class ThreadDetail(BaseModel):
 
 class NewThread(BaseModel):
     client_id: int
+    year_start: Optional[dt.date] = None   # an open year of the client's to chat about; None: the open year now
 
 
 class ThreadPatch(BaseModel):
@@ -378,10 +379,16 @@ class Chat:
             raise NotFound("This chat was not found.")
         return found
 
-    def new_thread(self, client_id: int) -> ChatThread:
-        """A chat on the client's open year, called "New chat" until its first message."""
+    def new_thread(self, client_id: int, year_start: Optional[dt.date] = None) -> ChatThread:
+        """A chat on the client's open year (or the open year named, an earlier one being caught up, say), called
+        "New chat" until its first message."""
         require_active(self.store.get_client(client_id))
-        return self.records.create_thread(client_id, _open_year(self.store, client_id), NEW_CHAT)
+        if year_start is None:
+            year_start = _open_year(self.store, client_id)
+        elif not any(y.start == year_start and not y.closed
+                     for y in books.years_of(self.store, client_id, dt.date.today())):
+            raise InvalidInput(f"{year_start:%-d %b %Y} isn't one of this client's open years.")
+        return self.records.create_thread(client_id, year_start, NEW_CHAT)
 
     def detail(self, thread: ChatThread) -> ThreadDetail:
         """The chat's messages from its memory, with each turn's files on the person's message and its result on the

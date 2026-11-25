@@ -617,7 +617,7 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
     @app.post("/api/chat/threads", response_model=ChatThread, status_code=201)
     def new_thread(body: NewThread, x_ledgersync: Optional[str] = Header(None)):
         from_our_pages(x_ledgersync)
-        return chat.new_thread(body.client_id)
+        return chat.new_thread(body.client_id, body.year_start)
 
     @app.get("/api/chat/threads/{thread_id}", response_model=ThreadDetail)
     def get_thread(thread_id: str):

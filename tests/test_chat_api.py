@@ -147,6 +147,19 @@ def test_new_thread_belongs_to_client(make, mongo_store, client_id):
     assert api.get(f"/api/chat/threads/{thread['id']}").json() == {"thread": thread, "messages": [], "running": False}
 
 
+def test_a_new_thread_can_name_an_earlier_open_year(make, mongo_store):
+    # The test books: catching up the year to 31 Mar 2024, the chat opened on today's year and could not see the
+    # question it was answered about.
+    api = make()
+    client = ledger.add_client(mongo_store, ClientFields(name="Kestrel & Finch Digital Ltd", business_type="limited_company",
+                                                         contact_name="Hannah Finch", first_year_end=dt.date(2024, 3, 31))).id
+    created = api.post("/api/chat/threads", json={"client_id": client, "year_start": "2023-04-01"})
+    assert created.status_code == 201 and created.json()["year_start"] == "2023-04-01"
+    assert new_thread(api, client)["year_start"] != "2023-04-01"   # none named: the open year holding today
+    refused = api.post("/api/chat/threads", json={"client_id": client, "year_start": "2023-05-01"})
+    assert refused.status_code == 422 and "isn't one of" in refused.json()["detail"]["message"]
+
+
 def test_rename_and_delete_thread(make, mongo_store, client_id):
     api = make(say("Done."))
     thread = new_thread(api, client_id)
