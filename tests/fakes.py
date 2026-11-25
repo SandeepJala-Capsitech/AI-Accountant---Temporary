@@ -74,6 +74,8 @@ class FakeUrlopen:
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, BaseException):
             raise outcome
+        if isinstance(outcome, _Stream) or (req.data and json.loads(req.data).get("stream") and "choices" in outcome):
+            return outcome if isinstance(outcome, _Stream) else _Stream.of(outcome)
         return _JsonResponse(outcome)
 
     def payload(self, n: int = -1) -> dict:
@@ -92,6 +94,44 @@ class _JsonResponse:
 
     def __exit__(self, *exc):
         return False
+
+
+class _Stream:
+    """A chat completion as server-sent events, one line at a time, as a streamed answer arrives; `read_lines` counts
+    the lines the client took, so a test can see it stopped early."""
+    def __init__(self, lines: list[bytes]):
+        self._lines, self.read_lines = lines, 0
+
+    @classmethod
+    def of(cls, answer: dict, piece: int = 8) -> "_Stream":
+        choice = answer["choices"][0]
+        content = choice["message"]["content"]
+        chunks = [{"choices": [{"index": 0, "delta": {"content": content[i:i + piece]}}]}
+                  for i in range(0, len(content), piece)] or [{"choices": [{"index": 0, "delta": {}}]}]
+        chunks[-1]["choices"][0]["finish_reason"] = choice.get("finish_reason")
+        for chunk in chunks:
+            if answer.get("provider"):
+                chunk["provider"] = answer["provider"]
+        return cls([f"data: {json.dumps(c)}\n".encode() for c in chunks] + [b"data: [DONE]\n"])
+
+    def __iter__(self):
+        for line in self._lines:
+            self.read_lines += 1
+            yield line
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def streamed(*pieces: str, finish_reason=None) -> _Stream:
+    """An answer streamed in these pieces, ending with finish_reason (None: the stream is cut before it ends)."""
+    chunks = [{"choices": [{"index": 0, "delta": {"content": p}}]} for p in pieces]
+    if finish_reason:
+        chunks[-1]["choices"][0]["finish_reason"] = finish_reason
+    return _Stream([f"data: {json.dumps(c)}\n".encode() for c in chunks] + [b"data: [DONE]\n"])
 
 
 def http_error(code: int, message: str = "failed", retry_after=None) -> urllib.error.HTTPError:

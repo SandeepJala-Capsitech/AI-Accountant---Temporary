@@ -86,6 +86,21 @@ def openrouter_route(settings: Settings, *, require_parameters: bool = False) ->
     return route
 
 
+RUNAWAY, RUNAWAY_SPACE = "runaway", 512   # an answer stopped after this much whitespace: no JSON pads that much
+
+
+def _closed(content: str) -> Optional[str]:
+    """A trailed-off answer as JSON: as it stands, or with the one closing brace the model never wrote; None when
+    neither parses (it stopped part way through)."""
+    for text in (content.rstrip(), content.rstrip() + "}"):
+        try:
+            json.loads(text)
+            return text
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
 class ModelClient:
     def __init__(self, settings: Settings, opener: Callable = urllib.request.urlopen,
                  clock: Callable[[], float] = time.monotonic,
@@ -151,6 +166,8 @@ class ModelClient:
             "response_format": {"type": "json_schema", "json_schema": {
                 "name": "transactions", "schema": strict_schema(schema), "strict": True}},
         }
+        if self._openrouter:   # streamed, so an answer that trails off into whitespace is stopped, not waited out
+            payload["stream"] = True   # (_read_stream); Groq doesn't stream structured outputs
         effort = self._s.reasoning_effort if reasoning_effort is None else reasoning_effort
         if effort:
             payload["reasoning_effort"] = effort
@@ -160,6 +177,12 @@ class ModelClient:
             payload["provider"] = self._route(require_parameters=True)
         response = self._chat(payload)
         choice = (response.get("choices") or [{}])[0]
+        if choice.get("finish_reason") == RUNAWAY:
+            content = _closed((choice.get("message") or {}).get("content") or "")
+            if content is None:
+                raise ModelError("The AI model's answer trailed off before it was complete. Try again.",
+                                 code="ai_output_invalid")
+            return ModelAnswer(content, host=response.get("provider"))
         if choice.get("finish_reason") == "length":
             raise ModelError("The document is too long for the AI model to answer in one pass. "
                              "Split it into smaller files and try again.", code="ai_output_truncated")
@@ -329,7 +352,37 @@ class ModelClient:
             "User-Agent": USER_AGENT,
         })
         with self._open(req, timeout=timeout) as resp:
+            if payload is not None and payload.get("stream"):
+                return self._read_stream(resp, timeout)
             return json.loads(resp.read())
+
+    def _read_stream(self, resp, timeout: float) -> dict:
+        """A streamed chat completion put together as an unstreamed one is: its content, finish_reason, host and usage.
+        Read line by line, so it stops early: once the content ends in more than RUNAWAY_SPACE characters of
+        whitespace (a model that has finished its JSON but not closed it can write nothing else to the token cap;
+        finish_reason RUNAWAY), and with a timeout once the whole answer has taken longer than `timeout`."""
+        started, parts, finish, provider, usage, space = self._clock(), [], None, None, None, 0
+        for raw in resp:
+            if self._clock() - started > timeout:
+                raise TimeoutError
+            line = raw.decode("utf-8", "replace").strip()
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                break
+            chunk = json.loads(data)
+            provider, usage = chunk.get("provider") or provider, chunk.get("usage") or usage
+            choice = (chunk.get("choices") or [{}])[0]
+            piece = (choice.get("delta") or {}).get("content") or ""
+            parts.append(piece)
+            space = space + len(piece) if not piece.strip() else len(piece) - len(piece.rstrip())
+            finish = choice.get("finish_reason") or finish
+            if space > RUNAWAY_SPACE:
+                finish = RUNAWAY
+                break
+        return {"choices": [{"message": {"content": "".join(parts)}, "finish_reason": finish}],
+                "provider": provider, "usage": usage}
 
     def _unreachable_message(self) -> str:
         return (f"Cannot reach {self._s.provider} at {self._s.base_url}. "

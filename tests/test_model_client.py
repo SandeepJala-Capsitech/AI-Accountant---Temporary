@@ -4,7 +4,7 @@ import urllib.error
 from typing import Optional
 
 import pytest
-from fakes import FakeUrlopen, chat_answer, http_error
+from fakes import FakeUrlopen, chat_answer, http_error, streamed
 from pydantic import BaseModel, Field
 
 from ledgersync.config import Settings
@@ -38,7 +38,7 @@ def test_chat_asks_the_configured_model_for_strict_json():
     fmt = body["response_format"]
     assert fmt["type"] == "json_schema" and fmt["json_schema"]["strict"] is True
     assert fmt["json_schema"]["schema"]["additionalProperties"] is False
-    assert "provider" not in body   # OpenRouter's routing field; Groq has no use for it
+    assert "provider" not in body and "stream" not in body   # OpenRouter's routing; Groq streams no structured output
 
 
 def test_with_an_openrouter_key_the_same_model_is_asked_through_openrouter():
@@ -119,6 +119,30 @@ def test_an_answer_cut_off_at_the_token_limit_is_an_error():
     with pytest.raises(ModelError) as info:
         client.chat_json(MSG, SCHEMA)
     assert info.value.code == "ai_output_truncated"
+
+
+def test_an_answer_that_trails_off_into_whitespace_is_stopped_and_closed():
+    # The agency run: for a notice of administration the model wrote {"transactions": [] and then only whitespace for
+    # 14 minutes, to the 32,768-token cap; the app had given up at 300 seconds.
+    stream = streamed('{"transactions": []', *["\n\n  "] * 400, finish_reason="length")
+    client, http, _, _ = make_client(stream, settings=OPENROUTER)
+    assert json.loads(client.chat_json(MSG, SCHEMA)) == {"transactions": []}
+    assert http.payload()["stream"] is True and stream.read_lines < 200   # stopped well before the end
+
+
+def test_a_trailing_off_answer_that_cannot_be_closed_is_an_error():
+    client, _, _, _ = make_client(streamed('{"transactions": [{"amount": 1', *["   "] * 400), settings=OPENROUTER)
+    with pytest.raises(ModelError) as info:
+        client.chat_json(MSG, SCHEMA)
+    assert info.value.code == "ai_output_invalid"
+
+
+def test_a_streamed_answer_slower_than_the_timeout_in_all_is_a_timeout():
+    client, _, now, _ = make_client(streamed('{"transactions": [', '1', ']}', finish_reason="stop"), settings=OPENROUTER)
+    ticks = iter([0.0, 30.0, 61.0, 61.0])
+    client._clock = lambda: next(ticks)
+    with pytest.raises(ModelTimeout):
+        client.chat_json(MSG, SCHEMA)
 
 
 def test_an_empty_answer_is_an_error():
