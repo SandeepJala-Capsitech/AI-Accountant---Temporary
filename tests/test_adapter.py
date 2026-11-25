@@ -484,6 +484,20 @@ def test_a_streaming_subscription_is_booked_to_the_owner(business_type, code):
     assert t.account_code == code
 
 
+@pytest.mark.parametrize("who", ["STREAMFLIX.COM", "Streamflix.com", "Paramount Plus", "Apple TV"])
+def test_any_streaming_service_on_the_company_card_is_the_directors(who):
+    # The agency run: Streamflix's £10.99 a month went to Subscriptions; only services named on a list were caught.
+    [t] = to_transactions([dict(NETFLIX, counterparty=who, description=who)], source="table",
+                          settings=BusinessSettings(business_type="limited_company"))
+    assert t.account_code == "2250" and ("personal", "info") in issues_of(t)
+
+
+def test_a_coach_ticket_is_not_a_streaming_service():
+    [t] = to_transactions([dict(NETFLIX, counterparty="FlixBus", description="FLIXBUS LONDON", account="7400 Travel")],
+                          source="table", settings=BusinessSettings(business_type="limited_company"))
+    assert t.account_code == "7400"
+
+
 def test_vat_the_document_does_not_print_is_not_taken():
     # On a third reading the reader worked out Screwfix's £14.40 VAT (20% of £72.00), and it was reclaimed: the
     # receipt never prints it, so there's nothing to reclaim it with.

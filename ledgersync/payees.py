@@ -12,7 +12,11 @@ PROCESSORS = {"stripe": "Stripe", "paypal": "PayPal", "square": "Square", "sumup
               "ebay": "eBay", "etsy": "Etsy"}
 PERSONAL = {"netflix": "Netflix", "spotify": "Spotify", "disney plus": "Disney+", "disneyplus": "Disney+",
             "now tv": "NOW TV", "nowtv": "NOW TV", "audible": "Audible", "playstation": "PlayStation",
-            "xbox": "Xbox", "nintendo": "Nintendo"}
+            "xbox": "Xbox", "nintendo": "Nintendo", "paramount plus": "Paramount+", "apple tv": "Apple TV",
+            "prime video": "Prime Video", "youtube premium": "YouTube Premium", "crunchyroll": "Crunchyroll",
+            "deezer": "Deezer", "tidal": "Tidal", "mubi": "MUBI", "britbox": "BritBox"}
+# A film or TV streaming service named as Netflix is ("Streamflix", "Kidflix"): a word ending in "flix".
+_FLIX = re.compile(r" ([a-z0-9]+flix) ")
 
 
 # How a card statement words the money paid to the card from the bank.
@@ -77,4 +81,8 @@ def personal(*texts: Optional[str], business_type: Optional[str] = None) -> Opti
     names = {**PERSONAL, **OWNERS_TAX}
     if business_type and business_type != "limited_company":
         names.update(OWNERS_HOME)
-    return _found(names, *texts)
+    found = _found(names, *texts)
+    if found is None:
+        flix = next((m.group(1) for text in texts if (m := _FLIX.search(_padded(text)))), None)
+        found = flix.capitalize() if flix else None
+    return found
