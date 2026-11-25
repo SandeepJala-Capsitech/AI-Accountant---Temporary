@@ -32,6 +32,8 @@ def card_days_apart(a: dt.date, b: dt.date) -> bool:
     """Whether a card payment and its bank line are close enough to be one payment: no more than CARD_WORKING_DAYS
     working days apart (a weekend in between doesn't count)."""
     earlier, later = sorted((a, b))
+    if (later - earlier).days > 7:   # 3 working days never span more than a week: no need to count (it is called
+        return False                 # for every card line against every receipt)
     working = sum(1 for k in range(1, (later - earlier).days + 1)
                   if (earlier + dt.timedelta(days=k)).weekday() < 5)
     return working <= CARD_WORKING_DAYS
@@ -918,8 +920,8 @@ def _pair_receipts(rows: list[Transaction], changes: list[dict], lines: list[int
             if (line.link is not None or line.date is None or change.get("pays") or change.get("candidates")
                     or change.get("recorded_by")):
                 continue
-            fits = [r for r in receipts if r.date is not None and card_days_apart(line.date, r.date)
-                    and r.total == line.gross and r.direction == line.direction.value
+            fits = [r for r in receipts if r.total == line.gross and r.date is not None
+                    and card_days_apart(line.date, r.date) and r.direction == line.direction.value
                     and (not by_name or names_match(line.counterparty, r.counterparty)) and not kept_apart(n, r)]
             if not fits:
                 continue
