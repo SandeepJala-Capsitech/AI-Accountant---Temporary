@@ -1804,8 +1804,9 @@ def test_a_supermarket_buy_on_a_claim_is_booked_to_subsistence_and_says_why():
                             row("receipt", "out", "8.19", "2026-10-08", "Victoria Food & Groceries", "vic",
                                 account="8205"))
     assert receipt.account_code == "7406"
-    note = next(i for i in receipt.issues if i.code == "claim_note")
-    assert note.severity == "info" and "working away" in note.message
+    # Nothing on it says it was for the staff, so it is Subsistence before the claim is even read (checks.normalise).
+    note = next(i for i in receipt.issues if i.code == "meal_recoded")
+    assert note.severity == "info" and "Subsistence" in note.message
     # Groceries from a food shop: the claimant's own, as an accountant reads it; no one is asked who was there.
     assert "meal_check" not in [c for c, _ in codes(receipt)]
     assert "meal_decided" in [i.code for i in receipt.issues]

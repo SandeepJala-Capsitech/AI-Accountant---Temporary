@@ -32,7 +32,7 @@ _DERIVED = {"unknown_account", "same_account", "non_gbp_currency", "vat_not_appl
             "payroll_owed_to", "before_first_year", "vat_not_booked", "needs_document", "total_worked_out",
             "cis_deducted", "personal", "possible_duplicate", "booked_without_document", "card_credit", "vat_unclaimed",
             "on_account", "no_vat_number", "vat_over_rate", "reverse_charge", "before_vat_registration", "small_asset",
-            "meal_check", "claim_note", "sundry_check", "account_fact", "account_choice", "left_small", "left_unset", "meal_decided", "small_items_add_up", "future_date", "journal_note", "prepayment", "unusual_account", "asset_check",
+            "meal_check", "meal_recoded", "claim_note", "sundry_check", "account_fact", "account_choice", "left_small", "left_unset", "meal_decided", "small_items_add_up", "future_date", "journal_note", "prepayment", "unusual_account", "asset_check",
             "should_be_asset", "whose_account", "vat_confirmed", "vat_implied", "document_wanted", "hotel_vat"} | MATCHING_ISSUES | STATEMENT_ISSUES
 # Warnings that are a matter of judgement: a person who has looked can say one is fine (Transaction.accepted), and it
 # is not raised on that row again.
@@ -123,6 +123,22 @@ _PROVISIONS = re.compile(r"\b(grocer(y|ies|s)?|supermarkets?|convenience (store|
                          r"budgens|londis|nisa|one stop|iceland|m&s food|marks (&|and) spencer food)\b", re.IGNORECASE)
 _WITH_GUESTS = re.compile(r"\b(with|for|and|entertaining|hosting|treating)\b(\W+\w+){0,3}?\W+(clients?|customers?|guests?|"
                           r"prospects?|suppliers?|visitors?)\b", re.IGNORECASE)
+
+
+# Food or drink for the workplace, in the row's words: "for the office", "office kitchen", "for the team".
+_WORKPLACE = re.compile(r"\b(office|kitchen|workplace|studio)\b", re.IGNORECASE)
+
+
+def _staff_food_unshown(tx: Transaction) -> bool:
+    """Whether food or drink the reader put on Refreshments or Staff Welfare has nothing on it (its words, its claim
+    note) saying it was for the staff or the workplace: then it is the buyer's own while working, Subsistence. Only
+    such a note or remark makes it staff welfare; guests named are the meal check's to ask, and a person's choice of
+    account stands."""
+    words = f"{tx.description or ''} {tx.claim_note or ''}"
+    food = tx.bought is not None or tx.people is not None or _groceries(tx)
+    return (tx.direction == Direction.OUT and tx.document_type in ("receipt", "invoice", "expense_claim")
+            and tx.account_code in (REFRESHMENTS, STAFF_WELFARE) and food and not tx.account_chosen
+            and not (_STAFF.search(words) or _WORKPLACE.search(words) or _GUESTS.search(words)))
 
 
 def account_by_note(tx: Transaction) -> Optional[str]:
@@ -438,6 +454,13 @@ _TREATMENT_WORDS = {VatTreatment.ZERO: "zero-rated", VatTreatment.EXEMPT: "exemp
 def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
     kept = [i for i in tx.issues if i.code not in _DERIVED]   # re-validating must not duplicate
     issues: list[Issue] = []
+    if _staff_food_unshown(tx):
+        was = BY_CODE[tx.account_code].name
+        tx = tx.model_copy(update={"account_code": SUBSISTENCE})
+        issues.append(issue("meal_recoded", f"Booked to Subsistence, not {was}: nothing on it says it was for the "
+                                            "staff. If it was, change the account.", "info"))
+    elif tx.account_code == SUBSISTENCE and not tx.account_chosen:   # checked again (matching does): still so
+        issues += [i for i in tx.issues if i.code == "meal_recoded"]
     account = BY_CODE.get(tx.account_code)
     # The client's banks and the accounts for what is owed are worked out afresh on every pass, so a row whose
     # account, document type or bank account changes moves with it; any other account sent in is kept.

@@ -835,7 +835,9 @@ def test_entertainment_that_names_no_guests_is_asked_about_at_any_amount():
 
 
 def test_staff_welfare_food_that_doesnt_say_staff_or_names_guests_is_asked_about():
-    assert meal(account="8206", gross="5.00", description="The Gun", people="several") == [("meal_check", "warning")]
+    # Nothing says staff: Subsistence (meal_recoded), and for several people still asked who was there.
+    assert meal(account="8206", gross="5.00", description="The Gun", people="several") == [
+        ("meal_recoded", "info"), ("meal_check", "warning")]
     assert meal(account="8206", gross="5.00", description="Team drinks", people="several") == []
     t = normalise(tx(gross="80.00", account="8206", description="Drinks with clients"), REGISTERED)
     assert codes(t) == [("meal_check", "warning")] and "Entertainment" in t.issues[0].message
@@ -1044,3 +1046,26 @@ def test_an_account_a_person_chose_is_kept_and_no_threshold_means_no_change():
     chosen = normalise(equipment("576.00", "96.00", "0030", account_chosen=True), POLICY)
     assert chosen.account_code == "0030"
     assert normalise(equipment("576.00", "96.00", "0030"), HELPER_SETTINGS).account_code == "0030"
+
+
+# ─── Food and drink with nothing to show it was for the staff ─────────────────
+
+def deli(account, description="Gantry Deli, sandwiches and coffee", **kw):
+    return row(date=dt.date(2026, 1, 9), gross=Decimal("12.00"), vat=Decimal("2.00"), account_code=account,
+               counterparty="Gantry Deli", description=description, bought="food_to_go", **kw)
+
+
+def test_food_on_refreshments_or_staff_welfare_with_nothing_saying_staff_is_subsistence():
+    # The agency run: 49 deli and bakery receipts went to Refreshments; the key books them as Subsistence. Only a note
+    # or remark that they were for the staff makes them staff welfare.
+    for account in ("8205", "8206"):
+        t = normalise(deli(account), REGISTERED)
+        assert t.account_code == "7406" and ("meal_recoded", "info") in codes(t)
+
+
+def test_food_said_to_be_for_the_staff_or_chosen_by_a_person_stays():
+    party = normalise(deli("8206", "The Granary Rooms, staff Christmas party for 9"), REGISTERED)
+    milk = normalise(deli("8205", "Milk and coffee for the office kitchen"), REGISTERED)
+    chosen = normalise(deli("8205", account_chosen=True), REGISTERED)
+    assert (party.account_code, milk.account_code, chosen.account_code) == ("8206", "8205", "8205")
+    assert not any(c == "meal_recoded" for t in (party, milk, chosen) for c, _ in codes(t))
