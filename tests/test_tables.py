@@ -181,6 +181,14 @@ def test_the_january_export_keeps_each_charge_on_its_own_day():
     assert [r.date for r in rows if r.direction == "in"] == ["2024-01-05", "2024-01-05", "2024-01-07", "2024-01-10"]
 
 
+def test_charges_on_the_same_day_print_the_days_net_as_their_total():
+    # The agency run: the app takes a processor's items of one day as one document, and each 5 Jan charge printed
+    # only its own net, so the day's items (£1,772.60) "did not match" £709.00 and the review asked about them.
+    rows = processor(parse(STRIPE_JANUARY), "2024-01-01_stripe-statement_2024-01-31.csv").data
+    assert {r.date: r.document_total for r in rows} == {"2024-01-05": 1772.6, "2024-01-07": 886.3,
+                                                        "2024-01-10": 531.7}
+
+
 def test_a_refund_and_an_unknown_category():
     text = STRIPE_HEADER + """
 ,,txn_1,2023-04-08 12:00:00,gbp,-720.00,0.00,-720.00,refund,Refund Moss & Pine,Moss & Pine Florists

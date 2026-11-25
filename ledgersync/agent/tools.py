@@ -183,6 +183,8 @@ def _brief(row: SavedRow, names: dict[int, str], held: Optional[DocumentRule] = 
         "date": row.date, "description": row.description, "counterparty": row.counterparty,
         "direction": row.direction.value, "gross": row.gross, "vat": row.vat, "account_code": row.account_code,
         "account_name": row.account_name,
+        # A row paying a document posts against the account its document was owed on, not its own account.
+        "posts_against": row.paid_against, "posts_against_name": row.paid_against_name if row.paid_against else None,
         "issues": [_kept({"code": i.code, "family": family_of(i.code), "severity": i.severity, "message": i.message,
                           "related_rows": i.related}) for i in row.issues],
         "held": {"needs": held.needs, "reason": held.reason} if held else None,

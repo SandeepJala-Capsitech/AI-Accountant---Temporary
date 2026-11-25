@@ -341,6 +341,12 @@ def processor(table: Table, file_name: str):
     dates = parse_date([row[roles["date"][0]] for row in table.rows])
     cell = lambda row, role: row[roles[role][0]] if role in roles else ""   # noqa: E731
     rows, warnings = [], []
+    # The app takes a processor's items of one day as one document (adapter._document_key): what it nets to is the
+    # day's nets together, not one line's.
+    day_net: dict = {}
+    for n, row in enumerate(table.rows):
+        if _category(_key(cell(row, "category"))) != "payout":
+            day_net[dates[n]] = day_net.get(dates[n], Decimal(0)) + (parse_amount(cell(row, "net")) or Decimal(0))
     for n, row in enumerate(table.rows):
         gross, fee, net = (parse_amount(cell(row, r)) or Decimal(0) for r in ("gross", "fee", "net"))
         category = _category(_key(cell(row, "category")))
@@ -355,7 +361,7 @@ def processor(table: Table, file_name: str):
                                          direction="in" if amount > 0 else "out", account=account,
                                          currency=currency, document_type="agent_statement",
                                          counterparty=counterparty, document_number=ref,
-                                         document_total=float(net))
+                                         document_total=float(day_net[dates[n]]))
 
         if category in ("charge", "refund"):
             rows.append(booked(gross, SALES, text, cell(row, "customer") or agent))

@@ -327,6 +327,21 @@ def test_list_rows_lists_rows_that_have_no_issues(mongo_store, deps, acme):
 
 
 @pytest.mark.mongo
+def test_a_row_that_pays_an_invoice_says_what_it_posts_against(mongo_store, deps, acme):
+    # The agency run: a Stripe charge paying invoice KF-1014 showed only its own account, Sales, so the review asked
+    # each month whether the sale was booked twice.
+    add_rows(mongo_store, acme,
+             row(date=dt.date(2026, 6, 1), direction="in", gross=Decimal("720.00"), vat=Decimal("120.00"),
+                 account_code="4000", document_type="invoice", document_number="KF-1014",
+                 counterparty="Moss & Pine Florists"),
+             row(date=dt.date(2026, 6, 6), direction="in", gross=Decimal("720.00"), account_code="4000",
+                 document_type="statement", counterparty="Moss & Pine Florists"), year_start=YEAR)
+    invoice, line = rows_of_the_year(mongo_store, deps, acme)["rows"]
+    assert (line["account_code"], line["posts_against"], line["posts_against_name"]) == ("4000", "1100", "Debtors")
+    assert "posts_against" not in invoice
+
+
+@pytest.mark.mongo
 def test_list_rows_by_document_lists_only_its_rows(mongo_store, deps, acme):
     first, second = three_clean_rows(mongo_store, acme)
 
