@@ -2,7 +2,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Transaction } from './api.ts'
-import { filtersSet, levelsLine, matchesFilters, netBooked, NO_FILTERS, vatBooked } from './ledger.ts'
+import { filtersSet, levelsLine, matchesFilters, netBooked, NO_FILTERS, pageOf, ROWS_PER_PAGE, vatBooked } from './ledger.ts'
 import { aboutAnotherRow, acceptChange, acceptLabel, accountName, askAbout, claimLineOf, issueFixes, apartChange, apartStatus, canBeAccepted, canBeApart, checkHover, issueHeading, issueTitle, kindOf, needsReview, postedLedgerNote,
          reviewSummary, rowStatus, showLabel, takesLines, totalsOf } from './ledger.ts'
 
@@ -554,4 +554,13 @@ test('the questions asked by facts and stakes are named, and the materiality is 
   assert.equal(levelsLine(null), "Materiality not set: no sales booked and no earlier year to work it out from. Set it "
                                  + "in the client's details; until then, questions where either account is right wait. "
                                  + 'Questions that change the tax are asked now.')
+})
+
+test('the table draws a page of rows at a time and says how many more there are', () => {
+  // The website: the Transactions tab drew all 1,351 of the agency's rows at once.
+  const rows = Array.from({ length: 1351 }, (_, k) => k)
+  assert.equal(ROWS_PER_PAGE, 200)
+  assert.deepEqual([pageOf(rows, 200).shown.length, pageOf(rows, 200).more], [200, 1151])
+  assert.deepEqual([pageOf(rows, 1400).shown.length, pageOf(rows, 1400).more], [1351, 0])
+  assert.deepEqual(pageOf(rows, 400).shown.slice(-1), [399])
 })

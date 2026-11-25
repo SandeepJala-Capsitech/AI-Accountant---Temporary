@@ -539,3 +539,10 @@ export const levelsLine = (levels: Levels | null) =>
   levels ? `Materiality ${gbp(levels.overall)} (${levels.basis}) · items under ${gbp(levels.trivial)} left as coded`
          : "Materiality not set: no sales booked and no earlier year to work it out from. Set it in the client's "
            + 'details; until then, questions where either account is right wait. Questions that change the tax are asked now.'
+
+// How many rows the Transactions table draws at a time: a year of 1,351 rows drawn at once is slow to show.
+export const ROWS_PER_PAGE = 200
+
+// The first `limit` of the rows the table lists, and how many more it has.
+export const pageOf = <T>(rows: T[], limit: number): { shown: T[]; more: number } =>
+  ({ shown: rows.slice(0, limit), more: Math.max(0, rows.length - limit) })

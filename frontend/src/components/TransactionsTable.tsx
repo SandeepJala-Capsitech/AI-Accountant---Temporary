@@ -9,7 +9,7 @@ import { useAccountChoices } from '@/components/useAccountChoices'
 import { type Ledger, type RowChange, type SavedRow } from '@/lib/clients'
 import { DOCUMENT_TYPES, transactionCount } from '@/lib/clientRules'
 import { sectionHref } from '@/lib/years'
-import { askAbout, claimLineOf, filtersSet, issueFixes, matchesFilters, netBooked, NO_FILTERS, vatBooked, type RowFilters } from '@/lib/ledger'
+import { askAbout, claimLineOf, filtersSet, issueFixes, matchesFilters, netBooked, NO_FILTERS, pageOf, ROWS_PER_PAGE, vatBooked, type RowFilters } from '@/lib/ledger'
 import { acceptChange, accountName, apartChange, apartStatus, checkHover, documentProblems, kindOf, leftOut, leftOutLabel,
          longDate, money, needsReview, reviewSummary, rowIssues, rowStatus, takesLines, totalsOf } from '@/lib/ledger'
 
@@ -140,6 +140,10 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
     ? picked.map((item, n) => ({ item, n })).sort((a, b) =>
         (a.item.row.date ?? '').localeCompare(b.item.row.date ?? '') || a.n - b.n).map(({ item }) => item)
     : picked
+  // A page at a time, back to the first whenever what is listed changes.
+  const [limit, setLimit] = useState(ROWS_PER_PAGE)
+  useEffect(() => { setLimit(ROWS_PER_PAGE) }, [filters, only, focus, byDate])
+  const page = pageOf(listed, limit)
   const showTogether = (ids: number[]) => {
     setFocus(ids)
     card.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
@@ -261,7 +265,7 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
             </tr>
           </thead>
           <tbody>
-            {listed.map(({ row, issues }) => {
+            {page.shown.map(({ row, issues }) => {
               const left = leftOut(row)
               const check = checkOf(issues, left)
               const origin = `${uploads.get(row.upload_id) ?? ''} · ${DOCUMENT_TYPES[row.document_type ?? 'receipt'] ?? row.document_type}`
@@ -374,6 +378,14 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
                 </tr>
               )
             })}
+            {page.more > 0 && (
+              <tr><td colSpan={9}>
+                <button type="button" className="btn btn-small" onClick={() => setLimit(l => l + ROWS_PER_PAGE)}>
+                  Show {Math.min(ROWS_PER_PAGE, page.more)} more
+                </button>{' '}
+                <span className="muted small">{page.more} not shown yet</span>
+              </td></tr>
+            )}
           </tbody>
           <tfoot>
             {narrowed && !together.length && (
