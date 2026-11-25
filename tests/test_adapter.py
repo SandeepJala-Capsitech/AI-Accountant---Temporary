@@ -570,6 +570,26 @@ def test_a_persons_payroll_lines_that_add_up_to_no_printed_gross_are_flagged():
     assert flagged == ["J Kestrel"]      # 3,035.00 is nobody's gross; A Patel's 3,000.00 is printed
 
 
+def january_payroll(employees_net: float) -> list[dict]:
+    """The agency's January 2024 payroll report as the model read it: the five employees' net pay in one row."""
+    def line(description, amount, owed_to, account="7000"):
+        return payroll_row(description=description, amount=amount, owed_to=owed_to, account=account,
+                           document_total=18178.33)
+    return [line("Net pay to directors", 2095.0, "net_pay", "7001"), line("Net pay to employees", employees_net, "net_pay"),
+            line("Employees' tax and NI", 3107.39, "paye_ni"), line("Employees' pension", 666.95, "pension"),
+            line("Employer's NI", 1776.40, "paye_ni", "7006"), line("Employer's pension", 400.17, "pension", "7007")]
+
+
+def test_payroll_pay_lines_that_do_not_add_up_to_the_printed_total_gross_are_flagged():
+    # The agency run: the model added the five employees' net pay to £12,309.00, not £12,308.99, and nothing said so.
+    text = "Leah Morgan £3,212.69 ... Total gross pay £18,178.33"
+    read = to_transactions(january_payroll(12309.00), source="text", settings=BusinessSettings(), text=text)
+    [flagged] = [i for t in read for i in t.issues if i.code == "payroll_total"]
+    assert "£18,178.34" in flagged.message and "£18,178.33" in flagged.message and flagged.severity == "warning"
+    right = to_transactions(january_payroll(12308.99), source="text", settings=BusinessSettings(), text=text)
+    assert not [i for t in right for i in t.issues if i.code == "payroll_total"]
+
+
 OKAFOR = dict(ROW, direction="out", document_type="invoice", counterparty="D Okafor Bricklaying", document_number="17",
               document_total=1000.0, document_net=1200.0, not_vat_invoice=True, cis_deducted=200.0)
 OKAFOR_TEXT = ("Labour 1,000.00\nMaterials 200.00\nInvoice total 1,200.00\n"

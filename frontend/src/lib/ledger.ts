@@ -258,7 +258,7 @@ const ISSUE_TITLES: Record<string, string> = {
   vat_not_booked: 'VAT not booked', needs_document: 'Needs its document', booked_without_document: 'Booked without a receipt', claimed_less: 'Claimed less than its bill', total_worked_out: 'Total not printed',
   card_credit: 'Money in on a card', vat_unclaimed: 'VAT not reclaimed', on_account: 'Payment on account',
   vat_confirmed: 'VAT reclaimed on your say', vat_implied: 'VAT worked out', document_wanted: 'Invoice needed', hotel_vat: 'Invoice needed',
-  payroll_person: 'Check this person\'s pay', cis_deducted: 'CIS deducted', payout_report: 'Payout report needed', personal: 'Looks personal', subtotal_only: 'Total not printed',
+  payroll_person: 'Check this person\'s pay', payroll_total: 'Payroll doesn\'t add up', cis_deducted: 'CIS deducted', payout_report: 'Payout report needed', personal: 'Looks personal', subtotal_only: 'Total not printed',
   not_claimed: 'Not claimed', claim_receipts_unclear: "Can't tell which charges",
 }
 
