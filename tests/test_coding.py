@@ -107,3 +107,24 @@ def test_an_unflagged_row_still_counts_as_history():
     assert usual_accounts(rows, flag=[True, True, True, False]) == [None] * 4
     found = usual_accounts(rows, flag=[False, False, False, True])
     assert (found[3].code, found[3].others) == ("7502", 3)
+
+
+def test_bank_lines_that_pay_a_bill_are_not_history():
+    """A bank line that pays a supplier's bill posts against Creditors: the account the reader guessed for it is not
+    where anything was coded. Kite & Quill's ten invoices on 7602 and one on 7603, with nine payments guessed onto 7602
+    or 5002, made 7602 only 70% of its "bills", so the odd invoice was never flagged (agency run, 25 Nov 2026)."""
+    paid = Settlement(ref="inv", amount=Decimal("86.40"))
+    payments = [*bills(4, "7602", start=20, document_type="statement", pays=[paid], paid_against="2100"),
+                *bills(5, "5002", start=24, document_type="statement", pays=[paid], paid_against="2100")]
+    rows = [*bills(10, "7602"), *bills(1, "7603", start=10), *payments]
+    found = found_in(rows)
+    assert (found[10].code, found[10].others, found[10].on_usual) == ("7602", 10, 10)
+    assert found[11:] == [None] * len(payments)
+
+
+def test_a_meal_is_coded_by_who_was_there_not_by_the_restaurant():
+    # The paid run of 25 Nov 2026: Marlowe's Kitchen's £186 dinner for a client, rightly on Entertainment (its VAT
+    # blocked, disallowed for tax), was flagged against the 32 other bills there on Subsistence, and the rules
+    # suggested moving it: that would have reclaimed blocked VAT. Who was at a meal decides its account.
+    rows = [*bills(32, "7406", who="Marlowe's Kitchen"), *bills(1, "7403", who="Marlowe's Kitchen", start=32)]
+    assert found_in(rows) == [None] * 33

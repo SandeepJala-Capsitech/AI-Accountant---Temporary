@@ -600,6 +600,7 @@ class InvoiceSummary(BaseModel):
     paid: Decimal
     owed: Decimal
     paid_by: list[Settlement] = Field(default_factory=list)
+    owed_at_year_end: Decimal = ZERO   # what was owed on the year's last day: payments after it left out
     brought_forward: bool = False
     credit_note: bool = False   # the money goes the other way: a supplier's credit to the business, or its own to a customer
 
@@ -736,7 +737,7 @@ class Decision(DecisionDraft):
 ChangeKind = Literal["upload_read", "upload_removed", "upload_bank_changed", "row_edited", "row_added",
                      "row_removed", "row_linked", "row_included", "rows_apart", "row_reverted", "client_changed",
                      "opening_balances_changed", "question_answered", "decision", "year_reopened", "year_closed",
-                     "decision_undone", "decision_applied", "question_closed"]
+                     "decision_undone", "decision_applied", "question_closed", "question_offered"]
 
 
 class ChangeDraft(BaseModel):
@@ -772,14 +773,39 @@ class QuestionDraft(BaseModel):
     source: Literal["rules", "agent"]
 
 
+class OfferSource(BaseModel):
+    """Where part of an offered answer comes from: the person's words in the chat (said), a quote from one of the
+    client's documents (document, for the line or date it backs, with any working), or the question itself (its
+    amount, or the write-off date it defaults to)."""
+    model_config = {"populate_by_name": True}
+    kind: Literal["said", "document", "question"]
+    quote: str = ""
+    upload_id: Optional[int] = None
+    upload_name: str = ""
+    for_: Optional[str] = Field(None, alias="for")   # "line:<n>" (from 1) or "date"
+    working: str = ""                                 # how a figure was worked out: "£6,000.00 for 91 days, 84 next year"
+
+
+class Offer(BaseModel):
+    """An answer to a books question the agent filled in from what the person said, for them to change or confirm
+    on the question's card: nothing is booked until they do."""
+    answer: dict                                      # a SplitAnswer or WriteOffAnswer, as JSON
+    sources: list[OfferSource]
+    reason: str
+    thread_id: str
+    offered_at: str
+    offered_by: str
+
+
 class Question(QuestionDraft):
     """A question as kept: open until answered, waiting when the person has no answer yet ("I don't have it",
-    "Not sure"), resolved once answered."""
+    "Not sure"), resolved once answered. offer: an answer filled in for the person to confirm."""
     id: str
     status: Literal["open", "waiting", "resolved"]
     answer: Optional[str] = None
     created_at: str
     resolved_at: Optional[str] = None
+    offer: Optional[Offer] = None
 
 
 class ChatThread(BaseModel):

@@ -341,6 +341,17 @@ def test_an_invoice_paid_next_year_shows_as_owed_at_the_year_end_and_paid_now(st
     assert bill.kind == "purchase" and bill.owed == 0 and bill.paid_by[0].date == date(2026,5,10)
 
 
+def test_an_invoice_paid_after_its_year_end_says_what_was_owed_at_the_year_end(store, acme_with_unpaid_bill_in_year_one):
+    # The agency's Mendip and Brightwater invoices of February and March 2024, paid in April: the year's list said
+    # nothing was owed on them, and its "owed at 31 Mar 2024" total left out £32,880 the trial balance's Debtors
+    # holds (agency run, 25 Nov 2026).
+    add_rows(store, acme_with_unpaid_bill_in_year_one, the_bills_payment_dated(date(2026, 5, 10)))
+    [bill] = books.invoices(store, acme_with_unpaid_bill_in_year_one, date(2025, 4, 1))
+    assert (bill.owed, bill.owed_at_year_end) == (0, D("300.00"))
+    [now] = books.invoices(store, acme_with_unpaid_bill_in_year_one, date(2026, 4, 1))
+    assert now.brought_forward and now.owed_at_year_end == 0
+
+
 def test_the_bank_check_compares_the_books_with_the_statement(store, acme_with_statement_missing_a_line):
     [check] = books.bank_checks(store, acme_with_statement_missing_a_line, date(2025,4,1))
     assert check.difference == D("-25.00") and check.statement_date == date(2025,9,30)

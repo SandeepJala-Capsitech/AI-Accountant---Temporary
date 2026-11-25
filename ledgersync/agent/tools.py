@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Annotated, Any, Callable, Literal, Optional
 
 from langchain.tools import ToolRuntime, tool
+from langchain_core.messages import HumanMessage
 from langchain_core.tools import BaseTool
 from pydantic import BeforeValidator, Field
 from pydantic_core import to_jsonable_python
@@ -26,7 +27,7 @@ from ledgersync.errors import InvalidInput, InvalidTransactions, NotFound
 from ledgersync.evidence_rules import DocumentRule, document_rule
 from ledgersync.accounts import choosable
 from ledgersync.ledger import bank_choices, owners_of, settings_for
-from ledgersync.models import Evidence, Ledger, SavedRow
+from ledgersync.models import Evidence, Ledger, OfferSource, SavedRow
 from ledgersync.records import AgentRecords
 from ledgersync.resolutions import AgentResolution, RowEdit, edit_as_told, resolve
 from ledgersync.store_mongo import MongoStore
@@ -269,11 +270,35 @@ def issues(deps: AgentDeps, ctx: ChatContext, family: Optional[Family] = None, a
 
 
 def open_questions(deps: AgentDeps, ctx: ChatContext) -> dict:
-    """What list_questions returns."""
-    asked = deps.records.questions(ctx.client_id, ctx.year_start)
-    return {"questions": [_kept({"question_id": q.id, "kind": q.kind, "text": q.text, "why": q.why,
-                                 "status": q.status, "answer": q.answer, "row_ids": q.row_ids,
-                                 "asked_by": q.source, "asked_at": q.created_at}) for q in asked]}
+    """What list_questions returns: the chat year's questions, and the books' own questions of the client's other
+    open years (a books question is asked in the earliest open year it belongs to), each with its year and any answer
+    offered for the person to confirm."""
+    closed = {c.start for c in deps.store.get_client(ctx.client_id).closed_years}
+    asked = [q for q in deps.records.questions(ctx.client_id, None) if q.year_start == ctx.year_start
+             or (q.source == "rules" and q.year_start not in closed)]
+    return {"questions": [_kept({"question_id": q.id, "year_start": q.year_start.isoformat(), "kind": q.kind,
+                                 "text": q.text, "why": q.why, "status": q.status, "answer": q.answer,
+                                 "row_ids": q.row_ids, "asked_by": q.source, "asked_at": q.created_at,
+                                 "offer": q.offer.model_dump(mode="json", by_alias=True) if q.offer else None})
+                          for q in asked]}
+
+
+_ANSWER_TO = re.compile(r'^Answer to ".*?":\s*', re.DOTALL)
+
+
+def _own_words(text: str) -> str:
+    """A message without the question it quotes: a card's answer is sent as 'Answer to "<question>": <words>', and a
+    reply may quote the question in lines starting "> "."""
+    text = _ANSWER_TO.sub("", text.strip())
+    return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith(">")).strip()
+
+
+def person_said(state) -> list[str]:
+    """The person's own words in the chat so far: the app's notes in the chat's memory are not theirs, nor the
+    question a reply quotes."""
+    messages = (state or {}).get("messages", []) if isinstance(state, dict) else getattr(state, "messages", [])
+    return [_own_words(m.content if isinstance(m.content, str) else str(m.content)) for m in messages
+            if isinstance(m, HumanMessage) and not (m.additional_kwargs or {}).get("note")]
 
 
 def changes(deps: AgentDeps, ctx: ChatContext, when: Optional[str] = None, limit: int = 50) -> dict:
@@ -404,12 +429,15 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
         return _out(result)
 
     @tool
-    def list_documents(runtime: ToolRuntime[ChatContext]) -> dict:
+    def list_documents(runtime: ToolRuntime[ChatContext],
+                       year_start: Annotated[Optional[dt.date], Field(description=(
+                           "Another year's documents, by the year's first day (last year's invoices for an opening "
+                           "balance question); the chat's year when left out."))] = None) -> dict:
         """The year's documents: each upload's id, file name, kind, how many rows were read from it, and for a bank
         statement whether its lines agree with the balances it prints. list_rows with an upload_id gives its rows."""
         ctx = runtime.context
         _step(runtime, "Listing the documents…")
-        uploads = books.ledger(store, ctx.client_id, ctx.year_start).uploads
+        uploads = books.ledger(store, ctx.client_id, year_start or ctx.year_start).uploads
         result = {"documents": [_kept({"upload_id": u.id, "name": u.name, "kind": u.kind, "rows": u.rows,
                                        "added": u.created_at, "bank_account": u.bank_account,
                                        "statement_check": _kept(u.statement.model_dump()) if u.statement else None})
@@ -584,6 +612,46 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
         return _out({"decision_id": decision.id, "status": decision.status, "rule": decision.rule})
 
     @tool
+    def offer_answer(question_id: Annotated[str, Field(description="A books question (asked_by rules) of kind "
+                                                                    "opening_vat, opening_prepayments, "
+                                                                    "opening_accruals or bad_debt.")],
+                     answer: Annotated[questions.OfferedAnswer, Field(description=(
+                         "The answer: {kind: split, lines: [{account, amount}]} for the VAT difference or an opening "
+                         "balance, the lines adding up to the question's amount; {kind: write_off, date} for a bad "
+                         "debt (date left out: when its six months end)."))],
+                     sources: Annotated[list[OfferSource], Field(min_length=1, description=(
+                         "Where each part comes from. At least one {kind: said, quote} quoting the person's own "
+                         "words in this chat. {kind: document, upload_id, quote, for: 'line:<n>' or 'date', working} "
+                         "for a figure from one of the client's documents (any year), with how you worked it out. "
+                         "{kind: question} when a figure is the question's own amount or the default date."))],
+                     reason: Annotated[str, Field(min_length=1, max_length=300,
+                                                  description="Why this is the answer, in a sentence the person reads.")],
+                     runtime: ToolRuntime[ChatContext]) -> dict:
+        """Fills in the answer card of one of the books' own questions (the VAT difference, the opening prepayments
+        or accruals, a bad debt) from what the person said in this chat, for them to change or confirm. Use it when
+        their words, with the documents, settle the answer: quote their words, and work out any amounts from
+        documents you quote, saying how. Nothing is booked: the books check it as they check the card's answer and
+        refuse what they would refuse, saying why. It is refused in a background review. The person confirms on the
+        card: never say it is booked."""
+        ctx = runtime.context
+        if ctx.trigger != "chat":
+            _step(runtime, "Didn't fill in the answer", "failed", "Only a person in a chat can answer.")
+            return {"status": "refused", "why": "Only a person in a chat can answer a books question: offer_answer "
+                                                "fills in an answer from their words, so it isn't used in a review."}
+        _step(runtime, "Filling in the answer…")
+        try:
+            with deps.locks.hold(ctx.client_id):
+                made = questions.offer(store, records, client_id=ctx.client_id, thread_id=ctx.thread_id,
+                                       question_id=question_id, answer=answer, sources=sources, reason=reason,
+                                       texts=texts(ctx.client_id), said=person_said(runtime.state), actor=actor)
+        except InvalidInput as exc:
+            _step(runtime, "Didn't fill in the answer", "failed", exc.message)
+            return {"status": "refused", "why": exc.message}
+        _step(runtime, "Filled in the answer for the person to confirm", "done")
+        return {"status": "offered", "question_id": made.id,
+                "note": "Filled in on the question's card: the person confirms it there. Nothing is booked yet."}
+
+    @tool
     def list_questions(runtime: ToolRuntime[ChatContext]) -> dict:
         """The questions still open on the client's year, from this chat or earlier ones: what each asks and why,
         its rows, whether it is open or waiting (the person said "I don't have it" or "Not sure"), and who asked it
@@ -687,5 +755,5 @@ def make_tools(deps: AgentDeps, actor: str) -> list[BaseTool]:
     # hand_over is the specialists' own: the lead accountant is never offered it (specialists.PROFILES).
     return [get_overview, list_issues, list_rows, get_row, list_documents, read_document, resolve_issue, edit_row,
             ask_user,
-            close_question, list_questions, list_decisions, list_changes, get_trial_balance, get_vat_figures,
+            close_question, offer_answer, list_questions, list_decisions, list_changes, get_trial_balance, get_vat_figures,
             hand_over]

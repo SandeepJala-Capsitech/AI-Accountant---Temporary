@@ -3,9 +3,11 @@ up to date for every open year, under the client's lock."""
 import logging
 from contextlib import contextmanager
 from datetime import date
+from decimal import Decimal
 
 import pytest
-from helpers import acme_two_years, acme_with_a_non_gbp_row, acme_with_year_one, add_rows  # noqa: F401
+
+from helpers import acme_two_years, acme_with_a_non_gbp_row, acme_with_year_one, add_rows, row  # noqa: F401
 from test_questions import trainline_invoice, travel_line
 
 from ledgersync import books, ledger_book, upkeep
@@ -181,3 +183,15 @@ def test_settling_a_year_that_is_up_to_date_reads_the_client_once(store, records
             reads.append(self.name) if self.name == "clients" else None) or _real(self, *a, **k))
     upkeep.settle(store, records, acme, YEAR_1)
     assert reads == ["clients"]
+
+
+def test_a_row_to_fix_in_an_earlier_year_does_not_stop_the_next_year_posting(store, records, locks,
+                                                                            acme_with_a_non_gbp_row):
+    # The agency's Tallgrass invoice of May 2023, read in dollars, stopped the year to March 2025 posting at all:
+    # working out its questions needs its opening balances, which raised "Fix the earlier years first", and settling
+    # gave up before posting (agency run, 25 Nov 2026). The year's own rows post; its questions wait for the fix.
+    add_rows(store, acme_with_a_non_gbp_row,
+             row(date=date(2026, 5, 1), gross=Decimal("25.00"), account_code="7502"))
+    out = upkeep.after_change(store, records, locks, change(acme_with_a_non_gbp_row), today=TODAY)
+    assert YEAR_2 in out and out[YEAR_2].batch_id is not None
+    assert batches(records, acme_with_a_non_gbp_row, YEAR_2) == 1

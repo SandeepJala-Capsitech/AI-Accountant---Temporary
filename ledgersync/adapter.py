@@ -346,28 +346,43 @@ def to_transactions(rows: list[dict], source: str, settings: BusinessSettings, o
                          opening_balance=to_money(opening_balance) if statement else None,
                          closing_balance=to_money(closing_balance) if statement else None)
         result.append(normalise(tx, settings))
-    return _with_payroll_total(_with_payroll_people(result, printed, settings, text), settings)
+    return _with_payroll_total(_with_payroll_people(result, printed, settings, text), settings, printed)
 
 
 _OWN_PAY = {"7000", "7001"}   # an employee's own pay, tax and pension: not the employer's NI or pension
 
 
-def _with_payroll_total(rows: list[Transaction], settings: BusinessSettings) -> list[Transaction]:
+def _with_payroll_total(rows: list[Transaction], settings: BusinessSettings,
+                        figures: Optional[set[Decimal]] = None) -> list[Transaction]:
     """A payroll report's pay, tax and pension lines (_OWN_PAY) add up to the total gross pay it prints (their
     document_total): when they don't, a figure was read or added up wrong (the model adds several people's net pay into
-    one line), and the first of them says so."""
+    one line), and the first of them says so. When they do, that total confirms the lines the model added up from each
+    person's figures, so none is worked out. With no document_total, a figure the report prints (figures) that the
+    lines add up to confirms them the same way."""
     pay = [n for n, tx in enumerate(rows) if tx.document_type == "payroll" and tx.account_code in _OWN_PAY]
     totals = {rows[n].document_total for n in pay}
+    gross = sum((rows[n].gross for n in pay), Decimal("0.00"))
+    if pay and totals == {None} and figures and gross in figures:
+        return _confirmed(rows, pay, settings)
     if not pay or len(totals) != 1 or None in totals:
         return rows
-    printed, gross = totals.pop(), sum((rows[n].gross for n in pay), Decimal("0.00"))
+    printed = totals.pop()
     if gross == printed:
-        return rows
+        return _confirmed(rows, pay, settings)
     first = rows[pay[0]]
     said = issue("payroll_total", f"The pay, tax and pension lines add up to £{gross:,.2f}; the payroll report's total "
                                   f"gross pay is £{printed:,.2f}. Check each amount against the report.")
     checked = list(rows)
     checked[pay[0]] = normalise(first.model_copy(update={"issues": first.issues + [said]}), settings)
+    return checked
+
+
+def _confirmed(rows: list[Transaction], pay: list[int], settings: BusinessSettings) -> list[Transaction]:
+    """The pay lines, their sum confirmed by the report's printed total: none is a worked-out figure to check."""
+    checked = list(rows)
+    for n in pay:
+        if rows[n].total_worked_out:
+            checked[n] = normalise(rows[n].model_copy(update={"total_worked_out": False}), settings)
     return checked
 
 

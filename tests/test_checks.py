@@ -801,8 +801,8 @@ def test_groceries_from_a_food_shop_are_the_claimants_own_food_and_ask_nothing()
 def test_what_was_bought_says_who_it_was_for_as_an_accountant_reads_it():
     # Groceries, or food or a drink to go for one, are the buyer's own; a sit-down meal, a round at the bar or a
     # group order for several, or one whose numbers aren't known, may have had guests: asked.
-    own = [{"bought": "groceries", "people": "several"}, {"bought": "food_to_go"}, {"bought": "food_to_go", "people": "one"},
-           {"bought": "meal_out", "people": "one"}]
+    own = [{"bought": "groceries", "people": "several", "claim_note": "Jenny Hogg claiming groceries"},
+           {"bought": "food_to_go"}, {"bought": "food_to_go", "people": "one"}, {"bought": "meal_out", "people": "one"}]
     for kw in own:
         assert meal(**kw) == [("meal_decided", "info")], kw
     for kw in ({"bought": "food_to_go", "people": "several"}, {"bought": "meal_out"}, {"bought": "drinks_out"},
@@ -811,6 +811,32 @@ def test_what_was_bought_says_who_it_was_for_as_an_accountant_reads_it():
     t = normalise(tx(gross="4.20", account="7406", bought="food_to_go"), REGISTERED)
     assert t.issues[0].message == ("Food or a drink to go: the buyer's own while working, on Subsistence, unless "
                                    "something says others had some.")
+
+
+def test_groceries_the_company_paid_for_ask_whose_they_were_at_any_amount():
+    # The paid run of 25 Nov 2026: a director's household shop on the company card (£35.65 at a supermarket) went to
+    # Subsistence as "the claimant's own food while working", though no one claimed it. On a claim the claimant
+    # bought it; paid by the company, it may be a director's own shopping, the office's, or a trip's (user, 25 Nov).
+    t = normalise(tx(gross="35.65", account="7406", bought="groceries", counterparty="Harbour Fresh Market",
+                     description="Harbour Fresh Market – fruit and vegetables, pasta, wine"), REGISTERED)
+    [asked] = t.issues
+    assert (asked.code, asked.severity, asked.difference) == ("meal_check", "warning", None)   # at any amount
+    assert "director's loan" in asked.message and "Staff Welfare" in asked.message
+    office = normalise(tx(gross="6.40", account="8205", bought="groceries", counterparty="Tesco",
+                          description="Tesco, milk, tea bags and biscuits for the studio"), REGISTERED)
+    assert "meal_check" not in [c for c, _ in codes(office)]   # its words say the workplace
+    claimed = normalise(tx(gross="35.65", account="7406", bought="groceries", counterparty="Harbour Fresh Market",
+                           description="Harbour Fresh Market – fruit and vegetables, pasta, wine",
+                           claim_note="Omar Kestrel claiming groceries"), REGISTERED)
+    assert codes(claimed) == [("meal_decided", "info")]
+
+
+def test_a_deli_lunch_the_company_paid_for_is_still_the_buyers_own():
+    # The preview of 25 Nov 2026: the reader calls a deli's or bakery's "Food and drink" groceries, so 43 lunches on
+    # the agency's card (£960) asked whose they were. Only a household shop is asked: its receipt shows it.
+    lunch = normalise(tx(gross="38.38", account="7406", bought="groceries", counterparty="Gantry Deli",
+                         description="Gantry Deli – Food and drink"), REGISTERED)
+    assert codes(lunch) == [("meal_decided", "info")]
 
 
 def test_the_reader_saying_what_was_bought_comes_before_the_shops_name():
@@ -1035,6 +1061,9 @@ def test_equipment_under_the_clients_threshold_is_booked_as_a_cost():
         kept = normalise(equipment(gross, vat, account), POLICY)
         assert kept.account_code == account and not [i for i in kept.issues if i.code in ("small_asset",
                                                                                           "under_capitalisation")]
+        # small_asset is a presentation question, kept apart until materiality decides: the paid run of 25 Nov 2026
+        # still asked "small to keep as Office Equipment" of both.
+        assert presented(kept) == [], gross
 
 
 def test_without_vat_registration_the_threshold_is_on_the_whole_price():

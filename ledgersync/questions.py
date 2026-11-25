@@ -22,12 +22,13 @@ from .checks import booked, long_date
 from .errors import InvalidInput, NotFound
 from .evidence_rules import document_rule
 from .ledger import settings_for
-from .models import (ChangeDraft, Decision, DecisionDraft, Evidence, Ledger, ManualUpload, PostResult, Question,
-                     QuestionDraft, RowPatch, Transaction)
+from .models import (ChangeDraft, Decision, DecisionDraft, Evidence, Ledger, ManualUpload, Offer, OfferSource,
+                     PostResult, Question, QuestionDraft, RowPatch, Transaction)
 from .money import ZERO
 from .payees import processor
 from .records import AgentRecords
-from .resolutions import Texts, check_quotes, set_date
+from .resolutions import _SHORTEST_QUOTE, Texts, _normalised, check_quotes, set_date
+from .rows import now_iso
 from .store_mongo import MongoStore
 
 _OVER = {"receipt_or_invoice": "£50 or more", "vat_invoice": "Over £250"}
@@ -219,10 +220,18 @@ def _wanted(store: MongoStore, client_id: int,
     # uploaded is not a bad debt. No statement at all: none can be told unpaid.
     statements = [t.date for t in built.transactions if booked(t) and t.document_type == "statement" and t.date]
     by = min(dt.date.today(), built.year.end, max(statements)) if statements else None
+    # A question about the books brought in, or a debt gone bad, is asked in one year: the earliest open year it
+    # arises in. Its key names no year, so a later year asking it too would take it over (the opening's
+    # prepayments, never released while unanswered, are carried into every later year).
+    closed = {c.start for c in built.client.closed_years}
+    first_open = min((y.start for y in books.years_of(store, client_id, dt.date.today()) if y.start not in closed),
+                     default=year_start)
     seen: set[str] = set()
     for tx in _sales_owed(store, client_id, built) if by else []:
         ref = tx.document_ref or f"row-{tx.id}"
         overdue = _overdue_from(tx)
+        if overdue is not None and overdue < year_start and first_open <= overdue:
+            continue   # it went bad in an earlier year still open: asked there
         if overdue is not None and overdue <= by and ref not in seen:
             seen.add(ref)
             want(tx, "bad_debt", f"Write off the {_gbp(tx.owed)} {tx.counterparty or 'the customer'} owes as a bad "
@@ -230,6 +239,8 @@ def _wanted(store: MongoStore, client_id: int,
                  f"Invoice {tx.document_number or tx.description} of {long_date(tx.date)} is unpaid more than six "
                  "months after it fell due. Written off, it is a cost (Bad Debts), and the VAT on it can be claimed "
                  "back as VAT bad debt relief.")
+    if year_start != first_open:
+        return wanted, built
     vat = _vat_difference(store, client_id, year_start, built)
     if vat is not None:
         payment, owed, left = vat
@@ -288,6 +299,7 @@ _PERSON_CHANGES = frozenset({"row_edited", "row_removed", "row_reverted", "row_l
 CHANGED_SINCE = "You changed this row after it was asked."
 ROWS_GONE = "Its row is no longer in the books."
 SAID_APART = "You said these are not the same."
+PAIRED_SINCE = "The papers it waited for came in later, and the books now pair each of its rows with them."
 
 
 def _partners(rows) -> dict[int, set[int]]:
@@ -313,7 +325,9 @@ def _close_answered(store: MongoStore, records: AgentRecords, client_id: int, ye
     """Resolves the year's open and waiting questions of the agent's that the books have moved past: none of its
     rows is in the books any more (removed, left out or replaced), a person said two of its rows are not the same
     (whenever they said it: a review that read the books just before may ask after), or a person changed one of them
-    after it was asked. A question about no row is left alone. Each closing is recorded as a change."""
+    after it was asked, or every one of its rows is now paired with a record uploaded after it was asked (the card
+    statement a question about receipts waited for). A question about no row is left alone. Each closing is recorded
+    as a change."""
     asked = [q for q in records.questions(client_id, year_start) if q.source == "agent" and q.row_ids]
     if not asked:
         return
@@ -322,7 +336,19 @@ def _close_answered(store: MongoStore, records: AgentRecords, client_id: int, ye
     apart = {frozenset((r.id, other)) for r in rows for other in r.tx.apart_from}   # Not the same, by pair
     theirs = [c for c in records.changes(client_id, since=min(q.created_at for q in asked), limit=1000)
               if c.actor == "user" and c.kind in _PERSON_CHANGES]
-    partners = _partners(books.all_rows(store, client_id)) if theirs else {}
+    uploaded = {u["id"]: u["created_at"] for u in store.uploads(client_id)}
+    first = min(q.created_at for q in asked)
+    # Matching every row is the costly part: only when a person changed something, or papers came in, since.
+    partners = (_partners(books.all_rows(store, client_id))
+                if theirs or any(when > first for when in uploaded.values()) else {})
+    row_upload = {r.id: r.upload_id for r in rows}
+
+    def paired_since(q) -> bool:
+        """Each of the question's rows still in the books has a partner from an upload added after it was asked."""
+        kept = [n for n in q.row_ids if n in in_books]
+        return bool(kept) and all(any(uploaded.get(row_upload.get(p), "") > q.created_at
+                                      for p in partners.get(n, ())) for n in kept)
+
     for q in asked:
         # The rows the question is about, and the other record of each (a claim line's receipt, a bill's bank line):
         # a question about one of a pair is answered by a change to either.
@@ -333,6 +359,8 @@ def _close_answered(store: MongoStore, records: AgentRecords, client_id: int, ye
             said = SAID_APART
         elif any(c.created_at > q.created_at and set(c.row_ids) & about for c in theirs):
             said = CHANGED_SINCE
+        elif paired_since(q):
+            said = PAIRED_SINCE
         else:
             continue
         records.set_question(q.id, "resolved", said)
@@ -452,7 +480,93 @@ def answer(store: MongoStore, records: AgentRecords, *, client_id: int, thread_i
     return Answered(records.questions(client_id, q.year_start), posts[0])
 
 
-def _write_off(store: MongoStore, client_id: int, q: Question, answer: WriteOffAnswer) -> str:
+# An answer the agent may offer for the person to confirm: a split or a write-off.
+OfferedAnswer = Annotated[Union[SplitAnswer, WriteOffAnswer], Field(discriminator="kind")]
+
+# The books questions whose answer is a choice the agent may fill in for the person to confirm (offer).
+OFFERABLE = frozenset({"opening_vat", "opening_prepayments", "opening_accruals", "bad_debt"})
+
+
+def check_answer(store: MongoStore, client_id: int, q: Question, answer: Answer) -> Optional[str]:
+    """What answering the question so would be refused with, or None: the answer service's own checks, run without
+    booking anything. Only the answers that are a choice (a split, a write-off) can be checked so."""
+    try:
+        if isinstance(answer, WriteOffAnswer):
+            _write_off(store, client_id, q, answer, dry=True)
+        elif isinstance(answer, SplitAnswer):
+            (_release_vat if q.kind == "opening_vat" else _release)(store, client_id, q, answer, dry=True)
+        else:
+            return "Only a split or a write-off can be checked."
+    except InvalidInput as exc:
+        return exc.message
+    return None
+
+
+def offer(store: MongoStore, records: AgentRecords, *, client_id: int, thread_id: str, question_id: str,
+          answer: Union[SplitAnswer, WriteOffAnswer], sources: list[OfferSource], reason: str, texts: Texts,
+          said: list[str], actor: str) -> Question:
+    """Keeps an answer to a books question that the agent filled in from what the person said in this chat, for them
+    to change or confirm on the question's card: nothing is booked here. It must rest on the person's own words
+    (a said source quoting said, their messages in the chat), pass the answer service's checks (check_answer), and
+    every line, and the write-off date, needs a source: the person's words, a document of the client's (any of its
+    uploads, the quote in its text) or the question itself (its amount, the default date). Refused with
+    InvalidInput saying why. Offered again, it replaces the earlier offer; each is recorded as a change."""
+    q = records.question(question_id)
+    if q is None or q.client_id != client_id:
+        raise NotFound("This question was not found.")
+    if q.source != "rules" or q.kind not in OFFERABLE:
+        raise InvalidInput("This isn't a books question that takes an answer: only the VAT difference, the opening "
+                           "prepayments or accruals and a bad debt do.")
+    if q.status == "resolved":
+        raise InvalidInput("This question is already answered.")
+    if (problem := check_answer(store, client_id, q, answer)) is not None:
+        raise InvalidInput(problem)
+    if not any(s.kind == "said" for s in sources):
+        raise InvalidInput("An offer needs the person's own words in this chat: quote what they said.")
+    heard = _normalised(" ".join(said))
+    for s in sources:
+        if s.kind != "said":
+            continue
+        if len("".join(s.quote.split())) < _SHORTEST_QUOTE:
+            raise InvalidInput(f"\"{s.quote}\" is too short to show anything: quote {_SHORTEST_QUOTE} characters or "
+                               "more of what the person said.")
+        if _normalised(s.quote) not in heard:
+            raise InvalidInput(f"\"{s.quote}\" isn't in what the person said in this chat.")
+    uploads = {u["id"]: u["name"] for u in store.uploads(client_id)}
+    for s in sources:
+        if s.kind != "document":
+            continue
+        if s.upload_id not in uploads:
+            raise InvalidInput(f"Upload {s.upload_id} isn't one of the client's documents.")
+        if len("".join(s.quote.split())) < _SHORTEST_QUOTE:
+            raise InvalidInput(f"\"{s.quote}\" is too short to show anything: quote {_SHORTEST_QUOTE} characters or "
+                               "more.")
+        if _normalised(s.quote) not in _normalised(" ".join(texts(s.upload_id) or [])):
+            raise InvalidInput(f"\"{s.quote}\" isn't in {uploads[s.upload_id]}.")
+    parts = ([f"line:{n}" for n in range(1, len(answer.lines) + 1)] if isinstance(answer, SplitAnswer) else ["date"])
+    for s in sources:
+        if s.kind == "document" and s.for_ not in parts:
+            raise InvalidInput(f"The quote from {uploads[s.upload_id]} names no line or date of this answer: say "
+                               f"which it backs ({', '.join(parts)}).")
+    from_question = any(s.kind == "question" for s in sources)
+    for part in parts:
+        # The question's own figure is the whole amount (or the default date): it backs a split of one line only.
+        own = from_question and (len(parts) == 1 if isinstance(answer, SplitAnswer) else answer.date is None)
+        backed = own or any(s.for_ == part for s in sources) or (part == "date" and answer.date is None)
+        if not backed:
+            raise InvalidInput(f"{part.replace(':', ' ')} has no source: quote what it comes from, or say it is the "
+                               "question's own figure.")
+    named = [s.model_copy(update={"upload_name": uploads.get(s.upload_id, "")}) if s.kind == "document" else s
+             for s in sources]
+    made = records.set_offer(q.id, Offer(answer=answer.model_dump(mode="json"), sources=named, reason=reason.strip(),
+                                         thread_id=thread_id, offered_at=now_iso(), offered_by=actor))
+    records.add_change(ChangeDraft(client_id=client_id, year_start=q.year_start, actor=actor, kind="question_offered",
+                                   row_ids=list(q.row_ids), after={"offer": made.offer.model_dump(mode="json", by_alias=True)},
+                                   summary=f"Offered an answer to: {q.text}", in_chat=True))
+    return made
+
+
+def _write_off(store: MongoStore, client_id: int, q: Question, answer: WriteOffAnswer, *, dry: bool = False) -> str:
     """Adds the row that writes off what is still owed on the question's invoice as a bad debt, with the VAT on it as
     relief (checks books it only when the client was VAT registered); what the person said."""
     if q.kind != "bad_debt" or not q.row_ids:
@@ -469,6 +583,8 @@ def _write_off(store: MongoStore, client_id: int, q: Question, answer: WriteOffA
     if day < overdue:
         raise InvalidInput(f"Bad debt relief can be claimed from {long_date(overdue)}, six months after the invoice "
                            "fell due: choose that day or later.")
+    if dry:
+        return ""
     parts = [t for t in books.all_rows(store, client_id) if booked(t) and (t.document_ref or f"row-{t.id}") == (tx.document_ref or f"row-{tx.id}")]
     gross = sum((t.gross for t in parts), ZERO)
     vat = sum((t.vat_posted or ZERO for t in parts), ZERO)
@@ -481,7 +597,7 @@ def _write_off(store: MongoStore, client_id: int, q: Question, answer: WriteOffA
     return f"Written off on {long_date(day)}: {_gbp(tx.owed)}"
 
 
-def _release_vat(store: MongoStore, client_id: int, q: Question, answer: SplitAnswer) -> str:
+def _release_vat(store: MongoStore, client_id: int, q: Question, answer: SplitAnswer, *, dry: bool = False) -> str:
     """Posts the journal of a VAT payment's difference from the VAT owed brought forward, on the payment's day."""
     built = books.ledger(store, client_id, q.year_start)
     found = _vat_difference(store, client_id, q.year_start, built)
@@ -495,6 +611,8 @@ def _release_vat(store: MongoStore, client_id: int, q: Question, answer: SplitAn
     total = sum((line.amount for line in answer.lines), ZERO)
     if total != abs(left):
         raise InvalidInput(f"The lines add up to {_gbp(total)}; the difference is {_gbp(abs(left))}.")
+    if dry:
+        return ""
     more = left > ZERO   # paid more: Dr the account, Cr VAT Liability; paid less: the other way
     journals = [Transaction(date=payment.date, direction="out", gross=line.amount, document_type="journal",
                             description=f"VAT payment's difference from the VAT owed: {BY_CODE[line.account].name}",
@@ -506,7 +624,7 @@ def _release_vat(store: MongoStore, client_id: int, q: Question, answer: SplitAn
                                     for line in answer.lines)
 
 
-def _release(store: MongoStore, client_id: int, q: Question, answer: SplitAnswer) -> str:
+def _release(store: MongoStore, client_id: int, q: Question, answer: SplitAnswer, *, dry: bool = False) -> str:
     """Posts the journals that release an opening prepayment or accrual to the costs the answer gives, on the year's
     first day; what the person said. The lines must add up to what is still to be released."""
     if q.kind not in _OPENING:
@@ -522,6 +640,8 @@ def _release(store: MongoStore, client_id: int, q: Question, answer: SplitAnswer
     total = sum((line.amount for line in answer.lines), ZERO)
     if total != left:
         raise InvalidInput(f"The lines add up to {_gbp(total)}; the opening {word} still to release are {_gbp(left)}.")
+    if dry:
+        return ""
     journals = [Transaction(date=q.year_start, direction="out", gross=line.amount, document_type="journal",
                             description=f"Opening {word} released: {BY_CODE[line.account].name}",
                             account_code=line.account if sign > 0 else code,

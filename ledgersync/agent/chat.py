@@ -493,6 +493,11 @@ class Chat:
                 post = self._write(thread, since)
         open_now = self.records.questions(thread.client_id, thread.year_start)
         raised = open_now if "list_questions" in called else [q for q in open_now if q.id not in before]
+        # An answer the agent filled in this turn, for the person to confirm on its card: shown whatever its year.
+        offered = [q for q in self.records.questions(thread.client_id, None)
+                   if q.offer is not None and q.offer.thread_id == thread.id and q.offer.offered_at >= since.at
+                   and q.id not in {r.id for r in raised}]
+        raised = raised + offered
         wrote = post.batch_id is not None
         result = TurnResult(
             sorted=sorted_since(self.records, thread, since), questions=raised,

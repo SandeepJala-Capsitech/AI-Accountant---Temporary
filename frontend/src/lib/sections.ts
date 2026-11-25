@@ -262,10 +262,12 @@ export interface Ageing { total: number; upTo30: number; upTo60: number; upTo90:
 export const daysOld = (date: string | null, asAt: string): number | null =>
   (date ? Math.max(0, Math.round((Date.parse(asAt) - Date.parse(date)) / 86400000)) : null)
 
-export function ageing(invoices: InvoiceSummary[], asAt: string): Ageing {
+// Once the year has ended (atYearEnd), what was owed on its last day, as its Debtors and Creditors hold it: an
+// invoice paid since was still owed then.
+export function ageing(invoices: InvoiceSummary[], asAt: string, atYearEnd = false): Ageing {
   const found: Ageing = { total: 0, upTo30: 0, upTo60: 0, upTo90: 0, over90: 0 }
   for (const invoice of invoices) {
-    const owed = pence(invoice.owed) * (invoice.credit_note ? -1 : 1)
+    const owed = pence(atYearEnd ? invoice.owed_at_year_end : invoice.owed) * (invoice.credit_note ? -1 : 1)
     if (!owed) continue
     const days = daysOld(invoice.date, asAt)
     found.total += owed

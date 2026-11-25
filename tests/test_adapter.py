@@ -619,6 +619,23 @@ def test_payroll_pay_lines_that_do_not_add_up_to_the_printed_total_gross_are_fla
     assert not [i for t in right for i in t.issues if i.code == "payroll_total"]
 
 
+def test_pay_lines_that_add_up_to_the_printed_total_gross_need_no_checking_one_by_one():
+    # The paid run of 25 Nov 2026: the reader added each month's pay lines up from every person's figures and gave no
+    # document total, so each line said "The payroll doesn't print £2,095.00: it was worked out ... Check it against
+    # the document": 42 warnings in the year, though the report's printed total gross pay confirmed them.
+    text = ("Hannah Finch £1,047.50 £0.00 £0.00 £39.95 ... Leah Morgan £4,333.33 £620.20 £379.81 £493.40 £183.45 "
+            "£110.07 £3,149.87 Total gross pay £18,178.33")
+
+    def lines(employees_net):
+        return [dict(row, document_total=None) for row in january_payroll(employees_net)]
+
+    right = to_transactions(lines(12308.99), source="text", settings=BusinessSettings(), text=text)
+    pay = [t for t in right if t.account_code in ("7000", "7001")]
+    assert len(pay) == 4 and not [i for t in pay for i in t.issues if i.code == "total_worked_out"]
+    wrong = to_transactions(lines(12309.00), source="text", settings=BusinessSettings(), text=text)
+    assert any(i.code == "total_worked_out" for t in wrong if t.account_code == "7000" for i in t.issues)
+
+
 OKAFOR = dict(ROW, direction="out", document_type="invoice", counterparty="D Okafor Bricklaying", document_number="17",
               document_total=1000.0, document_net=1200.0, not_vat_invoice=True, cis_deducted=200.0)
 OKAFOR_TEXT = ("Labour 1,000.00\nMaterials 200.00\nInvoice total 1,200.00\n"

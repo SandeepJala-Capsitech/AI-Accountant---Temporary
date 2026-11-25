@@ -7,13 +7,13 @@ import re
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional, Sequence
 
-from .accounts import (ASSET_CANDIDATES, BY_CODE, CAPITALS, CARDS, CREDITORS, DEBTORS, DIRECTORS_LOANS, DIVIDENDS,
+from .accounts import (ASSET_CANDIDATES, BY_CODE, CAPITALS, CARDS, CLEARING, CREDITORS, DEBTORS, DIRECTORS_LOANS, DIVIDENDS,
                        HALF_VAT_RECLAIMED, HOTELS, SMALL_EQUIPMENT_COST, MEMBERS_CURRENT, OWNER_DRAWINGS, OWNER_WORDS, SHARES, owner_codes, owner_slots,
                        NET_WAGES, PAYE, PENSION, PURCHASE_VAT, SALES_VAT, STAFF_EXPENSES, SUSPENSE, WAGES, Account,
                        AccountType)
 from .models import NOT_TRANSACTIONS, BusinessSettings, Direction, Issue, Transaction
 from .money import PENNY, ZERO, VatTreatment, vat_in_gross
-from .payees import personal
+from .payees import personal, processor
 
 _NO_VAT = {AccountType.LIABILITY, AccountType.EQUITY}
 # Issues matching.match adds; listed here so validating again replaces them instead of adding copies.
@@ -247,6 +247,12 @@ def _who_was_there(tx: Transaction) -> Optional[tuple[str, Optional[Decimal]]]:
     words = f"{tx.description or ''} {tx.claim_note or ''}"
     staff, guests = bool(_STAFF.search(words)), bool(_GUESTS.search(words))
     amount = f"£{tx.gross:,.2f}"
+    if _groceries(tx) and _company_bought(tx) and not (staff or guests or _WORKPLACE.search(words)):
+        # Asked at any amount: an owner's own shopping is theirs, not a cost (user's decision, 25 Nov 2026). Milk and
+        # tea "for the studio" say whose they were.
+        return (f"Groceries of {amount} paid by the business, not on anyone's expense claim: whose were they? An "
+                "owner's own shopping is theirs (a director's loan, or the owner's drawings); for the workplace it is "
+                "Refreshments or Staff Welfare (VAT reclaimed); bought on a business trip, Subsistence. Recode it."), None
     choices = ("for staff only it is Staff Welfare (VAT reclaimed); with clients or other guests it is Entertainment "
                "(VAT can't be reclaimed). Recode it if so.")
     if tx.account_code == SUBSISTENCE:
@@ -285,11 +291,26 @@ def _groceries(tx: Transaction) -> bool:
     return bool(_PROVISIONS.search(f"{tx.counterparty or ''} {tx.description or ''}"))
 
 
+# What a household shop's receipt shows and a lunch's doesn't: cleaning, raw food to cook, drink to take home.
+_HOUSEHOLD = re.compile(r"\b(household|cleaning|detergent|toiletr\w*|washing|nappies|pet food|wine|beer|lager|"
+                        r"spirits|vegetables|veg|meat|fish|pasta|rice|tins|cereal|eggs|milk)\b", re.IGNORECASE)
+
+
+def _company_bought(tx: Transaction) -> bool:
+    """Whether the company paid for a household shop itself (its card or bank), not someone claiming it back: then
+    no claimant says whose it was. A deli's or bakery's food and drink, which the reader also calls groceries, is a
+    lunch: the buyer's own while working, as before."""
+    return (tx.document_type in ("receipt", "invoice") and tx.claimed_in is None and not tx.claim_note
+            and bool(_HOUSEHOLD.search(f"{tx.description or ''}")))
+
+
 def _own_food(tx: Transaction) -> Optional[str]:
     """Why food or drink was the buyer's own, as an accountant reads what was bought and for how many; None when
     that leaves open whether others had some. Groceries are the buyer's own whoever ate them (nobody entertains with
     a shop's groceries); so is one person's food or drink, and food or a drink to go not said to be for several."""
     if _groceries(tx):
+        if _company_bought(tx):   # no claimant: whose they were is asked (_who_was_there)
+            return None
         return ("Groceries from a food shop: the claimant's own food while working, on Subsistence. Nobody "
                 "entertains clients or treats staff with a shop's groceries.")
     if tx.people == "one":
@@ -362,13 +383,14 @@ def other_side(tx: Transaction, settings: BusinessSettings) -> str:
     account or card its statement is for, anything else through the default bank. An invoice,
     a claim or an included document is owed until a bank line pays it: a sale to the customer's account
     (Debtors), anything else to the supplier's (Creditors), and a claim to the employee. What an agent
-    collected and paid for the business is held by the agent (Debtors) until it pays over the net."""
+    collected and paid for the business is held by the agent (Debtors) until it pays over the net; what a payment
+    processor holds (Stripe, PayPal, SumUp) in Payment Processor Clearing, as its payout is: the customers have paid."""
     if tx.document_type == "expense_claim":
         return STAFF_EXPENSES
     if tx.document_type == "write_off":   # what the customer owed comes off Debtors
         return DEBTORS
     if tx.document_type == "agent_statement":
-        return DEBTORS
+        return CLEARING if processor(tx.agent) else DEBTORS
     if tx.document_type == "payroll":   # never the bank: the bank payment clears what is owed
         return OWED_TO.get(tx.owed_to) or {"7006": PAYE, "7007": PENSION}.get(tx.account_code, NET_WAGES)
     if tx.document_type == "invoice" or tx.document_type in NOT_TRANSACTIONS:
@@ -690,8 +712,8 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
                                                     "account to keep it as an asset.", "info"))
         account = cost
     whole = max(tx.gross, tx.document_total or ZERO)   # the purchase it is part of
-    if (purchase and account.type == AccountType.ASSET and account.code.startswith("00")
-            and account.vat != VatTreatment.OUTSIDE_SCOPE):
+    if (purchase and account.type == AccountType.ASSET and account.code.startswith("00") and not settings.capitalise_from
+            and account.vat != VatTreatment.OUTSIDE_SCOPE):   # with a capitalisation policy, the policy decides
         issues.append(issue("small_asset", f"£{tx.gross:,.2f} is small to keep as {account.name} for this client: "
                                            "write it off as a cost. Recode it to the cost account of its kind, unless "
                                            "it is part of a bigger purchase.", difference=whole))

@@ -604,7 +604,7 @@ def _total_and_date(rows: list[Transaction]) -> tuple[Decimal, Optional[dt.date]
 
 def _invoices(b: _Books, n: int) -> list[InvoiceSummary]:
     ready, statuses = _matched(b, b.settings_in(n))
-    start = b.years[n].start
+    start, end = b.years[n].start, b.years[n].end
     refs: dict[str, list[int]] = defaultdict(list)
     for k, tx in enumerate(ready):
         if tx.document_type == "invoice" and booked(tx) and tx.claimed_in is None:
@@ -616,9 +616,11 @@ def _invoices(b: _Books, n: int) -> list[InvoiceSummary]:
         status = statuses[ref]
         if not here and total - sum((p.amount for p in status.paid_by if p.date and p.date < start), ZERO) <= 0:
             return None
+        by_end = sum((p.amount for p in status.paid_by if p.date is None or p.date <= end), ZERO)
         return InvoiceSummary(ref=ref, kind="sale" if sale else "purchase", counterparty=who, number=number, date=day,
                               total=total, paid=total - status.open, owed=status.open, paid_by=status.paid_by,
-                              brought_forward=not here, credit_note=credit_note)
+                              owed_at_year_end=max(total - by_end, ZERO), brought_forward=not here,
+                              credit_note=credit_note)
 
     found = []
     for ref, ks in refs.items():
@@ -642,7 +644,8 @@ def _invoices(b: _Books, n: int) -> list[InvoiceSummary]:
 
 def invoices(store: MongoStore, client_id: int, year_start: dt.date) -> list[InvoiceSummary]:
     """The year's booked invoices, and the earlier ones and open items still owed when it started, oldest first. Each
-    says what has been paid and what is still owed after every payment, in any year."""
+    says what has been paid and what is still owed after every payment, in any year, and what was owed at the year's
+    end (the year's Debtors and Creditors hold that)."""
     b = _books(store, client_id)
     return _invoices(b, b.index(year_start))
 

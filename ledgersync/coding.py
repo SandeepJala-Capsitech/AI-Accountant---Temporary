@@ -12,7 +12,7 @@ from decimal import Decimal
 from typing import Optional
 
 from .accounts import BY_CODE, SUSPENSE, AccountType
-from .checks import booked
+from .checks import _FOOD_AND_DRINK, booked
 from .matching import same_supplier
 from .models import Direction, Transaction
 
@@ -33,9 +33,11 @@ class Usual:
 
 def _checked(tx: Transaction) -> bool:
     """A booked purchase from a named supplier, on a cost account or a fixed asset: a row whose account someone
-    chose for what was bought. Suspense holds what no one has coded yet."""
+    chose for what was bought. Suspense holds what no one has coded yet. A bank line that pays a bill posts against
+    the supplier's account (paid_against), so the account on it was never chosen for anything."""
     account = BY_CODE.get(tx.account_code)
     return (booked(tx) and tx.direction == Direction.OUT and tx.document_type not in _NOT_CODED
+            and not (tx.pays and tx.paid_against is not None)
             and bool((tx.counterparty or "").strip()) and account is not None and account.code != SUSPENSE
             and (account.type == AccountType.EXPENSE or account.code.startswith("00")))
 
@@ -75,6 +77,8 @@ def usual_accounts(rows: list[Transaction], *, flag: list[bool]) -> list[Optiona
             code, on_usual = counts.most_common(1)[0]
             if Decimal(on_usual) / len(seen) < SHARE or rows[k].account_code == code:
                 continue
+            if rows[k].account_code in _FOOD_AND_DRINK and code in _FOOD_AND_DRINK:
+                continue   # one meal account or another: who was there decides (checks.meal_check), not the place
             usual = sorted((j for (_, c), j in seen.items() if c == code),
                            key=lambda j: (rows[j].date or dt.date.min, j), reverse=True)
             found[k] = Usual(code=code, others=len(seen), on_usual=on_usual, related=usual[:RELATED])

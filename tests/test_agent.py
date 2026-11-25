@@ -590,14 +590,16 @@ def test_only_a_checked_resolution_can_set_a_date():
 
     tools = make_tools(AgentDeps(store=None, records=None, blobs=None), actor="agent:test")
     assert {t.name for t in tools} == {"get_overview", "list_issues", "list_rows", "get_row", "list_documents", "read_document",
-                                       "resolve_issue", "edit_row", "ask_user", "close_question", "list_questions",
+                                       "resolve_issue", "edit_row", "ask_user", "close_question", "offer_answer",
+                                       "list_questions",
                                        "list_decisions", "list_changes", "get_trial_balance", "get_vat_figures",
                                        "hand_over"}   # the specialists' own: it changes who works, never a row
     dated = [(tool.name, name) for tool in tools for name, field in properties(tool.tool_call_schema.model_json_schema())
              if "date" in name or field.get("format") in ("date", "date-time")]
     # The dates a tool takes: set_date's, which resolutions.resolve checks against another record, the file name or
-    # the document before it changes the row (R1), and the one a person in the chat tells edit_row to set.
-    assert dated == [("resolve_issue", "date"), ("edit_row", "date")]
+    # the document before it changes the row (R1), the one a person in the chat tells edit_row to set, and a bad
+    # debt's write-off date offer_answer fills in, which the answer service checks and only the person's Confirm books.
+    assert dated == [("resolve_issue", "date"), ("edit_row", "date"), ("offer_answer", "date")]
 
 
 # ─── Threads ───────────────────────────────────────────────────────────────────
@@ -1087,3 +1089,87 @@ def test_a_claim_line_is_related_to_every_receipt_it_is_booked_from():
     rows = [line, *receipts]
     assert {r.id for r in _related(line, rows)} == {r.id for r in receipts}
     assert {r.id for r in _related(receipts[3], rows)} == {1}
+
+
+# ─── offer_answer (design of 2026-11-25) ─────────────────────────────────────
+
+def _vat_question(mongo_store, deps, client_id):
+    from test_questions import opened_owing_vat
+    from ledgersync import questions
+    opened_owing_vat(mongo_store, client_id)
+    return next(q for q in questions.refresh(mongo_store, deps.records, client_id, dt.date(2025, 4, 1))
+                if q.kind == "opening_vat")
+
+
+def _offer_args(q, quote="Fine to correct it this year"):
+    return dict(question_id=q.id, answer={"kind": "split", "lines": [{"account": "8250", "amount": "312.00"}]},
+                sources=[{"kind": "said", "quote": quote}, {"kind": "question"}], reason="As the client said.")
+
+
+def _offer_turn(deps, client_id, q, text, *, trigger="chat", note=None, quote="Fine to correct it this year"):
+    from ledgersync.agent.chat import _say
+    model = ScriptedChatModel(replies=[call("offer_answer", **_offer_args(q, quote)), say("Done.")])
+    agent = build_agent(SETTINGS, deps, model=model, checkpointer=InMemorySaver())
+    ctx = ChatContext(client_id=client_id, thread_id=uuid4().hex, year_start=dt.date(2025, 4, 1), trigger=trigger)
+    if note:
+        _say(agent, ctx.thread_id, note, note=True)
+    list(stream_turn(agent, ctx, text))
+    return json.loads(answered(model, 1)[0].content)
+
+
+@pytest.mark.mongo
+def test_offer_answer_is_refused_outside_a_chat(mongo_store, deps, acme):
+    q = _vat_question(mongo_store, deps, acme)
+    result = _offer_turn(deps, acme, q, "Fine to correct it this year.", trigger="background")
+    assert result["status"] == "refused" and "Only a person in a chat" in result["why"]
+    assert deps.records.question(q.id).offer is None
+
+
+@pytest.mark.mongo
+def test_offer_answer_takes_the_persons_words_from_the_chat_not_a_note(mongo_store, deps, acme):
+    q = _vat_question(mongo_store, deps, acme)
+    noted = _offer_turn(deps, acme, q, "Have a look.", note="Fine to correct it this year (the app's note)")
+    assert noted["status"] == "refused" and "isn't in what the person said" in noted["why"]
+    made = _offer_turn(deps, acme, q, "Redland & Co left an invoice off. Fine to correct it this year.")
+    assert made["status"] == "offered" and deps.records.question(q.id).offer is not None
+
+
+@pytest.mark.mongo
+def test_list_questions_shows_an_offer_and_the_other_open_years(mongo_store, deps, acme):
+    from test_questions import books_question
+    q = _vat_question(mongo_store, deps, acme)
+    later = books_question(deps.records, acme, kind="opening_accruals", year_start=dt.date(2026, 4, 1),
+                           text="Opening accruals of £2,400.00: which costs are they for?")
+    _offer_turn(deps, acme, q, "Fine to correct it this year.")
+    model = ScriptedChatModel(replies=[call("list_questions"), say("Listed.")])
+    agent = build_agent(SETTINGS, deps, model=model, checkpointer=InMemorySaver())
+    list(stream_turn(agent, ChatContext(client_id=acme, thread_id=uuid4().hex, year_start=dt.date(2025, 4, 1)), "List."))
+    listed = {x["question_id"]: x for x in json.loads(answered(model, 1)[0].content)["questions"]}
+    assert later.id in listed and listed[later.id]["year_start"] == "2026-04-01"
+    assert listed[q.id]["offer"]["answer"]["lines"] == [{"account": "8250", "amount": "312.00"}]
+
+
+def test_the_persons_words_leave_out_the_question_their_reply_quotes():
+    # Final review, 25 Nov 2026: a card's answer is sent as 'Answer to "<question>": <words>', and the runner's as
+    # "> <question>" then the words, so the app's own question passed as something the person said.
+    from langchain_core.messages import HumanMessage
+    from ledgersync.agent.tools import person_said
+    said = person_said({"messages": [
+        HumanMessage('Answer to "Opening prepayments of £6,558.46: which costs are they for?": no idea'),
+        HumanMessage("> The VAT payment of £27,412.00 is £312.00 more: what was the difference for?\n\nFine to correct it"),
+        HumanMessage("A note", additional_kwargs={"note": True})]})
+    assert said == ["no idea", "Fine to correct it"]
+
+
+def test_list_questions_keeps_a_closed_years_own_questions_in_its_chat():
+    # Final review: listing every open year's books questions left out the chat year's own when that year is closed.
+    from types import SimpleNamespace
+    from ledgersync.agent.tools import open_questions
+    from ledgersync.models import Question
+    year = dt.date(2025, 4, 1)
+    asked = Question(id="q1", client_id=1, year_start=year, kind="date", text="When?", why="No date.", source="rules",
+                     status="open", created_at="2026-11-25T10:00:00+00:00")
+    deps = SimpleNamespace(store=SimpleNamespace(get_client=lambda _: SimpleNamespace(
+        closed_years=[SimpleNamespace(start=year)])), records=SimpleNamespace(questions=lambda *_: [asked]))
+    listed = open_questions(deps, ChatContext(client_id=1, thread_id="t", year_start=year))["questions"]
+    assert [x["question_id"] for x in listed] == ["q1"]

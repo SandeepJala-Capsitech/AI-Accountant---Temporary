@@ -82,6 +82,27 @@ export interface Question {
   answer: string | null      // "I don't have it", "Not sure", or the answer given
   created_at: string
   resolved_at: string | null
+  offer?: Offer | null       // an answer the agent filled in from what the person said, to change or confirm
+}
+
+// Where part of an offered answer comes from: the person's words, one of the client's documents (for the line
+// "line:<n>" or the "date" it backs, with how a figure was worked out), or the question's own amount or date.
+export interface OfferSource {
+  kind: 'said' | 'document' | 'question'
+  quote?: string
+  upload_id?: number | null
+  upload_name?: string
+  for?: string | null
+  working?: string
+}
+
+export interface Offer {
+  answer: { kind: 'split'; lines: { account: string; amount: string }[] } | { kind: 'write_off'; date?: string | null }
+  sources: OfferSource[]
+  reason: string
+  thread_id: string
+  offered_at: string
+  offered_by: string
 }
 
 export interface SuspenseItem {
@@ -467,3 +488,35 @@ export async function streamMessage(
 // (**7400 Travel**) or a heading (## Options) now and then: the marks are dropped, the words kept.
 export const plainReply = (text: string): string =>
   text.replace(/\*\*([^*\n]+)\*\*/g, '$1').replace(/^#{1,6}\s+/gm, '').replace(/`([^`\n]+)`/g, '$1')
+
+// The split lines an offered answer fills the form with; null when nothing split is offered.
+export function offerLines(q: Question): { account: string; amount: string }[] | null {
+  const a = q.offer?.answer
+  return a && a.kind === 'split' ? a.lines.map(l => ({ account: l.account, amount: l.amount })) : null
+}
+
+// The write-off date an offer gives; null for none (the default: when the six months end) or no offer.
+export function offerDate(q: Question): string | null {
+  const a = q.offer?.answer
+  return a && a.kind === 'write_off' ? a.date ?? null : null
+}
+
+// What backs a part of the offer ("line:1", "date"): its own document quotes, and the question itself if it gave one.
+export const sourcesFor = (q: Question, part: string): OfferSource[] =>
+  (q.offer?.sources ?? []).filter(s => s.for === part || s.kind === 'question')
+
+// For each line on the form, whether the person changed it from the offer (or added it).
+export const changedLines = (offered: { account: string; amount: string }[], current: { account: string; amount: string }[]) =>
+  current.map((l, n) => !offered[n] || offered[n].account !== l.account.trim() || offered[n].amount !== l.amount.trim())
+
+// The form's lines when the question changes: an offer fills them in, unless the person has typed in them already.
+export function nextLines(current: { account: string; amount: string }[], q: Question, touched: boolean) {
+  const lines = offerLines(q)
+  return lines && !touched ? lines : current
+}
+
+// Whether a line's figure is the question's own amount: so for a one-line split the offer backs with the question.
+export const fromQuestion = (q: Question, line: number): boolean => {
+  const lines = offerLines(q)
+  return !!lines && lines.length === 1 && line === 1 && (q.offer?.sources ?? []).some(s => s.kind === 'question')
+}

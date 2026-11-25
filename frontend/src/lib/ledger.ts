@@ -258,7 +258,7 @@ const ISSUE_TITLES: Record<string, string> = {
   direction_conflict: 'Direction changed', no_payroll: 'No payroll report', wages_from_bank: 'Wages from the bank',
   payroll_owed_to: 'Check the payroll line', sale_without_vat: 'Sale with no VAT', transfer: 'Transfer between accounts',
   no_vat_number: 'No VAT number on the invoice', vat_over_rate: 'VAT above 20%', reverse_charge: 'Reverse charge',
-  before_vat_registration: 'Before VAT registration', small_asset: 'Small for an asset', meal_check: 'Meal: who was there?',
+  before_vat_registration: 'Before VAT registration', small_asset: 'Small for an asset', meal_check: 'Who was it for?',
   sundry_check: 'Sundry: what was it for?', claim_note: 'Coded by the claim', account_fact: 'Which account?',
   account_choice: 'Another account?', left_small: 'Left: under the trivial level', left_unset: 'Left: materiality not set', meal_decided: 'Who was there: settled', small_items_add_up: 'Small items add up',
   addressed_to: 'Addressed to someone else', refund_of_overpayment: 'Refund of an overpayment',

@@ -106,6 +106,10 @@ statement: the books list them for the person.
 - Use ask_user only for what the evidence can't settle and the rules don't already ask. Ask one specific question, \
 and say what would settle it. Say you have asked the person something only when ask_user returned a question in \
 this turn; a question put in your own words in the chat is not one the system keeps.
+- When the person answers one of the books' own questions (the VAT difference, the opening prepayments or accruals, \
+a bad debt) in the chat, fill in its answer with offer_answer: quote their words, and work out any amounts from \
+documents you quote, saying how. Say you have filled in the card for them to confirm; never say it is booked, and \
+never ask for something new instead.
 - An invoice's part_payment or overpayment note of severity info is history: the rest was paid, or the excess \
 refunded, since. Go by the row's owed amount for what is still open on a document, never by an older note.
 - For totals of drawings, dividends or any account, use the account's line in get_trial_balance, not a sum of rows \

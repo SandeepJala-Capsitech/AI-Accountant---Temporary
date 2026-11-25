@@ -1,7 +1,7 @@
 'use client'
 
-import { useRef, useState } from 'react'
-import { answerQuestion, canBookWithout, formatMoney, openingAmount, questionControl, questionState, splitTotal, uploadForQuestion, type Answer, type AnswerResult, type Question } from '@/lib/chat'
+import { useEffect, useRef, useState } from 'react'
+import { answerQuestion, canBookWithout, changedLines, fromQuestion, formatMoney, nextLines, offerDate, offerLines, openingAmount, questionControl, questionState, sourcesFor, splitTotal, uploadForQuestion, type Answer, type AnswerResult, type OfferSource, type Question } from '@/lib/chat'
 import type { Answerer } from '@/lib/reviews'
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
@@ -18,10 +18,22 @@ export default function QuestionCard({ question, number, threadId, answerer, onA
   effect: string | null              // what the answer did, shown on every card for this question
   busy: boolean                      // a turn is running: the controls wait, keeping what was typed
 }) {
-  const [date, setDate] = useState('')
+  const [date, setDate] = useState(() => offerDate(question) ?? '')
   const [words, setWords] = useState('')
   const [reason, setReason] = useState<string | null>(null)   // why it is booked without its document, while typed
-  const [lines, setLines] = useState([{ account: '', amount: '' }])   // the costs an opening balance goes to
+  // the costs an opening balance goes to: as the agent offered them, if it did, for the person to change or confirm
+  const [lines, setLines] = useState(() => offerLines(question) ?? [{ account: '', amount: '' }])
+  const [touched, setTouched] = useState(false)   // the person has changed the form: a later offer leaves it alone
+  const offeredAt = question.offer?.offered_at
+  useEffect(() => {
+    setLines(ls => nextLines(ls, question, touched))
+    if (!touched && offerDate(question)) setDate(offerDate(question) ?? '')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [offeredAt])
+  const offered = offerLines(question)
+  const changed = offered ? changedLines(offered, lines) : []
+  const said = (question.offer?.sources ?? []).filter(src => src.kind === 'said')
+  const proof = (part: string) => sourcesFor(question, part).filter(src => src.kind === 'document')
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
   const fileInput = useRef<HTMLInputElement>(null)
@@ -52,8 +64,10 @@ export default function QuestionCard({ question, number, threadId, answerer, onA
   const total = splitTotal(lines)
   const codes = lines.map(l => /^\d{4}/.exec(l.account.trim())?.[0] ?? '')
   const splitReady = needed !== null && total === needed && codes.every(Boolean)
-  const setLine = (n: number, change: Partial<{ account: string; amount: string }>) =>
+  const setLine = (n: number, change: Partial<{ account: string; amount: string }>) => {
+    setTouched(true)
     setLines(ls => ls.map((l, k) => (k === n ? { ...l, ...change } : l)))
+  }
   const say = () => {
     if (!words.trim()) return
     onSay(`Answer to "${question.text}": ${words.trim()}`)
@@ -108,9 +122,11 @@ export default function QuestionCard({ question, number, threadId, answerer, onA
             e.preventDefault()
             answer(date ? { kind: 'write_off', date } : { kind: 'write_off' }, 'Writing off…')
           }}>
-            <input className="input question-date" type="date" value={date} onChange={e => setDate(e.target.value)}
+            <input className="input question-date" type="date" value={date} onChange={e => { setTouched(true); setDate(e.target.value) }}
                    aria-label="Write-off date (blank: when six months overdue)" disabled={!!busy || working} />
-            <button type="submit" className="btn btn-primary btn-small" disabled={!!busy || working}>Write it off</button>
+            <button type="submit" className="btn btn-primary btn-small" disabled={!!busy || working}>
+              {question.offer ? 'Confirm' : 'Write it off'}
+            </button>
             <button type="button" className="btn btn-small" disabled={!!busy || working}
                     onClick={() => answer({ kind: 'not_sure' }, 'Saving…')}>Not sure</button>
           </form>
@@ -128,18 +144,21 @@ export default function QuestionCard({ question, number, threadId, answerer, onA
                        aria-label={`Amount ${n + 1}`} placeholder="Amount" inputMode="decimal" disabled={!!busy || working} />
                 {lines.length > 1 && (
                   <button type="button" className="btn btn-small" aria-label={`Remove line ${n + 1}`}
-                          onClick={() => setLines(ls => ls.filter((_, k) => k !== n))}>Remove</button>
+                          onClick={() => { setTouched(true); setLines(ls => ls.filter((_, k) => k !== n)) }}>Remove</button>
                 )}
+                {changed[n] && <span className="muted small">changed by you</span>}
+                {proof(`line:${n + 1}`).map((src, k) => <Proof key={k} source={src} />)}
+                {fromQuestion(question, n + 1) && !changed[n] && <span className="muted small">the question&apos;s own amount</span>}
               </div>
             ))}
             <div className="question-row">
               <button type="button" className="btn btn-small" disabled={!!busy || working}
-                      onClick={() => setLines(ls => [...ls, { account: '', amount: '' }])}>Add a cost</button>
+                      onClick={() => { setTouched(true); setLines(ls => [...ls, { account: '', amount: '' }]) }}>Add a cost</button>
               <span className={total === needed ? 'muted' : 'field-error'}>
                 {formatMoney(total)} of {needed ? formatMoney(needed) : '—'}
               </span>
               <button type="submit" className="btn btn-primary btn-small" disabled={!splitReady || !!busy || working}>
-                Release
+                {question.offer ? 'Confirm' : 'Release'}
               </button>
             </div>
           </form>
@@ -151,11 +170,27 @@ export default function QuestionCard({ question, number, threadId, answerer, onA
             <button type="submit" className="btn btn-primary btn-small" disabled={!words.trim() || working}>Send</button>
           </form>
         )}
+        {question.offer && (
+          <div className="question-offer muted small">
+            {said.map((src, k) => <p key={k}>From what you said: “{src.quote}”</p>)}
+            {proof('date').map((src, k) => <Proof key={k} source={src} />)}
+            <p>{question.offer.reason} Change anything that isn&apos;t right, then Confirm.</p>
+          </div>
+        )}
         {working && !busy && <span className="muted">You can answer when the current reply finishes.</span>}
         {busy && <span className="progress question-busy"><span className="spinner" /> {busy}</span>}
       </div>}
       {effect && <p className="question-effect">{effect}</p>}
       {error && <p className="field-error">{error}</p>}
     </li>
+  )
+}
+
+// A document quote an offered figure rests on: which file, its words, and how the figure was worked out.
+function Proof({ source }: { source: OfferSource }) {
+  return (
+    <span className="muted small">
+      {source.upload_name || 'Document'}: “{source.quote}”{source.working ? ` (${source.working})` : ''}
+    </span>
   )
 }

@@ -157,6 +157,7 @@ export interface InvoiceSummary {
   total: string
   paid: string
   owed: string               // still owed after every payment matched to it, in any year
+  owed_at_year_end: string   // what was owed on the year's last day: payments after it left out
   paid_by: Settlement[]
   brought_forward: boolean   // dated before the year and still owed when it started
   credit_note?: boolean      // the money goes the other way: its amounts are shown as minus

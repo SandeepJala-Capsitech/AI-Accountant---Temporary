@@ -8,14 +8,14 @@ import { ageing, ageingText, daysOld, fullDate, splitInvoices } from '@/lib/sect
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
-function InvoiceTable({ title, who, invoices, asAt }: { title: string; who: string; invoices: InvoiceSummary[]; asAt: string }) {
+function InvoiceTable({ title, who, invoices, asAt, ended }: { title: string; who: string; invoices: InvoiceSummary[]; asAt: string; ended: boolean }) {
   return (
     <section className="card section table-card">
       <div className="section-head">
         <h2>{title}</h2>
         <span className="muted small">{invoices.length} invoice{invoices.length === 1 ? '' : 's'}</span>
       </div>
-      {invoices.length > 0 && <p className="muted small">{ageingText(ageing(invoices, asAt), asAt)}</p>}
+      {invoices.length > 0 && <p className="muted small">{ageingText(ageing(invoices, asAt, ended), asAt)}</p>}
       {!invoices.length ? <p className="muted">No {title.toLowerCase()} invoices in this year.</p> : (
         <table className="table">
           <thead>
@@ -48,6 +48,9 @@ function InvoiceTable({ title, who, invoices, asAt }: { title: string; who: stri
                   {amount(invoice.owed)}
                   {Number(invoice.owed) > 0 && daysOld(invoice.date, asAt) !== null && (
                     <div className="muted small">{daysOld(invoice.date, asAt)} days</div>
+                  )}
+                  {ended && invoice.owed_at_year_end !== invoice.owed && Number(invoice.owed_at_year_end) > 0 && (
+                    <div className="muted small">{amount(invoice.owed_at_year_end)} at {fullDate(asAt)}</div>
                   )}
                 </td>
                 <td>
@@ -85,7 +88,8 @@ export default function InvoicesSection() {
   const { sales, purchases } = splitInvoices(invoices)
   // Ages are counted to today, or to the year's end once it has passed.
   const today = new Date().toISOString().slice(0, 10)
-  const asAt = today < year.end ? today : year.end
+  const ended = today >= year.end
+  const asAt = ended ? year.end : today
   return (
     <>
       <p className="muted small">
@@ -93,8 +97,8 @@ export default function InvoicesSection() {
         them. Receipts, bank lines and expense-claim items are in Transactions; a bill on an expense claim is owed to
         the claimant, so it is on the claim, not here.
       </p>
-      <InvoiceTable title="Sales" who="Customer" invoices={sales} asAt={asAt} />
-      <InvoiceTable title="Purchases" who="Supplier" invoices={purchases} asAt={asAt} />
+      <InvoiceTable title="Sales" who="Customer" invoices={sales} asAt={asAt} ended={ended} />
+      <InvoiceTable title="Purchases" who="Supplier" invoices={purchases} asAt={asAt} ended={ended} />
     </>
   )
 }

@@ -306,7 +306,7 @@ def match_documents(rows: list[Transaction], settings: BusinessSettings,
     for n in [n for n in automatic if changes[n].get("recorded_by")]:
         _note(changes[n], rows[n], automatic.pop(n))
     for n, found in automatic.items():
-        _settle(n, rows[n], documents, changes[n], found, settings.owner_names)
+        _settle(n, rows[n], documents, changes[n], found, settings.owner_names, settings)
     statement_lines = [n for n in lines if rows[n].document_type == "statement"]
     _pair_receipts(rows, changes, statement_lines, apart)
     _paid_again(rows, changes, statement_lines, apart)
@@ -427,10 +427,12 @@ def _with_sale_without_vat(tx: Transaction, settings: BusinessSettings) -> Trans
 
 def _with_addressee(tx: Transaction, settings: BusinessSettings) -> Transaction:
     """A company's purchase whose receipt or invoice is addressed to someone else (the director at home): it may be
-    their own spending, so a person says. Not for a sole trader or a partnership, whose papers name the owner."""
+    their own spending, so a person says. Not for a sole trader or a partnership, whose papers name the owner, nor a
+    credit note the company gives a customer (money out on a sales account), which is addressed to the customer."""
     name, to = settings.business_name, tx.addressed_to
     if (settings.business_type != "limited_company" or not name or not to or tx.direction != Direction.OUT
             or tx.document_type not in ("receipt", "invoice") or tx.account_code in DIRECTORS_LOANS
+            or (BY_CODE.get(tx.account_code) is not None and BY_CODE[tx.account_code].type == AccountType.INCOME)
             or "addressed_to" in tx.accepted or not booked(tx)
             or same_payee(to, name) or _named_in(name, to)):
         return tx
@@ -666,7 +668,8 @@ def _payroll_summaries(rows: list[Transaction], settings: BusinessSettings,
     account it would book the wages again. All but one thing on it: the Employment Allowance it claims, which only
     the P32 shows, comes off employer's NI and what is owed to HMRC. A one-row P32 is booked as that allowance when
     it prints it, or when what it says is due is the payroll report's tax and NI for the same pay date less an amount
-    no more than that report's employer's NI. Rows a person changed or ticked Include stay as they are."""
+    no more than that report's employer's NI; a P32 read as several rows, from the row that is the allowance. Rows a
+    person changed or ticked Include stay as they are."""
     if not upload_ids:
         return rows
     by_upload: dict[int, list[int]] = {}
@@ -684,8 +687,8 @@ def _payroll_summaries(rows: list[Transaction], settings: BusinessSettings,
             tx = rows[n]
             if tx.account_chosen or tx.include:
                 continue
-            allowance = _allowance(tx, [rows[k] for k in reports if rows[k].date == tx.date]) if len(members) == 1 \
-                else None
+            allowance = (_allowance(tx, [rows[k] for k in reports if rows[k].date == tx.date]) if len(members) == 1
+                         else _allowance_line(tx))
             if allowance is not None:
                 amount, how = allowance
                 checked = normalise(tx.model_copy(update={"account_code": EMPLOYERS_NI, "direction": Direction.IN,
@@ -697,6 +700,17 @@ def _payroll_summaries(rows: list[Transaction], settings: BusinessSettings,
             elif tx.account_code != PAYE:
                 out[n] = normalise(tx.model_copy(update={"account_code": PAYE}), settings)
     return out
+
+
+def _allowance_line(row: Transaction) -> Optional[tuple[Decimal, str]]:
+    """A P32 read as several rows: the Employment Allowance when one of them is it ("Employment Allowance claimed")."""
+    printed = _ALLOWANCE.search(row.description or "")
+    if printed:
+        amount = Decimal(printed.group(1).replace(",", ""))
+        return (amount, "it prints it") if amount > ZERO else None
+    if re.search(r"\bemployment allowance\b", row.description or "", re.I) and row.gross > ZERO:
+        return row.gross, "a line of its own"
+    return None
 
 
 def _allowance(p32: Transaction, report: list[Transaction]) -> Optional[tuple[Decimal, str]]:
@@ -1797,7 +1811,7 @@ def _outcome(line: Transaction, documents: dict[str, _Document],
 
 
 def _settle(n: int, line: Transaction, documents: dict[str, _Document], change: dict, found: list[Issue],
-            owners: Sequence[str] = ()) -> None:
+            owners: Sequence[str] = (), settings: Optional[BusinessSettings] = None) -> None:
     kind, options, why = _outcome(line, documents, owners)
     if kind == "pay":
         _pay(n, line, options[0], change, found)
@@ -1824,14 +1838,40 @@ def _settle(n: int, line: Transaction, documents: dict[str, _Document], change: 
         found.append(issue("choose_payment", f"Could pay: {_choices(options)}. Choose one.", "error"))
         change["candidates"] = [[d.settlement(d.open) for d in option] for option in options]
     elif kind == "open_document":
-        found.append(issue("open_document", f"May pay {_choices(options)}: not matched because {why}. Link it if "
-                                            "so."))
+        if settings is not None and _on_account(line, options):
+            # Money from a customer who owes more on an invoice it doesn't match is their payment on account, not a
+            # sale with no VAT: Debtors stays as the customer owes it, and the invoice open until a person links it.
+            checked = normalise(line.model_copy(update={"account_code": DEBTORS}), settings)
+            change.update(account_code=DEBTORS, vat=checked.vat, vat_posted=checked.vat_posted, net=checked.net)
+            line = line.model_copy(update={"issues": [i for i in checked.issues
+                                                      if i.code not in ("on_account", "sale_without_vat")]})
+            change["issues"] = line.issues
+            found.append(issue("open_document", f"May pay {_choices(options)}: not matched because {why}. Held on "
+                                                "Debtors as the customer's payment on account, not booked as a sale. "
+                                                "Link it to the invoice it pays part of."))
+        else:
+            found.append(issue("open_document", f"May pay {_choices(options)}: not matched because {why}. Link it "
+                                                "if so."))
         change["candidates"] = [[d.settlement(d.open) for d in option] for option in options]
     elif kind == "suggest":
         found.append(issue("possible_payment", f"May pay {_choices(options)}: same amount, but {why}. Link it if "
                                                "so."))
         change["candidates"] = [[d.settlement(d.open) for d in option] for option in options]
     _note(change, line, found)
+
+
+def _on_account(line: Transaction, options: list[list[_Document]]) -> bool:
+    """Whether a bank receipt the reader put on a sales account is a customer's payment on account: money in from a
+    customer surely named (or their name in the line's, as an administrator's is), who owes more than it on an
+    invoice it could not be matched to. A receipt of more than any of them owes may be a new sale, and stays."""
+    account = BY_CODE.get(line.account_code)
+    docs = [d for option in options for d in option]
+    return (line.document_type == "statement" and line.direction == Direction.IN and not line.account_chosen
+            and not line.link and account is not None and account.type == AccountType.INCOME and bool(docs)
+            and all(d.direction == "in" and d.account == DEBTORS and d.counterparty and line.counterparty
+                    and (same_payee(line.counterparty, d.counterparty) or _named_in(d.counterparty, line.counterparty))
+                    for d in docs)
+            and any(line.gross < d.open for d in docs))
 
 
 def _why_not_matched(line: Transaction, docs: list[_Document]) -> str:

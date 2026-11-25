@@ -14,7 +14,7 @@ const check = (change: Partial<BankCheck> = {}): BankCheck => ({
 
 const inv = (kind: 'sale' | 'purchase'): InvoiceSummary => ({
   ref: kind, kind, counterparty: 'Acme', number: '1', date: '2025-05-01', total: '10.00', paid: '0.00', owed: '10.00',
-  paid_by: [], brought_forward: false,
+  owed_at_year_end: '10.00', paid_by: [], brought_forward: false,
 })
 
 test('the bank check says whether the books agree with the statement', () => {
@@ -187,6 +187,15 @@ test('the profit and loss and the balance sheet come from the trial balance, and
   assert.deepEqual([statementAmount(134000), statementAmount(-26000), statementAmount(0)], ['£1,340.00', '(£260.00)', '—'])
 })
 
+
+test('once the year has ended, what is aged is what was owed at its end, not what is owed now', () => {
+  // Mendip's £16,380 invoice of 15 Feb 2024, paid on 2 Apr: owed at 31 Mar 2024, though nothing is owed on it now.
+  const paidSince: InvoiceSummary = { ...inv('sale'), date: '2024-02-15', total: '16380.00', paid: '16380.00',
+    owed: '0.00', owed_at_year_end: '16380.00' }
+  const a = ageing([paidSince], '2024-03-31', true)
+  assert.equal(ageingText(a, '2024-03-31'), '£16,380.00 owed at 31 Mar 2024: £16,380.00 31 to 60 days.')
+  assert.equal(ageing([paidSince], '2024-03-31').total, 0)   // a year still running: what is owed now
+})
 
 test('what is owed is aged by the invoice date, a credit note counting against it', () => {
   const owed = (date: string | null, amount: string, credit_note = false): InvoiceSummary =>

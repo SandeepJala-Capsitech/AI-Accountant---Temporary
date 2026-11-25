@@ -109,3 +109,14 @@ def test_two_write_offs_of_the_same_amount_are_not_duplicates():
                document_type="write_off", description="Bad debt written off")
     assert possible_duplicates([Transaction(**off, writes_off="a"), Transaction(**off, writes_off="b")],
                                uploads=[1, 2], ids=[1, 2]) == [None, None]
+
+
+def test_two_till_receipts_with_different_numbers_are_two_purchases():
+    # The test books' EC-0430, in the paid run of 25 Nov 2026: two £4.50 coffees at Quayside Coffee on 6 Mar 2024,
+    # receipts QC-301 and QC-302, were flagged as a possible duplicate. A till numbers every receipt: a second photo
+    # of one receipt has its number, another purchase has its own.
+    first = tx(gross="4.50", counterparty="Quayside Coffee Co", document_number="QC-301")
+    second = tx(gross="4.50", counterparty="Quayside Coffee Co", document_number="QC-302")
+    assert possible_duplicates([first, second], uploads=[1, 2], ids=[1, 2]) == [None, None]
+    again = tx(gross="4.50", counterparty="Quayside Coffee Co", document_number="QC 301")
+    assert possible_duplicates([first, again], uploads=[1, 2], ids=[1, 2]) == [None, 0]

@@ -386,3 +386,56 @@ test('waiting questions are counted by year: the one on show, and each other yea
                    { here: 1, elsewhere: [{ start: '2020-11-02', label: 'Year to 1 Nov 2021', count: 2 }] })
   assert.deepEqual(waitingByYear([], years, '2026-11-02'), { here: 0, elsewhere: [] })
 })
+
+// ─── An answer the agent filled in, to change or confirm (design of 2026-11-25) ────────────────────────────────
+
+import { changedLines, fromQuestion, nextLines, offerDate, offerLines, sourcesFor, type Offer } from './chat.ts'
+
+const offer = (answer: Offer['answer']): Offer => ({
+  answer,
+  sources: [
+    { kind: 'said', quote: 'the rent and the insurance' },
+    { kind: 'document', upload_id: 4, upload_name: 'he-2403.pdf', quote: 'Rent, quarter 25 Mar to 23 Jun', for: 'line:1',
+      working: '£6,000.00 for 91 days, 84 of them in this year' },
+    { kind: 'question' },
+  ],
+  reason: 'The client said they were the rent and the insurance.',
+  thread_id: 't1', offered_at: '2026-11-25T12:00:00+00:00', offered_by: 'agent:test',
+})
+const offered = (answer: Offer['answer']): Question => ({ ...question('opening_prepayments'), offer: offer(answer) })
+const SPLIT = { kind: 'split' as const, lines: [{ account: '7100', amount: '5538.46' }, { account: '8204', amount: '1020.00' }] }
+
+test('an offered split fills in the form, and a question without one leaves it empty', () => {
+  assert.deepEqual(offerLines(offered(SPLIT)), [{ account: '7100', amount: '5538.46' }, { account: '8204', amount: '1020.00' }])
+  assert.equal(offerLines(question('opening_prepayments')), null)
+  assert.equal(offerDate(offered({ kind: 'write_off', date: '2024-01-31' })), '2024-01-31')
+  assert.equal(offerDate(offered({ kind: 'write_off' })), null)   // left to the default: when the six months end
+})
+
+test('a line shows its own document quote and what the question itself gave', () => {
+  const q = offered(SPLIT)
+  assert.deepEqual(sourcesFor(q, 'line:1').map(s => s.kind), ['document', 'question'])
+  assert.deepEqual(sourcesFor(q, 'line:2').map(s => s.kind), ['question'])
+  assert.deepEqual(sourcesFor(question('opening_prepayments'), 'line:1'), [])
+})
+
+test('only the line the person edited is marked as changed by them', () => {
+  const was = offerLines(offered(SPLIT))!
+  assert.deepEqual(changedLines(was, [was[0], { account: '8204', amount: '1000.00' }]), [false, true])
+  assert.deepEqual(changedLines(was, [...was, { account: '7200', amount: '20.00' }]), [false, false, true])   // added
+})
+
+test('an offer that arrives later fills the form unless the person has started on it', () => {
+  const blank = [{ account: '', amount: '' }]
+  assert.deepEqual(nextLines(blank, offered(SPLIT), false), offerLines(offered(SPLIT)))
+  const typed = [{ account: '7100', amount: '10.00' }]
+  assert.deepEqual(nextLines(typed, offered(SPLIT), true), typed)                    // theirs stays
+  assert.deepEqual(nextLines(blank, question('opening_prepayments'), false), blank)  // nothing offered
+})
+
+test("a one-line answer shows its figure is the question's own amount", () => {
+  const whole = offered({ kind: 'split', lines: [{ account: '8250', amount: '312.00' }] })
+  assert.equal(fromQuestion(whole, 1), true)
+  assert.equal(fromQuestion(offered(SPLIT), 1), false)   // two lines: the question's amount backs neither alone
+  assert.equal(fromQuestion(question('opening_vat'), 1), false)
+})

@@ -570,6 +570,32 @@ def test_an_agent_question_about_a_claim_line_goes_once_a_person_changes_its_rec
     assert records.question(asked.id).answer == "You changed this row after it was asked."
 
 
+def test_an_agent_question_goes_once_the_lines_it_waited_for_pair_with_its_rows(store, records, acme):
+    # The agency's April 2023 receipts: asked whether the card paid them, as no card statement was in yet. The card
+    # statement came in the next batch and every receipt paired with its card line, but the question stayed open all
+    # year (agency run, 25 Nov 2026).
+    import time
+    add_rows(store, acme, trainline_invoice(), year_start=YEAR_1)
+    [invoice] = store.rows(acme)
+    asked = questions.ask(records, client_id=acme, year_start=YEAR_1, row_ids=[invoice.id],
+                          text="Was this paid by the company card?", why="No statement shows it yet.")
+    time.sleep(1.1)   # times are kept to the second
+    add_rows(store, acme, travel_line(), year_start=YEAR_1)
+    assert asked.id not in [q.id for q in refresh(store, records, acme)]
+    assert records.question(asked.id).answer == questions.PAIRED_SINCE
+
+
+def test_an_agent_question_about_rows_already_paired_when_asked_stays(store, records, acme):
+    add_rows(store, acme, trainline_invoice(), year_start=YEAR_1)
+    add_rows(store, acme, travel_line(), year_start=YEAR_1)
+    import time
+    time.sleep(1.1)
+    invoice, line = store.rows(acme)
+    asked = questions.ask(records, client_id=acme, year_start=YEAR_1, row_ids=[invoice.id, line.id],
+                          text="Is this the right invoice for the payment?", why="Two bills of this amount.")
+    assert asked.id in [q.id for q in refresh(store, records, acme)]
+
+
 # ─── Opening prepayments and accruals ─────────────────────────────────────────
 
 from ledgersync.models import OpeningBalances, OpeningLine  # noqa: E402
@@ -721,6 +747,21 @@ def test_without_a_bank_statement_no_invoice_is_asked_about(store, records, acme
     assert not [q for q in refresh(store, records, acme) if q.kind == "bad_debt"]
 
 
+def test_a_question_about_an_earlier_year_stays_in_that_year_when_a_later_year_is_worked_out(store, records, acme):
+    # The paid run of 25 Nov 2026: once the later years were settled too, the opening prepayments and accruals
+    # questions moved to the year starting 1 Apr 2026 ("released on 1 Apr 2026"), and Lowther's bad debt to the year
+    # after it fell overdue: one key per client, so the last year worked out took the question.
+    opened_with_prepayments_and_an_accrual(store, acme)
+    unpaid_sale(store, acme)
+    refresh(store, records, acme)
+    later = questions.refresh(store, records, acme, YEAR_2)
+    assert not {q.kind for q in later} & {"opening_prepayments", "opening_accruals", "bad_debt"}
+    kept = {q.kind: q for q in records.questions(acme, None)}
+    for kind in ("opening_prepayments", "opening_accruals", "bad_debt"):
+        assert kept[kind].year_start == YEAR_1, kind
+    assert "released on 1 Apr 2025" in kept["opening_prepayments"].why
+
+
 def test_a_supplier_credit_note_is_not_a_bad_debt(store, records, acme):
     add_rows(store, acme, row(date=date(2025, 5, 1), direction="in", gross=D("120.00"), account_code="7500",
                               document_type="invoice", document_ref="CN-1", counterparty="Paper Co",
@@ -753,3 +794,213 @@ def test_a_vat_payment_more_than_the_vat_owed_asks_what_the_difference_was(store
 def test_a_vat_payment_of_what_was_owed_asks_nothing(store, records, acme):
     opened_owing_vat(store, acme, paid="27100.00")
     assert not [q for q in refresh(store, records, acme) if q.kind == "opening_vat"]
+
+
+# ─── Answers the agent offers for the person to confirm (design of 2026-11-25) ──────────────────────────────
+
+from ledgersync.models import Offer, OfferSource, QuestionDraft  # noqa: E402
+
+
+def books_question(records, client_id, text="Opening prepayments of £6,558.46: which costs are they for?",
+                   kind="opening_prepayments", year_start=YEAR_1):
+    return records.upsert_question(QuestionDraft(client_id=client_id, year_start=year_start, kind=kind, text=text,
+                                                 why="Carried in from last year.", source="rules"), f"open:{kind}")
+
+
+def an_offer(thread_id="t1"):
+    return Offer(answer={"kind": "split", "lines": [{"account": "7100", "amount": "5538.46"},
+                                                     {"account": "8204", "amount": "1020.00"}]},
+                 sources=[OfferSource(kind="said", quote="the rent and the insurance"),
+                          OfferSource(kind="document", upload_id=1, quote="Rent, quarter to 23 June", **{"for": "line:1"},
+                                      working="£6,000.00 for 91 days, 84 of them next year")],
+                 reason="The client said they were the rent and the insurance.", thread_id=thread_id,
+                 offered_at="2026-11-25T12:00:00+00:00", offered_by="agent:test")
+
+
+def test_an_offer_is_kept_on_its_question_and_read_back(records, acme):
+    q = books_question(records, acme)
+    assert q.offer is None
+    records.set_offer(q.id, an_offer())
+    kept = records.question(q.id).offer
+    assert kept == an_offer() and kept.sources[1].for_ == "line:1"
+    assert kept.model_dump(mode="json", by_alias=True)["sources"][1]["for"] == "line:1"   # as the page reads it
+
+
+def test_answering_or_waiting_clears_the_offer(records, acme):
+    for status, said in (("resolved", "Released to 7100"), ("waiting", "Not sure")):
+        q = books_question(records, acme, kind="opening_accruals" if status == "waiting" else "opening_prepayments")
+        records.set_offer(q.id, an_offer())
+        records.set_question(q.id, status, said)
+        assert records.question(q.id).offer is None, status
+
+
+def test_an_offer_goes_when_the_question_text_changes(records, acme):
+    q = books_question(records, acme)
+    records.set_offer(q.id, an_offer())
+    assert books_question(records, acme).offer == an_offer()   # asked again in the same words: kept
+    changed = books_question(records, acme, text="Opening prepayments of £6,000.00: which costs are they for?")
+    assert changed.id == q.id and changed.offer is None
+    records.set_offer(q.id, an_offer())
+    records.clear_offer(q.id)
+    assert records.question(q.id).offer is None
+
+
+def _rows(store, client_id):
+    return [(r.id, r.tx.model_dump_json()) for r in store.rows(client_id)]
+
+
+def test_checking_an_answer_writes_nothing_and_says_what_would_be_refused(store, records, acme):
+    opened_with_prepayments_and_an_accrual(store, acme)
+    q = opening_question(store, records, acme, "opening_prepayments")
+    before = _rows(store, acme)
+    good = SplitAnswer(kind="split", lines=[SplitLine(account="7100", amount=D("5538.46")),
+                                            SplitLine(account="8204", amount=D("1020.00"))])
+    assert questions.check_answer(store, acme, q, good) is None
+    short = SplitAnswer(kind="split", lines=[SplitLine(account="7100", amount=D("6000.00"))])
+    assert questions.check_answer(store, acme, q, short) == (
+        "The lines add up to £6,000.00; the opening prepayments still to release are £6,558.46.")
+    assert _rows(store, acme) == before
+
+
+def test_checking_a_vat_difference_answer_refuses_the_vat_liability(store, records, acme):
+    opened_owing_vat(store, acme)
+    [q] = [q for q in refresh(store, records, acme) if q.kind == "opening_vat"]
+    to_vat = SplitAnswer(kind="split", lines=[SplitLine(account="2202", amount=D("312.00"))])
+    assert questions.check_answer(store, acme, q, to_vat) == (
+        "Choose an account for each line, not the VAT liability or a bank.")
+    sundry = SplitAnswer(kind="split", lines=[SplitLine(account="8250", amount=D("312.00"))])
+    assert questions.check_answer(store, acme, q, sundry) is None
+
+
+def test_checking_a_write_off_refuses_a_date_before_the_six_months(store, records, acme):
+    unpaid_sale(store, acme)
+    q = debt_question(store, records, acme)
+    before = _rows(store, acme)
+    assert "six months after the invoice fell due" in questions.check_answer(
+        store, acme, q, WriteOffAnswer(kind="write_off", date=date(2025, 9, 1)))
+    assert questions.check_answer(store, acme, q, WriteOffAnswer(kind="write_off")) is None
+    assert _rows(store, acme) == before
+
+
+SAID = ["> Opening prepayments of £6,558.46: which costs are they for?\n\nThey were the rent and the insurance."]
+RENT = "Harbourside Estates Ltd Rent, quarter 25 Mar to 23 Jun 2025 £6,000.00"
+
+
+def offering(store, records, client_id, q, answer, sources, *, said=SAID, texts=None, upload=None):
+    pages = {upload: [RENT]} if upload else {}
+    return questions.offer(store, records, client_id=client_id, thread_id="t1", question_id=q.id, answer=answer,
+                           sources=sources, reason="As the client said.", texts=texts or (lambda u: pages.get(u, [])),
+                           said=said, actor="agent:test")
+
+
+def two_lines():
+    return SplitAnswer(kind="split", lines=[SplitLine(account="7100", amount=D("5538.46")),
+                                            SplitLine(account="8204", amount=D("1020.00"))])
+
+
+def rent_sources(upload):
+    return [OfferSource(kind="said", quote="the rent and the insurance"),
+            OfferSource(kind="document", upload_id=upload, quote="Rent, quarter 25 Mar to 23 Jun 2025", **{"for": "line:1"},
+                        working="£6,000.00 for 91 days, 84 of them in this year"),
+            OfferSource(kind="said", quote="the insurance", **{"for": "line:2"})]
+
+
+@pytest.fixture
+def prepaid(store, records, acme):
+    opened_with_prepayments_and_an_accrual(store, acme)
+    upload = add_rows(store, acme, row(date=date(2025, 3, 25), gross=D("6000.00"), account_code="7100",
+                                       document_type="invoice", counterparty="Harbourside Estates Ltd",
+                                       description="Rent", document_ref="he"), year_start=YEAR_1)
+    return opening_question(store, records, acme, "opening_prepayments"), upload
+
+
+def test_an_offer_backed_by_the_clients_words_and_a_document_is_kept(store, records, acme, prepaid):
+    q, upload = prepaid
+    made = offering(store, records, acme, q, two_lines(), rent_sources(upload), upload=upload)
+    assert made.offer.answer["lines"][0] == {"account": "7100", "amount": "5538.46"}
+    assert made.offer.thread_id == "t1" and made.offer.offered_by == "agent:test"
+    assert records.changes(acme)[-1].kind == "question_offered"
+    again = offering(store, records, acme, q, SplitAnswer(kind="split", lines=[
+        SplitLine(account="7100", amount=D("6558.46"))]), [OfferSource(kind="said", quote="all of it was rent"),
+                                                           OfferSource(kind="question")],
+        said=["All of it was rent."])
+    assert again.offer.answer["lines"] == [{"account": "7100", "amount": "6558.46"}]   # replaces the first
+
+
+@pytest.mark.parametrize("case, why", [
+    ("no_said", "needs the person's own words"),
+    ("note_only", "isn't in what the person said"),
+    ("bad_quote", "isn't in"),
+    ("short_quote", "too short"),
+    ("no_source", "line 2 has no source"),
+    ("short_total", "The lines add up to £5,538.46"),
+])
+def test_an_offer_is_refused_without_what_backs_it(store, records, acme, prepaid, case, why):
+    q, upload = prepaid
+    answer, sources, said = two_lines(), rent_sources(upload), SAID
+    if case == "no_said":
+        sources = [s for s in sources if s.kind != "said"] + [OfferSource(kind="question")]
+    elif case == "note_only":
+        said = []   # the words are only in a note the app wrote: not the person's
+    elif case == "bad_quote":
+        sources[1] = sources[1].model_copy(update={"quote": "Rent for the whole of 2026"})
+    elif case == "short_quote":
+        sources[1] = sources[1].model_copy(update={"quote": "Re"})
+    elif case == "no_source":
+        sources = sources[:2]
+    elif case == "short_total":
+        answer = SplitAnswer(kind="split", lines=[SplitLine(account="7100", amount=D("5538.46"))])
+    with pytest.raises(InvalidInput, match=why):
+        offering(store, records, acme, q, answer, sources, said=said, upload=upload)
+    assert records.question(q.id).offer is None
+
+
+def test_only_an_open_books_question_of_the_four_kinds_takes_an_offer(store, records, acme, prepaid):
+    q, upload = prepaid
+    asked = questions.ask(records, client_id=acme, year_start=YEAR_1, row_ids=[], text="Which bank?", why="To know.")
+    with pytest.raises(InvalidInput, match="isn't a books question that takes an answer"):
+        offering(store, records, acme, asked, two_lines(), rent_sources(upload), upload=upload)
+    records.set_question(q.id, "resolved", "Released")
+    with pytest.raises(InvalidInput, match="already answered"):
+        offering(store, records, acme, q, two_lines(), rent_sources(upload), upload=upload)
+
+
+def test_the_vat_difference_offer_takes_its_amount_from_the_question(store, records, acme):
+    # The agency's £312: the client's words say where it goes; the amount is the question's own.
+    opened_owing_vat(store, acme)
+    [q] = [q for q in refresh(store, records, acme) if q.kind == "opening_vat"]
+    made = offering(store, records, acme, q, SplitAnswer(kind="split", lines=[SplitLine(account="8250", amount=D("312.00"))]),
+                    [OfferSource(kind="said", quote="Fine to correct it this year"), OfferSource(kind="question")],
+                    said=["Redland & Co say a February invoice was left off their VAT figure. Fine to correct it this year."])
+    assert made.offer.answer["lines"] == [{"account": "8250", "amount": "312.00"}]
+
+
+def test_the_questions_own_amount_backs_only_a_split_of_one_line(store, records, acme, prepaid):
+    # Final review, 25 Nov 2026: one {kind: question} source made every line "sourced", so an invented split that
+    # added up (£1.00 and £6,557.46) was offered with nothing beside either figure.
+    q, upload = prepaid
+    invented = SplitAnswer(kind="split", lines=[SplitLine(account="7100", amount=D("1.00")),
+                                                SplitLine(account="8204", amount=D("6557.46"))])
+    with pytest.raises(InvalidInput, match="line 1 has no source"):
+        offering(store, records, acme, q, invented,
+                 [OfferSource(kind="said", quote="the rent and the insurance"), OfferSource(kind="question")])
+    whole = SplitAnswer(kind="split", lines=[SplitLine(account="7100", amount=D("6558.46"))])
+    assert offering(store, records, acme, q, whole, [OfferSource(kind="said", quote="the rent and the insurance"),
+                                                     OfferSource(kind="question")]).offer is not None
+
+
+def test_a_document_quote_must_name_a_line_or_the_date_it_backs(store, records, acme, prepaid):
+    q, upload = prepaid
+    for wrong in ("line:7", None):
+        sources = rent_sources(upload)
+        sources[1] = sources[1].model_copy(update={"for_": wrong})
+        with pytest.raises(InvalidInput, match="names no line"):
+            offering(store, records, acme, q, two_lines(), sources, upload=upload)
+
+
+def test_the_persons_words_are_a_quote_of_four_characters_or_more(store, records, acme, prepaid):
+    q, upload = prepaid
+    sources = rent_sources(upload)
+    sources[0] = OfferSource(kind="said", quote="e")
+    with pytest.raises(InvalidInput, match="too short"):
+        offering(store, records, acme, q, two_lines(), sources, upload=upload)

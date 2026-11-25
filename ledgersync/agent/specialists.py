@@ -17,8 +17,8 @@ from .router import BOOKKEEPER, LEAD, REPORTER, REVIEWER, TAX
 
 # The agent's tools, in the order make_tools gives them (tests/test_specialists.py holds the two together).
 ALL_TOOLS = ("get_overview", "list_issues", "list_rows", "get_row", "list_documents", "read_document", "resolve_issue",
-             "edit_row", "ask_user", "close_question", "list_questions", "list_decisions", "list_changes",
-             "get_trial_balance", "get_vat_figures")
+             "edit_row", "ask_user", "close_question", "offer_answer", "list_questions", "list_decisions",
+             "list_changes", "get_trial_balance", "get_vat_figures")
 HAND_OVER = "hand_over"   # the specialists' one tool of their own: the rest of the turn goes to the lead accountant
 
 # Lines kept though they name a tool the specialist lacks: each says what not to do, or what to tell the person.
@@ -40,10 +40,12 @@ PARTS = {
                 "else. If they ask for a review of the evidence, a tax answer or a report, or haven't said what a row "
                 "should be, call hand_over.",
     TAX: "You are the tax and VAT adviser: you answer tax questions from the books and the facts below, and change "
-         "nothing. If the person asks for a change to the books or a review of the evidence, call hand_over.",
+         "nothing. If the person asks for a change to the books or a review of the evidence, or answers one of the "
+         "books' own questions (the VAT difference, the opening prepayments or accruals, a bad debt), call hand_over.",
     REPORTER: "You are the reporter: you say where the books stand (what changed, what needs the person, the balances) "
               "and change nothing. If the person asks for a change to the books, a review of the evidence or a tax "
-              "answer, call hand_over.",
+              "answer, or answers one of the books' own questions (the VAT difference, the opening prepayments or "
+              "accruals, a bad debt), call hand_over.",
 }
 _HOW, _FINISHING, _STARTS = "How you work", "Finishing", "- Start with get_overview"
 # Lines of other sections every specialist but the reviewer needs too (the reviewer has their sections whole).
@@ -117,10 +119,11 @@ PROFILES: dict[str, Profile] = {
     LEAD: Profile(LEAD, "Working on it…", ALL_TOOLS, SYSTEM_PROMPT),
     REVIEWER: _profile(REVIEWER, "Reviewing the books…",
                        {"list_issues", "list_rows", "get_row", "list_documents", "read_document", "resolve_issue",
-                        "ask_user", "close_question", "list_questions", "list_decisions", "list_changes"},
+                        "ask_user", "close_question", "offer_answer", "list_questions", "list_decisions",
+                        "list_changes"},
                        ("Evidence", "Resolving", _RULES, "Background reviews")),
     BOOKKEEPER: _profile(BOOKKEEPER, "Making the change…",
-                         {"list_issues", "list_rows", "get_row", "edit_row", "list_questions"},
+                         {"list_issues", "list_rows", "get_row", "edit_row", "offer_answer", "list_questions"},
                          ("Doing what the person tells you", _RULES), (_ROW_IDS, _CHAT_START)),
     TAX: _profile(TAX, "Working out the tax…", {"list_rows", "get_row", "get_trial_balance", "get_vat_figures"},
                   ("Tax questions", _RULES), (_ROW_IDS, _CLEAN_ROWS, _CHAT_START)),

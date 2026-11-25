@@ -39,9 +39,10 @@ def test_the_lead_accountant_is_the_whole_agent():
 def test_each_specialist_has_its_own_tools_in_the_agents_order_and_can_hand_over():
     assert {name: PROFILES[name].tools for name in SPECIALISTS} == {
         REVIEWER: ("get_overview", "list_issues", "list_rows", "get_row", "list_documents", "read_document",
-                   "resolve_issue", "ask_user", "close_question", "list_questions", "list_decisions", "list_changes",
-                   "hand_over"),
-        BOOKKEEPER: ("get_overview", "list_issues", "list_rows", "get_row", "edit_row", "list_questions", "hand_over"),
+                   "resolve_issue", "ask_user", "close_question", "offer_answer", "list_questions", "list_decisions",
+                   "list_changes", "hand_over"),
+        BOOKKEEPER: ("get_overview", "list_issues", "list_rows", "get_row", "edit_row", "offer_answer", "list_questions",
+                     "hand_over"),
         TAX: ("get_overview", "list_rows", "get_row", "get_trial_balance", "get_vat_figures", "hand_over"),
         REPORTER: ("get_overview", "list_issues", "list_rows", "get_row", "list_documents", "list_questions",
                    "list_decisions", "list_changes", "get_trial_balance", "hand_over"),
@@ -281,3 +282,11 @@ def test_the_reporters_briefing_gives_only_the_latest_twenty_changes(books_with_
     ctx = ChatContext(client_id=acme, thread_id="t", year_start=YEAR_1, specialist=REPORTER)
     latest = json.loads(briefing(deps, ctx))["latest_changes"]
     assert [c["summary"] for c in latest] == [f"Change {n}" for n in range(5, 25)]
+
+
+def test_a_reply_to_a_books_question_can_be_answered_whoever_takes_the_turn():
+    # Final review, 25 Nov 2026: a reply with its document attached goes to the reviewer, and one with a VAT word and
+    # "?" to the tax adviser: neither could fill in the books question's answer, so it stayed open.
+    assert "offer_answer" in PROFILES[REVIEWER].tools and "offer_answer" in PROFILES[REVIEWER].prompt
+    for name in (TAX, REPORTER):
+        assert "answers one of the books' own questions" in PROFILES[name].prompt, name

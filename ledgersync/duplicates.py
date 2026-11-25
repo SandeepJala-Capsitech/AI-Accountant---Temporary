@@ -25,6 +25,18 @@ def _kind(tx: Transaction) -> str:
     return "bank" if kind == "statement" else "other"
 
 
+def _number(tx: Transaction) -> str:
+    return "".join(ch for ch in (tx.document_number or "").lower() if ch.isalnum())
+
+
+def _numbered_apart(a: Transaction, b: Transaction) -> bool:
+    """Two receipts from one shop that print different numbers: a till numbers every receipt, so they are two
+    purchases (a second photo of one receipt prints its number)."""
+    return (a.document_type == b.document_type == "receipt" and bool(_number(a)) and bool(_number(b))
+            and _number(a) != _number(b) and bool(a.counterparty) and bool(b.counterparty)
+            and names_match(a.counterparty, b.counterparty))
+
+
 def _linked(tx: Transaction) -> set[str]:
     """The refs of what matching linked the row to: what it pays, what paid it, its claim and what books it."""
     found = [*tx.pays, *tx.paid_by, tx.claimed_in, tx.recorded_by]
@@ -36,7 +48,8 @@ def possible_duplicates(rows: list[Transaction], *, uploads: list[int], ids: lis
     dated within WINDOW of it (or both undated); otherwise None. uploads and ids: each row's upload and row id.
     Rows of one upload are not compared (two equal payments on one statement are usually real), nor rows out of the
     books, a document and a bank line, rows matching linked, rows a person said are not the same, or two receipts on
-    one expense claim, which has a line for each (claimed_in names the line; the lines of one claim are one upload)."""
+    one expense claim, which has a line for each (claimed_in names the line; the lines of one claim are one upload),
+    or two receipts from one shop with different numbers."""
     upload_of = {row.document_ref: uploads[k] for k, row in enumerate(rows) if row.document_ref}
 
     def claim(row: Transaction) -> Optional[object]:
@@ -66,6 +79,8 @@ def possible_duplicates(rows: list[Transaction], *, uploads: list[int], ids: lis
             if ids[j] in row.apart_from or ids[i] in other.apart_from:
                 continue
             if claim(row) is not None and claim(row) == claim(other):
+                continue
+            if _numbered_apart(row, other):
                 continue
             if row.date is None or other.date is None:
                 if row.date is other.date:

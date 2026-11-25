@@ -9,6 +9,7 @@ from typing import Optional, Sequence
 
 from . import books, ledger_book, questions
 from .agent.locks import ClientLocks
+from .errors import InvalidTransactions
 from .models import ChangeDraft, PostResult
 from .records import AgentRecords
 from .resolutions import record_automatic, suggest_account_changes
@@ -22,11 +23,17 @@ def settle(store: MongoStore, records: AgentRecords, client_id: int, year_start:
     """With the client's lock held by the caller: records the rows matching dated from the bank, suggests the usual
     account for a bill on another, works the year's questions out and posts the year, with the decisions behind the
     posting. The four steps work from one copy of the client, read again only after one of them changes it
-    (MongoStore.reading)."""
+    (MongoStore.reading). Questions that can't be worked out while an earlier year's row needs a fix wait; the year
+    still posts."""
     with store.reading():
         record_automatic(store, records, client_id=client_id, year_start=year_start, thread_id=thread_id)
         suggest_account_changes(store, records, client_id=client_id, year_start=year_start)
-        questions.refresh(store, records, client_id, year_start)
+        try:
+            questions.refresh(store, records, client_id, year_start)
+        except InvalidTransactions as exc:
+            # An earlier year's row needing a fix leaves this year without opening balances (books._opening): its
+            # questions stay as they were until the fix, but its own rows still post.
+            logger.info("Questions of client %s, year %s wait for a fix: %s", client_id, year_start, exc.message)
         return ledger_book.post(store, records, client_id, year_start, decision_ids=decision_ids)
 
 

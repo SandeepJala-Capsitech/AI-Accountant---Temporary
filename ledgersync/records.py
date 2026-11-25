@@ -15,7 +15,7 @@ from pymongo.database import Database
 from pymongo.errors import DuplicateKeyError, OperationFailure
 
 from .errors import NotFound
-from .models import (Change, ChangeDraft, ChatThread, Decision, DecisionDraft, Question, QuestionDraft, ReviewRun,
+from .models import (Change, ChangeDraft, ChatThread, Decision, DecisionDraft, Offer, Question, QuestionDraft, ReviewRun,
                      ReviewState)
 from .rows import now_iso
 
@@ -194,6 +194,9 @@ class AgentRecords:
         update = {"$set": {"kind": q.kind, "year_start": q.year_start.isoformat(), "text": q.text, "why": q.why,
                            "row_ids": q.row_ids}, "$setOnInsert": fresh}
         where = {"client_id": q.client_id, "key": key}
+        # An answer offered for other words (another amount to release, say) no longer fits the question.
+        self.db.questions.update_one({**where, "text": {"$ne": q.text}, "offer": {"$exists": True}},
+                                     {"$unset": {"offer": ""}})
         try:
             doc = self.db.questions.find_one_and_update(where, update, upsert=True,
                                                         return_document=ReturnDocument.AFTER)
@@ -221,12 +224,26 @@ class AgentRecords:
         return [_model(Question, doc) for doc in self.db.questions.find(query).sort("seq", pymongo.ASCENDING)]
 
     def set_question(self, id: str, status: str, answer: Optional[str] = None) -> Question:
-        """Moves the question to the status, with the person's answer; resolved sets the time it was."""
+        """Moves the question to the status, with the person's answer; resolved sets the time it was. An answer
+        offered for it goes: the person has answered, or said they can't yet."""
         changes = {"status": status, "answer": answer, "resolved_at": now_iso() if status == "resolved" else None}
-        doc = self.db.questions.find_one_and_update({"id": id}, {"$set": changes}, return_document=ReturnDocument.AFTER)
+        doc = self.db.questions.find_one_and_update({"id": id}, {"$set": changes, "$unset": {"offer": ""}},
+                                                    return_document=ReturnDocument.AFTER)
         if not doc:
             raise NotFound("This question was not found.")
         return _model(Question, doc)
+
+    def set_offer(self, id: str, offer: Offer) -> Question:
+        """Keeps an answer offered for the question, in place of any offered before."""
+        doc = self.db.questions.find_one_and_update(
+            {"id": id}, {"$set": {"offer": offer.model_dump(mode="json", by_alias=True)}},
+            return_document=ReturnDocument.AFTER)
+        if not doc:
+            raise NotFound("This question was not found.")
+        return _model(Question, doc)
+
+    def clear_offer(self, id: str) -> None:
+        self.db.questions.update_one({"id": id}, {"$unset": {"offer": ""}})
 
     def set_question_why(self, id: str, why: str) -> Question:
         """Says why the question is still asked; the rules' next refresh puts their own reason back."""

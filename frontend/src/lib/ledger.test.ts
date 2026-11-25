@@ -665,3 +665,8 @@ test("a link to a row opens it beside the rows its issues name; one to a documen
   assert.deepEqual(linkedRows(rows, 4, true), [4])      // no problem of its document's: the row alone
   assert.equal(linkedRows(rows, 77, false), undefined)
 })
+
+test('the who-was-it-for question fits a shop as well as a meal', () => {
+  // Groceries the company paid for ask whose they were (25 Nov 2026): "who was there" reads oddly for a shop.
+  assert.equal(issueTitle('meal_check'), 'Who was it for?')
+})

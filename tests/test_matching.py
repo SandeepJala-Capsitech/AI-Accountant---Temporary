@@ -1363,6 +1363,19 @@ def test_the_payout_report_books_the_sales_and_fees_and_clears_the_payout():
     assert "payout_report" not in [i.code for i in line.issues]
 
 
+def test_what_a_processor_holds_is_in_payment_processor_clearing_not_debtors():
+    # The agency's Stripe charges of the last days of March 2024, not paid out until April: the customers had paid,
+    # so the £2,127 Stripe held is not owed by them. It sat on Debtors, where the payout without a report would have
+    # held it on Payment Processor Clearing (agency run, 25 Nov 2026).
+    report = dict(document_type="agent_statement", agent="Stripe", document_ref="po", date=dt.date(2026, 10, 15))
+    rows = [Transaction(description="Card sales", direction="in", gross="1200.00", account_code="4000",
+                        counterparty="Customers", **report),
+            Transaction(description="Stripe fees", direction="out", gross="36.90", account_code="7901",
+                        counterparty="Stripe", **report)]
+    tb = trial_balance(rows, SETTINGS)
+    assert (net(tb, "1250"), net(tb, "1100")) == (Decimal("1163.10"), 0)
+
+
 def _stripe_charges(month):
     """A month of Stripe's balance export as the reader saves it: each charge and its fee a document of their own."""
     return [row("agent_statement", direction, gross, f"2023-{month:02d}-{day:02d}", "Stripe Payments UK",
@@ -1643,6 +1656,15 @@ def test_a_companys_receipt_addressed_to_someone_else_is_asked_about():
         assert "addressed_to" not in dict(codes(fine))
     sole = BusinessSettings(business_name="Rosa's Cafe", business_type="sole_trader")
     assert "addressed_to" not in dict(codes(match([normalise(tv, sole)], sole)[0]))
+
+
+def test_a_credit_note_the_company_gives_its_customer_is_not_asked_whose_it_is():
+    # The paid run of 25 Nov 2026: Kestrel & Finch's £720 credit note to Northgate Dental Group, addressed to the
+    # customer as every credit note is, was flagged "If it is their own spending, recode it to Director's Loan".
+    credit = row("invoice", "out", "720.00", "2026-05-16", "Northgate Dental Group", "cn", account="4000",
+                 addressed_to="Northgate Dental Group", vat="120.00")
+    flagged, = match([normalise(credit, COMPANY)], COMPANY)
+    assert "addressed_to" not in dict(codes(flagged))
 
 
 # ─── UAT round 2, medium issues ────────────────────────────────────────────────
@@ -2104,6 +2126,21 @@ def test_a_p32_read_on_paye_with_no_owed_to_still_gives_its_allowance():
     assert (allowance.account_code, allowance.gross) == ("7006", Decimal("1447.20"))
 
 
+def test_a_p32_read_as_two_rows_books_its_allowance_row():
+    # The paid run of 25 Nov 2026: April's and June's P32s were read as two rows, the tax and NI due (£5,097.77) and
+    # "Employment Allowance claimed" (£1,776.40 in). The allowance only came off a P32 read as one row, so employer's
+    # NI was £3,223.60 too high for the year.
+    rows, uploads = _month_of_payroll("5097.77")
+    rows.append(_payroll("2210", "paye_ni", "1776.40", "p2", "Employment Allowance claimed").model_copy(
+        update={"direction": Direction.IN}))
+    uploads.append(2)
+    *_, due, allowance = matched_from(rows, uploads)
+    assert not booked(due) and due.account_code == "2210"
+    assert booked(allowance) and (allowance.account_code, allowance.direction, allowance.gross) == (
+        "7006", Direction.IN, Decimal("1776.40"))
+    assert "employment_allowance" in [i.code for i in allowance.issues]
+
+
 # ─── Bad debts (design of 2026-11-24) ─────────────────────────────────────────
 
 def _lowther(gross="4800.00", vat="800.00"):
@@ -2292,3 +2329,21 @@ def test_a_long_list_of_what_a_line_may_pay_names_the_first_few():
     said = _choices(docs)
     assert said.count("Stripe's statement") == 3 and said.endswith("or 22 more")
     assert _choices(docs[:3]).count("Stripe's statement") == 3 and "more" not in _choices(docs[:3])
+
+
+def test_an_unmatched_receipt_from_a_customer_owing_more_is_held_on_debtors():
+    # The administrator's £1,200 for Lowther's £4,800 invoice, before any write-off: more than 120 days on, so not
+    # paid automatically, and the reader coded it to Sales. Booked as a sale with no VAT, it overstated sales and left
+    # Debtors £1,200 high (agency run, 25 Nov 2026). Held on Debtors as the customer's payment on account instead.
+    invoice, back = matched(_lowther(), bank("1200.00", "2024-03-20", "LOWTHER INTERIORS IN ADMIN", direction="in",
+                                             account="4000"))
+    assert back.account_code == "1100" and not back.pays and invoice.owed == Decimal("4800.00")
+    said = dict(codes(back))
+    assert said.get("open_document") == "warning" and "sale_without_vat" not in said and "on_account" not in said
+    assert "Debtors" in only_issue(back, "open_document").message
+
+
+def test_a_receipt_for_more_than_the_customer_owes_keeps_its_account():
+    _, back = matched(_lowther(), bank("6000.00", "2024-03-20", "Lowther Interiors Ltd", direction="in",
+                                       account="4000"))
+    assert back.account_code == "4000"

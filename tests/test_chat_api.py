@@ -950,3 +950,44 @@ def test_files_sent_with_a_message_go_to_the_reviewer_whose_briefing_has_their_r
     assert statuses(events) == ["Reading 1 file…", "Reviewing the books…", "Posting the books…"]
     told = json.loads(api.model.seen[0][0].content.split(BOOKS_NOW)[1])
     assert told["overview"]["rows"] == 1 and [r["gross"] for r in told["need_a_look"]["rows"]] == ["240.00"]
+
+
+# ─── The agent offers a books question's answer for the person to confirm (design of 2026-11-25) ──────────
+
+def owing_vat_at_the_start(mongo_store, client_id: int):
+    """Northbridge opening its first year owing £27,100 of VAT, and paying £27,412 on 13 Apr 2026: the books ask
+    what the £312 was for."""
+    from helpers import add_rows, row
+    from decimal import Decimal
+    from ledgersync import questions
+    from ledgersync.models import OpeningBalances, OpeningLine
+    books.set_opening(mongo_store, client_id, OpeningBalances(lines=[
+        OpeningLine(code="1200", debit=Decimal("30000.00")), OpeningLine(code="2202", credit=Decimal("27100.00")),
+        OpeningLine(code="3200", credit=Decimal("2900.00"))]))
+    add_rows(mongo_store, client_id, row(date=dt.date(2026, 4, 13), gross=Decimal("27412.00"), account_code="2202",
+                                         document_type="statement", counterparty="HMRC", description="HMRC VAT"))
+    records = AgentRecords(mongo_store.db)
+    [q] = [q for q in questions.refresh(mongo_store, records, client_id, dt.date(2026, 4, 1)) if q.kind == "opening_vat"]
+    return q
+
+
+def test_the_agent_fills_in_a_books_question_for_the_person_to_confirm(make, mongo_store, client_id):
+    # The agency's £312 (25 Nov 2026): the client said in the chat where it went, and the books' question stayed
+    # open. Now the agent fills in its card from their words, and the person's Confirm books it.
+    q = owing_vat_at_the_start(mongo_store, client_id)
+    offer = dict(question_id=q.id, answer={"kind": "split", "lines": [{"account": "8250", "amount": "312.00"}]},
+                 sources=[{"kind": "said", "quote": "Fine to correct it this year"}, {"kind": "question"}],
+                 reason="The client says the previous accountant left an invoice off the VAT figure.")
+    api = make(call("offer_answer", **offer), say("I've filled in the VAT question's card for you to confirm."))
+    thread = new_thread(api, client_id)
+    said = "Redland & Co say a February invoice was left off their VAT figure. Fine to correct it this year."
+    [card] = [x for x in result_of(send(api, thread["id"], said))["questions"] if x["id"] == q.id]
+    assert card["status"] == "open" and card["offer"]["answer"]["lines"] == [{"account": "8250", "amount": "312.00"}]
+    assert card["offer"]["sources"][0]["quote"] == "Fine to correct it this year"
+    assert not [r for r in mongo_store.rows(client_id) if r.tx.document_type == "journal"]   # nothing booked yet
+
+    done = api.post(f"/api/chat/threads/{thread['id']}/questions/{q.id}/answer", json=card["offer"]["answer"])
+    assert done.status_code == 200, done.text
+    asked = AgentRecords(mongo_store.db).question(q.id)
+    assert asked.status == "resolved" and asked.offer is None
+    assert [r.tx.account_code for r in mongo_store.rows(client_id) if r.tx.document_type == "journal"] == ["8250"]
