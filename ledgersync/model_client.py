@@ -341,7 +341,7 @@ class ModelClient:
             return DEFAULT_RETRY_AFTER
 
     def _timeout_message(self) -> str:
-        return (f"{self._s.provider} did not answer within {self._s.model_timeout:.0f} seconds. "
+        return (f"{self._s.provider} sent nothing for {self._s.model_timeout:.0f} seconds. "
                 "Try again, or raise OPENROUTER_TIMEOUT.")
 
     def _request(self, method: str, path: str, payload: Optional[dict], timeout: float) -> dict:
@@ -353,18 +353,21 @@ class ModelClient:
         })
         with self._open(req, timeout=timeout) as resp:
             if payload is not None and payload.get("stream"):
-                return self._read_stream(resp, timeout)
+                return self._read_stream(resp)
             return json.loads(resp.read())
 
-    def _read_stream(self, resp, timeout: float) -> dict:
+    def _read_stream(self, resp) -> dict:
         """A streamed chat completion put together as an unstreamed one is: its content, finish_reason, host and usage.
         Read line by line, so it stops early: once the content ends in more than RUNAWAY_SPACE characters of
         whitespace (a model that has finished its JSON but not closed it can write nothing else to the token cap;
-        finish_reason RUNAWAY), and with a timeout once the whole answer has taken longer than `timeout`."""
+        finish_reason RUNAWAY), and once the whole answer has taken longer than model_total_timeout. Silence is
+        the connection's own timeout (model_timeout), between one piece and the next."""
         started, parts, finish, provider, usage, space = self._clock(), [], None, None, None, 0
         for raw in resp:
-            if self._clock() - started > timeout:
-                raise TimeoutError
+            if self._clock() - started > self._s.model_total_timeout:
+                raise ModelTimeout(f"{self._s.provider} had not finished reading the document after "
+                                   f"{self._s.model_total_timeout:.0f} seconds. Try again, or raise "
+                                   "OPENROUTER_TOTAL_TIMEOUT.")
             line = raw.decode("utf-8", "replace").strip()
             if not line.startswith("data:"):
                 continue

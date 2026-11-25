@@ -335,7 +335,8 @@ Settings come from environment variables or `.env` (environment variables win).
 | `OPENROUTER_MAX_OUTPUT_TOKENS` | `32768` | Longest answer on OpenRouter, thinking included: a 60-row statement thinks for about 4,000 tokens and answers in about 9,000 |
 | `OPENROUTER_PROVIDERS` | `deepinfra/bf16` | Hosts asked first, in order, comma-separated; blank lets OpenRouter choose |
 | `OPENROUTER_QUANTIZATIONS` | `bf16,fp16,fp32,fp8` | Precisions a host may run the model at; blank allows any, 4-bit (`fp4`) hosts included |
-| `OPENROUTER_TIMEOUT` | `60` | Seconds to wait for one model call, on either provider (as are the next two); a long bank or card statement can take several minutes. Was `GROQ_TIMEOUT`, still read when this isn't set |
+| `OPENROUTER_TIMEOUT` | `200` | Seconds a model call may send nothing, on either provider (as are the next three): a streamed read still arriving is never cut off. Was `GROQ_TIMEOUT`, still read when this isn't set |
+| `OPENROUTER_TOTAL_TIMEOUT` | `600` | Seconds a streamed read may take in all, a backstop: a long bank or card statement can take several minutes, and an answer that trails off into whitespace is stopped long before |
 | `OPENROUTER_REASONING_EFFORT` | `high` | The model's "thinking" (`none`, `low`, `high`); thinking keeps it to the receipt rules, `none` is about 10x faster than `low`. Was `GROQ_REASONING_EFFORT` |
 | `OPENROUTER_MAX_IMAGES` | `3` | Scanned pages per request, Groq's most; on Groq's free plan set `1`, as 3 overflow its 8K tokens a minute. Was `GROQ_MAX_IMAGES` |
 | `GROQ_API_KEY` | — | Your Groq key; put it in `.env`. Used when there is no OpenRouter key |

@@ -30,7 +30,7 @@ def test_chat_asks_the_configured_model_for_strict_json():
     assert client.chat_json(MSG, SCHEMA) == '{"transactions": [1]}'
     req, timeout = http.requests[0]
     body = http.payload()
-    assert req.full_url == "https://api.groq.com/openai/v1/chat/completions" and timeout == 60.0
+    assert req.full_url == "https://api.groq.com/openai/v1/chat/completions" and timeout == 200.0
     assert req.get_header("Authorization") == f"Bearer {KEY}"
     assert req.get_header("User-agent").startswith("LedgerSync")   # urllib's default agent can be blocked
     assert (body["model"], body["temperature"], body["max_completion_tokens"], body["reasoning_effort"]) == (
@@ -137,12 +137,27 @@ def test_a_trailing_off_answer_that_cannot_be_closed_is_an_error():
     assert info.value.code == "ai_output_invalid"
 
 
-def test_a_streamed_answer_slower_than_the_timeout_in_all_is_a_timeout():
-    client, _, now, _ = make_client(streamed('{"transactions": [', '1', ']}', finish_reason="stop"), settings=OPENROUTER)
-    ticks = iter([0.0, 30.0, 61.0, 61.0])
+def test_a_streamed_answer_still_arriving_after_the_silence_limit_is_read():
+    # A long statement keeps sending: only silence (OPENROUTER_TIMEOUT, 200 s) is a reason to give up on it.
+    client, _, _, _ = make_client(streamed('{"transactions": [', '1', ']}', finish_reason="stop"), settings=OPENROUTER)
+    ticks = iter([0.0, 150.0, 300.0, 450.0, 450.0])
     client._clock = lambda: next(ticks)
-    with pytest.raises(ModelTimeout):
+    assert client.chat_json(MSG, SCHEMA) == '{"transactions": [1]}'
+
+
+def test_a_streamed_answer_past_the_overall_cap_is_a_timeout():
+    client, _, _, _ = make_client(streamed('{"transactions": [', '1', ']}', finish_reason="stop"), settings=OPENROUTER)
+    ticks = iter([0.0, 300.0, 601.0, 601.0])
+    client._clock = lambda: next(ticks)
+    with pytest.raises(ModelTimeout) as info:
         client.chat_json(MSG, SCHEMA)
+    assert "600 seconds" in info.value.message and "OPENROUTER_TOTAL_TIMEOUT" in info.value.message
+
+
+def test_the_silence_limit_is_the_wait_for_each_piece_of_the_answer():
+    client, http, _, _ = make_client(chat_answer('{"transactions": []}'), settings=OPENROUTER)
+    client.chat_json(MSG, SCHEMA)
+    assert http.requests[0][1] == 200.0
 
 
 def test_an_empty_answer_is_an_error():
@@ -266,7 +281,7 @@ def test_provider_refusals_become_clear_errors(status, error, code, words):
     (http_error(401), "OpenRouter rejected the API key. Check OPENROUTER_API_KEY in .env"),
     (http_error(404), "OpenRouter does not offer the model 'qwen/qwen3.8-27b'. Check OPENROUTER_MODEL in .env"),
     (http_error(429, retry_after=120), "OpenRouter's rate limit is used up"),
-    (TimeoutError(), "OpenRouter did not answer within 60 seconds"),
+    (TimeoutError(), "OpenRouter sent nothing for 200 seconds"),
 ])
 def test_openrouter_errors_name_openrouter_and_its_settings(outcome, words):
     client, _, _, _ = make_client(outcome, settings=OPENROUTER)

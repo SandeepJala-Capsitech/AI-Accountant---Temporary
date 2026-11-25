@@ -14,7 +14,7 @@ ENV_NAMES = (
     "LEDGERSYNC_BUSINESS_NAME",
     "OPENROUTER_API_KEY", "OPENROUTER_MODEL", "OPENROUTER_CHAT_MODEL", "OPENROUTER_BASE_URL", "OPENROUTER_MAX_OUTPUT_TOKENS",
     "OPENROUTER_PROVIDERS", "OPENROUTER_QUANTIZATIONS",
-    "OPENROUTER_TIMEOUT", "OPENROUTER_REASONING_EFFORT", "OPENROUTER_MAX_IMAGES",
+    "OPENROUTER_TIMEOUT", "OPENROUTER_TOTAL_TIMEOUT", "OPENROUTER_REASONING_EFFORT", "OPENROUTER_MAX_IMAGES",
     "GROQ_API_KEY", "GROQ_MODEL", "GROQ_BASE_URL", "GROQ_MAX_OUTPUT_TOKENS",
     # The names the three settings above had while the app ran on Groq: still read when the new name isn't set.
     "GROQ_TIMEOUT", "GROQ_REASONING_EFFORT", "GROQ_MAX_IMAGES",
@@ -86,9 +86,11 @@ class Settings:
     openrouter_max_output_tokens: int = 32768
     openrouter_providers: tuple[str, ...] = ("deepinfra/bf16",)
     openrouter_quantizations: tuple[str, ...] = ("bf16", "fp16", "fp32", "fp8")
-    # How a document is read, on either provider: seconds to wait for one model call, the model's thinking,
-    # and scanned pages per request.
-    model_timeout: float = 60.0
+    # How a document is read, on either provider: seconds the model may send nothing (a streamed answer still
+    # arriving is not cut off; an unstreamed one is waited for this long), seconds a read may take in all, the
+    # model's thinking, and scanned pages per request.
+    model_timeout: float = 200.0
+    model_total_timeout: float = 600.0   # a backstop: an answer that trails off is stopped long before
     reasoning_effort: str = "high"
     max_images: int = 3
     groq_api_key: str = field(default="", repr=False)   # never printed or logged
@@ -165,6 +167,7 @@ class Settings:
             openrouter_providers=_names(env.get("OPENROUTER_PROVIDERS"), d.openrouter_providers),
             openrouter_quantizations=_names(env.get("OPENROUTER_QUANTIZATIONS"), d.openrouter_quantizations),
             model_timeout=_number(env, _named(env, "OPENROUTER_TIMEOUT", "GROQ_TIMEOUT"), d.model_timeout, float),
+            model_total_timeout=_number(env, "OPENROUTER_TOTAL_TIMEOUT", d.model_total_timeout, float),
             reasoning_effort=env.get(_named(env, "OPENROUTER_REASONING_EFFORT", "GROQ_REASONING_EFFORT"),
                                      d.reasoning_effort).strip(),
             max_images=_number(env, _named(env, "OPENROUTER_MAX_IMAGES", "GROQ_MAX_IMAGES"), d.max_images),

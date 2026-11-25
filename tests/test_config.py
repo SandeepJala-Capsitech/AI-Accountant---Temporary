@@ -30,7 +30,7 @@ def test_env_overrides():
 def test_groq_settings_have_working_defaults():
     s = Settings.from_env({})
     assert (s.groq_base_url, s.groq_model) == ("https://api.groq.com/openai/v1", "qwen/qwen3.8-27b")
-    assert (s.model_timeout, s.groq_max_output_tokens, s.reasoning_effort, s.max_images) == (60.0, 8192, "high", 3)
+    assert (s.model_timeout, s.groq_max_output_tokens, s.reasoning_effort, s.max_images) == (200.0, 8192, "high", 3)
     assert (s.groq_api_key, s.openrouter_api_key, s.business_name, s.health_ttl) == ("", "", "", 300.0)
 
 
@@ -53,6 +53,12 @@ def test_how_a_document_is_read_has_openrouter_names_and_still_reads_the_old_gro
     both = Settings.from_env({"OPENROUTER_TIMEOUT": "120", "GROQ_TIMEOUT": "600",
                               "OPENROUTER_REASONING_EFFORT": "", "GROQ_REASONING_EFFORT": "low"})
     assert (both.model_timeout, both.reasoning_effort) == (120.0, "")   # the new name wins, even when blank
+
+
+def test_a_read_may_be_silent_200_seconds_and_take_600_in_all():
+    assert (Settings.from_env({}).model_timeout, Settings.from_env({}).model_total_timeout) == (200.0, 600.0)
+    s = Settings.from_env({"OPENROUTER_TIMEOUT": "90", "OPENROUTER_TOTAL_TIMEOUT": "900"})
+    assert (s.model_timeout, s.model_total_timeout) == (90.0, 900.0)
 
 
 def test_without_an_openrouter_key_groq_reads_the_documents():
