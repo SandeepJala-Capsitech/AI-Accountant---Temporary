@@ -65,6 +65,25 @@ def test_a_first_year_is_worked_out_from_itself_so_far():
     assert got.overall == D("600.00") and "this year so far" in got.basis
 
 
+def test_a_sale_and_the_payment_of_it_count_once():
+    # The agency run: each invoice and the bank line that paid it were both counted, so income came to £1.27m and
+    # profit to £569,094.74 against the books' £138,818.83. A payment posts against Debtors or Creditors, not to
+    # income or costs.
+    from ledgersync.matching import match
+    settings = BusinessSettings()
+    def doc(day, gross, account, direction, kind, who):
+        return normalise(Transaction(date=day, gross=gross, account_code=account, direction=direction,
+                                     document_type=kind, counterparty=who, document_ref=f"{who}-{kind}"), settings)
+    rows = match([doc(dt.date(2026, 6, 1), "15000", "4000", "in", "invoice", "Brightwater"),
+                  doc(dt.date(2026, 6, 20), "15000", "4000", "in", "statement", "Brightwater"),
+                  doc(dt.date(2026, 7, 1), "9000", "7100", "out", "invoice", "Harbourside"),
+                  doc(dt.date(2026, 7, 10), "9000", "7100", "out", "statement", "Harbourside")], settings)
+    assert rows[1].paid_against == "1100" and rows[3].paid_against == "2100"   # the bank lines pay the documents
+    got = year_levels(rows, [1, 1, 1, 1], YEARS, 1, None)
+    # 15,000 less 9,000, in the year's first 3 months (it starts 2 May; the latest row is July): £24,000 a year
+    assert got.figure == D("24000.00") and got.overall == D("1200.00")
+
+
 # Presentation questions: asked from the client's trivial level, left below it with a note saying so.
 from ledgersync.materiality import Levels, decide  # noqa: E402
 

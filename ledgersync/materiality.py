@@ -63,11 +63,13 @@ def levels(income: Decimal, costs: Decimal, *, months: int = 12, which: str,
 
 
 def _figures(rows: list[Transaction], placed: list[int], n: int) -> tuple[Decimal, Decimal, Optional[int]]:
-    """Year n's booked income and costs, net of VAT, and the month of the year its latest dated row is in (1-12)."""
+    """Year n's booked income and costs, net of VAT, and the month of the year its latest dated row is in (1-12). Each
+    row counts on the account it posts to, as the trial balance does: a payment of an invoice or a bill posts against
+    Debtors or Creditors (paid_against), so the sale or the cost counts once, from its document."""
     income = costs = Decimal(0)
     latest = None
     for tx, p in zip(rows, placed):
-        account = BY_CODE.get(tx.account_code)
+        account = BY_CODE.get(tx.paid_against or tx.account_code)
         if p != n or account is None or not booked(tx):
             continue
         net = tx.gross - (tx.vat_posted or 0)
