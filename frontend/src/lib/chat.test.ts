@@ -5,7 +5,7 @@ import { ApiError } from './api.ts'
 import {
   agentDecisions, answerQuestion, attentionHref, changedFields, effectLine, fileStatus, formatMoney, groupThreads, hasResult, looksLikeStatement, parseEvents,
   canBookWithout, openingAmount, questionControl, questionState, splitTotal, shouldPoll, readStatus, ruleBadge, retryFiles, shownAccounts, streamMessage, suspenseLabel, uploadForQuestion,
-  withQuestion, afterDelete, deleteQuestion, deleteThread, newTitle, renameThread,
+  waitingByYear, withQuestion, afterDelete, deleteQuestion, deleteThread, newTitle, renameThread,
   type AnswerResult, type ChatEvent, type ChatThread, type Decision, type PostResult, type PostedTrialBalance, type Question,
 } from './chat.ts'
 
@@ -278,6 +278,7 @@ test('hasResult and readStatus', () => {
 
 test('the Overview link starts a chat that asks what needs attention', () => {
   assert.equal(attentionHref(7), '/chat?client=7&ask=What%20needs%20my%20attention%3F')
+  assert.equal(attentionHref(7, '2020-11-02'), '/chat?client=7&year=2020-11-02&ask=What%20needs%20my%20attention%3F')
 })
 
 test('a chat is polled only while a turn runs that this page did not send', () => {
@@ -371,4 +372,15 @@ test('a typed title is trimmed and kept to the API\'s length; an empty or unchan
   assert.equal(newTitle('   ', 'New chat'), null)
   assert.equal(newTitle(' New chat ', 'New chat'), null)
   assert.equal(newTitle('x'.repeat(80), 'New chat'), 'x'.repeat(60))
+})
+
+test('waiting questions are counted by year: the one on show, and each other year with some', () => {
+  // mind Limited: 22 waited in the year to 1 Nov 2021, and the overview of the year to 1 Nov 2027 counted them as its own.
+  const years = [{ start: '2020-11-02', end: '2021-11-01', label: 'Year to 1 Nov 2021', closed: false },
+                 { start: '2026-11-02', end: '2027-11-01', label: 'Year to 1 Nov 2027', closed: false }]
+  const q = (year_start: string, status: Question['status']) => ({ ...question('date'), year_start, status })
+  const asked = [q('2020-11-02', 'open'), q('2020-11-02', 'waiting'), q('2020-11-02', 'resolved'), q('2026-11-02', 'open')]
+  assert.deepEqual(waitingByYear(asked, years, '2026-11-02'),
+                   { here: 1, elsewhere: [{ start: '2020-11-02', label: 'Year to 1 Nov 2021', count: 2 }] })
+  assert.deepEqual(waitingByYear([], years, '2026-11-02'), { here: 0, elsewhere: [] })
 })

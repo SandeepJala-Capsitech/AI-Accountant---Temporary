@@ -6,7 +6,23 @@ import { longDate } from './ledger.ts'
 
 // What the Overview's "N things need you" link asks in a new chat, so the open items show as cards in the reply.
 export const ATTENTION = 'What needs my attention?'
-export const attentionHref = (clientId: number) => `/chat?client=${clientId}&ask=${encodeURIComponent(ATTENTION)}`
+// The chat about what needs attention, on the year named (the year whose questions wait) or, with none, the one the
+// app picks: the earliest open year with questions waiting.
+export const attentionHref = (clientId: number, yearStart?: string) =>
+  `/chat?client=${clientId}${yearStart ? `&year=${yearStart}` : ''}&ask=${encodeURIComponent(ATTENTION)}`
+
+// The questions waiting for an answer (open or waiting), counted for the year on show (here) and for each other year
+// that has some, in the order of the years.
+export function waitingByYear(questions: Question[], years: { start: string; label: string }[], shown: string):
+    { here: number; elsewhere: { start: string; label: string; count: number }[] } {
+  const counts = new Map<string, number>()
+  for (const q of questions) if (q.status !== 'resolved') counts.set(q.year_start, (counts.get(q.year_start) ?? 0) + 1)
+  return {
+    here: counts.get(shown) ?? 0,
+    elsewhere: years.filter(y => y.start !== shown && counts.has(y.start))
+                    .map(y => ({ start: y.start, label: y.label, count: counts.get(y.start)! })),
+  }
+}
 
 // Money is a string everywhere below, like the rest of the API.
 export interface ChatThread {
@@ -386,7 +402,8 @@ const json = (method: string, body: unknown): RequestInit => ({
 // All threads, or one client's.
 export const listThreads = (clientId?: number) =>
   request<ChatThread[]>(clientId ? `/api/chat/threads?client_id=${clientId}` : '/api/chat/threads')
-export const newThread = (clientId: number) => request<ChatThread>('/api/chat/threads', json('POST', { client_id: clientId }))
+export const newThread = (clientId: number, yearStart?: string) =>
+  request<ChatThread>('/api/chat/threads', json('POST', yearStart ? { client_id: clientId, year_start: yearStart } : { client_id: clientId }))
 export const getThread = (id: string) => request<ThreadDetail>(`/api/chat/threads/${id}`)
 // Gives a chat a new title. A chat a person has named keeps that name; only a "New chat" is titled by its first message.
 export const renameThread = (id: string, title: string) =>

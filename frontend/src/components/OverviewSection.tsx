@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import ClientDialog from '@/components/ClientDialog'
 import { useClientYear } from '@/components/ClientYearContext'
-import { attentionHref, clientQuestions } from '@/lib/chat'
+import { attentionHref, clientQuestions, waitingByYear, type Question } from '@/lib/chat'
 import { postedTrialBalance } from '@/lib/api'
 import { changeClient, getSummary, type ClientFields, type YearSummary } from '@/lib/clients'
 import { BUSINESS_TYPES, transactionCount } from '@/lib/clientRules'
@@ -18,18 +18,18 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 // A client's details, and how the year stands: whether it is open, what needs review or is unpaid, how the bank
 // agrees with the statements, and whether the trial balance balances.
 export default function OverviewSection() {
-  const { client, year, ledger, reload } = useClientYear()
+  const { client, year, years, ledger, reload } = useClientYear()
   const [summary, setSummary] = useState<YearSummary | null>(null)
   const [error, setError] = useState('')
   const [editing, setEditing] = useState(false)
-  const [needYou, setNeedYou] = useState(0)             // open and waiting questions, from every chat on the client
+  const [asked, setAsked] = useState<Question[]>([])    // the client's questions, every year's, from every chat
   const [reviewLine, setReviewLine] = useState<string | null>(null)   // the AI review's last run; null when it has had none
   const [unposted, setUnposted] = useState<number | null>(null)   // changes not in the posted ledger; null until known
 
   // What the accountant chat has to say about the client; a failure just leaves these out.
   useEffect(() => {
     let current = true
-    clientQuestions(client.id).then(qs => { if (current) setNeedYou(qs.filter(q => q.status !== 'resolved').length) }).catch(() => {})
+    clientQuestions(client.id).then(qs => { if (current) setAsked(qs) }).catch(() => {})
     listReviews(client.id, year.start).then(runs => {
       if (!current) return
       const done = newestFirst(runs).filter(r => r.status === 'done')
@@ -73,6 +73,8 @@ export default function OverviewSection() {
 
   const ledgerNote = postedLedgerNote(unposted)
 
+  const waiting = waitingByYear(asked, years, year.start)
+
   return (
     <>
       <section className="card section">
@@ -102,9 +104,12 @@ export default function OverviewSection() {
         )}
         {error && <div className="notice notice-error">{error}</div>}
         {!summary && !error && <p className="muted">Loading the summary…</p>}
-        {needYou > 0 && (
-          <p><Link href={attentionHref(client.id)} className="link-btn">{needYou} {needYou === 1 ? 'question is' : 'questions are'} waiting for your answer</Link></p>
+        {waiting.here > 0 && (
+          <p><Link href={attentionHref(client.id, year.start)} className="link-btn">{waiting.here} {waiting.here === 1 ? 'question is' : 'questions are'} waiting for your answer</Link></p>
         )}
+        {waiting.elsewhere.map(other => (
+          <p key={other.start}><Link href={attentionHref(client.id, other.start)} className="link-btn">{other.count} {other.count === 1 ? 'question is' : 'questions are'} waiting in the {other.label.charAt(0).toLowerCase() + other.label.slice(1)}</Link></p>
+        ))}
         {reviewLine && <p><Link href={sectionHref(client.id, year.start, 'ai-review')} className="link-btn">{reviewLine}</Link></p>}
         {summary?.missing_paperwork?.length ? (
           <div className="notice notice-warn">

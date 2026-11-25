@@ -384,11 +384,18 @@ class Chat:
         "New chat" until its first message."""
         require_active(self.store.get_client(client_id))
         if year_start is None:
-            year_start = _open_year(self.store, client_id)
+            year_start = self._year_waiting(client_id) or _open_year(self.store, client_id)
         elif not any(y.start == year_start and not y.closed
                      for y in books.years_of(self.store, client_id, dt.date.today())):
             raise InvalidInput(f"{year_start:%-d %b %Y} isn't one of this client's open years.")
         return self.records.create_thread(client_id, year_start, NEW_CHAT)
+
+    def _year_waiting(self, client_id: int) -> Optional[dt.date]:
+        """The earliest open year with questions waiting for an answer, where a chat about what needs attention
+        belongs (books caught up from years back); None when no open year has any."""
+        waiting = {q.year_start for q in self.records.questions(client_id, None)}
+        return next((y.start for y in books.years_of(self.store, client_id, dt.date.today())
+                     if not y.closed and y.start in waiting), None)
 
     def detail(self, thread: ChatThread) -> ThreadDetail:
         """The chat's messages from its memory, with each turn's files on the person's message and its result on the

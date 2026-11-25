@@ -28,11 +28,11 @@ function NewChat() {
   const linked = useRef(false)                 // a link's client is picked once, even when effects run twice
 
   // A link's chat replaces the link in the history, so Back from the chat does not make another.
-  const pick = async (client: ClientSummary, ask?: string, fromLink = false) => {
+  const pick = async (client: ClientSummary, ask?: string, fromLink = false, yearStart?: string) => {
     setBusy(true)
     setError('')
     try {
-      const thread = await newThread(client.id)
+      const thread = await newThread(client.id, yearStart)
       await reloadThreads()
       const to = `/chat/${thread.id}${ask ? `?ask=${encodeURIComponent(ask)}` : ''}`
       if (fromLink) router.replace(to)
@@ -43,13 +43,14 @@ function NewChat() {
     }
   }
 
-  // A link (the Overview's) names the client and what to ask; the chat is made on that client without the picker.
+  // A link (the Overview's) names the client, what to ask and perhaps the year; the chat is made on that client
+  // without the picker.
   useEffect(() => {
     const id = params.get('client')
     const client = clients?.find(c => String(c.id) === id)
     if (!client || linked.current) return
     linked.current = true
-    pick(client, params.get('ask') ?? undefined, true)
+    pick(client, params.get('ask') ?? undefined, true, params.get('year') ?? undefined)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clients, params])
 

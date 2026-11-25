@@ -160,6 +160,21 @@ def test_a_new_thread_can_name_an_earlier_open_year(make, mongo_store):
     assert refused.status_code == 422 and "isn't one of" in refused.json()["detail"]["message"]
 
 
+def test_a_new_thread_with_no_year_opens_on_the_year_whose_questions_wait(make, mongo_store):
+    # mind Limited: 22 questions waited in the year to 1 Nov 2021, but "What needs my attention?" opened on today's
+    # empty year, and the agent said nothing needed attention.
+    from ledgersync.models import QuestionDraft
+    api = make()
+    client = ledger.add_client(mongo_store, ClientFields(name="mind Limited", business_type="limited_company",
+                                                         contact_name="Sandy", first_year_end=dt.date(2024, 3, 31))).id
+    assert new_thread(api, client)["year_start"] != "2023-04-01"   # no questions anywhere: the year holding today
+    records = AgentRecords(mongo_store.db)
+    for year, key in (("2024-04-01", "a"), ("2023-04-01", "b")):
+        records.upsert_question(QuestionDraft(client_id=client, year_start=dt.date.fromisoformat(year), row_ids=[],
+                                              kind="other", text="Which account?", why="Unclear.", source="rules"), key)
+    assert new_thread(api, client)["year_start"] == "2023-04-01"   # the earliest year with questions waiting
+
+
 def test_rename_and_delete_thread(make, mongo_store, client_id):
     api = make(say("Done."))
     thread = new_thread(api, client_id)
