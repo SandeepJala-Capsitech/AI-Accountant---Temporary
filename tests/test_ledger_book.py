@@ -168,10 +168,32 @@ def test_no_vat_leg_for_a_client_not_vat_registered(store, records, acme, monkey
     assert counts(records) == (0, 0)
 
 
-def test_rows_that_need_fixing_post_nothing(store, records, acme_with_a_non_gbp_row):
-    result = ledger_book.post(store, records, acme_with_a_non_gbp_row, YEAR_1)
-    assert result.batch_id is None and result.problems and "Read as USD 50.00" in result.problems[0]
-    assert counts(records) == (0, 0)
+def test_a_row_that_needs_fixing_is_left_out_and_the_rest_post(store, records, acme):
+    # The agency run: one invoice read as USD 38.31 stopped every posting after May, for the whole year.
+    add_rows(store, acme, stationery(), row(date=date(2025, 6, 2), gross=D("50.00"), currency="USD"))
+    result = ledger_book.post(store, records, acme, YEAR_1)
+    assert result.batch_id is not None and not result.problems and result.entries_added == 3
+    assert len(result.left_out) == 1 and "Read as USD 50.00" in result.left_out[0]
+    assert {d["code"] for d in entries(records, acme)} == {"7504", "2201", "1200"}
+    assert ledger_book.unposted_changes(store, records, acme, YEAR_1) == 0   # the one left can't post until fixed
+
+
+def test_reverse_charge_vat_rounded_to_the_penny_posts(store, records, acme):
+    # The agency run: Tallgrass's $49 a month came to £39.28; its reverse-charge VAT, 20% of that, is £7.856, booked
+    # as £7.86, which the check took as more than the fifth it allows, and the whole batch was refused.
+    add_rows(store, acme, row(date=date(2025, 9, 15), gross=D("39.28"), account_code="8201", reverse_charge=True,
+                              document_type="invoice", counterparty="Tallgrass Metrics Inc.", vat=D("0.00")))
+    result = ledger_book.post(store, records, acme, YEAR_1)
+    assert result.batch_id is not None and not result.problems
+    assert {d["code"]: d["debit"].to_decimal() for d in entries(records, acme)}.get("2201") == D("7.86")
+
+
+def test_a_posted_row_that_comes_to_need_fixing_keeps_what_it_posted(store, records, acme):
+    add_rows(store, acme, stationery())
+    ledger_book.post(store, records, acme, YEAR_1)
+    store.patch_row(acme, first_row_id(store, acme), {"currency": "USD"})
+    result = ledger_book.post(store, records, acme, YEAR_1)
+    assert result.batch_id is None and result.left_out and counts(records) == (3, 1)   # nothing reversed
 
 
 def test_posted_trial_balance_includes_opening(store, records, acme):
@@ -257,7 +279,7 @@ def test_the_posted_trial_balance_shows_while_rows_need_fixing(store, records, a
     add_rows(store, acme, row(date=date(2025, 6, 2), gross=D("50.00"), currency="USD"))   # needs converting
     tb = ledger_book.posted_trial_balance(store, records, acme, YEAR_1)
     assert (net(tb, "7504"), net(tb, "1200")) == (D("50.00"), D("-60.00")) and tb.problems
-    assert ledger_book.unposted_changes(store, records, acme, YEAR_1) == 1   # the one row needing fixing
+    assert ledger_book.unposted_changes(store, records, acme, YEAR_1) == 0   # the one row needing fixing can't post
     later = ledger_book.posted_trial_balance(store, records, acme, YEAR_2)   # its opening can't be worked out
     assert later.lines == [] and later.problems and later.problems[0].startswith("Fix the earlier years first")
 

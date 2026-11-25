@@ -576,14 +576,19 @@ def _first_of(code: str) -> str:
     return code[:3] + "0"
 
 
-def booked_rows(store: MongoStore, client_id: int, year_start: dt.date) -> list[tuple[int, Transaction]]:
+def booked_rows(store: MongoStore, client_id: int, year_start: dt.date,
+                held: Optional[dict[int, list[str]]] = None) -> list[tuple[int, Transaction]]:
     """The year's booked rows, each with its stored row id, matched exactly as its trial balance matches them;
-    InvalidTransactions (422) while any of them needs fixing, as the trial balance raises."""
+    InvalidTransactions (422) while any of them needs fixing, as the trial balance raises. With held (a dict) those
+    rows are left out instead, and held gets each one's row id with its problems."""
     b = _books(store, client_id)
     n = b.index(year_start)
+    found: Optional[list] = [] if held is not None else None
     posted = matched_rows([row.tx for row in b.stored], b.settings_in(n), b.read, b.apart,
                           keep=[p == n for p in b.placed], open_items=b.unpaid, name_days=_name_days(b),
-                          upload_ids=[row.upload_id for row in b.stored])
+                          upload_ids=[row.upload_id for row in b.stored], skip_errors=held is not None, held=found)
+    if held is not None:
+        held.update({b.stored[k].id: problems for k, _, problems in found})
     return [(b.stored[k].id, tx) for k, tx in posted]
 
 

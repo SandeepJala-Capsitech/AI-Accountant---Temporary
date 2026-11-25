@@ -395,6 +395,7 @@ class PostResult(BaseModel):
     total_debits: Decimal
     total_credits: Decimal
     problems: list[str] = Field(default_factory=list)
+    left_out: list[str] = Field(default_factory=list)   # the rows needing a fix, not posted until they are fixed
 
 
 class ClientFields(BaseModel):

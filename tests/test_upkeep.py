@@ -93,10 +93,10 @@ def test_a_failing_settle_is_logged_not_raised(store, records, locks, acme_with_
     assert any(r.name == "ledgersync.upkeep" and r.exc_info for r in caplog.records)
 
 
-def test_settle_with_a_blocked_year_returns_problems(store, records, locks, acme_with_a_non_gbp_row):
+def test_settle_with_a_row_needing_a_fix_says_it_is_left_out(store, records, locks, acme_with_a_non_gbp_row):
     out = upkeep.after_change(store, records, locks, change(acme_with_a_non_gbp_row), today=TODAY)
     result = out[YEAR_1]
-    assert result.problems and result.batch_id is None
+    assert result.left_out and not result.problems and result.batch_id is None   # its only row, so nothing to post
 
 
 def test_settle_runs_inside_the_clients_lock(store, records, acme_with_year_one, monkeypatch):

@@ -76,10 +76,11 @@ def matched_rows(transactions: list[Transaction], settings: BusinessSettings,
                  read: Optional[list[Optional[Decimal]]] = None, apart: Optional[list[set[int]]] = None, *,
                  keep: Optional[list[bool]] = None, open_items: Sequence[OpenItem] = (),
                  name_days: Optional[list] = None, upload_ids: Optional[list] = None,
-                 skip_errors: bool = False) -> list[tuple[int, Transaction]]:
+                 skip_errors: bool = False, held: Optional[list] = None) -> list[tuple[int, Transaction]]:
     """The rows trial_balance posts, each with its place in transactions, matched as it matches them (see there);
     InvalidTransactions while any of them has an error. name_days: each row's file name's day; upload_ids: each row's
-    upload (matching.match)."""
+    upload (matching.match). With skip_errors the rows with an error are left out instead, and held (when given)
+    gets each of them, with its place and its problems."""
     ready = match([normalise(tx, settings) for tx in transactions], settings, read=read, apart=apart,
                   open_items=open_items, name_days=name_days, upload_ids=upload_ids)
     posted = [(n, tx) for n, tx in enumerate(ready)   # a quote or the like waits for Include
@@ -87,6 +88,9 @@ def matched_rows(transactions: list[Transaction], settings: BusinessSettings,
     problems = [f"{_named(tx)}: {issue.message}" for n, tx in posted
                 for issue in tx.issues if issue.severity == "error"]
     if problems and skip_errors:   # shown without them, for a page that says which are left out
+        if held is not None:
+            held.extend((n, tx, [f"{_named(tx)}: {i.message}" for i in tx.issues if i.severity == "error"])
+                        for n, tx in posted if any(i.severity == "error" for i in tx.issues))
         return [(n, tx) for n, tx in posted if not any(issue.severity == "error" for issue in tx.issues)]
     if problems:
         raise InvalidTransactions(f"{len(problems)} problem(s) must be fixed before the trial balance: "

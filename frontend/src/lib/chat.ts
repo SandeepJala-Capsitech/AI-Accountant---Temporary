@@ -86,6 +86,7 @@ export interface PostResult {
   total_debits: string
   total_credits: string
   problems: string[]         // why nothing was written, when the batch failed its checks
+  left_out?: string[]        // rows needing a fix: not posted until they are fixed
 }
 
 // How a file the person added was read: shown as its chip, and kept with the message.
@@ -345,7 +346,9 @@ export function effectLine(a: AnswerResult): string | null {
   if (!a.trial_balance) return null
   const held = a.trial_balance.suspense.length
   const suspense = held === 0 ? 'nothing in Suspense' : `${held} ${held === 1 ? 'item' : 'items'} in Suspense`
-  return `Posted · ${a.trial_balance.is_balanced ? 'balanced' : 'not balanced'} · ${suspense}`
+  const out = a.post?.left_out?.length ?? 0
+  const left = out === 0 ? '' : ` · ${out} ${out === 1 ? 'row' : 'rows'} left out until ${out === 1 ? 'it is' : 'they are'} fixed`
+  return `Posted · ${a.trial_balance.is_balanced ? 'balanced' : 'not balanced'} · ${suspense}${left}`
 }
 
 // The files a retry sends again: those not read the first time, each with its bank account. A file read once is

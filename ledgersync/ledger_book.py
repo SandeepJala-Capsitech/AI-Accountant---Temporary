@@ -12,7 +12,7 @@ import json
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Iterable, Optional, Sequence
 from uuid import uuid4
 
@@ -63,12 +63,14 @@ def _ensure_indexes(db: Database) -> None:
     _INDEXED.add(db.name)
 
 
-def _ruled(store: MongoStore, client_id: int, year_start: dt.date) -> tuple[BusinessSettings, Ruled]:
+def _ruled(store: MongoStore, client_id: int, year_start: dt.date,
+           held: Optional[dict[int, list[str]]] = None) -> tuple[BusinessSettings, Ruled]:
     """The client's settings, and the year's booked rows by row id with the document rule each falls under;
-    InvalidTransactions while rows need fixing."""
+    InvalidTransactions while rows need fixing, unless held (a dict) is given: then those rows are left out and held
+    gets their ids with their problems (books.booked_rows)."""
     settings = settings_for(store.get_client(client_id))
     return settings, [(row_id, tx, document_rule(tx, settings))
-                      for row_id, tx in books.booked_rows(store, client_id, year_start)]
+                      for row_id, tx in books.booked_rows(store, client_id, year_start, held)]
 
 
 def wanted_journal(store: MongoStore, client_id: int, year_start: dt.date,
@@ -127,17 +129,20 @@ def _posted(db: Database, client_id: int, year_start: dt.date) -> _Posted:
                    complete=complete)
 
 
-def _changed(wanted: dict[int, list[JournalLine]], posted: _Posted) -> list[int]:
+def _changed(wanted: dict[int, list[JournalLine]], posted: _Posted, held: Iterable[int] = ()) -> list[int]:
     """The rows whose wanted lines come to something other than what is posted for them, by account: changed rows,
-    new rows, and rows posted that are no longer booked."""
-    return sorted(r for r in set(wanted) | set(posted.net) if _net(_legs(wanted.get(r, []))) != posted.net.get(r, {}))
+    new rows, and rows posted that are no longer booked. A row held for a fix (held) is none of these: what it posted
+    stays as it is until it is fixed."""
+    held = set(held)
+    return sorted(r for r in set(wanted) | set(posted.net)
+                  if r not in held and _net(_legs(wanted.get(r, []))) != posted.net.get(r, {}))
 
 
-def _new_lines(wanted: dict[int, list[JournalLine]], posted: _Posted) -> list[dict]:
-    """For each changed row, the reversal of each line it has posted (debit and credit swapped), then its wanted
-    lines."""
+def _new_lines(wanted: dict[int, list[JournalLine]], posted: _Posted, held: Iterable[int] = ()) -> list[dict]:
+    """For each changed row (_changed), the reversal of each line it has posted (debit and credit swapped), then its
+    wanted lines."""
     lines = []
-    for r in _changed(wanted, posted):
+    for r in _changed(wanted, posted, held):
         lines += [dict(row_id=r, code=d["code"], description=d["description"], debit=d["credit"], credit=d["debit"],
                        reverses=d["_id"]) for d in posted.live.get(r, [])]
         lines += [dict(row_id=r, code=l.code, description=l.description, debit=l.debit.quantize(PENNY),
@@ -185,8 +190,8 @@ def _problems(lines: list[dict], rows: dict[int, Transaction], vat_registered: b
                 problems.append(f"Row {r}: VAT goes only on 2200 or 2201, not {l['code']}.")
             elif not vat_registered:
                 problems.append(f"Row {r}: the client isn't VAT registered, so no VAT goes on {l['code']}.")
-            elif amount > max(most_vat(tx.gross), tx.gross / 5):   # a fifth: the reverse charge, or VAT charged
-                                                                    # before a voucher came off
+            elif amount > max(most_vat(tx.gross), (tx.gross / 5).quantize(PENNY, ROUND_HALF_UP)):
+                # a fifth, to the penny as VAT is booked: the reverse charge, or VAT charged before a voucher came off
                 problems.append(f"Row {r}: VAT of £{amount} is more than a sixth of its £{tx.gross}.")
     debits, credits = sum((l["debit"] for l in lines), ZERO), sum((l["credit"] for l in lines), ZERO)
     if debits != credits:
@@ -218,19 +223,21 @@ def post(store: MongoStore, records: AgentRecords, client_id: int, year_start: d
     _ensure_indexes(db)
     if any(c.start == year_start for c in store.get_client(client_id).closed_years):
         return _nothing(["That year is closed."])   # closed is closed: nothing is posted to it
+    held: dict[int, list[str]] = {}   # rows needing a fix: left as they are, and listed
     try:
-        settings, ruled = _ruled(store, client_id, year_start)
-    except InvalidTransactions as exc:
+        settings, ruled = _ruled(store, client_id, year_start, held)
+    except InvalidTransactions as exc:   # an earlier year's: this year's opening can't be worked out
         return _nothing(exc.problems)
+    left_out = [p for problems in held.values() for p in problems]
     posted = _posted(db, client_id, year_start)
     if not posted.complete:   # its entries would be missing from what this posting reverses
         return _nothing(["Another posting is still being written; try again."])
-    lines = _new_lines(wanted_journal(store, client_id, year_start, ruled=ruled), posted)
+    lines = _new_lines(wanted_journal(store, client_id, year_start, ruled=ruled), posted, held)
     if not lines:
-        return _nothing()
+        return _nothing().model_copy(update={"left_out": left_out})
     problems = _problems(lines, {r: tx for r, tx, _ in ruled}, settings.vat_registered, posted)
     if problems:
-        return _nothing(problems)
+        return _nothing(problems).model_copy(update={"left_out": left_out})
     debits, credits = sum((l["debit"] for l in lines), ZERO), sum((l["credit"] for l in lines), ZERO)
     reversals = sum(1 for l in lines if l["reverses"])
     batch_id, now, seq, year = uuid4().hex, now_iso(), time.time_ns(), year_start.isoformat()
@@ -253,7 +260,7 @@ def post(store: MongoStore, records: AgentRecords, client_id: int, year_start: d
         db.posting_batches.delete_one({"_id": batch_id})
         raise
     return PostResult(batch_id=batch_id, entries_added=len(lines) - reversals, reversals_added=reversals,
-                      total_debits=debits, total_credits=credits)
+                      total_debits=debits, total_credits=credits, left_out=left_out)
 
 
 def posted_trial_balance(store: MongoStore, records: AgentRecords, client_id: int,
@@ -271,11 +278,13 @@ def posted_trial_balance(store: MongoStore, records: AgentRecords, client_id: in
     posted = _posted(records.db, client_id, year_start)
     journal = [JournalLine(transaction=d["row_id"], code=d["code"], description=d["description"], debit=d["debit"],
                            credit=d["credit"]) for d in posted.entries]
+    held: dict[int, list[str]] = {}
     try:
-        rules = {r: rule for r, _, rule in _ruled(store, client_id, year_start)[1]}
+        rules = {r: rule for r, _, rule in _ruled(store, client_id, year_start, held)[1]}
     except InvalidTransactions as exc:
         rules = {}
         problems += exc.problems
+    problems += [p for found in held.values() for p in found]   # rows left out of posting until they are fixed
     suspense = []
     for r, net in posted.net.items():
         if net.get(SUSPENSE):
@@ -288,10 +297,12 @@ def posted_trial_balance(store: MongoStore, records: AgentRecords, client_id: in
 
 def unposted_changes(store: MongoStore, records: AgentRecords, client_id: int, year_start: dt.date) -> int:
     """How many rows would post something on the next posting: their wanted lines differ from what is posted for
-    them, or they are posted and no longer booked. While rows need fixing nothing can be posted, so it is the
-    number of rows that need fixing instead (it never raises for them)."""
+    them, or they are posted and no longer booked. A row needing a fix is not among them: it posts once fixed. While
+    an earlier year needs fixing nothing can be posted, so it is the number of its problems (it never raises)."""
+    held: dict[int, list[str]] = {}
     try:
-        wanted = wanted_journal(store, client_id, year_start)
+        ruled = _ruled(store, client_id, year_start, held)[1]
     except InvalidTransactions as exc:
         return len({p.split(":", 1)[0] for p in exc.problems})   # each problem starts with its row: "#3: ..."
-    return len(_changed(wanted, _posted(records.db, client_id, year_start)))
+    return len(_changed(wanted_journal(store, client_id, year_start, ruled=ruled),
+                        _posted(records.db, client_id, year_start), held))

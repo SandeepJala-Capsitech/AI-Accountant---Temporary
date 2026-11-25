@@ -264,6 +264,9 @@ test("an answer's effect is one line", () => {
   assert.equal(effectLine(a({ trial_balance: tb(0) })), 'Posted · balanced · nothing in Suspense')
   assert.equal(effectLine(a({ trial_balance: tb(1) })), 'Posted · balanced · 1 item in Suspense')
   assert.equal(effectLine(a({ post: { problems: ['Row 3 has no date.'] } as PostResult })), 'Nothing was posted: Row 3 has no date.')
+  const leftOut = { problems: [], left_out: ['Tallgrass (15 May 2023): read as USD.'] } as unknown as PostResult
+  assert.equal(effectLine(a({ trial_balance: tb(0), post: leftOut })),
+               'Posted · balanced · nothing in Suspense · 1 row left out until it is fixed')
 })
 
 test('hasResult and readStatus', () => {

@@ -485,7 +485,7 @@ class Chat:
             trial_balance=(ledger_book.posted_trial_balance(self.store, self.records, thread.client_id,
                                                             thread.year_start)
                            if wrote or "get_trial_balance" in called else None),
-            post=post if wrote or post.problems else None)
+            post=post if wrote or post.problems or post.left_out else None)
         self.records.add_turn(thread.id, TurnRecord(message_id=message_id, files=read, result=result, specialist=took,
                                                     handed_over=ctx.handed_over).model_dump(mode="json"))
         yield ChatEvent("result", result.model_dump(mode="json"))
@@ -540,7 +540,7 @@ class Chat:
             sorted=_applied_since(self.records, client_id, thread_id, since),
             trial_balance=(ledger_book.posted_trial_balance(self.store, self.records, client_id, year_start)
                            if wrote else None),
-            post=post if wrote or post.problems else None)
+            post=post if wrote or post.problems or post.left_out else None)
 
     # ─── Answers ───────────────────────────────────────────────────────────────
 
