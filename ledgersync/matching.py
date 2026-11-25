@@ -1492,7 +1492,9 @@ def _checked_totals(rows: list[Transaction], read: list[Optional[Decimal]],
     difference a person said to leave as it is (total_accepted, on the document's rows) raises a note in place of the
     warning, for as long as the difference is that much."""
     marked = list(rows)
-    for doc in _grouped(rows, lambda tx: tx.document_type != "statement").values():
+    # A payroll report's rows go into a document for each payee, while the total it prints is its whole gross pay: its
+    # pay lines are set against that when it is read (adapter: payroll_total), not each payee's here.
+    for doc in _grouped(rows, lambda tx: tx.document_type not in ("statement", "payroll")).values():
         printed = next((rows[n].document_total for n in doc.rows if rows[n].document_total is not None), None)
         claimed_in = rows[doc.rows[0]].claimed_in
         if printed is None or (claimed_in is not None and claimed_in.amount == doc.total):

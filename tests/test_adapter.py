@@ -584,6 +584,21 @@ def test_a_persons_payroll_lines_that_add_up_to_no_printed_gross_are_flagged():
     assert flagged == ["J Kestrel"]      # 3,035.00 is nobody's gross; A Patel's 3,000.00 is printed
 
 
+def test_only_a_person_on_the_report_has_their_pay_checked():
+    # The agency run: "Check this person's pay" on "Hannah Finch, Omar Kestrel", on HMRC and on the pension provider,
+    # every month. Only a payee the report names, with net pay of their own, is one person's pay.
+    def line(who, amount, owed_to, account="7000"):
+        return payroll_row(description=f"{who} {owed_to}", counterparty=who, amount=amount, owed_to=owed_to,
+                           account=account)
+    text = ("Hannah Finch £1,047.50  Omar Kestrel £1,047.50  Priya Nair £2,333.33  Daniel Okoro £2,666.67\n"
+            "Total gross pay £7,095.00")
+    rows = [line("Hannah Finch, Omar Kestrel", 2095.0, "net_pay", "7001"), line("HMRC", 3321.37, "paye_ni"),
+            line("Pension provider", 666.95, "pension"), line("Priya Nair", 1875.33, "net_pay")]
+    read = to_transactions(rows, source="text", settings=BusinessSettings(), text=text)
+    flagged = [t.counterparty for t in read if any(i.code == "payroll_person" for i in t.issues)]
+    assert flagged == ["Priya Nair"]   # her net pay alone isn't her printed gross; the rest are not one person
+
+
 def january_payroll(employees_net: float) -> list[dict]:
     """The agency's January 2024 payroll report as the model read it: the five employees' net pay in one row."""
     def line(description, amount, owed_to, account="7000"):

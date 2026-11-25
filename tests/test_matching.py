@@ -2257,3 +2257,16 @@ def test_someone_else_s_payment_parked_in_suspense_pays_no_claim():
     settings = BusinessSettings(owner_names=("Hannah Finch", "Omar Kestrel"))
     *_, paid = match([normalise(t, settings) for t in (*omar_claim(), parked("Kestrel Joinery"))], settings)
     assert not paid.pays and paid.paid_against is None
+
+
+def test_a_payroll_report_split_by_who_is_paid_is_not_short_of_its_total():
+    # The agency run: every monthly report warned four times "Total doesn't add up": its rows go into a document for
+    # each payee, and each was set against the whole report's total gross pay (£18,178.33). The pay lines are checked
+    # against it when the report is read (adapter: payroll_total).
+    def line(gross, account, who, owed_to):
+        return row("payroll", "out", gross, "2023-04-28", who, None, account=account, owed_to=owed_to,
+                   document_total=Decimal("18178.33"))
+    rows = matched(line("2095.00", "7001", "Hannah Finch, Omar Kestrel", "net_pay"),
+                   line("12095.01", "7000", "Staff", "net_pay"), line("3321.37", "7000", "HMRC", "paye_ni"),
+                   line("666.95", "7000", "Pension provider", "pension"))
+    assert not [c for t in rows for c, _ in codes(t) if c == "total_mismatch"]

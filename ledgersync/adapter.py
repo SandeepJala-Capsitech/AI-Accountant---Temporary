@@ -346,7 +346,7 @@ def to_transactions(rows: list[dict], source: str, settings: BusinessSettings, o
                          opening_balance=to_money(opening_balance) if statement else None,
                          closing_balance=to_money(closing_balance) if statement else None)
         result.append(normalise(tx, settings))
-    return _with_payroll_total(_with_payroll_people(result, printed, settings), settings)
+    return _with_payroll_total(_with_payroll_people(result, printed, settings, text), settings)
 
 
 _OWN_PAY = {"7000", "7001"}   # an employee's own pay, tax and pension: not the employer's NI or pension
@@ -371,19 +371,24 @@ def _with_payroll_total(rows: list[Transaction], settings: BusinessSettings) -> 
     return checked
 
 
-def _with_payroll_people(rows: list[Transaction], printed: Optional[set], settings: BusinessSettings) -> list[Transaction]:
+def _with_payroll_people(rows: list[Transaction], printed: Optional[set], settings: BusinessSettings,
+                         text: Optional[str] = None) -> list[Transaction]:
     """A payroll report read from text: each person's net pay, tax and pension lines add up to their gross pay, which
     the report prints. A person whose lines add up to a figure it doesn't print was read wrong (pay moved between
     people leaves the totals right), and their first line says so. Checked only when the lines name two people or
-    more and the report's text is to hand."""
+    more and the report's text is to hand. A person is a payee the report names with net pay of their own: not
+    several people in one line ("Hannah Finch, Omar Kestrel"), HMRC or a pension provider."""
     if printed is None:
         return rows
+    named = " ".join((text or "").lower().split())
     people: dict[str, list[int]] = {}
     for n, tx in enumerate(rows):
         if tx.document_type == "payroll" and tx.account_code in _OWN_PAY and tx.counterparty:
             people.setdefault(tx.counterparty.strip().lower(), []).append(n)
-    if len(people) < 2:
+    if len(people) < 2:   # one payee: the report's own totals check them
         return rows
+    people = {who: places for who, places in people.items()
+              if " ".join(who.split()) in named and any(rows[n].owed_to == "net_pay" for n in places)}
     checked = list(rows)
     for places in people.values():
         gross = sum((rows[n].gross for n in places), Decimal("0.00"))
