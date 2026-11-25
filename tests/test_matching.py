@@ -2270,3 +2270,25 @@ def test_a_payroll_report_split_by_who_is_paid_is_not_short_of_its_total():
                    line("12095.01", "7000", "Staff", "net_pay"), line("3321.37", "7000", "HMRC", "paye_ni"),
                    line("666.95", "7000", "Pension provider", "pension"))
     assert not [c for t in rows for c, _ in codes(t) if c == "total_mismatch"]
+
+
+def test_paid_the_oldest_names_what_was_open_on_it():
+    # The website: "Paid the oldest… Brought forward: Brightwater Homes Ltd (£0.00, 31 Mar 2023)": the item it paid
+    # was shown after the payment, with nothing left on it.
+    older = row("invoice", "in", "7200.00", "2026-01-01", "Brightwater Homes", "kf-1", account="4000")
+    newer = row("invoice", "in", "7200.00", "2026-02-01", "Brightwater Homes", "kf-2", account="4000")
+    *_, line = matched(older, newer, bank("7200.00", "2026-02-10", "Brightwater Homes", "pay", direction="in",
+                                          account="4000"))
+    [said] = [i for i in line.issues if i.code == "paid_oldest"]
+    assert "(£7,200.00, 01 Jan 2026)" in said.message and "£0.00" not in said.message
+
+
+def test_a_long_list_of_what_a_line_may_pay_names_the_first_few():
+    # The website: "May pay an open invoice" listed 45 Stripe statements in one sentence.
+    from ledgersync.matching import _choices, _Document
+    docs = [[_Document(ref=f"s{k}", kind="agent_statement", direction="in", account="1250", counterparty="Stripe",
+                       description="Stripe's statement", open=Decimal("709.00"), date=dt.date(2023, 4, k + 1))]
+            for k in range(25)]
+    said = _choices(docs)
+    assert said.count("Stripe's statement") == 3 and said.endswith("or 22 more")
+    assert _choices(docs[:3]).count("Stripe's statement") == 3 and "more" not in _choices(docs[:3])

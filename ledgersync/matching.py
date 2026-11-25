@@ -1816,9 +1816,10 @@ def _settle(n: int, line: Transaction, documents: dict[str, _Document], change: 
                                                   f"{long_date(doc.date)}: the card was charged before the invoice "
                                                   "was dated, as at an order.", "info"))
     elif kind == "oldest":
+        paid = options[0][0].label()   # as it was open, before this payment
         _pay(n, line, options[0], change, found)
         found.append(issue("paid_oldest", f"Paid the oldest of {len(options)} open items of {_gbp(line.gross)}: "
-                                          f"{options[0][0].label()}. If it was for another, Link that one."))
+                                          f"{paid}. If it was for another, Link that one."))
     elif kind == "choose":
         found.append(issue("choose_payment", f"Could pay: {_choices(options)}. Choose one.", "error"))
         change["candidates"] = [[d.settlement(d.open) for d in option] for option in options]
@@ -1964,8 +1965,12 @@ def _overpaid(line: Transaction, doc: _Document, excess: Decimal) -> str:
     return f"Paid {_gbp(excess)} over. {whom[0].upper()}{whom[1:]} owes you {_gbp(excess)}."
 
 
+CHOICES_SAID = 3   # a message names this many of what a line may pay; Link lists them all
+
+
 def _choices(options: list[list[_Document]]) -> str:
-    return " or ".join(" + ".join(d.label() for d in option) for option in options)
+    said = " or ".join(" + ".join(d.label() for d in option) for option in options[:CHOICES_SAID])
+    return said if len(options) <= CHOICES_SAID else f"{said}, or {len(options) - CHOICES_SAID} more"
 
 
 def _note(change: dict, line: Transaction, found: list[Issue]) -> None:
