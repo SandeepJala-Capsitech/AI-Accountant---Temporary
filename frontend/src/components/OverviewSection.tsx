@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import ClientDialog from '@/components/ClientDialog'
 import { useClientYear } from '@/components/ClientYearContext'
-import { attentionHref, clientQuestions, waitingByYear, type Question } from '@/lib/chat'
+import { clientQuestions, questionsHref, waitingByYear, type Question } from '@/lib/chat'
 import { postedTrialBalance } from '@/lib/api'
 import { changeClient, getSummary, type ClientFields, type YearSummary } from '@/lib/clients'
 import { BUSINESS_TYPES, transactionCount } from '@/lib/clientRules'
@@ -105,10 +105,10 @@ export default function OverviewSection() {
         {error && <div className="notice notice-error">{error}</div>}
         {!summary && !error && <p className="muted">Loading the summary…</p>}
         {waiting.here > 0 && (
-          <p><Link href={attentionHref(client.id, year.start)} className="link-btn">{waiting.here} {waiting.here === 1 ? 'question is' : 'questions are'} waiting for your answer</Link></p>
+          <p><Link href={questionsHref(client.id, year.start)} className="link-btn">{waiting.here} {waiting.here === 1 ? 'question is' : 'questions are'} waiting for your answer</Link></p>
         )}
         {waiting.elsewhere.map(other => (
-          <p key={other.start}><Link href={attentionHref(client.id, other.start)} className="link-btn">{other.count} {other.count === 1 ? 'question is' : 'questions are'} waiting in the {other.label.charAt(0).toLowerCase() + other.label.slice(1)}</Link></p>
+          <p key={other.start}><Link href={questionsHref(client.id, other.start)} className="link-btn">{other.count} {other.count === 1 ? 'question is' : 'questions are'} waiting in the {other.label.charAt(0).toLowerCase() + other.label.slice(1)}</Link></p>
         ))}
         {reviewLine && <p><Link href={sectionHref(client.id, year.start, 'ai-review')} className="link-btn">{reviewLine}</Link></p>}
         {summary?.missing_paperwork?.length ? (

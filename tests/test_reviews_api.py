@@ -146,7 +146,11 @@ def test_a_question_is_answered_by_date_with_no_chat(make, mongo_store, client_i
                         json={"kind": "date", "date": "2026-10-09"})
 
     assert answered.status_code == 200, answered.text
-    assert answered.json() == {"questions": []}
+    # What the page's question card reads, as a chat's answer gives it: the question as it stands now, what was sorted,
+    # and the posting.
+    got = answered.json()
+    assert got["question"]["id"] == question["id"] and got["question"]["status"] == "resolved"
+    assert set(got) == {"question", "sorted", "trial_balance", "post"}
     assert api.get(f"/api/clients/{client_id}/questions").json() == []
     [decision] = [d for d in api.get(f"/api/clients/{client_id}/decisions").json() if d["rule"].startswith("R1")]
     assert decision["thread_id"] is None   # no chat

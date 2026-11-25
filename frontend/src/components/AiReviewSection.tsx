@@ -9,7 +9,7 @@ import TodoList from '@/components/TodoList'
 import { useRowDialogs } from '@/components/useRowDialogs'
 import { clientDecisions, getMateriality } from '@/lib/api'
 import { levelsLine, type Levels } from '@/lib/ledger'
-import { effectLine, type AnswerResult, type Decision } from '@/lib/chat'
+import { clientQuestions, effectLine, type AnswerResult, type Decision, type Question } from '@/lib/chat'
 import { changeRow, type RowChange } from '@/lib/clients'
 import { DOCUMENT_TYPES } from '@/lib/clientRules'
 import {
@@ -32,6 +32,7 @@ export default function AiReviewSection() {
   const { client, year, ledger, reload, show } = useClientYear()
   const router = useRouter()
   const [runs, setRuns] = useState<ReviewDetail[] | null>(null)
+  const [ownQuestions, setOwnQuestions] = useState<Question[]>([])   // the client's questions, the books' own among them
   const [suggestions, setSuggestions] = useState<Decision[]>([])   // what waits for the person, the rules' too
   const [reversed, setReversed] = useState<Set<string>>(new Set()) // the changes some later decision undid
   const [freshRuns, setFreshRuns] = useState<Set<string> | null>(null)   // the runs not looked at when the page opened
@@ -51,9 +52,11 @@ export default function AiReviewSection() {
 
   const load = useCallback(async () => {
     try {
-      const [reviews, waiting, decisions] = await Promise.all([
+      const [reviews, waiting, decisions, questions] = await Promise.all([
         listReviews(client.id, year.start), listSuggestions(client.id, year.start), clientDecisions(client.id, year.start),
+        clientQuestions(client.id),
       ])
+      setOwnQuestions(questions)
       getMateriality(client.id, year.start).then(setLevels, () => setLevels(undefined))
       setRuns(newestFirst(reviews))
       setSuggestions(waiting)
@@ -108,9 +111,9 @@ export default function AiReviewSection() {
   // The cards: a problem with a whole document is named by its file, "Mark october expenses.xlsx, expense claim".
   const cards = useMemo(() => {
     const names = new Map(ledger.uploads.map(u => [u.id, u.name]))
-    return todoCards(ledger.transactions, suggestions, openQuestions(runs ?? []), row =>
+    return todoCards(ledger.transactions, suggestions, openQuestions(runs ?? [], ownQuestions, year.start), row =>
       `${names.get(row.upload_id) ?? 'Document'}, ${(DOCUMENT_TYPES[row.document_type ?? 'receipt'] ?? 'document').toLowerCase()}`)
-  }, [ledger.transactions, ledger.uploads, suggestions, runs])
+  }, [ledger.transactions, ledger.uploads, suggestions, runs, ownQuestions, year.start])
   const waiting = useMemo(() => waitingSuggestions(cards), [cards])
   const groups = useMemo(() => sameFixGroups(waiting), [waiting])
   // The documents open beside the list: every one its card is about, for as long as the card is on the list.

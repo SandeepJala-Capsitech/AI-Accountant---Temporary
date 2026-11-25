@@ -150,6 +150,16 @@ test('the same question in two runs is listed once; a resolved one is not', () =
   assert.deepEqual(found.map(q => q.id), ['Q1', 'Q2'])
 })
 
+test("the books' own questions of the year join the runs' questions, each once", () => {
+  // The agency run: the opening balances, the bad debt and the VAT difference could be answered only through a chat.
+  const run = (questions: Question[]) => ({ questions } as unknown as ReviewDetail)
+  const of = (q: Question, year: string) => ({ ...q, year_start: year })
+  const asked = [of(question('Q1', [1]), '2023-04-01'), of(question('R1', []), '2023-04-01'),
+                 of(question('R2', [], 'resolved'), '2023-04-01'), of(question('R3', []), '2024-04-01')]
+  const found = openQuestions([run([question('Q1', [1])])], asked, '2023-04-01')
+  assert.deepEqual(found.map(q => q.id), ['Q1', 'R1'])
+})
+
 test('waitingSuggestions lists each suggestion once', () => {
   const cards = todoCards([row(1, [issue('unusual_account')]), row(5)], [suggestion('D1', [1]), suggestion('D2', [5])], [], file)
   assert.deepEqual(waitingSuggestions(cards).map(s => s.id).sort(), ['D1', 'D2'])

@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { ApiError } from './api.ts'
 import {
-  agentDecisions, answerQuestion, attentionHref, changedFields, effectLine, fileStatus, formatMoney, groupThreads, hasResult, looksLikeStatement, parseEvents,
+  agentDecisions, answerQuestion, attentionHref, questionsHref, changedFields, effectLine, fileStatus, formatMoney, groupThreads, hasResult, looksLikeStatement, parseEvents,
   canBookWithout, openingAmount, questionControl, questionState, splitTotal, shouldPoll, readStatus, ruleBadge, retryFiles, shownAccounts, streamMessage, suspenseLabel, uploadForQuestion,
   waitingByYear, withQuestion, afterDelete, deleteQuestion, deleteThread, newTitle, renameThread,
   type AnswerResult, type ChatEvent, type ChatThread, type Decision, type PostResult, type PostedTrialBalance, type Question,
@@ -279,6 +279,8 @@ test('hasResult and readStatus', () => {
 test('the Overview link starts a chat that asks what needs attention', () => {
   assert.equal(attentionHref(7), '/chat?client=7&ask=What%20needs%20my%20attention%3F')
   assert.equal(attentionHref(7, '2020-11-02'), '/chat?client=7&year=2020-11-02&ask=What%20needs%20my%20attention%3F')
+  // The questions waiting are answered on the year's AI review list, with no chat (and no model) needed.
+  assert.equal(questionsHref(7, '2023-04-01'), '/clients/7/2023-04-01/ai-review')
 })
 
 test('a chat is polled only while a turn runs that this page did not send', () => {

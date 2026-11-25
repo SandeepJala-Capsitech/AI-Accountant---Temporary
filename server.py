@@ -744,16 +744,13 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
         return undo.apply_suggestion(store, chat.records, chat.locks, client_id=client_id, decision_id=decision_id,
                                      texts=upload_texts(deps, client_id), wait=settings.review_wait_seconds)
 
-    @app.post("/api/clients/{client_id}/questions/{question_id}/answer")
+    @app.post("/api/clients/{client_id}/questions/{question_id}/answer", response_model=AnswerResult)
     def answer_client_question(client_id: int, question_id: str, answer: Answer,
                                x_ledgersync: Optional[str] = Header(None)):
-        """Answers a question without a chat (the background review's); the client is made due for a review."""
+        """Answers a question without a chat (a question card on the client's page): what the answer did, as a chat's
+        answer says it; the client is made due for a review."""
         from_our_pages(x_ledgersync)
-        ledger.require_active(store.get_client(client_id))
-        with chat.locks.hold(client_id):
-            answered = questions.answer(store, chat.records, client_id=client_id, thread_id=None,
-                                        question_id=question_id, answer=answer, wait=settings.review_wait_seconds)
-        return {"questions": answered.questions}
+        return chat.answer_outside(client_id, question_id, answer, wait=settings.review_wait_seconds)
 
     @app.post("/api/clients/{client_id}/questions/{question_id}/document", response_model=AnswerResult)
     def client_question_document(client_id: int, question_id: str, file: UploadFile = File(...),

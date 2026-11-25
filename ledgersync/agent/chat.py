@@ -582,6 +582,21 @@ class Chat:
             self.records.touch_thread(thread.id)
             return self._answered(thread, since, question_id, answered.post)
 
+    def answer_outside(self, client_id: int, question_id: str, answer: questions.Answer, *,
+                       wait: int) -> AnswerResult:
+        """Applies the person's answer given outside any chat (a question card on the client's page), and returns
+        what a chat's answer returns: the question as it stands, with what the answer did. The client is made due for
+        a background review `wait` seconds on (questions.answer)."""
+        require_active(self.store.get_client(client_id))
+        asked = self.records.question(question_id)
+        if asked is None or asked.client_id != client_id:
+            raise NotFound("This question was not found.")
+        since = since_now(self.records, client_id)
+        with self.locks.hold(client_id):
+            answered = questions.answer(self.store, self.records, client_id=client_id, thread_id=None,
+                                        question_id=question_id, answer=answer, wait=wait)
+        return self._answered_for(client_id, asked.year_start, None, since, question_id, answered.post)
+
     def document(self, thread: ChatThread, question_id: str, file: ChatFile) -> AnswerResult:
         """A document sent for a question in a chat: see answer_with_document."""
         require_active(self.store.get_client(thread.client_id))

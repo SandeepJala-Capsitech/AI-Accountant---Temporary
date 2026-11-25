@@ -98,9 +98,12 @@ export const needCount = (cards: TodoCard[]): number => cards.filter(c => !c.wai
 // Every suggestion on the list, for Apply all.
 export const waitingSuggestions = (cards: TodoCard[]): Decision[] => cards.flatMap(c => c.suggestions)
 
-// The questions the runs asked that are still to answer, each once, newest run's first.
-export function openQuestions(runs: ReviewDetail[]): Question[] {
+// The questions still to answer, each once: the runs' (newest run's first), then the rest of the year's own, which the
+// books ask of themselves (a date, the opening balances, a bad debt, missing paperwork) and are answered here too.
+export function openQuestions(runs: ReviewDetail[], asked: Question[] = [], yearStart?: string): Question[] {
   const found = new Map<string, Question>()
-  for (const run of runs) for (const q of run.questions) if (q.status !== 'resolved' && !found.has(q.id)) found.set(q.id, q)
+  const keep = (q: Question) => { if (q.status !== 'resolved' && !found.has(q.id)) found.set(q.id, q) }
+  for (const run of runs) run.questions.forEach(keep)
+  asked.filter(q => q.year_start === yearStart).forEach(keep)
   return [...found.values()]
 }

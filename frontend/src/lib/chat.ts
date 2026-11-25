@@ -8,6 +8,9 @@ import { longDate } from './ledger.ts'
 export const ATTENTION = 'What needs my attention?'
 // The chat about what needs attention, on the year named (the year whose questions wait) or, with none, the one the
 // app picks: the earliest open year with questions waiting.
+// Where the questions waiting in a year are answered: its AI review list, with no chat and no model call.
+export const questionsHref = (clientId: number, yearStart: string) => `/clients/${clientId}/${yearStart}/ai-review`
+
 export const attentionHref = (clientId: number, yearStart?: string) =>
   `/chat?client=${clientId}${yearStart ? `&year=${yearStart}` : ''}&ask=${encodeURIComponent(ATTENTION)}`
 
