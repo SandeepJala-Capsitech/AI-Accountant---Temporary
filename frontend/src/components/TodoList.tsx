@@ -6,9 +6,8 @@ import DecisionLine from '@/components/chat/DecisionLine'
 import QuestionCard from '@/components/chat/QuestionCard'
 import { useClientYear } from '@/components/ClientYearContext'
 import IssueList from '@/components/IssueList'
-import { useAccountChoices } from '@/components/useAccountChoices'
 import type { AnswerResult, Decision } from '@/lib/chat'
-import type { RowChange, SavedRow } from '@/lib/clients'
+import type { AccountChoice, RowChange, SavedRow } from '@/lib/clients'
 import { acceptChange, apartChange, askAbout, claimLineOf, issueFixes, takesLines } from '@/lib/ledger'
 import type { Answerer } from '@/lib/reviews'
 import { cardDocuments, changeLines } from '@/lib/suggestions'
@@ -19,8 +18,9 @@ import { sectionHref } from '@/lib/years'
 // a question or a suggestion on its own. A card holds everything that settles it: the same issue list, with the same
 // controls, as the Transactions page; the change the AI suggests, with Apply; and the question it asks, with its
 // answer. A closed year or an archived client shows the cards with no control that changes anything.
-export default function TodoList({ cards, working, refused, answerer, viewing, onView, onChange, onApply, onEdit, onAddLine, onAnswered, onSay }: {
+export default function TodoList({ cards, accounts, working, refused, answerer, viewing, onView, onChange, onApply, onEdit, onAddLine, onAnswered, onSay }: {
   cards: TodoCard[]
+  accounts: AccountChoice[]            // the accounts a row can be coded to, read once for every list
   working: string                      // the suggestion being applied, 'all', or ''
   refused: Record<string, string>      // why an Apply didn't go through, by suggestion
   answerer: Answerer
@@ -37,10 +37,9 @@ export default function TodoList({ cards, working, refused, answerer, viewing, o
   const router = useRouter()
   const readOnly = year.closed || client.archived
   const rows = ledger.transactions
-  const accounts = useAccountChoices(!readOnly && cards.some(c =>
-    c.kind === 'row' && c.row && c.issues.some(i => issueFixes(c.row!, i).some(f => f.choose === 'account'))))
   // A card's row on the Transactions page, beside the rows its issues name.
-  const rowHref = (row: SavedRow) => `${sectionHref(client.id, year.start, 'transactions')}?row=${row.id}`
+  const rowHref = (row: SavedRow, document: boolean) =>
+    `${sectionHref(client.id, year.start, 'transactions')}?row=${row.id}${document ? '&lines=1' : ''}`
   const askHref = (row: SavedRow) => readOnly ? undefined
     : (issue: TodoCard['issues'][number]) => `/chat?client=${client.id}&ask=${encodeURIComponent(askAbout(row, issue))}`
 
@@ -56,7 +55,7 @@ export default function TodoList({ cards, working, refused, answerer, viewing, o
               {/* A question about no row is its own title: its card says it once, below. */}
               {(row || !card.questions.length) && <strong>{card.title}</strong>}
               {card.waiting && <span className="badge badge-warn">Waiting on you</span>}
-              {row && <Link href={rowHref(row)} className="small">{card.kind === 'document' ? 'Show its lines' : 'Show row'}</Link>}
+              {row && <Link href={rowHref(row, card.kind === 'document')} className="small">{card.kind === 'document' ? 'Show its lines' : 'Show row'}</Link>}
               {row && documents > 0 && (
                 <button type="button" className="link-btn small" aria-pressed={viewing === card.key} onClick={() => onView(card)}>
                   {documents === 1 ? 'View document' : documents === 2 ? 'View both documents' : `View ${documents} documents`}
@@ -64,7 +63,7 @@ export default function TodoList({ cards, working, refused, answerer, viewing, o
               )}
             </div>
             {row && card.kind === 'row' && (
-              <IssueList issues={card.issues} onShowBoth={() => router.push(rowHref(row))}
+              <IssueList issues={card.issues} onShowBoth={() => router.push(rowHref(row, false))}
                          onNotSame={readOnly ? undefined : related => onChange(row.id, apartChange(row, related))}
                          onAccept={readOnly ? undefined : code => onChange(row.id, acceptChange(row, code))}
                          fixesOf={readOnly ? undefined : issue => issueFixes(row, issue, claimLineOf(row, rows))}
@@ -73,7 +72,7 @@ export default function TodoList({ cards, working, refused, answerer, viewing, o
                          askHref={askHref(row)} />
             )}
             {row && card.kind === 'document' && (
-              <IssueList issues={card.issues} onShowBoth={() => router.push(rowHref(row))}
+              <IssueList issues={card.issues} onShowBoth={() => router.push(rowHref(row, true))}
                          onAddLine={!readOnly && takesLines(row) ? () => onAddLine(row) : undefined}
                          fixesOf={readOnly ? undefined : issue => issueFixes(row, issue)}
                          onFix={change => onChange(row.id, change)} askHref={askHref(row)} />

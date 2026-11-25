@@ -58,6 +58,15 @@ export function documentProblems<Row extends Transaction & { id: number }>(rows:
   })))
 }
 
+// The rows a link to the Transactions page opens on, the asked-for one first: beside the rows its issues name, or,
+// for a link to its document's problem, beside every line of that document. None when the row is not in the year.
+export function linkedRows<Row extends Transaction & { id: number }>(rows: Row[], id: number, document: boolean): number[] | undefined {
+  const asked = rows.find(r => r.id === id)
+  if (!asked) return undefined
+  if (document) return documentProblems(rows).find(d => d.row.id === id)?.lines ?? [id]
+  return [id, ...asked.issues.flatMap(i => i.related ?? [])]
+}
+
 // Whether a row needs a person: it has a warning or an error (its own, or those the page adds, such as a possible
 // duplicate), and it is in the books. What is wrong with a row left out no longer matters; the agent skips it too.
 export const needsReview = (tx: Transaction, issues: Issue[] = tx.issues) =>
@@ -548,6 +557,23 @@ export const ROWS_PER_PAGE = 200
 export const pageOf = <T>(rows: T[], limit: number): { shown: T[]; more: number } =>
   ({ shown: rows.slice(0, limit), more: Math.max(0, rows.length - limit) })
 
+// How many rows the table must list to show this one: the pages up to it, never fewer than it lists now. A row the
+// table doesn't list (filtered out) changes nothing.
+export function pageReaching(ids: number[], id: number | null, limit: number): number {
+  const at = id === null ? -1 : ids.indexOf(id)
+  return at < 0 ? limit : Math.max(limit, Math.ceil((at + 1) / ROWS_PER_PAGE) * ROWS_PER_PAGE)
+}
+
+// The row the panel shows once these rows are shown together: the open one if it is among them, else the first.
+export const keepSelected = (selected: number | null, ids: number[]): number | null =>
+  selected !== null && ids.includes(selected) ? selected : ids[0] ?? null
+
+// The "Needs review" choice: the flagged rows, and apart from them the documents with a problem of their own.
+export function needsReviewLabel(rows: number, documents: number): string {
+  const n = (count: number, one: string) => `${count.toLocaleString('en-GB')} ${one}${count === 1 ? '' : 's'}`
+  return `Needs review · ${[rows ? n(rows, 'row') : '', documents ? n(documents, 'document') : ''].filter(Boolean).join(', ')}`
+}
+
 // ─── The compact table ───────────────────────────────────────────────────────
 
 // 01 Apr 23: a date that never wraps in the table's first column.
@@ -568,9 +594,9 @@ export function signedAmount(tx: Transaction): { text: string; tone: 'in' | 'out
 // The line under a row's description: its worst warning or error, with +N for the rest (a document's problem counts
 // as one of them); else its kind of document and its first status ("Invoice · paid 3 Oct"); "left out" for a row
 // out of the books, which is never flagged.
-export function rowHeadline(tx: Transaction, issues: Issue[], documentIssue?: Issue | null):
+export function rowHeadline(tx: Transaction, issues: Issue[], documentIssue?: Issue | null, why?: string | null):
     { text: string; severity: 'error' | 'warning' | 'info' | null } {
-  if (leftOut(tx)) return { text: leftOutLabel(tx).toLowerCase(), severity: null }
+  if (leftOut(tx)) return { text: leftOutLabel(tx).toLowerCase() + (why ? ` · ${why}` : ''), severity: null }
   const flags = [...issues, ...(documentIssue ? [documentIssue] : [])].filter(i => i.severity !== 'info')
   if (flags.length) {
     const worst = flags.find(i => i.severity === 'error') ?? flags[0]

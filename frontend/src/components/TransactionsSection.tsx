@@ -8,7 +8,7 @@ import TransactionsTable from '@/components/TransactionsTable'
 import { useRowDialogs } from '@/components/useRowDialogs'
 import { changeRow, removeRow, type RowChange, type SavedRow } from '@/lib/clients'
 import { CLOSED_YEAR_NOTICE } from '@/lib/clientRules'
-import { money, removedForGood } from '@/lib/ledger'
+import { linkedRows, money, removedForGood } from '@/lib/ledger'
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
@@ -25,10 +25,11 @@ export default function TransactionsSection() {
   const listed = useMemo(() => (removing.size
     ? { ...ledger, transactions: ledger.transactions.filter(r => !removing.has(r.id)) } : ledger), [ledger, removing])
   const readOnly = year.closed || client.archived
-  // ?row=7 (from the AI review's problems list): open on that row, beside the rows its problems name.
-  const wanted = Number(useSearchParams().get('row'))
-  const asked = ledger.transactions.find(r => r.id === wanted)
-  const show = asked ? [asked.id, ...asked.issues.flatMap(i => i.related ?? [])] : undefined
+  // ?row=7 (from the AI review's cards): open on that row, beside the rows its problems name; ?row=7&lines=1, on
+  // every line of the document whose problem row 7 heads.
+  const params = useSearchParams()
+  const wanted = Number(params.get('row'))
+  const show = linkedRows(ledger.transactions, wanted, params.get('lines') === '1')
 
   // A change the API answers with the year's ledger, which is shown as it comes back.
   const change = async (rowId: number, made: RowChange) => {

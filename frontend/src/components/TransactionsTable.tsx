@@ -10,7 +10,7 @@ import RowPanel from '@/components/RowPanel'
 import { useAccountChoices } from '@/components/useAccountChoices'
 import { type Ledger, type RowChange, type SavedRow } from '@/lib/clients'
 import { DOCUMENT_TYPES, transactionCount } from '@/lib/clientRules'
-import { filtersSet, issueFixes, matchesFilters, NO_FILTERS, pageOf, ROWS_PER_PAGE, rowHeadline, signedAmount, tableDate, type RowFilters } from '@/lib/ledger'
+import { filtersSet, issueFixes, keepSelected, matchesFilters, NO_FILTERS, pageOf, pageReaching, ROWS_PER_PAGE, rowHeadline, signedAmount, tableDate, type RowFilters } from '@/lib/ledger'
 import { accountName, checkHover, documentProblems, kindOf, leftOut, money, needsReview, reviewSummary, rowIssues, totalsOf } from '@/lib/ledger'
 
 
@@ -74,7 +74,7 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
   // Rows left out of the books are listed, crossed out, but are never counted or filtered as rows to review.
   const review = useMemo(() => reviewSummary([...issuesOf.filter((_, i) => !leftOut(rows[i])), ...docs.map(d => [d.issue])]),
                          [rows, issuesOf, docs])
-  const flagged = rows.filter((row, i) => needsReview(row, issuesOf[i])).length + docs.length
+  const flaggedRows = rows.filter((row, i) => needsReview(row, issuesOf[i])).length
   const all = rows.map((row, i) => ({ row, issues: issuesOf[i] }))
   // The filters narrow the table by several fields at once; the review chips then pick among the rows left.
   const [filters, setFilters] = useState<RowFilters>(NO_FILTERS)
@@ -101,12 +101,32 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
   // A page at a time, back to the first whenever what is listed changes.
   const [limit, setLimit] = useState(ROWS_PER_PAGE)
   useEffect(() => { setLimit(ROWS_PER_PAGE) }, [filters, only, focus, byDate])
+  // ...but always far enough to show the row open in the panel (after Show all, it can be the 900th).
+  const listedIds = listed.map(p => p.row.id).join(',')
+  useEffect(() => {
+    setLimit(l => pageReaching(listedIds ? listedIds.split(',').map(Number) : [], selected, l))
+  }, [selected, listedIds])
   const page = pageOf(listed, limit)
+  // Rows shown side by side keep the row open in the panel when it is one of them (Show its lines).
   const showTogether = (ids: number[]) => {
     setFocus(ids)
-    setSelected(ids[0] ?? null)
+    setSelected(s => keepSelected(s, ids))
     card.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
   }
+  // Back to every row, at the one open in the panel.
+  const scrollTo = useRef<number | null>(null)
+  const showAll = () => {
+    setFocus(null)
+    scrollTo.current = selected
+  }
+  useEffect(() => {
+    if (scrollTo.current === null) return
+    const found = document.getElementById(`row-${scrollTo.current}`)
+    if (found) {
+      found.scrollIntoView({ block: 'center' })
+      scrollTo.current = null
+    }
+  })
   // A document's problems, by each of its lines.
   const docsOf = useMemo(() => {
     const found = new Map<number, typeof docs>()
@@ -150,13 +170,14 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
         )}
       </div>
       {rows.length > 0 && !together.length && (
-        <FilterBar filters={filters} onFilters={setFilters} review={review} only={filter} onOnly={setOnly} flagged={flagged}
-                   accounts={accountChoices} types={typeChoices} shown={passing.length} total={rows.length} />
+        <FilterBar filters={filters} onFilters={setFilters} review={review} only={filter} onOnly={setOnly}
+                   flaggedRows={flaggedRows} flaggedDocuments={docs.length}
+                   accounts={accountChoices} types={typeChoices} shown={listed.length} total={rows.length} />
       )}
       {together.length > 0 ? (
         <div className="review-bar" role="group" aria-label="Rows shown together">
           <span className="review-count">{transactionCount(together.length)} side by side</span>
-          <button type="button" className="chip chip-on" onClick={() => setFocus(null)}>Show all</button>
+          <button type="button" className="chip chip-on" onClick={showAll}>Show all</button>
         </div>
       ) : null}
       {!rows.length ? <p className="muted">Add documents to see their transactions here.</p> : (
@@ -176,7 +197,7 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
               const left = leftOut(row)
               const ofDocument = docsOf.get(row.id)?.[0]?.issue ?? null
               const check = checkOf(ofDocument ? [...issues, ofDocument] : issues, left)
-              const head = rowHeadline(row, issues, ofDocument)
+              const head = rowHeadline(row, issues, ofDocument, left ? whyLeftOut(row) : null)
               const amount = signedAmount(row)
               const worst = check.cls === 'check-error' || head.severity === 'error' ? 'row-flag-error'
                 : check.cls === 'check-warn' || head.severity === 'warning' ? 'row-flag-warn' : ''

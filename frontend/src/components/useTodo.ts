@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useClientYear } from '@/components/ClientYearContext'
 import { clientQuestions, type Decision, type Question } from '@/lib/chat'
 import { DOCUMENT_TYPES } from '@/lib/clientRules'
@@ -17,18 +17,23 @@ export function useTodo() {
   const [suggestions, setSuggestions] = useState<Decision[]>([])   // what waits for the person, the rules' too
   const [questions, setQuestions] = useState<Question[]>([])       // the client's questions, the books' own among them
   const [error, setError] = useState('')
+  const latest = useRef(0)   // the newest load: an answer overtaken by a later one is dropped
 
+  // Loaded again whenever the year's rows are (a change, a poll); true when this or a later load got through.
   const reload = useCallback(async (): Promise<boolean> => {
+    const ticket = ++latest.current
     try {
       const [reviews, waiting, asked] = await Promise.all([
         listReviews(client.id, year.start), listSuggestions(client.id, year.start), clientQuestions(client.id),
       ])
+      if (ticket !== latest.current) return true
       setRuns(newestFirst(reviews))
       setSuggestions(waiting)
       setQuestions(asked)
       setError('')
       return true
     } catch (e) {
+      if (ticket !== latest.current) return true
       setError(message(e))
       return false
     }

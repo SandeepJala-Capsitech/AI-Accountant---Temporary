@@ -1,7 +1,7 @@
 // Run with: npm test.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { cardKind, checkKinds, doneSince, GROUP_LABELS, groupOf, needCount, openQuestions, queueGroups, tagOf, todoCards, waitingSuggestions } from './todo.ts'
+import { cardKind, checkKinds, doneSince, stepAt, GROUP_LABELS, groupOf, needCount, openQuestions, queueGroups, tagOf, todoCards, waitingSuggestions } from './todo.ts'
 import type { Decision, Question } from './chat.ts'
 import type { SavedRow } from './clients'
 import type { ReviewDetail } from './reviews.ts'
@@ -203,4 +203,14 @@ test('done since opening never goes below nothing', () => {
   assert.equal(doneSince(113, 108), 5)
   assert.equal(doneSince(100, 104), 0)
   assert.equal(doneSince(null, 3), 0)
+})
+
+test('the stepper stays on its card when cards before it come or go', () => {
+  const cards = [{ key: 'a' }, { key: 'b' }, { key: 'c' }]
+  assert.equal(stepAt(cards, 'b', 1), 1)
+  assert.equal(stepAt([{ key: 'z' }, ...cards], 'b', 1), 2)   // a poll put a card before it
+  assert.equal(stepAt([{ key: 'a' }, { key: 'c' }], 'b', 1), 1)  // settled: the next one takes its place
+  assert.equal(stepAt([{ key: 'a' }], 'b', 1), 0)                // the last: the one before
+  assert.equal(stepAt([], 'b', 1), 0)
+  assert.equal(stepAt(cards, null, 0), 0)
 })

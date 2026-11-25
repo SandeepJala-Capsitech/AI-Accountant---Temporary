@@ -2,7 +2,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Transaction } from './api.ts'
-import { capActions, filterChips, filtersSet, levelsLine, matchesFilters, netBooked, NO_FILTERS, pageOf, ROWS_PER_PAGE, rowHeadline, signedAmount, tableDate, vatBooked } from './ledger.ts'
+import { capActions, filterChips, filtersSet, keepSelected, levelsLine, matchesFilters, needsReviewLabel, netBooked, NO_FILTERS, pageOf, pageReaching, ROWS_PER_PAGE, rowHeadline, signedAmount, tableDate, vatBooked } from './ledger.ts'
 import { aboutAnotherRow, acceptChange, acceptLabel, accountName, askAbout, claimLineOf, issueFixes, apartChange, apartStatus, canBeAccepted, canBeApart, checkHover, issueHeading, issueTitle, kindOf, needsReview, postedLedgerNote,
          reviewSummary, rowStatus, showLabel, takesLines, totalsOf } from './ledger.ts'
 
@@ -454,7 +454,7 @@ test('a row must pass every filter that is set, and an empty filter passes every
 // ─── A document's problem, a removed row, and a total left as it is ──────────────────────────────────────────────
 
 import type { SavedRow, Upload } from './clients'
-import { documentProblems, leftOutLabel, removedForGood, rowIssues } from './ledger.ts'
+import { documentProblems, leftOutLabel, linkedRows, removedForGood, rowIssues } from './ledger.ts'
 
 const saved = (id: number, change: Partial<Transaction> = {}): SavedRow =>
   ({ ...tx({ document_type: 'expense_claim', document_ref: 'claim', ...change }), id, upload_id: 1 } as unknown as SavedRow)
@@ -626,4 +626,42 @@ test('only the links are capped: "None of these" stays a button', () => {
   assert.deepEqual(shown.map(a => a.label), ['Link 1', 'Link 2', 'Link 3', 'None of these'])
   assert.deepEqual(rest.map(a => a.label), ['Link 4', 'Link 5'])
   assert.equal(capActions([...links.slice(0, 3), none]).rest.length, 0)
+})
+
+test('a left-out row says why, when the decision that left it out gives a reason', () => {
+  assert.deepEqual(rowHeadline(tx({ excluded: true }), [], null, 'Repeats the receipt already booked'),
+                   { text: 'left out · Repeats the receipt already booked', severity: null })
+  assert.deepEqual(rowHeadline(tx({ excluded: true }), [], null, null), { text: 'left out', severity: null })
+})
+
+test('the table pages far enough to show the open row', () => {
+  const ids = Array.from({ length: 450 }, (_, n) => n + 1)
+  assert.equal(pageReaching(ids, 5, ROWS_PER_PAGE), ROWS_PER_PAGE)
+  assert.equal(pageReaching(ids, 201, ROWS_PER_PAGE), 2 * ROWS_PER_PAGE)
+  assert.equal(pageReaching(ids, 450, ROWS_PER_PAGE), 3 * ROWS_PER_PAGE)
+  assert.equal(pageReaching(ids, 999, ROWS_PER_PAGE), ROWS_PER_PAGE)   // not listed: as it was
+  assert.equal(pageReaching(ids, null, 2 * ROWS_PER_PAGE), 2 * ROWS_PER_PAGE)
+})
+
+test('showing rows together keeps the open row when it is one of them', () => {
+  assert.equal(keepSelected(7, [3, 7, 9]), 7)
+  assert.equal(keepSelected(4, [3, 7, 9]), 3)
+  assert.equal(keepSelected(null, [3, 7]), 3)
+  assert.equal(keepSelected(4, []), null)
+})
+
+test('the review count names rows and documents apart', () => {
+  assert.equal(needsReviewLabel(110, 6), 'Needs review · 110 rows, 6 documents')
+  assert.equal(needsReviewLabel(1, 1), 'Needs review · 1 row, 1 document')
+  assert.equal(needsReviewLabel(1355, 0), 'Needs review · 1,355 rows')
+  assert.equal(needsReviewLabel(0, 2), 'Needs review · 2 documents')
+})
+
+test("a link to a row opens it beside the rows its issues name; one to a document, beside every line of it", () => {
+  const rows = [saved(1, { issues: [short] }), saved(2), saved(3, { excluded: true }),
+                saved(4, { document_ref: 'other', issues: [{ code: 'possible_duplicate', severity: 'warning', message: '', related: [9] }] })]
+  assert.deepEqual(linkedRows(rows, 1, true), [1, 2])
+  assert.deepEqual(linkedRows(rows, 4, false), [4, 9])
+  assert.deepEqual(linkedRows(rows, 4, true), [4])      // no problem of its document's: the row alone
+  assert.equal(linkedRows(rows, 77, false), undefined)
 })

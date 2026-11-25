@@ -6,10 +6,11 @@ import { useClientYear } from '@/components/ClientYearContext'
 import DocumentPanel, { type PanelDocument } from '@/components/DocumentPanel'
 import ReviewHistory from '@/components/ReviewHistory'
 import TodoList from '@/components/TodoList'
+import { useAccountChoices } from '@/components/useAccountChoices'
 import { useRowDialogs } from '@/components/useRowDialogs'
 import { useTodo } from '@/components/useTodo'
 import { clientDecisions, getMateriality } from '@/lib/api'
-import { levelsLine, type Levels } from '@/lib/ledger'
+import { issueFixes, levelsLine, type Levels } from '@/lib/ledger'
 import { effectLine, type AnswerResult, type Decision } from '@/lib/chat'
 import { changeRow, type RowChange } from '@/lib/clients'
 import {
@@ -18,7 +19,7 @@ import {
   type ReviewDetail,
 } from '@/lib/reviews'
 import { cardDocuments, sameFixGroups } from '@/lib/suggestions'
-import { cardKind, checkKinds, doneSince, GROUP_LABELS, needCount, queueGroups, waitingSuggestions, type QueueGroup, type TodoCard } from '@/lib/todo'
+import { cardKind, checkKinds, doneSince, GROUP_LABELS, needCount, queueGroups, stepAt, waitingSuggestions, type QueueGroup, type TodoCard } from '@/lib/todo'
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const RELOAD_EVERY = 3_000     // while a review is running, or one was asked for
@@ -48,28 +49,41 @@ export default function AiReviewSection() {
   const { edit, add, dialogs } = useRowDialogs()
   const answerer = clientAnswerer(client.id)
   const readOnly = client.archived || year.closed
+  // The accounts a card's row can be coded to, read once for the whole queue.
+  const accounts = useAccountChoices(!readOnly && (todo.cards ?? []).some(c =>
+    c.kind === 'row' && c.row && c.issues.some(i => issueFixes(c.row!, i).some(f => f.choose === 'account'))))
 
   const reloadTodo = todo.reload
+  // The decisions say which changes a later one undid. The to-do is useTodo's to load: it does so when the page
+  // opens and whenever the rows change, so opening the page reads it once.
+  const loadDecisions = useCallback(async () => {
+    const decisions = await clientDecisions(client.id, year.start)
+    setReversed(new Set(decisions.flatMap(d => (d.reverses ? [d.reverses] : []))))
+  }, [client.id, year.start])
   const load = useCallback(async () => {
     try {
-      const [decisions, loaded] = await Promise.all([clientDecisions(client.id, year.start), reloadTodo()])
-      getMateriality(client.id, year.start).then(setLevels, () => setLevels(undefined))
-      setReversed(new Set(decisions.flatMap(d => (d.reverses ? [d.reverses] : []))))
+      const [, loaded] = await Promise.all([loadDecisions(), reloadTodo()])
       setError('')
       return loaded
     } catch (e) {
       setError(message(e))
       return false
     }
-  }, [client.id, year.start, reloadTodo])
-  // The runs not looked at when the page opened, kept from the first load.
+  }, [loadDecisions, reloadTodo])
   useEffect(() => {
-    if (runs) setFreshRuns(fresh => fresh ?? new Set(runs.filter(r => !r.seen).map(r => r.id)))
-  }, [runs])
-
+    loadDecisions().catch(e => setError(message(e)))
+    getMateriality(client.id, year.start).then(setLevels, () => setLevels(undefined))
+  }, [loadDecisions, client.id, year.start])
+  // The runs not looked at when the page opened, kept from the first load; once they are read, they are seen.
+  const marked = useRef(false)
   useEffect(() => {
-    load().then(ok => { if (ok) markReviewsSeen(client.id).catch(() => {}) })
-  }, [load, client.id])
+    if (!runs) return
+    setFreshRuns(fresh => fresh ?? new Set(runs.filter(r => !r.seen).map(r => r.id)))
+    if (!marked.current) {
+      marked.current = true
+      markReviewsSeen(client.id).catch(() => {})
+    }
+  }, [runs, client.id])
 
   // While a review runs, or one was asked for and hasn't started, the runs are read again every few seconds; when
   // it is over the year is read again too, with whatever the review changed, and its run is marked seen.
@@ -129,7 +143,7 @@ export default function AiReviewSection() {
   const [tab, setTab] = useState<'all' | QueueGroup>('all')
   const [kind, setKind] = useState('')
   const [stepping, setStepping] = useState<string | null>(null)
-  const [step, setStep] = useState(0)
+  const [step, setStep] = useState<{ key: string | null; at: number }>({ key: null, at: 0 })   // the card shown, and where
   const first = useRef<number | null>(null)   // how many there were to do when the page opened
   if (first.current === null && todo.need !== null) first.current = todo.need
   const done = doneSince(first.current, need)
@@ -142,9 +156,15 @@ export default function AiReviewSection() {
   const tabNow = tab !== 'all' && allGroups.some(g => g.group === tab) ? tab : 'all'
   const stepped = stepping === null ? null
     : { kind: stepping, cards: checkKinds(kindCards).find(k => k.kind === stepping)?.cards ?? [] }
-  const at = stepped ? Math.max(0, Math.min(step, stepped.cards.length - 1)) : 0
+  const at = stepped ? stepAt(stepped.cards, step.key, step.at) : 0
+  // The card shown is the one followed: when it is settled, the one that took its place is.
+  const shownKey = stepped?.cards[at]?.key ?? null
+  useEffect(() => {
+    if (shownKey !== null && shownKey !== step.key) setStep({ key: shownKey, at })
+  }, [shownKey, at, step.key])
+  const stepTo = (n: number) => setStep({ key: stepped?.cards[n]?.key ?? null, at: n })
   const list = (these: TodoCard[]) => (
-    <TodoList cards={these} working={working} refused={problems} answerer={answerer} viewing={panelOpen ? viewing : null}
+    <TodoList cards={these} accounts={accounts} working={working} refused={problems} answerer={answerer} viewing={panelOpen ? viewing : null}
               onView={card => setViewing(v => (v === card.key ? null : card.key))} onChange={changeARow}
               onApply={d => change(d, 'apply')} onEdit={edit} onAddLine={add} onAnswered={answered} onSay={say} />
   )
@@ -228,7 +248,7 @@ export default function AiReviewSection() {
         </div>
       )}
       {answers.map(a => <p key={a.id} className="muted small todo-done">{a.text} {a.effect}</p>)}
-      {!runs && !error && <p className="muted">Loading the reviews…</p>}
+      {!runs && !error && !todo.error && <p className="muted">Loading the reviews…</p>}
       {runs && (
         <>
           <div className="todo-top">
@@ -271,7 +291,7 @@ export default function AiReviewSection() {
           {cards.length > 0 && (
             <div className="queue-tabs" role="group" aria-label="Show">
               <button type="button" className="queue-tab" aria-pressed={tabNow === 'all'} onClick={() => setTab('all')}>
-                All <span>{kindCards.length}</span>
+                All <span>{needCount(kindCards)}</span>
               </button>
               {allGroups.map(g => (
                 <button key={g.group} type="button" className={`queue-tab queue-tab-${g.group}`} aria-pressed={tabNow === g.group}
@@ -302,9 +322,9 @@ export default function AiReviewSection() {
                         {stepped.cards.length > 0 ? (
                           <>
                             <span className="muted small">{at + 1} of {stepped.cards.length}</span>
-                            <button type="button" className="btn btn-small" disabled={at === 0} onClick={() => setStep(at - 1)}>Previous</button>
+                            <button type="button" className="btn btn-small" disabled={at === 0} onClick={() => stepTo(at - 1)}>Previous</button>
                             <button type="button" className="btn btn-small" disabled={at >= stepped.cards.length - 1}
-                                    onClick={() => setStep(at + 1)}>Next</button>
+                                    onClick={() => stepTo(at + 1)}>Next</button>
                           </>
                         ) : <span className="muted small">All checked</span>}
                       </div>
@@ -314,7 +334,7 @@ export default function AiReviewSection() {
                     <ul className="queue-kinds">
                       {checkKinds(g.cards).map(k => (
                         <li key={k.kind}>
-                          <button type="button" className="queue-kind-line" onClick={() => { setStepping(k.kind); setStep(0) }}>
+                          <button type="button" className="queue-kind-line" onClick={() => { setStepping(k.kind); setStep({ key: k.cards[0]?.key ?? null, at: 0 }) }}>
                             <span>{k.kind}</span>
                             <span className="muted small">{k.cards.length} {k.cards.every(c => c.kind === 'document') ? (k.cards.length === 1 ? 'document' : 'documents') : k.cards.length === 1 ? 'row' : 'rows'} · one by one ›</span>
                           </button>

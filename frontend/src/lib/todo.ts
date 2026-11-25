@@ -144,3 +144,10 @@ export function checkKinds(cards: TodoCard[]): { kind: string; cards: TodoCard[]
 // How many have been settled since the page opened: the count then less the count now, never below nothing (a review
 // can add cards while the person works).
 export const doneSince = (first: number | null, now: number): number => (first === null ? 0 : Math.max(0, first - now))
+
+// Where the one-by-one stepper is: on its card wherever that card now is in the list, or, once it is settled and
+// gone, on the card that took its place (the one before, if it was the last).
+export function stepAt(cards: { key: string }[], key: string | null, at: number): number {
+  const found = key === null ? -1 : cards.findIndex(c => c.key === key)
+  return found >= 0 ? found : Math.max(0, Math.min(at, cards.length - 1))
+}
