@@ -2,16 +2,16 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { clientDecisions, postedTrialBalance, type Issue } from '@/lib/api'
-import { agentDecisions, changedFields, type Decision } from '@/lib/chat'
+import { agentDecisions, type Decision } from '@/lib/chat'
 import { useClientYear } from '@/components/ClientYearContext'
-import IssueList, { MARKS } from '@/components/IssueList'
+import FilterBar from '@/components/FilterBar'
+import { MARKS } from '@/components/IssueList'
+import RowPanel from '@/components/RowPanel'
 import { useAccountChoices } from '@/components/useAccountChoices'
 import { type Ledger, type RowChange, type SavedRow } from '@/lib/clients'
 import { DOCUMENT_TYPES, transactionCount } from '@/lib/clientRules'
-import { sectionHref } from '@/lib/years'
-import { askAbout, claimLineOf, filtersSet, issueFixes, matchesFilters, netBooked, NO_FILTERS, pageOf, ROWS_PER_PAGE, vatBooked, type RowFilters } from '@/lib/ledger'
-import { acceptChange, accountName, apartChange, apartStatus, checkHover, documentProblems, kindOf, leftOut, leftOutLabel,
-         longDate, money, needsReview, reviewSummary, rowIssues, rowStatus, takesLines, totalsOf } from '@/lib/ledger'
+import { filtersSet, issueFixes, matchesFilters, NO_FILTERS, pageOf, ROWS_PER_PAGE, rowHeadline, signedAmount, tableDate, type RowFilters } from '@/lib/ledger'
+import { accountName, checkHover, documentProblems, kindOf, leftOut, money, needsReview, reviewSummary, rowIssues, totalsOf } from '@/lib/ledger'
 
 
 // The worst issue on a row, as the Check column shows it. A row left out of the books needs no review, whatever its
@@ -22,46 +22,6 @@ function checkOf(issues: Issue[], left: boolean) {
   const worst = issues.some(i => i.severity === 'error') ? 'error' : issues.some(i => i.severity === 'warning') ? 'warning' : 'info'
   const cls = { error: 'check-error', warning: 'check-warn', info: 'check-info' }[worst]
   return { mark: `${MARKS[worst]} ${issues.length}`, cls, title: checkHover(issues) }
-}
-
-// A row's VAT treatment, when a person chose one, under its VAT.
-const VAT_SHORT: Record<string, string> = { standard: '20%', reduced: '5%', zero: 'Zero-rated', exempt: 'Exempt',
-                                            outside_scope: 'Outside scope' }
-
-const FIELD_NAMES: Record<string, string> = {
-  date: 'date', description: 'description', counterparty: 'counterparty', direction: 'in/out', gross: 'amount',
-  vat: 'VAT', account_code: 'account', document_type: 'type', currency: 'currency',
-  vat_treatment: 'VAT treatment',
-}
-
-// The hover on an edited row: what the model read, where it differs from now.
-function originalText(row: SavedRow): string {
-  const now = row as unknown as Record<string, string | null | undefined>
-  const changed = Object.entries(row.original ?? {})
-    .filter(([field, value]) => (value ?? '') !== (now[field] ?? ''))
-    .map(([field, value]) => `${FIELD_NAMES[field] ?? field} ${field === 'gross' || field === 'vat' ? money(value) : value || 'none'}`)
-  return changed.length ? `Read by the model: ${changed.join(', ')}` : 'Edited'
-}
-
-// The decisions that touched a row, as the Agent badge's popover shows them: the rule, what it was based on, and
-// what changed.
-function AgentBadge({ decisions }: { decisions: Decision[] }) {
-  return (
-    <details className="small agent-decisions">
-      <summary className="badge badge-accent">Agent</summary>
-      {decisions.map(d => (
-        <div key={d.id}>
-          <strong>{d.rule}</strong>{d.status === 'refused' && ' (refused)'}
-          <div className="muted">{d.trigger === 'background' ? 'From a background review' : 'From a chat'}</div>
-          {d.reason && <div>{d.reason}</div>}
-          {d.evidence.map((e, k) => <div key={k} className="muted">{e.upload_name}: “{e.quote}”</div>)}
-          {changedFields(d).map((c, k) => (
-            <div key={k} className="muted">Row {c.row} {c.field}: {c.before} → {c.after}</div>
-          ))}
-        </div>
-      ))}
-    </details>
-  )
 }
 
 // The client's saved rows: what needs review and why, statuses with Link, Unlink and Include, Edit, Add line,
@@ -83,8 +43,8 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
   const [held, setHeld] = useState<Set<number>>(new Set())   // rows waiting in Suspense for a document
   // The accounts a row can be coded to, read only when a row has an issue that is fixed by choosing one.
   const accounts = useAccountChoices(!readOnly && rows.some(r => r.issues.some(i => issueFixes(r, i).some(f => f.choose === 'account'))))
-  // The held row being booked without its document, and the reason typed for it; null when none is.
-  const [without, setWithout] = useState<{ row: number; reason: string } | null>(null)
+  // The row open in the panel beside the table, or none.
+  const [selected, setSelected] = useState<number | null>(show?.length ? show[0] : null)
   // The decisions and the posted ledger's held rows are read again whenever the rows are loaded again; a failure
   // leaves the table as it was.
   useEffect(() => {
@@ -107,9 +67,8 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
   const card = useRef<HTMLElement>(null)
   const uploads = useMemo(() => new Map(ledger.uploads.map(u => [u.id, u.name])), [ledger.uploads])
   const byId = useMemo(() => new Map(rows.map(r => [r.id, r])), [rows])
-  const described = useMemo(() => new Map(rows.map(r => [r.id, r.description])), [rows])
   // Each row's own issues, a possible duplicate among them (worked out with the books, so the AI sees it too). A
-  // problem with a whole document is not its first line's: it is listed once, above the table.
+  // problem with a whole document is not its first line's: it heads each of its lines, and their panels list it.
   const issuesOf = useMemo(() => rows.map(rowIssues), [rows])
   const docs = useMemo(() => documentProblems(rows), [rows])
   // Rows left out of the books are listed, crossed out, but are never counted or filtered as rows to review.
@@ -119,7 +78,6 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
   const all = rows.map((row, i) => ({ row, issues: issuesOf[i] }))
   // The filters narrow the table by several fields at once; the review chips then pick among the rows left.
   const [filters, setFilters] = useState<RowFilters>(NO_FILTERS)
-  const setFilter = (field: keyof RowFilters, value: string) => setFilters(f => ({ ...f, [field]: value }))
   const narrowed = filtersSet(filters) > 0
   const passing = narrowed ? all.filter(({ row }) => matchesFilters(row, filters, uploads.get(row.upload_id))) : all
   const accountChoices = useMemo(() => [...new Map(rows.filter(r => r.account_code).map(r =>
@@ -146,12 +104,40 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
   const page = pageOf(listed, limit)
   const showTogether = (ids: number[]) => {
     setFocus(ids)
+    setSelected(ids[0] ?? null)
     card.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
   }
-  const showBoth = (row: SavedRow, related: number[]) => showTogether([row.id, ...related])
+  // A document's problems, by each of its lines.
+  const docsOf = useMemo(() => {
+    const found = new Map<number, typeof docs>()
+    for (const d of docs) for (const id of d.lines) found.set(id, [...(found.get(id) ?? []), d])
+    return found
+  }, [docs])
+  const open = selected === null ? null : byId.get(selected) ?? null
+  // Esc closes the panel; up and down open the row above or below, unless a field is being typed in.
+  const ids = page.shown.map(p => p.row.id)
+  useEffect(() => {
+    if (selected === null) return
+    const onKey = (e: KeyboardEvent) => {
+      const at = document.activeElement
+      if (at instanceof HTMLInputElement || at instanceof HTMLSelectElement || at instanceof HTMLTextAreaElement) return
+      // Not while a dialog is open over the page (Edit, Remove), nor for a key held with another.
+      if (e.defaultPrevented || e.altKey || e.metaKey || e.ctrlKey || e.shiftKey || (at as HTMLElement | null)?.isContentEditable
+          || document.querySelector('[aria-modal="true"]')) return
+      if (e.key === 'Escape') { setSelected(null); return }
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
+      const next = ids[ids.indexOf(selected) + (e.key === 'ArrowDown' ? 1 : -1)]
+      if (next === undefined) return
+      e.preventDefault()
+      setSelected(next)
+      document.getElementById(`row-${next}`)?.scrollIntoView({ block: 'nearest' })
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [selected, ids.join(',')])   // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <section ref={card} className="card section table-card">
+    <section ref={card} className="card section">
       <div className="section-head">
         <h2>Transactions</h2>
         <span className="muted small">{transactionCount(rows.length)}</span>
@@ -164,222 +150,69 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
         )}
       </div>
       {rows.length > 0 && !together.length && (
-        <div className="filter-bar" role="search" aria-label="Filter transactions">
-          <input className="input filter-text" type="search" value={filters.text} aria-label="Search"
-                 placeholder="Search description, supplier, file or account" onChange={e => setFilter('text', e.target.value)} />
-          <select className="input" value={filters.account} aria-label="Account" onChange={e => setFilter('account', e.target.value)}>
-            <option value="">All accounts</option>
-            {accountChoices.map(([code, name]) => <option key={code} value={code}>{name}</option>)}
-          </select>
-          <select className="input" value={filters.type} aria-label="Document type" onChange={e => setFilter('type', e.target.value)}>
-            <option value="">All types</option>
-            {typeChoices.map(type => <option key={type} value={type}>{DOCUMENT_TYPES[type] ?? type}</option>)}
-          </select>
-          <select className="input" value={filters.direction} aria-label="Money in or out" onChange={e => setFilter('direction', e.target.value)}>
-            <option value="">In and out</option>
-            <option value="out">Money out</option>
-            <option value="in">Money in</option>
-          </select>
-          <select className="input" value={filters.status} aria-label="State" onChange={e => setFilter('status', e.target.value)}>
-            <option value="">Any state</option>
-            <option value="review">To review</option>
-            <option value="edited">Edited</option>
-            <option value="vat">With VAT</option>
-            <option value="no_vat">No VAT</option>
-            <option value="not_booked">Not booked</option>
-          </select>
-          <label className="filter-range">From
-            <input className="input" type="date" value={filters.from} onChange={e => setFilter('from', e.target.value)} />
-          </label>
-          <label className="filter-range">to
-            <input className="input" type="date" value={filters.to} onChange={e => setFilter('to', e.target.value)} />
-          </label>
-          <label className="filter-range">£ from
-            <input className="input filter-amount" inputMode="decimal" value={filters.min} placeholder="0.00"
-                   onChange={e => setFilter('min', e.target.value)} />
-          </label>
-          <label className="filter-range">to
-            <input className="input filter-amount" inputMode="decimal" value={filters.max} placeholder="any"
-                   onChange={e => setFilter('max', e.target.value)} />
-          </label>
-          {narrowed && (
-            <>
-              <span className="muted small">{passing.length} of {transactionCount(rows.length)} shown</span>
-              <button type="button" className="btn btn-small" onClick={() => setFilters(NO_FILTERS)}>Clear filters</button>
-            </>
-          )}
-        </div>
+        <FilterBar filters={filters} onFilters={setFilters} review={review} only={filter} onOnly={setOnly} flagged={flagged}
+                   accounts={accountChoices} types={typeChoices} shown={passing.length} total={rows.length} />
       )}
       {together.length > 0 ? (
         <div className="review-bar" role="group" aria-label="Rows shown together">
           <span className="review-count">{transactionCount(together.length)} side by side</span>
           <button type="button" className="chip chip-on" onClick={() => setFocus(null)}>Show all</button>
         </div>
-      ) : flagged > 0 && (
-        <div className="review-bar" role="group" aria-label="Rows to review">
-          <span className="review-count">{flagged} to review</span>
-          <button type="button" className={`chip${filter === null ? ' chip-on' : ''}`} onClick={() => setOnly(null)}>All</button>
-          <button type="button" className={`chip${filter === 'review' ? ' chip-on' : ''}`} onClick={() => setOnly('review')}>
-            Only these
-          </button>
-          {review.map(item => (
-            <button key={item.code} type="button" onClick={() => setOnly(item.code)}
-                    className={`chip chip-${item.severity}${filter === item.code ? ' chip-on' : ''}`}>
-              {item.title} <span className="chip-count">{item.rows}</span>
-            </button>
-          ))}
-        </div>
-      )}
-      {/* A problem with a whole document, said once against the document: its lines don't reach its total and no
-          one line explains why. Not narrowed by the filters, so it is never hidden with its first line. */}
-      {docs.length > 0 && (
-        <div className="document-problems" role="group" aria-label="Documents to check">
-          {docs.map(({ row, issue, lines }) => (
-            <div key={`${row.id}:${issue.code}`} className="document-problem">
-              <div className="document-name">
-                {uploads.get(row.upload_id) ?? 'Document'} · {DOCUMENT_TYPES[row.document_type ?? 'receipt'] ?? row.document_type}
-              </div>
-              <IssueList issues={[issue]} onShowBoth={() => showTogether(lines)}
-                         onAddLine={!readOnly && onAdd && takesLines(row) ? () => onAdd(row) : undefined}
-                         fixesOf={readOnly ? undefined : found => issueFixes(row, found)}
-                         onFix={change => onChange(row.id, change)}
-                         askHref={readOnly ? undefined
-                           : found => `/chat?client=${client.id}&ask=${encodeURIComponent(askAbout(row, found))}`} />
-            </div>
-          ))}
-        </div>
-      )}
+      ) : null}
       {!rows.length ? <p className="muted">Add documents to see their transactions here.</p> : (
-        <table className="table">
+        <div className={open ? 'ledger-with-panel ledger-panel-open' : 'ledger-with-panel'}>
+        <table className="table ledger-table">
           <thead>
             <tr>
-              <th>Date</th>
+              <th className="col-date">Date</th>
               <th>Description</th>
-              <th>In / out</th>
-              <th className="num">Amount</th>
-              <th className="num">VAT</th>
-              <th className="num">Net</th>
-              <th>Account</th>
-              <th>Check</th>
-              <th aria-label="Actions" />
+              <th className="num col-amount">Amount</th>
+              <th className="col-account">Account</th>
+              <th className="col-check" aria-label="Check" />
             </tr>
           </thead>
           <tbody>
             {page.shown.map(({ row, issues }) => {
               const left = leftOut(row)
-              const check = checkOf(issues, left)
-              const origin = `${uploads.get(row.upload_id) ?? ''} · ${DOCUMENT_TYPES[row.document_type ?? 'receipt'] ?? row.document_type}`
-              const classes = [left || kindOf(row) === 'not booked' ? 'row-not-booked' : '',
-                               check.cls === 'check-error' ? 'row-flag-error' : check.cls === 'check-warn' ? 'row-flag-warn' : '']
-              const touched = row.decision_ids?.length ? agentDecisions(row.decision_ids, decisions) : []
+              const ofDocument = docsOf.get(row.id)?.[0]?.issue ?? null
+              const check = checkOf(ofDocument ? [...issues, ofDocument] : issues, left)
+              const head = rowHeadline(row, issues, ofDocument)
+              const amount = signedAmount(row)
+              const worst = check.cls === 'check-error' || head.severity === 'error' ? 'row-flag-error'
+                : check.cls === 'check-warn' || head.severity === 'warning' ? 'row-flag-warn' : ''
+              const classes = [left || kindOf(row) === 'not booked' ? 'row-not-booked' : '', left ? '' : worst,
+                               selected === row.id ? 'row-selected' : '']
               return (
-                <tr key={row.id} className={classes.filter(Boolean).join(' ') || undefined}
+                <tr key={row.id} id={`row-${row.id}`} className={classes.filter(Boolean).join(' ') || undefined}
+                    aria-selected={selected === row.id} tabIndex={0} aria-label={`${row.description}: open`}
+                    onClick={() => setSelected(id => (id === row.id ? null : row.id))}
+                    onKeyDown={e => {
+                      if (e.target !== e.currentTarget || (e.key !== 'Enter' && e.key !== ' ')) return
+                      e.preventDefault()
+                      setSelected(id => (id === row.id ? null : row.id))
+                    }}
                     aria-busy={saving?.has(row.id) || undefined} style={saving?.has(row.id) ? { opacity: 0.5 } : undefined}>
-                  <td className="mono">{row.date ? longDate(row.date) : '—'}</td>
-                  <td>
-                    <span style={left ? { textDecoration: 'line-through' } : undefined}>{row.description}</span>
-                    {touched === null ? <span className="badge badge-accent">Agent</span>
-                      : touched.length > 0 && <AgentBadge decisions={touched} />}
-                    {left && <div className="row-status">{leftOutLabel(row)}
-                      {!row.removed && whyLeftOut(row) && `: ${whyLeftOut(row)}`}
-                      {row.removed && !readOnly && (
-                        <button type="button" className="link-btn" title="Book it again"
-                                onClick={() => onChange(row.id, { removed: false })}>Put back</button>
-                      )}</div>}
-                    {held.has(row.id) && !row.issues.some(i => i.code === 'booked_without_document') && (
-                      <div className="row-status">
-                        <span className="badge badge-warn">Documentation required</span>
-                        {!readOnly && without?.row !== row.id && (
-                          <button type="button" className="link-btn" title="Book it to its account with no VAT reclaimed"
-                                  onClick={() => setWithout({ row: row.id, reason: '' })}>Book without a receipt</button>
-                        )}
-                      </div>
-                    )}
-                    {without?.row === row.id && (
-                      <form className="row-status without-form" onSubmit={e => {
-                        e.preventDefault()
-                        if (!without.reason.trim()) return
-                        onChange(row.id, { without_document: without.reason.trim() })
-                        setWithout(null)
-                      }}>
-                        <input className="input" value={without.reason} maxLength={300} autoFocus
-                               aria-label="Why there is no receipt or invoice" placeholder="Why there is none, e.g. receipt lost"
-                               onChange={e => setWithout({ row: row.id, reason: e.target.value })} />
-                        <button type="submit" className="btn btn-primary btn-small" disabled={!without.reason.trim()}>
-                          Book with no VAT
-                        </button>
-                        <button type="button" className="btn btn-small" onClick={() => setWithout(null)}>Cancel</button>
-                      </form>
-                    )}
-                    {row.edited && <span className="badge badge-muted edited" title={originalText(row)}>Edited</span>}
-                    <div className="row-origin" title={origin}>{origin}</div>
-                    {[...rowStatus(row, id => byId.get(id)), ...[apartStatus(row, id => described.get(id))].filter(s => s !== null)]
-                      .map((status, k) => (status.include !== undefined ? (
-                      <label key={k} className="row-status">
-                        <input type="checkbox" checked={status.include} disabled={readOnly}
-                               onChange={e => onChange(row.id, { include: e.target.checked })} />
-                        {status.text}
-                      </label>
-                    ) : (
-                      <div key={k} className="row-status">
-                        {status.text}
-                        {!readOnly && status.actions.map((action, j) => (
-                          <button key={j} type="button" className="link-btn"
-                                  onClick={() => onChange(action.row ?? row.id, action.change)}>
-                            {action.label}
-                          </button>
-                        ))}
-                      </div>
-                    )))}
-                    <IssueList issues={issues.filter(i => i.code !== 'booked_without_document')} onShowBoth={related => showBoth(row, related)}
-                               onNotSame={readOnly ? undefined : related => onChange(row.id, apartChange(row, related))}
-                               onAccept={readOnly ? undefined : code => onChange(row.id, acceptChange(row, code))}
-                               fixesOf={readOnly || left ? undefined : issue => issueFixes(row, issue, claimLineOf(row, rows))}
-                               onFix={change => onChange(row.id, change)} onEdit={onEdit ? () => onEdit(row) : undefined}
-                               accounts={accounts} documentsHref={sectionHref(client.id, year.start, 'documents')}
-                               askHref={readOnly || left ? undefined
-                                 : issue => `/chat?client=${client.id}&ask=${encodeURIComponent(askAbout(row, issue))}`} />
+                  <td className="mono col-date">{tableDate(row.date)}</td>
+                  <td className="col-description">
+                    <div className="row-line" title={row.description} style={left ? { textDecoration: 'line-through' } : undefined}>
+                      {row.description}
+                      {row.edited && <span className="badge badge-muted edited">Edited</span>}
+                      {row.decision_ids?.length ? <span className="badge badge-accent">Agent</span> : null}
+                      {held.has(row.id) && <span className="badge badge-warn">Documentation required</span>}
+                    </div>
+                    <div className={`row-sub${head.severity ? ` row-sub-${head.severity}` : ''}`}
+                         title={`${uploads.get(row.upload_id) ?? ''} · ${DOCUMENT_TYPES[row.document_type ?? 'receipt'] ?? row.document_type}`}>
+                      {head.text}
+                    </div>
                   </td>
-                  <td>
-                    <span className={row.direction === 'in' ? 'badge badge-accent' : 'badge badge-muted'}>
-                      {row.document_type === 'journal' ? 'Journal' : row.direction === 'in' ? 'Money in' : 'Money out'}
-                    </span>
-                  </td>
-                  <td className="num">{money(row.gross)}</td>
-                  <td className="num">
-                    {money(vatBooked(row))}
-                    {row.vat_treatment && <div className="muted small">{VAT_SHORT[row.vat_treatment] ?? row.vat_treatment}</div>}
-                    {row.vat_not_reclaimed && (
-                      <div className="muted small vat-not-reclaimed" title={row.vat_not_reclaimed_why ?? undefined}>
-                        {money(row.vat_not_reclaimed)} not reclaimed
-                        {!readOnly && !left && (
-                          <button type="button" className="link-btn" title="Reclaim this VAT on your say: you hold the VAT invoice"
-                                  onClick={() => onChange(row.id, { vat_confirmed: true })}>Reclaim it</button>
-                        )}
-                      </div>
-                    )}
-                  </td>
-                  <td className="num">{money(netBooked(row))}</td>
-                  <td>{accountName(row)}</td>
+                  <td className={`num mono amount-${amount.tone}`}>{amount.text}</td>
+                  <td className="col-account"><div className="row-line" title={accountName(row)}>{accountName(row)}</div></td>
                   <td className={`check ${check.cls}`} title={check.title}>{check.mark}</td>
-                  <td className="row-actions">
-                    {!readOnly && onEdit && <button type="button" className="link-btn" onClick={() => onEdit(row)}>Edit</button>}
-                    {!readOnly && onAdd && takesLines(row) && (
-                      <button type="button" className="link-btn" onClick={() => onAdd(row)}>Add line</button>
-                    )}
-                    {!readOnly && row.edited && (
-                      <button type="button" className="link-btn"
-                              onClick={() => onChange(row.id, { revert: true })}>Revert</button>
-                    )}
-                    {!readOnly && onRemove && !row.removed && (
-                      <button type="button" className="link-btn danger" onClick={() => onRemove(row)}>Remove</button>
-                    )}
-                  </td>
                 </tr>
               )
             })}
             {page.more > 0 && (
-              <tr><td colSpan={9}>
+              <tr><td colSpan={5}>
                 <button type="button" className="btn btn-small" onClick={() => setLimit(l => l + ROWS_PER_PAGE)}>
                   Show {Math.min(ROWS_PER_PAGE, page.more)} more
                 </button>{' '}
@@ -389,24 +222,33 @@ export default function TransactionsTable({ ledger, readOnly, onChange, onEdit, 
           </tbody>
           <tfoot>
             {narrowed && !together.length && (
-              <tr><td colSpan={9} className="muted small">
+              <tr><td colSpan={5} className="muted small">
                 {listed.length ? `Totals of the ${transactionCount(listed.length)} shown` : 'No transactions match these filters.'}
               </td></tr>
             )}
             {totals.map(t => (
               <tr key={t.key}>
-                <td colSpan={3}>
+                <td colSpan={2}>
                   {t.label} ({transactionCount(t.count)})
-                  {t.stillOwed != null && ` · ${money(t.stillOwed)} still owed`}
+                  <div className="muted small" title={t.vat == null || t.net == null ? 'Fix the rows marked ✖ first' : undefined}>
+                    VAT {money(t.vat)} · net {money(t.net)}{t.stillOwed != null && ` · ${money(t.stillOwed)} still owed`}
+                  </div>
                 </td>
-                <td className="num">{money(t.gross)}</td>
-                <td className="num" title={t.vat == null ? 'Fix the rows marked ✖ first' : undefined}>{money(t.vat)}</td>
-                <td className="num" title={t.net == null ? 'Fix the rows marked ✖ first' : undefined}>{money(t.net)}</td>
-                <td colSpan={3} />
+                <td className="num mono">{money(t.gross)}</td>
+                <td colSpan={2} />
               </tr>
             ))}
           </tfoot>
         </table>
+        {open && (
+          <RowPanel key={open.id} row={open} issues={issuesOf[rows.indexOf(open)] ?? []} documentProblems={docsOf.get(open.id) ?? []}
+                    rows={rows} uploads={ledger.uploads}
+                    decisions={open.decision_ids?.length ? agentDecisions(open.decision_ids, decisions) : []}
+                    held={held.has(open.id)} whyLeftOut={whyLeftOut(open)} readOnly={readOnly} accounts={accounts}
+                    onChange={onChange} onEdit={onEdit} onAdd={onAdd} onRemove={onRemove}
+                    onShowTogether={showTogether} onClose={() => setSelected(null)} />
+        )}
+        </div>
       )}
     </section>
   )

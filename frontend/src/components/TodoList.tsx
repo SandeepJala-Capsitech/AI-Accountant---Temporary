@@ -12,7 +12,7 @@ import type { RowChange, SavedRow } from '@/lib/clients'
 import { acceptChange, apartChange, askAbout, claimLineOf, issueFixes, takesLines } from '@/lib/ledger'
 import type { Answerer } from '@/lib/reviews'
 import { cardDocuments, changeLines } from '@/lib/suggestions'
-import type { TodoCard } from '@/lib/todo'
+import { groupOf, type TodoCard } from '@/lib/todo'
 import { sectionHref } from '@/lib/years'
 
 // What needs the person, one card each: a row with what is wrong with it, a document whose total doesn't add up, or
@@ -50,13 +50,13 @@ export default function TodoList({ cards, working, refused, answerer, viewing, o
         const row = card.row
         const documents = cardDocuments(card, rows, ledger.uploads).length
         return (
-          <li key={card.key} className={`todo-card${card.waiting ? ' todo-waiting' : ''}${viewing === card.key ? ' todo-viewing' : ''}`}>
+          <li key={card.key} className={`todo-card todo-in-${groupOf(card)}${card.waiting ? ' todo-waiting' : ''}${viewing === card.key ? ' todo-viewing' : ''}`}>
             <div className="todo-head">
               <span className="badge badge-muted">{card.tag}</span>
               {/* A question about no row is its own title: its card says it once, below. */}
               {(row || !card.questions.length) && <strong>{card.title}</strong>}
               {card.waiting && <span className="badge badge-warn">Waiting on you</span>}
-              {row && <Link href={rowHref(row)} className="small">{card.kind === 'document' ? 'Show its lines' : 'Show'}</Link>}
+              {row && <Link href={rowHref(row)} className="small">{card.kind === 'document' ? 'Show its lines' : 'Show row'}</Link>}
               {row && documents > 0 && (
                 <button type="button" className="link-btn small" aria-pressed={viewing === card.key} onClick={() => onView(card)}>
                   {documents === 1 ? 'View document' : documents === 2 ? 'View both documents' : `View ${documents} documents`}

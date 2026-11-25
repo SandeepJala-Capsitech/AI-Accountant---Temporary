@@ -51,7 +51,7 @@ export default function DocumentPanel({ documents, onClose }: { documents: Panel
   )
 }
 
-function OneDocument({ clientId, doc: { upload, rows, rowId, quotes } }: { clientId: number; doc: PanelDocument }) {
+export function OneDocument({ clientId, doc: { upload, rows, rowId, quotes } }: { clientId: number; doc: PanelDocument }) {
   const kept = !!upload.sha256
   const shown = kept && canShow(upload.name)
   return (

@@ -2,6 +2,7 @@
 // description with the choices it offers a person, and the totals. Pure functions, tested in ledger.test.ts.
 import type { Issue, Settlement, Transaction } from './api'
 import type { RowChange } from './clients'
+import { DOCUMENT_TYPES } from './clientRules.ts'
 
 const fmt = (n: number) =>
   n === 0
@@ -546,3 +547,66 @@ export const ROWS_PER_PAGE = 200
 // The first `limit` of the rows the table lists, and how many more it has.
 export const pageOf = <T>(rows: T[], limit: number): { shown: T[]; more: number } =>
   ({ shown: rows.slice(0, limit), more: Math.max(0, rows.length - limit) })
+
+// ─── The compact table ───────────────────────────────────────────────────────
+
+// 01 Apr 23: a date that never wraps in the table's first column.
+export const tableDate = (iso: string | null | undefined): string => {
+  if (!iso) return '—'
+  const [year, month, day] = iso.split('-').map(Number)
+  return `${String(day).padStart(2, '0')} ${MONTHS[month - 1]} ${String(year).slice(-2)}`
+}
+
+// The amount as the table shows it: +4,800.00 for money in, −504.00 (a minus sign) for money out; a journal moves
+// money between accounts, so it has no sign.
+export function signedAmount(tx: Transaction): { text: string; tone: 'in' | 'out' | 'plain' } {
+  const figure = Math.abs(Number(tx.gross)).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  if (tx.document_type === 'journal') return { text: figure, tone: 'plain' }
+  return tx.direction === 'in' ? { text: `+${figure}`, tone: 'in' } : { text: `−${figure}`, tone: 'out' }
+}
+
+// The line under a row's description: its worst warning or error, with +N for the rest (a document's problem counts
+// as one of them); else its kind of document and its first status ("Invoice · paid 3 Oct"); "left out" for a row
+// out of the books, which is never flagged.
+export function rowHeadline(tx: Transaction, issues: Issue[], documentIssue?: Issue | null):
+    { text: string; severity: 'error' | 'warning' | 'info' | null } {
+  if (leftOut(tx)) return { text: leftOutLabel(tx).toLowerCase(), severity: null }
+  const flags = [...issues, ...(documentIssue ? [documentIssue] : [])].filter(i => i.severity !== 'info')
+  if (flags.length) {
+    const worst = flags.find(i => i.severity === 'error') ?? flags[0]
+    return { text: issueTitle(worst.code) + (flags.length > 1 ? ` · +${flags.length - 1}` : ''), severity: worst.severity }
+  }
+  const type = DOCUMENT_TYPES[tx.document_type ?? 'receipt'] ?? 'Document'
+  const first = rowStatus(tx)[0]?.text.replace(/^Paid by .* on (.+)$/, 'paid $1')
+  return { text: first ? `${type} · ${first}` : type, severity: null }
+}
+
+// A status's choices: the first few links as buttons and the rest for a picker (a payout can be any of 45
+// statements); every other choice, "None of these" among them, stays a button after the links.
+export function capActions(actions: RowAction[], limit = 3): { shown: RowAction[]; rest: RowAction[] } {
+  const isLink = (a: RowAction) => !!a.change.link?.length
+  const links = actions.filter(isLink)
+  return { shown: [...links.slice(0, limit), ...actions.filter(a => !isLink(a))], rest: links.slice(limit) }
+}
+
+const STATE_NAMES: Record<string, string> = { review: 'To review', edited: 'Edited', vat: 'With VAT', no_vat: 'No VAT',
+                                              not_booked: 'Not booked' }
+
+// The filters set, one chip each, as the bar lists them under itself; the two dates are one chip, and so are the two
+// amounts. Each chip's field is what its × clears.
+export function filterChips(f: RowFilters, names: { account: (code: string) => string; type: (t: string) => string }):
+    { field: keyof RowFilters | 'dates' | 'amounts'; label: string }[] {
+  const chips: { field: keyof RowFilters | 'dates' | 'amounts'; label: string }[] = []
+  const range = (low: string, high: string, show: (v: string) => string, from: string, upTo: string) =>
+    low && high ? `${show(low)} – ${show(high)}` : low ? `${from} ${show(low)}` : `${upTo} ${show(high)}`
+  if (f.text.trim()) chips.push({ field: 'text', label: `“${f.text.trim()}”` })
+  if (f.account) chips.push({ field: 'account', label: names.account(f.account) })
+  if (f.type) chips.push({ field: 'type', label: names.type(f.type) })
+  if (f.direction) chips.push({ field: 'direction', label: f.direction === 'in' ? 'Money in' : 'Money out' })
+  if (f.status) chips.push({ field: 'status', label: STATE_NAMES[f.status] ?? f.status })
+  if (f.from || f.to) chips.push({ field: 'dates', label: range(f.from, f.to, tableDate, 'From', 'Until') })
+  if (f.min.trim() || f.max.trim()) {
+    chips.push({ field: 'amounts', label: range(f.min.trim(), f.max.trim(), v => money(v), 'From', 'Up to') })
+  }
+  return chips
+}

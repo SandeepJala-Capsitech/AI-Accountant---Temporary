@@ -6,7 +6,7 @@ import type { Decision, Question } from './chat.ts'
 import { formatMoney } from './chat.ts'
 import { dayMonth } from './clientRules.ts'
 import type { SavedRow } from './clients'
-import { documentProblems, leftOut, rowIssues } from './ledger.ts'
+import { documentProblems, issueTitle, leftOut, rowIssues } from './ledger.ts'
 import type { ReviewDetail } from './reviews.ts'
 
 export interface TodoCard {
@@ -107,3 +107,40 @@ export function openQuestions(runs: ReviewDetail[], asked: Question[] = [], year
   asked.filter(q => q.year_start === yearStart).forEach(keep)
   return [...found.values()]
 }
+
+// ─── The queue's groups ──────────────────────────────────────────────────────
+
+// Where a card sits in the queue, in the order of rank: an error, a question, a suggestion, a warning, and last the
+// cards only waiting on something the person doesn't have yet.
+export type QueueGroup = 'fix' | 'question' | 'suggestion' | 'check' | 'waiting'
+const GROUPS: QueueGroup[] = ['fix', 'question', 'suggestion', 'check', 'waiting']
+export const GROUP_LABELS: Record<QueueGroup, { title: string; note: string }> = {
+  fix: { title: 'Must fix', note: 'stops the books being posted' },
+  question: { title: 'Questions', note: 'the AI needs an answer' },
+  suggestion: { title: 'Suggestions', note: 'changes to apply or leave' },
+  check: { title: 'To check', note: 'warnings, one by one' },
+  waiting: { title: 'Waiting on you', note: "answered: not to hand yet" },
+}
+
+export const groupOf = (card: TodoCard): QueueGroup => GROUPS[rank(card)]
+
+// The cards by group, in the queue's order; a group with no card is left out.
+export const queueGroups = (cards: TodoCard[]): { group: QueueGroup; cards: TodoCard[] }[] =>
+  GROUPS.map(group => ({ group, cards: cards.filter(c => groupOf(c) === group) })).filter(g => g.cards.length)
+
+// What kind of thing a card is about: its first issue's title, or its tag ("Question", "Suggestion") when it has none.
+export const cardKind = (card: TodoCard): string => (card.issues.length ? issueTitle(card.issues[0].code) : card.tag)
+
+// The warnings, folded by kind to be worked one by one: the kind with most cards first, then by name.
+export function checkKinds(cards: TodoCard[]): { kind: string; cards: TodoCard[] }[] {
+  const kinds = new Map<string, TodoCard[]>()
+  for (const card of cards.filter(c => groupOf(c) === 'check')) {
+    kinds.set(cardKind(card), [...(kinds.get(cardKind(card)) ?? []), card])
+  }
+  return [...kinds.entries()].map(([kind, list]) => ({ kind, cards: list }))
+    .sort((a, b) => b.cards.length - a.cards.length || a.kind.localeCompare(b.kind, 'en-GB'))
+}
+
+// How many have been settled since the page opened: the count then less the count now, never below nothing (a review
+// can add cards while the person works).
+export const doneSince = (first: number | null, now: number): number => (first === null ? 0 : Math.max(0, first - now))

@@ -2,7 +2,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Transaction } from './api.ts'
-import { filtersSet, levelsLine, matchesFilters, netBooked, NO_FILTERS, pageOf, ROWS_PER_PAGE, vatBooked } from './ledger.ts'
+import { capActions, filterChips, filtersSet, levelsLine, matchesFilters, netBooked, NO_FILTERS, pageOf, ROWS_PER_PAGE, rowHeadline, signedAmount, tableDate, vatBooked } from './ledger.ts'
 import { aboutAnotherRow, acceptChange, acceptLabel, accountName, askAbout, claimLineOf, issueFixes, apartChange, apartStatus, canBeAccepted, canBeApart, checkHover, issueHeading, issueTitle, kindOf, needsReview, postedLedgerNote,
          reviewSummary, rowStatus, showLabel, takesLines, totalsOf } from './ledger.ts'
 
@@ -563,4 +563,67 @@ test('the table draws a page of rows at a time and says how many more there are'
   assert.deepEqual([pageOf(rows, 200).shown.length, pageOf(rows, 200).more], [200, 1151])
   assert.deepEqual([pageOf(rows, 1400).shown.length, pageOf(rows, 1400).more], [1351, 0])
   assert.deepEqual(pageOf(rows, 400).shown.slice(-1), [399])
+})
+
+// ─── The compact table (one queue, clean ledger) ─────────────────────────────
+
+const flag = (code: string, severity: 'info' | 'warning' | 'error' = 'warning') => ({ code, severity, message: `${code} said` })
+
+test('the table date is day, short month and two-digit year', () => {
+  assert.equal(tableDate('2023-04-01'), '01 Apr 23')
+  assert.equal(tableDate(null), '—')
+})
+
+test('money in is signed + and money out −; a journal has no sign', () => {
+  assert.deepEqual(signedAmount(tx({ direction: 'in', gross: '4800.00' })), { text: '+4,800.00', tone: 'in' })
+  assert.deepEqual(signedAmount(tx({ direction: 'out', gross: '504' })), { text: '−504.00', tone: 'out' })
+  assert.deepEqual(signedAmount(tx({ document_type: 'journal', gross: '2400' })), { text: '2,400.00', tone: 'plain' })
+})
+
+test('a flagged row is headed by its worst issue, with +N for the rest', () => {
+  const h = rowHeadline(tx(), [flag('payout_report'), flag('non_gbp_currency', 'error'), flag('possible_duplicate')])
+  assert.deepEqual(h, { text: 'Not in pounds · +2', severity: 'error' })
+})
+
+test("a document's problem heads each of its lines when the line has none worse", () => {
+  assert.deepEqual(rowHeadline(tx(), [], flag('total_mismatch')), { text: "Total doesn't add up", severity: 'warning' })
+  assert.deepEqual(rowHeadline(tx(), [flag('non_gbp_currency', 'error')], flag('total_mismatch')),
+                   { text: 'Not in pounds · +1', severity: 'error' })
+})
+
+test('a row with nothing wrong is headed by its type and first status; notes do not head it', () => {
+  assert.deepEqual(rowHeadline(tx({ owed: '0.00', paid_by: paidBy }), [flag('reverse_charge', 'info')]),
+                   { text: 'Invoice · paid 3 Oct', severity: null })
+  assert.deepEqual(rowHeadline(tx(), []), { text: 'Invoice · Unpaid, owed to Business Cube', severity: null })
+})
+
+test('a left-out row is headed left out, never flagged', () => {
+  assert.deepEqual(rowHeadline(tx({ excluded: true }), [flag('non_gbp_currency', 'error')]), { text: 'left out', severity: null })
+})
+
+test('more than three candidates: three shown, the rest in a picker', () => {
+  const acts = [1, 2, 3, 4, 5].map(n => ({ label: `Link ${n}`, change: { link: [`b${n}`] } }))
+  const { shown, rest } = capActions(acts)
+  assert.deepEqual(shown.map(a => a.label), ['Link 1', 'Link 2', 'Link 3'])
+  assert.deepEqual(rest.map(a => a.label), ['Link 4', 'Link 5'])
+  assert.equal(capActions(acts.slice(0, 3)).rest.length, 0)
+})
+
+test('each filter set is one chip; the two dates and the two amounts are one chip each', () => {
+  const names = { account: (code: string) => (code === '7100' ? 'Rent' : code), type: (t: string) => (t === 'invoice' ? 'Invoice' : t) }
+  const chips = filterChips({ ...NO_FILTERS, direction: 'out', from: '2023-04-01', to: '2023-06-30', min: '100' }, names)
+  assert.deepEqual(chips.map(c => c.label), ['Money out', '01 Apr 23 – 30 Jun 23', 'From £100.00'])
+  assert.deepEqual(chips.map(c => c.field), ['direction', 'dates', 'amounts'])
+  const more = filterChips({ ...NO_FILTERS, text: 'stripe', account: '7100', type: 'invoice', status: 'review', to: '2023-06-30', max: '50' }, names)
+  assert.deepEqual(more.map(c => c.label), ['“stripe”', 'Rent', 'Invoice', 'To review', 'Until 30 Jun 23', 'Up to £50.00'])
+})
+
+test('only the links are capped: "None of these" stays a button', () => {
+  // Final review I1: "None of these" was the last option of the "Link to another…" picker.
+  const links = [1, 2, 3, 4, 5].map(n => ({ label: `Link ${n}`, change: { link: [`b${n}`] } }))
+  const none = { label: 'None of these', change: { link: [] } }
+  const { shown, rest } = capActions([...links, none])
+  assert.deepEqual(shown.map(a => a.label), ['Link 1', 'Link 2', 'Link 3', 'None of these'])
+  assert.deepEqual(rest.map(a => a.label), ['Link 4', 'Link 5'])
+  assert.equal(capActions([...links.slice(0, 3), none]).rest.length, 0)
 })

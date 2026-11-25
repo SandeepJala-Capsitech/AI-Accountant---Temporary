@@ -1,7 +1,7 @@
 // Run with: npm test.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { needCount, openQuestions, tagOf, todoCards, waitingSuggestions } from './todo.ts'
+import { cardKind, checkKinds, doneSince, GROUP_LABELS, groupOf, needCount, openQuestions, queueGroups, tagOf, todoCards, waitingSuggestions } from './todo.ts'
 import type { Decision, Question } from './chat.ts'
 import type { SavedRow } from './clients'
 import type { ReviewDetail } from './reviews.ts'
@@ -169,4 +169,38 @@ test('a charge left off a claim is about documents, and an unclear set about a p
   assert.equal(tagOf('not_claimed'), 'Documents')
   assert.equal(tagOf('hotel_vat'), 'Documents')   // a UK hotel stay waiting for the property's VAT invoice
   assert.equal(tagOf('claim_receipts_unclear'), 'Recorded twice')
+})
+
+// ─── The queue's groups ──────────────────────────────────────────────────────
+
+test('each card falls in one group, errors before questions before suggestions before warnings', () => {
+  const cards = todoCards([row(1, [issue('unusual_account')]), row(2, [issue('date_missing', 'error')])],
+                          [suggestion('s', [9])], [question('q', [8])], file)
+  assert.deepEqual(queueGroups(cards).map(g => [g.group, g.cards.length]),
+                   [['fix', 1], ['question', 1], ['suggestion', 1], ['check', 1]])
+  assert.equal(GROUP_LABELS.fix.title, 'Must fix')
+})
+
+test('a card only waiting on the person is in the last group', () => {
+  const cards = todoCards([], [], [question('q', [8], 'waiting'), question('r', [7])], file)
+  assert.deepEqual(cards.map(groupOf), ['question', 'waiting'])
+  assert.deepEqual(queueGroups(cards).map(g => g.group), ['question', 'waiting'])
+})
+
+test('warnings are folded by kind, the biggest first; other groups are not', () => {
+  const cards = todoCards([row(1, [issue('unusual_account')]), row(2, [issue('date_missing')]), row(3, [issue('date_missing')]),
+                           row(4, [issue('date_missing', 'error')])], [], [], file)
+  assert.deepEqual(checkKinds(cards).map(k => [k.kind, k.cards.length]),
+                   [['No date', 2], ["Not this supplier's usual account", 1]])
+})
+
+test("a card's kind is its first issue's title, or its tag when it has none", () => {
+  const cards = todoCards([row(1, [issue('date_missing')])], [suggestion('s', [9])], [], file)
+  assert.deepEqual(cards.map(cardKind), ['Suggestion', 'No date'])   // a suggestion ranks before a warning
+})
+
+test('done since opening never goes below nothing', () => {
+  assert.equal(doneSince(113, 108), 5)
+  assert.equal(doneSince(100, 104), 0)
+  assert.equal(doneSince(null, 3), 0)
 })

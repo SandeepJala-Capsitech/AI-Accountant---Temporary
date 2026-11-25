@@ -1,13 +1,14 @@
 'use client'
 
 import Link from 'next/link'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import ClientDialog from '@/components/ClientDialog'
 import { useClientYear } from '@/components/ClientYearContext'
+import { useTodo } from '@/components/useTodo'
 import { clientQuestions, questionsHref, waitingByYear, type Question } from '@/lib/chat'
 import { postedTrialBalance } from '@/lib/api'
 import { changeClient, getSummary, type ClientFields, type YearSummary } from '@/lib/clients'
-import { BUSINESS_TYPES, transactionCount } from '@/lib/clientRules'
+import { BUSINESS_TYPES } from '@/lib/clientRules'
 import { money, postedLedgerNote } from '@/lib/ledger'
 import { bankCheckText, fullDate, linesFor } from '@/lib/sections'
 import { newestFirst, listReviews, overviewReviewLine, unseenChanges } from '@/lib/reviews'
@@ -54,7 +55,7 @@ export default function OverviewSection() {
     setEditing(false)
     await reload()
   }
-  const link = (slug: 'transactions' | 'invoices' | 'bank' | 'trial-balance', text: string) => (
+  const link = (slug: 'transactions' | 'invoices' | 'bank' | 'trial-balance' | 'ai-review', text: string) => (
     <Link href={sectionHref(client.id, year.start, slug)} className="link-btn">{text}</Link>
   )
   const details: [string, string][] = [
@@ -72,26 +73,22 @@ export default function OverviewSection() {
   ]
 
   const ledgerNote = postedLedgerNote(unposted)
+  const { need, error: todoError } = useTodo()
 
   const waiting = waitingByYear(asked, years, year.start)
 
+  const summaryLine = [BUSINESS_TYPES[client.business_type], client.contact_name,
+                       client.vat_number ? `VAT ${client.vat_number}` : ''].filter(Boolean).join(' · ')
+  const tile = (label: string, value: ReactNode, to: ReactNode, warn = false) => (
+    <div className={warn ? 'status-tile status-tile-warn' : 'status-tile'} key={label}>
+      <div className="status-label">{label}</div>
+      <div className="status-value">{value}</div>
+      <div className="status-link">{to}</div>
+    </div>
+  )
+
   return (
     <>
-      <section className="card section">
-        <div className="section-head">
-          <h2>Client details</h2>
-          {!client.archived && <button type="button" className="btn btn-small" onClick={() => setEditing(true)}>Edit details</button>}
-        </div>
-        <dl className="details">
-          {details.map(([label, value]) => (
-            <div key={label}>
-              <dt>{label}</dt>
-              <dd>{value}</dd>
-            </div>
-          ))}
-        </dl>
-      </section>
-
       <section className="card section">
         <div className="section-head">
           <h2>{year.label}</h2>
@@ -103,14 +100,16 @@ export default function OverviewSection() {
           </div>
         )}
         {error && <div className="notice notice-error">{error}</div>}
-        {!summary && !error && <p className="muted">Loading the summary…</p>}
-        {waiting.here > 0 && (
-          <p><Link href={questionsHref(client.id, year.start)} className="link-btn">{waiting.here} {waiting.here === 1 ? 'question is' : 'questions are'} waiting for your answer</Link></p>
-        )}
+        <p className="todo-headline">
+          {need === null && todoError ? <>Couldn’t count what is left to do: {todoError} {link('ai-review', 'AI review')}</>
+            : need === null ? <span className="muted">Counting what is left to do…</span>
+            : need === 0 ? <>Nothing to do. {link('ai-review', 'AI review')}</>
+            : <Link href={sectionHref(client.id, year.start, 'ai-review')}><strong>{need} to do</strong> in the AI review</Link>}
+        </p>
         {waiting.elsewhere.map(other => (
           <p key={other.start}><Link href={questionsHref(client.id, other.start)} className="link-btn">{other.count} {other.count === 1 ? 'question is' : 'questions are'} waiting in the {other.label.charAt(0).toLowerCase() + other.label.slice(1)}</Link></p>
         ))}
-        {reviewLine && <p><Link href={sectionHref(client.id, year.start, 'ai-review')} className="link-btn">{reviewLine}</Link></p>}
+        {reviewLine && <p className="muted small"><Link href={sectionHref(client.id, year.start, 'ai-review')} className="link-btn">{reviewLine}</Link></p>}
         {summary?.missing_paperwork?.length ? (
           <div className="notice notice-warn">
             <strong>Missing paperwork</strong>
@@ -119,43 +118,38 @@ export default function OverviewSection() {
         ) : null}
         {summary?.pointers?.map(p => <p key={p} className="muted small">{p}</p>)}
         {ledgerNote && <p className="muted small">{ledgerNote}</p>}
+        {!summary && !error && <p className="muted">Loading the summary…</p>}
         {summary && (
-          <dl className="details">
-            <div>
-              <dt>Rows to review</dt>
-              <dd>
-                {summary.to_review
-                  ? <>{summary.to_review} of {transactionCount(summary.rows)} {link('transactions', 'Review')}</>
-                  : <>None of {transactionCount(summary.rows)}</>}
-              </dd>
-            </div>
-            <div>
-              <dt>Unpaid sales</dt>
-              <dd>{money(summary.unpaid_sales)} {link('invoices', 'Invoices')}</dd>
-            </div>
-            <div>
-              <dt>Unpaid purchases</dt>
-              <dd>{money(summary.unpaid_purchases)} {link('invoices', 'Invoices')}</dd>
-            </div>
-            {summary.bank.map(check => (
-              <div key={check.code}>
-                <dt>{check.name}</dt>
-                <dd>{bankCheckText(check, linesFor(ledger, check.code).length)} {link('bank', 'Bank')}</dd>
-              </div>
-            ))}
-            <div>
-              <dt>Trial balance</dt>
-              <dd>
-                {summary.trial_balance === 'balanced'
-                  ? <span className="badge badge-accent">Balances</span>
-                  : <span className="badge badge-warn">Blocked</span>}{' '}
-                {link('trial-balance', 'Trial balance')}
-                {summary.problems.map(p => <div key={p} className="text-warn small">{p}</div>)}
-              </dd>
-            </div>
-          </dl>
+          <div className="status-tiles">
+            {summary.bank.map(check => tile(check.name, bankCheckText(check, linesFor(ledger, check.code).length),
+                                            link("bank", "Bank"), check.difference !== null && Number(check.difference) !== 0))}
+            {tile('Trial balance',
+                  summary.trial_balance === 'balanced' ? 'Balances'
+                    : <>Blocked{summary.problems.slice(0, 1).map(p => <div key={p} className="small status-clamp" title={p}>{p}</div>)}</>,
+                  link('trial-balance', 'Trial balance'), summary.trial_balance !== 'balanced')}
+            {tile('Unpaid sales', <span className="mono">{money(summary.unpaid_sales)}</span>, link('invoices', 'Invoices'))}
+            {tile('Unpaid purchases', <span className="mono">{money(summary.unpaid_purchases)}</span>, link('invoices', 'Invoices'))}
+          </div>
         )}
       </section>
+
+      <details className="card section client-details">
+        <summary>
+          <h2>Client details</h2>
+          <span className="muted small">{summaryLine}</span>
+          {!client.archived && (
+            <button type="button" className="btn btn-small" onClick={e => { e.preventDefault(); setEditing(true) }}>Edit details</button>
+          )}
+        </summary>
+        <dl className="details">
+          {details.map(([label, value]) => (
+            <div key={label}>
+              <dt>{label}</dt>
+              <dd>{value}</dd>
+            </div>
+          ))}
+        </dl>
+      </details>
       {editing && <ClientDialog client={client} onCancel={() => setEditing(false)} onSave={saveDetails} />}
     </>
   )
