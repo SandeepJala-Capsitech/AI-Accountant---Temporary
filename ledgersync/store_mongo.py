@@ -39,8 +39,8 @@ FRESH_FOR = 5.0
 _CLIENT_FIELDS = ("name", "business_type", "contact_name", "contact_email", "contact_phone", "vat_registered",
                   "vat_from",
                   "bank_accounts", "owners", "first_year_end", "ai_review", "company_number", "utr", "vat_number",
-                  "paye_reference", "materiality", "capitalise_from")
-_REFERENCES = ("company_number", "utr", "vat_number", "paye_reference")
+                  "paye_reference", "materiality", "capitalise_from", "nature_of_business", "sic_code")
+_REFERENCES = ("company_number", "utr", "vat_number", "paye_reference", "nature_of_business", "sic_code")
 _CLIENT_PROJECTION = {
     "id": 1,
     "name": 1,
@@ -60,6 +60,8 @@ _CLIENT_PROJECTION = {
     "utr": 1,
     "vat_number": 1,
     "paye_reference": 1,
+    "nature_of_business": 1,
+    "sic_code": 1,
     "closed_years": 1,
     "archived_at": 1,
     "created_at": 1,

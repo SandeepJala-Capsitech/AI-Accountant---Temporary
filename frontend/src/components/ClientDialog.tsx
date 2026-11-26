@@ -26,6 +26,7 @@ export default function ClientDialog({ client, taken, onCancel, onSave }: {
     owners: (client.owners ?? []).map(o => ({ ...o, share: o.share ?? '' })),
     ai_review: client.ai_review ?? 'automatic', materiality: client.materiality ?? '', capitalise_from: client.capitalise_from ?? '', company_number: client.company_number ?? '', utr: client.utr ?? '',
     vat_number: client.vat_number ?? '', paye_reference: client.paye_reference ?? '',
+    nature_of_business: client.nature_of_business ?? '', sic_code: client.sic_code ?? '',
   } : NEW_CLIENT))
   const [showErrors, setShowErrors] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -100,6 +101,19 @@ export default function ClientDialog({ client, taken, onCancel, onSave }: {
           <span className="hint">The end of the first year the books are kept for, e.g. 31 March 2026. Later years follow it.</span>
           {showErrors && errors.first_year_end && <span className="field-error">{errors.first_year_end}</span>}
         </label>
+        <div className="field-row">
+          <label className="field">
+            <span>Nature of business</span>
+            <input className="input" value={fields.nature_of_business ?? ''} maxLength={120}
+                   onChange={e => set('nature_of_business', e.target.value)} placeholder="e.g. Web design agency" />
+            <span className="hint">What the business does. A streaming subscription is a film or music business&apos;s cost, and anyone else&apos;s own.</span>
+          </label>
+          <label className="field">
+            <span>SIC code</span>
+            <input className="input" value={fields.sic_code ?? ''} onChange={e => set('sic_code', e.target.value)}
+                   placeholder="e.g. 62012" inputMode="numeric" maxLength={5} />
+          </label>
+        </div>
         <div className="field-row">
           <label className="field">
             <span>Company number</span>

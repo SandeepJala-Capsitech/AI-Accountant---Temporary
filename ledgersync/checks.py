@@ -13,7 +13,7 @@ from .accounts import (ASSET_CANDIDATES, BY_CODE, CAPITALS, CARDS, CLEARING, CRE
                        AccountType)
 from .models import NOT_TRANSACTIONS, BusinessSettings, Direction, Issue, Transaction
 from .money import PENNY, ZERO, VatTreatment, vat_in_gross
-from .payees import personal, processor
+from .payees import consumer_service, media_business, personal, processor
 
 _NO_VAT = {AccountType.LIABILITY, AccountType.EQUITY}
 # Issues matching.match adds; listed here so validating again replaces them instead of adding copies.
@@ -30,7 +30,7 @@ _DERIVED = {"unknown_account", "same_account", "non_gbp_currency", "vat_not_appl
             "vat_arithmetic", "vat_rate_mismatch", "date_missing", "date_out_of_period", "unusual_direction",
             "not_booked", "vat_blocked", "vat_half_blocked", "under_capitalisation", "director_loan", "wages_from_bank",
             "payroll_owed_to", "before_first_year", "vat_not_booked", "needs_document", "total_worked_out",
-            "cis_deducted", "personal", "possible_duplicate", "booked_without_document", "card_credit", "vat_unclaimed",
+            "cis_deducted", "personal", "for_the_trade", "possible_duplicate", "booked_without_document", "card_credit", "vat_unclaimed",
             "on_account", "no_vat_number", "vat_over_rate", "reverse_charge", "before_vat_registration", "small_asset",
             "meal_check", "meal_recoded", "claim_note", "sundry_check", "account_fact", "account_choice", "left_small", "left_unset", "meal_decided", "small_items_add_up", "future_date", "journal_note", "prepayment", "unusual_account", "asset_check",
             "should_be_asset", "whose_account", "vat_confirmed", "vat_implied", "document_wanted", "hotel_vat"} | MATCHING_ISSUES | STATEMENT_ISSUES
@@ -659,6 +659,13 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
     if service and tx.direction == Direction.OUT and account is not None:
         issues.append(issue("personal", f"{service} looks like personal spending: booked to the {account.name}. "
                                         "Recode it if it was for the business.", "info"))
+    elif (tx.direction == Direction.OUT and account is not None and account.type == AccountType.EXPENSE
+          and media_business(settings.nature_of_business, settings.sic_code)
+          and (for_work := consumer_service(tx.counterparty, tx.description))):
+        what = settings.nature_of_business or f"SIC {settings.sic_code}"
+        issues.append(issue("for_the_trade", f"{for_work} kept as a business cost on {account.name}: the business is "
+                                             f"{what}, so it may be for its work. If it is someone's own, recode it "
+                                             "to their account.", "info"))
     if (tx.document_type == "statement" and tx.direction == Direction.IN and tx.bank_account in CARDS
             and account is not None and account.type == AccountType.INCOME):
         issues.append(issue("card_credit", f"Money in on a card is a payment to the card or a refund, not a sale: "

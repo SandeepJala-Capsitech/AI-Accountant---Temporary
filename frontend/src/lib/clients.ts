@@ -41,6 +41,8 @@ export interface ClientFields {
   utr?: string
   vat_number?: string
   paye_reference?: string
+  nature_of_business?: string   // what the business does: a streaming subscription is a film company's cost
+  sic_code?: string
 }
 
 export interface ClosedYear {

@@ -204,3 +204,19 @@ health checks (free), so $1.09 is the run's whole cost.
 Tests after all the fixes: 1,008 pass across the 15 test files they touch (matching, checks, coding, duplicates,
 adapter, questions, upkeep, resolutions, books, accountant cases, ledger, materiality, pipeline, posting, tables).
 Front end: 228 pass, `tsc` clean.
+
+## The five packs again (`2026-11-26-packs-today`, app f841d43)
+
+$0.04 (estimate $0.37), 7 min, 36 calls. Every file was read.
+
+| | 23 Nov | 26 Nov |
+|---|---|---|
+| Entries right | 20 of 21 | 20 of 21 |
+| Documents right | 21 of 22 | 21 of 22 |
+| VAT box differences | £31.79 | £0.00 |
+
+- **EC-0301 laptop, EC-0316 overseas software (reverse charge), EC-0330 client dinner, EC-0430 two coffees:** pass. Box 7 now leaves out the dinner's blocked VAT (c4c75d9).
+- **EC-0346, the £320 till receipt:** still fails. Its £53.33 VAT is reclaimed, and the full VAT invoice is never asked for. Waits on the user's VAT-invoice-wanted design (A-N13).
+- **No AI review ran in any pack.** By design: the review starts only when the books raise something to look at, and these packs raise nothing (the same on 23 Nov).
+
+The packs are one small company with one case each, so they say little about a different kind of client. That needs one of the planned clients built (the shop, café, builder, landlord or LLP).

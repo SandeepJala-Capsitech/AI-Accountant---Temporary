@@ -37,7 +37,8 @@ def settings_for(client: Client) -> BusinessSettings:
                             business_type=client.business_type, bank_accounts=codes, bank_account=default,
                             owners=owner_slots_of(client), owner_names=tuple(name for _, name in owners_of(client)),
                             books_start=year_bounds(client.first_year_end, 0)[0],
-                            capitalise_from=client.capitalise_from)
+                            capitalise_from=client.capitalise_from, nature_of_business=client.nature_of_business,
+                            sic_code=client.sic_code)
 
 
 def bank_choices(client: Client, upload_bank: Optional[str] = None) -> tuple[str, ...]:

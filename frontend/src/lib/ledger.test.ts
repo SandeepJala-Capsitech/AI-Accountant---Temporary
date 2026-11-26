@@ -670,3 +670,8 @@ test('the who-was-it-for question fits a shop as well as a meal', () => {
   // Groceries the company paid for ask whose they were (25 Nov 2026): "who was there" reads oddly for a shop.
   assert.equal(issueTitle('meal_check'), 'Who was it for?')
 })
+
+test('a subscription a media business keeps as a cost has a title of its own', () => {
+  // What the business does decides a streaming subscription (26 Nov 2026).
+  assert.equal(issueTitle('for_the_trade'), 'Kept for the business')
+})

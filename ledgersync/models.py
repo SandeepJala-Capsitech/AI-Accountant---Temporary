@@ -107,6 +107,8 @@ class BusinessSettings(BaseModel):
     owners: tuple[int, ...] = ()               # the slots of its directors, partners or members, in order; () when
                                                # none are listed: the first owner's accounts (slot 0) are used
     owner_names: tuple[str, ...] = ()          # their names, as the client lists them
+    nature_of_business: str = ""               # what the business does, as the firm describes it
+    sic_code: str = ""                         # its SIC code, if the firm gave one
 
 
 class Settlement(BaseModel):
@@ -421,9 +423,13 @@ class ClientFields(BaseModel):
     utr: str = ""                      # Unique Taxpayer Reference
     vat_number: str = ""               # VAT registration number
     paye_reference: str = ""           # employer's PAYE reference
+    # What the business does, as the firm describes it, and its SIC code: what looks personal for one business can be
+    # its trade for another (a streaming subscription for a film company).
+    nature_of_business: str = ""
+    sic_code: str = ""
 
     @field_validator("name", "contact_name", "contact_email", "contact_phone", "company_number", "utr",
-                     "vat_number", "paye_reference", mode="before")
+                     "vat_number", "paye_reference", "nature_of_business", "sic_code", mode="before")
     @classmethod
     def _trimmed(cls, value):
         return "" if value is None else str(value).strip()
@@ -477,6 +483,8 @@ class ClientPatch(BaseModel):
     utr: Optional[str] = None
     vat_number: Optional[str] = None
     paye_reference: Optional[str] = None
+    nature_of_business: Optional[str] = None
+    sic_code: Optional[str] = None
     archived: Optional[bool] = None
 
     @field_validator("vat_from", mode="before")

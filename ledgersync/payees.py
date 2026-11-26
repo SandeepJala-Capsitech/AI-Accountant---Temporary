@@ -74,15 +74,34 @@ OWNERS_HOME = {"mortgage": "A mortgage", "council tax": "Council tax", "tv licen
                "tv licensing": "A TV licence"}
 
 
-def personal(*texts: Optional[str], business_type: Optional[str] = None) -> Optional[str]:
-    """What the payee (or description) names that is the owner's own spending, as messages name it: a consumer
-    service; the owner's Self Assessment tax; and, for a business that is not a company, a mortgage or council tax.
-    None for anything else."""
-    names = {**PERSONAL, **OWNERS_TAX}
-    if business_type and business_type != "limited_company":
-        names.update(OWNERS_HOME)
-    found = _found(names, *texts)
+# A business whose trade is film, TV, music, streaming, gaming or other media: a streaming or gaming subscription may
+# be for its work. By what the firm says it does, or by its SIC code (59: film, video, TV and music; 60: broadcasting;
+# 90: creative arts and entertainment; 58210: publishing computer games).
+_MEDIA_TRADE = re.compile(r"\b(film|films|tv|television|video|streaming|media|music|recording|record label|broadcast\w*|"
+                          r"radio|podcast\w*|entertainment|content creat\w*|production company|post.production|"
+                          r"animation|cinema|games|gaming|esports)\b", re.IGNORECASE)
+_MEDIA_SIC = re.compile(r"^(59|60|90)\d{3}$|^58210$")
+
+
+def media_business(nature_of_business: str = "", sic_code: str = "") -> bool:
+    """Whether the business works in film, TV, music, streaming, gaming or other media."""
+    return bool(_MEDIA_TRADE.search(nature_of_business or "")) or bool(_MEDIA_SIC.match((sic_code or "").strip()))
+
+
+def consumer_service(*texts: Optional[str]) -> Optional[str]:
+    """The streaming, music, audiobook or gaming service the payee (or description) names, as messages name it."""
+    found = _found(PERSONAL, *texts)
     if found is None:
         flix = next((m.group(1) for text in texts if (m := _FLIX.search(_padded(text)))), None)
         found = flix.capitalize() if flix else None
     return found
+
+
+def personal(*texts: Optional[str], business_type: Optional[str] = None, media: bool = False) -> Optional[str]:
+    """What the payee (or description) names that is the owner's own spending, as messages name it: a consumer
+    service (unless the business works in media, media=True: then it may be for its work); the owner's Self
+    Assessment tax; and, for a business that is not a company, a mortgage or council tax. None for anything else."""
+    names = dict(OWNERS_TAX)
+    if business_type and business_type != "limited_company":
+        names.update(OWNERS_HOME)
+    return _found(names, *texts) or (None if media else consumer_service(*texts))

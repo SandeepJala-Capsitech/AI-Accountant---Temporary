@@ -688,3 +688,29 @@ def test_a_purchase_the_reader_saw_was_made_abroad_says_so_on_the_row():
     [t] = adapt({**ROW, "account": "7402 Hotels", "abroad": True})
     assert t.abroad is True
     assert adapt(ROW)[0].abroad is False
+
+
+# What the business does decides a streaming subscription (user, 26 Nov 2026): a film, TV, music or media business
+# may subscribe for its work; any other company's is the director's.
+
+@pytest.mark.parametrize("trade, sic", [("Film and TV production", ""), ("Music streaming platform", ""),
+                                        ("", "59111"), ("", "60200")])
+def test_a_media_business_keeps_a_streaming_subscription_as_a_cost(trade, sic):
+    settings = BusinessSettings(business_type="limited_company", nature_of_business=trade, sic_code=sic)
+    [t] = to_transactions([dict(NETFLIX, counterparty="STREAMFLIX.COM", description="STREAMFLIX.COM")],
+                          source="table", settings=settings)
+    assert t.account_code == "8201" and ("for_the_trade", "info") in issues_of(t)
+
+
+@pytest.mark.parametrize("trade, sic", [("Bakery and café", ""), ("Web design agency", "62012"), ("", "")])
+def test_another_business_puts_a_streaming_subscription_to_the_director(trade, sic):
+    settings = BusinessSettings(business_type="limited_company", nature_of_business=trade, sic_code=sic)
+    [t] = to_transactions([NETFLIX], source="table", settings=settings)
+    assert t.account_code == "2250" and ("personal", "info") in issues_of(t)
+
+
+def test_what_the_business_does_never_makes_the_owners_own_tax_a_cost():
+    settings = BusinessSettings(business_type="sole_trader", nature_of_business="Film production", sic_code="59111")
+    [t] = to_transactions([dict(NETFLIX, counterparty="HMRC", description="HMRC SELF ASSESSMENT")], source="table",
+                          settings=settings)
+    assert t.account_code == "3260"

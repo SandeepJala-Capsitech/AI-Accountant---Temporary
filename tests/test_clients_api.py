@@ -862,3 +862,14 @@ def test_a_firm_sets_a_clients_capitalisation_threshold_and_it_books_small_equip
     [line] = client.get(f"/api/clients/{made['id']}/years/{YEAR}/ledger").json()["transactions"]
     assert line["account_code"] == "7504"
     assert client.patch(f"/api/clients/{made['id']}", json={"capitalise_from": None}).json()["capitalise_from"] is None
+
+
+def test_a_firm_says_what_the_business_does_and_the_client_keeps_it(api):
+    client = api(FakeModel([]))
+    made = add(client)
+    assert (made["nature_of_business"], made["sic_code"]) == ("", "")
+    changed = client.patch(f"/api/clients/{made['id']}",
+                           json={"nature_of_business": "  Film and TV production ", "sic_code": " 59111 "}).json()
+    assert (changed["nature_of_business"], changed["sic_code"]) == ("Film and TV production", "59111")
+    again = client.get(f"/api/clients/{made['id']}").json()
+    assert (again["nature_of_business"], again["sic_code"]) == ("Film and TV production", "59111")
