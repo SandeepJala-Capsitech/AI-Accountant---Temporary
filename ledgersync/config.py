@@ -21,6 +21,7 @@ ENV_NAMES = (
     "MONGODB_URI", "MONGODB_DB_NAME", "LEDGERSYNC_MONGO_MAX_POOL",
     "LEDGERSYNC_AGENT_TIMEOUT", "LEDGERSYNC_DEMO", "LEDGERSYNC_REVIEW_WAIT", "LEDGERSYNC_REVIEW_DAILY_LIMIT",
     "LEDGERSYNC_REVIEW_WORKER",
+    "LEDGERSYNC_AUTH_USERNAME", "LEDGERSYNC_AUTH_PASSWORD", "LEDGERSYNC_AUTH_SECRET", "LEDGERSYNC_SESSION_DAYS",
 )
 
 
@@ -109,10 +110,20 @@ class Settings:
     review_wait_seconds: int = 20         # how long after the last change the background review waits to start
     review_daily_limit: int = 20          # background reviews a client may have in a day
     review_worker: bool = True            # the API runs the background review (with warmup; tests drive it by hand)
+    # The one username and password the pages sign in with. Both unset: sign-in is off (local use and the tests).
+    auth_username: str = ""
+    auth_password: str = field(default="", repr=False)   # never printed or logged
+    auth_secret: str = field(default="", repr=False)     # signs the session cookie; at least 32 characters
+    session_days: int = 7                 # how long a sign-in lasts
 
     @property
     def max_upload_bytes(self) -> int:
         return self.max_upload_mb * 1024 * 1024
+
+    @property
+    def auth_required(self) -> bool:
+        """Whether the API answers only a signed-in browser: both the username and the password are set."""
+        return bool(self.auth_username and self.auth_password)
 
     @property
     def provider(self) -> str:
@@ -184,4 +195,8 @@ class Settings:
             review_wait_seconds=max(0, _number(env, "LEDGERSYNC_REVIEW_WAIT", d.review_wait_seconds)),
             review_daily_limit=max(0, _number(env, "LEDGERSYNC_REVIEW_DAILY_LIMIT", d.review_daily_limit)),
             review_worker=_flag(env.get("LEDGERSYNC_REVIEW_WORKER", "1")),
+            auth_username=env.get("LEDGERSYNC_AUTH_USERNAME", "").strip(),
+            auth_password=env.get("LEDGERSYNC_AUTH_PASSWORD", "").strip(),
+            auth_secret=env.get("LEDGERSYNC_AUTH_SECRET", "").strip(),
+            session_days=max(1, _number(env, "LEDGERSYNC_SESSION_DAYS", d.session_days)),
         )

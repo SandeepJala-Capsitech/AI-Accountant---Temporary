@@ -103,6 +103,27 @@ class RefusedRequest(LedgerSyncError):
     code = "refused_request"
 
 
+class NotSignedIn(LedgerSyncError):
+    """Sign-in is on and the request carries no valid session cookie."""
+
+    status_code = 401
+    code = "not_signed_in"
+
+
+class WrongCredentials(LedgerSyncError):
+    """A sign-in whose username and password don't match the ones set."""
+
+    status_code = 401
+    code = "wrong_credentials"
+
+
+class TooManyAttempts(LedgerSyncError):
+    """Sign-in is paused after too many wrong attempts."""
+
+    status_code = 429
+    code = "too_many_attempts"
+
+
 class StorageError(LedgerSyncError):
     """The database could not be used, or its address is not set; the server log says why."""
 

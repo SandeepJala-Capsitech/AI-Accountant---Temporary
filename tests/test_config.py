@@ -196,3 +196,11 @@ def test_the_chat_can_run_on_another_model_than_the_one_that_reads_the_files():
     split = Settings.from_env({**base, "OPENROUTER_CHAT_MODEL": " stronger/model "})
     assert (split.model, split.chat_model_name) == ("reader/model", "stronger/model")
     assert "OPENROUTER_CHAT_MODEL" in ENV_NAMES
+
+
+def test_sign_in_is_off_by_default_and_on_with_both_credentials():
+    assert Settings.from_env({}).auth_required is False
+    s = Settings.from_env({"LEDGERSYNC_AUTH_USERNAME": " sandeep ", "LEDGERSYNC_AUTH_PASSWORD": "pw",
+                           "LEDGERSYNC_AUTH_SECRET": "x" * 32, "LEDGERSYNC_SESSION_DAYS": "3"})
+    assert s.auth_required and s.auth_username == "sandeep" and s.session_days == 3
+    assert "pw" not in repr(s) and "x" * 32 not in repr(s)
