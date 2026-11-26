@@ -675,3 +675,9 @@ test('a subscription a media business keeps as a cost has a title of its own', (
   // What the business does decides a streaming subscription (26 Nov 2026).
   assert.equal(issueTitle('for_the_trade'), 'Kept for the business')
 })
+
+test('VAT reclaimed as the bank file states it can be taken off the line', () => {
+  const line = tx({ document_type: 'statement', gross: '118.80', vat: '19.80', vat_posted: '19.80', net: '99.00' })
+  assert.deepEqual(issueFixes(line, { ...warning('vat_from_file'), severity: 'info' }), [{ label: "Don't reclaim it", change: { vat: '0.00' } }])
+  assert.equal(issueTitle('vat_from_file'), 'VAT from the bank file')
+})

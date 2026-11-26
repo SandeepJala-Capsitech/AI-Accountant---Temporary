@@ -884,3 +884,22 @@ def test_a_firm_names_the_clients_related_companies(api):
     assert changed["related_companies"] == ["Longcroft SPV 1 Ltd", "MKM Holdings Ltd"]
     assert client.get(f"/api/clients/{made['id']}").json()["related_companies"] == ["Longcroft SPV 1 Ltd",
                                                                                     "MKM Holdings Ltd"]
+
+
+def test_a_working_sheets_vat_is_reclaimed_from_its_bank_line(api):
+    # Test1's working sheet: the accountant's VAT column says what each line's VAT is; it is reclaimed from the line,
+    # and the line says the VAT invoice is still wanted. A line the sheet gives no VAT waits for its document as before.
+    coded = json.dumps({"lines": [{"n": n, "account": "8201", "counterparty": "Property Filter", "alternatives": [],
+                                   "bought": None, "people": None} for n in (1, 2)]})
+    client = api(FakeModel([coded]))
+    made = add(client)
+    data = (b"Date,Description,Debit,Credit,Balance,VAT/ NO VAT,Input,Output\n"
+            b"09/09/2026,PROPERTY-FILTER,118.80,0,881.20,VAT,19.8,0\n"
+            b"10/09/2026,PROPERTY-FILTER,60.00,0,821.20,No VAT,0,0\n")
+    resp = client.post("/api/analyze", data={"client_id": str(made["id"])},
+                       files={"file": ("working.xlsx.csv", data, "text/csv")})
+    assert finish(client, resp.json()["job_id"])["status"] == "succeeded"
+    with_vat, without = client.get(f"/api/clients/{made['id']}/years/{YEAR}/ledger").json()["transactions"]
+    assert (with_vat["vat_posted"], with_vat.get("vat_not_reclaimed")) == ("19.80", None)
+    assert "vat_from_file" in [i["code"] for i in with_vat["issues"]]
+    assert "needs_document" in [i["code"] for i in without["issues"]]

@@ -6,6 +6,7 @@ import re
 from typing import TYPE_CHECKING, List, Literal, Optional
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic.json_schema import SkipJsonSchema
 
 from .accounts import choosable, model_accounts
 from .errors import ModelError
@@ -41,6 +42,8 @@ class AccountingTransaction(BaseModel):
     account: str = Field(..., description="The account from the chart of accounts",
                          json_schema_extra={"enum": list(ACCOUNT_CHOICES)})
     vat: Optional[float] = Field(None, description="The VAT amount printed on the document, or null")
+    # Never the model's: set when a bank line's VAT is read in code from the file's own VAT columns (a working sheet).
+    vat_from_file: SkipJsonSchema[bool] = False
     currency: Optional[str] = Field("GBP", description="Currency code, e.g. GBP")
     # Per receipt or invoice: lets the ledger flag rows that do not add up to the document's total,
     # and a document kept as one row because its VAT could not be divided between accounts.
@@ -269,6 +272,7 @@ class TransactionExtractor:
                 rows.append(AccountingTransaction(
                     description=line.text, date=line.date.isoformat(), amount=float(line.amount),
                     direction=line.direction, account=answer.account if answer else "9998", currency=line.currency,
+                    vat=float(line.vat) if line.vat is not None else None, vat_from_file=line.vat is not None,
                     document_type="statement", counterparty=answer.counterparty if answer else None,
                     alternatives=answer.alternatives if answer else [], bought=answer.bought if answer else None,
                     people=answer.people if answer else None,

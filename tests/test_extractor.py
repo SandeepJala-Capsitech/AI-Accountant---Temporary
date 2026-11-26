@@ -398,3 +398,13 @@ def test_a_lines_note_and_the_related_companies_reach_the_model():
     assert "1 | 2025-09-10 | out | 775.02 | SITE RESPONSE SERVICES | note: Longcroft property project cost" in (
         call["messages"][-1]["content"])
     assert "Longcroft SPV 1 Ltd" in call["messages"][0]["content"] and "2330" in call["messages"][0]["content"]
+
+
+def test_a_lines_vat_from_the_file_is_kept_on_its_row():
+    fake = FakeModel([_coded([1])])
+    statement = Statement(lines=[Line(date=_dt.date(2024, 9, 30), text="PROPERTY-FILTER", amount=_D("118.80"),
+                                      direction="out", balance=None, currency="GBP", kind=None, vat=_D("19.80"))],
+                          opening_balance=None, closing_balance=None, heading="")
+    [row] = TransactionExtractor(fake).code_statement(statement, "current").data
+    assert (row.vat, row.vat_from_file) == (19.8, True)
+    assert "vat_from_file" not in json.dumps(ExtractedTransactions.model_json_schema())

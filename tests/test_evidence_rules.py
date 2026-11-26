@@ -410,3 +410,28 @@ def test_a_claim_line_with_no_receipt_is_booked_as_the_claim_shows_it_and_says_a
     assert document_rule(ready(document_type="expense_claim", gross=D("20.00"), vat=D("3.33"), account_code="7500"),
                          SETTINGS).unbacked is True
     assert verdict(document_rule(statement_line("457.20"), SETTINGS)) == ("hold", False, "vat_invoice")   # a bank line waits
+
+
+# VAT a bank file states (user, 26 Nov 2026): an accountant's working sheet gives each bank line's VAT. The sheet is
+# the accountant's own record, as an expense claim is the claimant's: its VAT is reclaimed from the line, and the row
+# says the VAT invoice is still wanted.
+
+def sheet_line(gross: str, vat: str, account: str = "8201") -> Transaction:
+    return ready(document_type="statement", gross=D(gross), vat=D(vat), account_code=account, direction="out",
+                 vat_from_file=True)
+
+
+@pytest.mark.parametrize("gross, vat", [("40.00", "6.67"), ("118.80", "19.80"), ("1200.00", "200.00")])
+def test_vat_the_bank_file_states_is_reclaimed_from_the_line(gross, vat):
+    rule = document_rule(sheet_line(gross, vat), SETTINGS)
+    assert (verdict(rule), rule.from_file) == (("book", True, None), True)
+
+
+def test_vat_on_a_bank_line_not_read_from_the_files_vat_columns_is_not_reclaimed_from_it():
+    line = ready(document_type="statement", gross=D("118.80"), vat=D("19.80"), account_code="8201", direction="out")
+    assert verdict(document_rule(line, SETTINGS)) == ("hold", False, "receipt_or_invoice")
+
+
+def test_a_bank_line_with_no_vat_stated_is_still_held_for_its_document():
+    assert verdict(document_rule(statement_line("118.80", "8201"), SETTINGS)) == ("hold", False,
+                                                                                   "receipt_or_invoice")

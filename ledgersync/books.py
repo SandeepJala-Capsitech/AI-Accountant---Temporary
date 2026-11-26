@@ -250,6 +250,10 @@ def _saved_rows(b: _Books, n: Optional[int]) -> tuple[list[SavedRow], dict[int, 
                     "for it. Get a VAT invoice for this." if vat > 0 else
                     "Booked as the claim shows it, but there is no receipt or invoice for it. Get one for this."),
                     "warning")]})
+            if rule.from_file:   # said, so VAT reclaimed from a bank line alone can always be found again
+                ready[k] = ready[k].model_copy(update={"issues": [*ready[k].issues, issue(
+                    "vat_from_file", f"VAT £{tx.vat_posted:,.2f} reclaimed as the bank file states it, with no "
+                                     "receipt or invoice: keep the supplier's VAT invoice on file.", "info")]})
             if rule.large_no_vat:   # said, so VAT a fuller invoice would show is not lost unnoticed
                 ready[k] = ready[k].model_copy(update={"issues": [*ready[k].issues, issue(
                     "vat_unclaimed", "No VAT reclaimed: the receipt shows none. If VAT was charged, enter it, or add "

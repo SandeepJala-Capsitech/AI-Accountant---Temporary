@@ -313,16 +313,28 @@ SHUFFLED = ("Date,Description,Debit,Credit,Balance\n29/09/2024,B SAVINGS,0,158.8
 def test_same_day_lines_out_of_the_banks_order_are_put_back_by_their_balances():
     s = lines_of(SHUFFLED, None)
     assert s is not None
+    # In the bank's order, so each line's balance follows from the one before when the statement is checked.
     assert [(l.text, l.direction, l.amount) for l in s.lines] == [
-        ("B SAVINGS", "in", Decimal("158.80")), ("C DIRECTOR", "out", Decimal("5499.00")),
-        ("A B&Q", "out", Decimal("40.00")), ("D FILTER", "out", Decimal("118.80"))]   # in file order
+        ("A B&Q", "out", Decimal("40.00")), ("B SAVINGS", "in", Decimal("158.80")),
+        ("C DIRECTOR", "out", Decimal("5499.00")), ("D FILTER", "out", Decimal("118.80"))]
     assert (s.opening_balance, s.closing_balance) == (Decimal("5512.63"), Decimal("13.63"))
+
+
+def test_a_working_sheet_put_back_in_the_banks_order_passes_the_balance_check():
+    from ledgersync.models import Direction, Transaction
+    from ledgersync.statements import check_statement
+    s = lines_of(SHUFFLED, None)
+    rows = [Transaction(date=l.date, description=l.text, direction=Direction(l.direction), gross=l.amount,
+                        account_code="1200", document_type="statement", balance=l.balance) for l in s.lines]
+    _, check = check_statement(rows)
+    assert check is not None and check.status == "ok"
 
 
 def test_one_amount_column_out_of_the_banks_order_is_signed_by_the_balances_put_back():
     s = lines_of("Date,Description,Amount,Balance\n29/09/2024,B,158.80,5631.43\n29/09/2024,C,-5499.00,132.43\n"
                  "29/09/2024,A,-40.00,5472.63\n30/09/2024,D,-118.80,13.63\n", None)
-    assert s is not None and [l.direction for l in s.lines] == ["in", "out", "out", "out"]
+    assert s is not None and [(l.text, l.direction) for l in s.lines] == [
+        ("A", "out"), ("B", "in"), ("C", "out"), ("D", "out")]   # in the bank's order
     assert (s.opening_balance, s.closing_balance) == (Decimal("5512.63"), Decimal("13.63"))
 
 
@@ -337,7 +349,10 @@ def test_same_day_pass_throughs_that_could_come_in_either_order_are_still_read()
     s = lines_of("Date,Description,Debit,Credit,Balance\n10/09/2025,IN 1,0,1758.40,12193.84\n"
                  "10/09/2025,IN 2,0,775.02,11210.46\n10/09/2025,OUT 1,1758.40,0,10435.44\n"
                  "10/09/2025,OUT 2,775.02,0,10435.44\n11/09/2025,FEE,5.00,0,10430.44\n", None)
-    assert s is not None and [l.direction for l in s.lines] == ["in", "in", "out", "out", "out"]
+    assert s is not None
+    assert {(l.text, l.direction) for l in s.lines} == {("IN 1", "in"), ("IN 2", "in"), ("OUT 1", "out"),
+                                                       ("OUT 2", "out"), ("FEE", "out")}
+    assert [l.text for l in s.lines][-1] == "FEE"   # the days are kept; only a day's lines are put back
     assert (s.opening_balance, s.closing_balance) == (Decimal("10435.44"), Decimal("10430.44"))
 
 
@@ -347,3 +362,25 @@ def test_a_note_column_is_kept_with_its_line():
                  "30/09/2024,TIDE FEES,11.99,0,120.44,,\n", None)
     assert [l.note for l in s.lines] == ["Repayment of money funded on personal card · Checked", ""]
     assert [l.text for l in s.lines] == ["JAMES EVANS", "TIDE FEES"]
+
+
+SHEET_VAT = ("Date,Description,Debit,Credit,Balance,VAT/ NO VAT,Input,Output\n"
+             "29/09/2024,B&Q,40.00,0,960.00,VAT,6.666666666666666,0\n"
+             "30/09/2024,PROPERTY-FILTER,118.80,0,841.20,VAT,19.8,0\n"
+             "01/10/2024,TIDE FEES,11.99,0,829.21,No VAT,0,0\n"
+             "02/10/2024,CLIENT,0,600.00,1429.21,VAT,0,100\n")
+
+
+def test_a_working_sheets_vat_columns_give_each_lines_vat():
+    s = lines_of(SHEET_VAT, None)
+    assert [l.vat for l in s.lines] == [Decimal("6.67"), Decimal("19.80"), None, Decimal("100.00")]
+
+
+def test_a_vat_flag_with_no_vat_column_works_the_vat_out_at_20_percent():
+    s = lines_of("Date,Description,Debit,Credit,VAT/ NO VAT\n29/09/2024,B&Q,40.00,0,VAT\n"
+                 "30/09/2024,TIDE FEES,11.99,0,No VAT\n", None)
+    assert [l.vat for l in s.lines] == [Decimal("6.67"), None]
+
+
+def test_a_bank_export_with_no_vat_columns_gives_no_vat():
+    assert [l.vat for l in lines_of(SHUFFLED, None).lines] == [None] * 4

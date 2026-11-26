@@ -199,6 +199,10 @@ class Transaction(BaseModel):
     # invoice showing none. The claim is the person's record of it, so the document rules reclaim it, and the row
     # says a VAT invoice is still wanted.
     vat_from_claim: bool = False
+    # A bank line whose VAT was read from the file's own VAT columns (an accountant's working sheet), not from a
+    # document: the sheet is the accountant's record of it, so the document rules reclaim it and the row says the VAT
+    # invoice is still wanted (the user's ruling, 26 Nov 2026).
+    vat_from_file: bool = False
     # A person entered the row's VAT, or said to reclaim it: the VAT is theirs to vouch for, so the document rules
     # reclaim it whatever the document is (a booking confirmation, a receipt over the limit, a line with no receipt).
     # Set when a person edits the VAT on a page or tells the chat to; never by the reading or the AI's own decision.

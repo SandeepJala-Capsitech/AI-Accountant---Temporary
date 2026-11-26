@@ -33,6 +33,8 @@ class DocumentRule(BaseModel):
     large_no_vat: bool = False   # a receipt over the simplified limit that shows no VAT: booked whole, and said
     unbacked: bool = False   # a line of an expense claim with no receipt or invoice behind it: booked as the claim
                              # shows it, VAT and all, and the row says the document is still wanted
+    from_file: bool = False  # a bank line whose VAT the file states (an accountant's working sheet): reclaimed from
+                             # the line, and the row says the VAT invoice is still wanted
 
 
 def _fixed_asset(account: Account) -> bool:
@@ -101,6 +103,13 @@ def document_rule(tx: Transaction, settings: BusinessSettings) -> DocumentRule:
     if tx.vat_confirmed and (tx.vat_posted or ZERO) > 0 and not rule.reclaim_vat:
         return DocumentRule(action="book", reclaim_vat=True, confirmed=True,
                             reason="VAT entered or confirmed by a person: reclaimed on their say.")
+    if (tx.vat_from_file and tx.document_type == "statement" and (tx.vat_posted or ZERO) > 0
+            and not rule.reclaim_vat and not tx.without_document):
+        # VAT the bank file states for the line: a working sheet is the accountant's own record, as an expense claim
+        # is the claimant's, so its VAT is reclaimed (the user's ruling, 26 Nov 2026), and the row says the VAT
+        # invoice is still wanted.
+        return DocumentRule(action="book", reclaim_vat=True, from_file=True,
+                            reason="VAT as the bank file states it: reclaimed, with the VAT invoice still wanted.")
     if tx.vat_from_claim and (tx.vat_posted or ZERO) > 0 and not rule.reclaim_vat:
         # The VAT is the expense claim's, the receipt showing none: booked as claimed (matching says an invoice is wanted).
         return DocumentRule(action="book", reclaim_vat=True,

@@ -33,7 +33,8 @@ _DERIVED = {"unknown_account", "same_account", "non_gbp_currency", "vat_not_appl
             "cis_deducted", "personal", "for_the_trade", "related_company", "possible_duplicate", "booked_without_document", "card_credit", "vat_unclaimed",
             "on_account", "no_vat_number", "vat_over_rate", "reverse_charge", "before_vat_registration", "small_asset",
             "meal_check", "meal_recoded", "claim_note", "sundry_check", "account_fact", "account_choice", "left_small", "left_unset", "meal_decided", "small_items_add_up", "future_date", "journal_note", "prepayment", "unusual_account", "asset_check",
-            "should_be_asset", "whose_account", "vat_confirmed", "vat_implied", "document_wanted", "hotel_vat"} | MATCHING_ISSUES | STATEMENT_ISSUES
+            "should_be_asset", "whose_account", "vat_confirmed", "vat_implied", "document_wanted", "hotel_vat",
+            "vat_from_file"} | MATCHING_ISSUES | STATEMENT_ISSUES
 # Warnings that are a matter of judgement: a person who has looked can say one is fine (Transaction.accepted), and it
 # is not raised on that row again.
 ACCEPTABLE = frozenset({"no_vat_number", "vat_over_rate", "small_asset", "meal_check", "sundry_check", "account_fact", "account_choice", "small_items_add_up", "addressed_to", "future_date",

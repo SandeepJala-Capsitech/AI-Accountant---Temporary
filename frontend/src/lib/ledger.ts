@@ -267,7 +267,7 @@ const ISSUE_TITLES: Record<string, string> = {
   unusual_account: "Not this supplier's usual account", asset_check: 'Checked for equipment', should_be_asset: 'Equipment?', whose_account: 'Whose account?',
   vat_not_booked: 'VAT not booked', needs_document: 'Needs its document', booked_without_document: 'Booked without a receipt', claimed_less: 'Claimed less than its bill', total_worked_out: 'Total not printed',
   card_credit: 'Money in on a card', vat_unclaimed: 'VAT not reclaimed', on_account: 'Payment on account',
-  vat_confirmed: 'VAT reclaimed on your say', vat_implied: 'VAT worked out', document_wanted: 'Invoice needed', hotel_vat: 'Invoice needed',
+  vat_confirmed: 'VAT reclaimed on your say', vat_from_file: 'VAT from the bank file', vat_implied: 'VAT worked out', document_wanted: 'Invoice needed', hotel_vat: 'Invoice needed',
   payroll_person: 'Check this person\'s pay', meal_recoded: 'Booked to Subsistence', payroll_total: 'Payroll doesn\'t add up', cis_deducted: 'CIS deducted', payout_report: 'Payout report needed', personal: 'Looks personal', for_the_trade: 'Kept for the business', subtotal_only: 'Total not printed',
   not_claimed: 'Not claimed', claim_receipts_unclear: "Can't tell which charges",
 }
@@ -348,6 +348,8 @@ export const claimLineOf = (tx: Transaction, rows: Transaction[]): Transaction |
 export function issueFixes(tx: Transaction, issue: Issue, claimLine?: Transaction): IssueFix[] {
   // The note on VAT reclaimed on a person's say is where they take that back.
   if (issue.code === 'vat_confirmed') return [{ label: "Don't reclaim it", change: { vat_confirmed: false } }]
+  // VAT reclaimed as a working sheet states it on a bank line: a person who knows it carries none takes it off.
+  if (issue.code === 'vat_from_file') return [{ label: "Don't reclaim it", change: { vat: '0.00' } }]
   // VAT worked out of the amount because the document shows a VAT number or says VAT: a person who knows it
   // carries none says so, or enters what it does carry.
   if (issue.code === 'vat_implied') return [{ label: 'No VAT on it', change: { vat: '0.00' } }, { label: 'Enter the VAT', edit: true }]

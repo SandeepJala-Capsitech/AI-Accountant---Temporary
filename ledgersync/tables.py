@@ -12,6 +12,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Literal, Optional
 
 from .accounts import BANK_SLOTS
+from .money import PENNY, VatTreatment, vat_in_gross
 
 HEADER_ROWS = 15   # the heading row is among a file's first lines: a bank's account details may come before it
 
@@ -36,6 +37,11 @@ ROLES: dict[str, tuple[str, ...]] = {
     "sign": ("debitcredit", "creditdebit", "drcr", "crdr", "dc", "cd", "debitorcredit", "indicator"),
     # What the client or the bookkeeper wrote about a line on a working sheet: a hint for its coding, not its text.
     "note": ("note", "notes", "clientnote", "clientnotes", "comment", "comments", "remarks", "notesandtags"),
+    # A working sheet's VAT: on what was paid (input), on what came in (output), either, or only whether there is any.
+    "vat_out": ("input", "inputvat", "purchasevat", "vatonpurchases"),
+    "vat_in": ("output", "outputvat", "salesvat", "vatonsales"),
+    "vat": ("vat", "vatamount"),
+    "vat_flag": ("vatnovat", "vatornovat", "vatstatus"),
 }
 _SEVERAL = {"description", "note"}   # roles whose columns are all kept, joined in file order
 
@@ -172,6 +178,7 @@ class Line:
     currency: str
     kind: Optional[str]   # what the type column says (BP, DD, TRF), if the file has one
     note: str = ""        # what the file's note columns say of the line, joined with " · "; "" when none do
+    vat: Optional[Decimal] = None   # the VAT the file states for the line (a working sheet's), None when it states none
 
 
 @dataclass(frozen=True)
@@ -244,6 +251,26 @@ def _put_back(candidate: list[int], dates: list[dt.date], signed: dict[int, Deci
         paths = {opening: [*path, *rest] for opening, path in paths.items()
                  if (rest := one_order(day, balances[path[-1]])) is not None}
     return None if steps > budget else list(paths.values())
+
+
+_NO_VAT_WORDS = ("no", "none", "exempt", "zero", "outside", "0")
+_VAT_WORDS = {"vat", "yes", "y", "standard", "s", "20"}
+
+
+def _line_vat(row: list[str], roles: dict[str, list[int]], direction: str, amount: Decimal) -> Optional[Decimal]:
+    """The VAT a working sheet states for a line: its input VAT column for money out, output for money in, or one VAT
+    column (a blank or 0 is none); with only a VAT / No VAT column, 20% of what was paid when it says VAT. None when
+    the file says nothing of VAT, or says there is none."""
+    flag = _key(row[roles["vat_flag"][0]]) if "vat_flag" in roles else ""
+    if flag.startswith(_NO_VAT_WORDS):
+        return None
+    for role in ("vat_out" if direction == "out" else "vat_in", "vat"):
+        if role in roles:
+            figure = parse_amount(row[roles[role][0]])
+            return abs(figure).quantize(PENNY) if figure else None
+    if flag in _VAT_WORDS:
+        return vat_in_gross(amount, VatTreatment.STANDARD)
+    return None
 
 
 def statement(table: Table, account_kind: Optional[str]) -> Optional[Statement]:
@@ -340,13 +367,16 @@ def statement(table: Table, account_kind: Optional[str]) -> Optional[Statement]:
     elif account_kind is None and not explicit:
         return None   # one amount column, no balance, and not known whether it is a bank account or a card
 
+    # A sheet whose days were put back gives its lines in the bank's order, so the balance check follows them; any
+    # other file keeps its own order, oldest or newest first.
     lines = []
-    for n in keep:
+    for n in order if order not in (keep, keep[::-1]) else keep:
         amount = -raw[n] if flip else raw[n]
         currency = (cell(rows[n], "currency") or "GBP").upper()
         lines.append(Line(date=dates[n], text=texts[n], amount=abs(amount), direction="in" if amount > 0 else "out",
                           balance=balances[n], currency=currency, kind=cell(rows[n], "type") or None,
-                          note=" · ".join(rows[n][c] for c in roles.get("note", []) if rows[n][c])))
+                          note=" · ".join(rows[n][c] for c in roles.get("note", []) if rows[n][c]),
+                          vat=_line_vat(rows[n], roles, "in" if amount > 0 else "out", abs(amount))))
     shown = [n for n in order if balances[n] is not None]
     closing = balances[shown[-1]] if shown else None
     if opening is None and shown:
