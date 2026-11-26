@@ -1,6 +1,8 @@
 // Client for the LedgerSync API. Paths are relative so every request goes through the
 // Next.js rewrite in next.config.ts: no CORS and no hardcoded host.
 
+import { signedOut } from './auth.ts'
+
 export interface Issue {
   code: string
   message: string
@@ -164,6 +166,12 @@ export async function request<T>(path: string, init: RequestInit = {}, timeoutMs
 }
 
 export async function errorFrom(res: Response): Promise<ApiError> {
+  const error = await readError(res)
+  if (error.code === 'not_signed_in') signedOut()
+  return error
+}
+
+async function readError(res: Response): Promise<ApiError> {
   let detail: unknown
   try {
     detail = (await res.json()).detail

@@ -6,17 +6,19 @@ import { usePathname } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import { useConfirm } from '@/components/ConfirmDialog'
 import { getHealth, type Health } from '@/lib/api'
+import { getSession, signOut } from '@/lib/auth'
 import { resetDemo } from '@/lib/chat'
 import { startTheme, THEME_KEY, type Theme } from '@/lib/theme'
 import logo from '@/assets/acting-office-logo.png'
 
 // The bar on every page: the Acting Office logo and the app's name (back to the clients), the Clients and Chat links,
-// whether the AI model can be reached, Reset demo when the API runs the demo, and the light/dark switch, with room on the right for the Agent button. The switch's choice is kept in this browser; the layout applies it before painting.
+// whether the AI model can be reached, Reset demo when the API runs the demo, Sign out when signed in, and the light/dark switch, with room on the right for the Agent button. The switch's choice is kept in this browser; the layout applies it before painting.
 export default function AppHeader() {
   const [health, setHealth] = useState<Health | null>(null)
   const [healthError, setHealthError] = useState('')
   const [theme, setTheme] = useState<Theme>('light')
   const [resetting, setResetting] = useState(false)
+  const [canSignOut, setCanSignOut] = useState(false)
   const pathname = usePathname()
   const { ask, dialog } = useConfirm()
 
@@ -28,6 +30,12 @@ export default function AppHeader() {
     check()
     const timer = setInterval(check, 30_000)
     return () => { alive = false; clearInterval(timer) }
+  }, [])
+
+  useEffect(() => {
+    getSession()
+      .then(s => setCanSignOut(s.auth_required && s.signed_in))
+      .catch(() => { /* the health check shows the API being down */ })
   }, [])
 
   useEffect(() => {
@@ -57,6 +65,10 @@ export default function AppHeader() {
     }
   }
 
+  const leave = async () => {
+    try { await signOut() } finally { window.location.assign('/login') }
+  }
+
   const inChat = pathname?.startsWith('/chat') ?? false
   const online = !!health?.model_available
   const status = health ? (online ? `AI online · ${health.model}` : 'AI offline') : healthError ? 'API offline' : 'Checking…'
@@ -84,6 +96,9 @@ export default function AppHeader() {
             <button type="button" className="bar-btn" onClick={reset} disabled={resetting}>
               {resetting ? 'Resetting…' : 'Reset demo'}
             </button>
+          )}
+          {canSignOut && (
+            <button type="button" className="bar-btn" onClick={leave}>Sign out</button>
           )}
           <button type="button" className="icon-btn" onClick={flip} aria-label={switchTo} title={switchTo}>
             {theme === 'dark' ? '☀' : '☾'}

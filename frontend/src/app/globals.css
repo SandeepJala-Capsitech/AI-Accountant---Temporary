@@ -305,6 +305,7 @@ textarea.input { height: auto; min-height: 150px; padding: 10px; resize: vertica
   background: var(--card); border: 1px solid var(--rule); border-radius: 12px; padding: 20px 22px;
 }
 .dialog-small { width: min(460px, 100%); }
+.login-form { margin: 48px auto 0; max-height: none; }
 #confirm-text { white-space: pre-line; }
 .statements { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
 .statements h3 { font-size: 14px; margin: 0 0 6px; }
