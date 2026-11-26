@@ -114,6 +114,11 @@ def parse_amount(cell: str) -> Optional[Decimal]:
         return None
 
 
+def _only_numbers(row: list[str]) -> bool:
+    filled = [cell for cell in row if cell]
+    return bool(filled) and all(parse_amount(cell) is not None for cell in filled)
+
+
 def _cells(text: str) -> list[list[str]]:
     delimiter = "\t" if "\t" in text else ","
     return [[c.strip() for c in row] for row in csv.reader(io.StringIO(text), delimiter=delimiter)]
@@ -140,8 +145,8 @@ def parse(text: str) -> Optional[Table]:
         if any(row[n] and parse_amount(row[n]) is None for n in money):
             return None
         if not row[date_at]:
-            if _NOT_A_LINE.search(" ".join(row)):
-                continue   # a total or a balance line: not a transaction
+            if _NOT_A_LINE.search(" ".join(row)) or _only_numbers(row):
+                continue   # a total or a balance line (a working sheet's sums carry no word): not a transaction
             return None
         rows.append(row)
     if rows and parse_date([row[date_at] for row in rows]) is None:
@@ -193,6 +198,49 @@ def _chain(signed: list[Decimal], balances: list[Optional[Decimal]]) -> bool:
                 checked += 1
             last = balance
     return checked > 0
+
+
+def _put_back(candidate: list[int], dates: list[dt.date], signed: dict[int, Decimal],
+              balances: list[Optional[Decimal]], budget: int = 20000) -> Optional[list[list[int]]]:
+    """Orders of the candidate's lines, the days kept but each day's lines in any order, in which each line's signed
+    amount takes the balance before it to its own: one for each opening balance that works (none, one, or more: not
+    certain). Orders within a day that start from the same balance book the same lines the same way, and end at the
+    same balance, so one of them is enough. None when the search runs past its budget."""
+    days: list[list[int]] = []
+    for n in candidate:
+        if days and dates[days[-1][0]] == dates[n]:
+            days[-1].append(n)
+        else:
+            days.append([n])
+    steps = 0
+
+    def one_order(left: list[int], last: Decimal) -> Optional[list[int]]:
+        nonlocal steps
+        steps += 1
+        if steps > budget:
+            return None
+        if not left:
+            return []
+        for i, n in enumerate(left):
+            if last + signed[n] == balances[n]:
+                rest = one_order(left[:i] + left[i + 1:], balances[n])
+                if rest is not None:
+                    return [n, *rest]
+        return None
+
+    # The first day: any of its lines may come first, opening at what its amount took to its balance.
+    first = days[0]
+    paths: dict[Decimal, list[int]] = {}
+    for i, n in enumerate(first):
+        rest = one_order(first[:i] + first[i + 1:], balances[n])
+        if rest is not None:
+            paths.setdefault(balances[n] - signed[n], [n, *rest])
+    for day in days[1:]:
+        if not paths:
+            break
+        paths = {opening: [*path, *rest] for opening, path in paths.items()
+                 if (rest := one_order(day, balances[path[-1]])) is not None}
+    return None if steps > budget else list(paths.values())
 
 
 def statement(table: Table, account_kind: Optional[str]) -> Optional[Statement]:
@@ -254,6 +302,12 @@ def statement(table: Table, account_kind: Optional[str]) -> Optional[Statement]:
             ok, flipped = _chain(signed, shown_balances), _chain([-a for a in signed], shown_balances)
             if ok or flipped:
                 found.append((candidate, ok, flipped and not ok))
+        if not found and len(keep) > 1 and all(balances[n] is not None for n in keep):
+            # A sheet sorted by date after its balances were worked out has each day's lines out of the bank's order:
+            # the order the balances follow is put back, one day at a time, when only one order (and sign) does.
+            for sign in (1,) if explicit else (1, -1):
+                for put_back in _put_back(orders[0], dates, {n: raw[n] * sign for n in keep}, balances) or []:
+                    found.append((put_back, sign == 1, sign == -1))
         if len(found) > 1:
             return None   # the file could run either way, with different signs: not certain
         if found:

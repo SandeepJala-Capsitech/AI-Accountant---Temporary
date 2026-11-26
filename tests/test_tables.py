@@ -295,3 +295,47 @@ def test_a_statement_with_no_lines_is_read_as_empty():
     assert (brought.lines, brought.opening_balance, brought.closing_balance) == ([], Decimal("500.00"),
                                                                                  Decimal("500.00"))
     assert processor(parse(STRIPE_HEADER + "\n"), "stripe.csv").data == []
+
+
+def test_an_undated_line_of_numbers_only_is_a_totals_line():
+    # An accountant's working sheet ends with its columns' sums, with no date and no "Total" word.
+    table = parse("Date,Details,Paid out,Paid in,Balance\n03/04/2023,RENT,120.00,,880.00\n"
+                  "05/04/2023,CLIENT,,500.00,1380.00\n,,120.00,500.00,\n")
+    assert table is not None and [row[1] for row in table.rows] == ["RENT", "CLIENT"]
+
+
+# A working sheet sorted by date after its balance column was worked out: on 29/09 the bank's order was A, B, C.
+SHUFFLED = ("Date,Description,Debit,Credit,Balance\n29/09/2024,B SAVINGS,0,158.80,5631.43\n"
+            "29/09/2024,C DIRECTOR,5499.00,0,132.43\n29/09/2024,A B&Q,40.00,0,5472.63\n"
+            "30/09/2024,D FILTER,118.80,0,13.63\n")
+
+
+def test_same_day_lines_out_of_the_banks_order_are_put_back_by_their_balances():
+    s = lines_of(SHUFFLED, None)
+    assert s is not None
+    assert [(l.text, l.direction, l.amount) for l in s.lines] == [
+        ("B SAVINGS", "in", Decimal("158.80")), ("C DIRECTOR", "out", Decimal("5499.00")),
+        ("A B&Q", "out", Decimal("40.00")), ("D FILTER", "out", Decimal("118.80"))]   # in file order
+    assert (s.opening_balance, s.closing_balance) == (Decimal("5512.63"), Decimal("13.63"))
+
+
+def test_one_amount_column_out_of_the_banks_order_is_signed_by_the_balances_put_back():
+    s = lines_of("Date,Description,Amount,Balance\n29/09/2024,B,158.80,5631.43\n29/09/2024,C,-5499.00,132.43\n"
+                 "29/09/2024,A,-40.00,5472.63\n30/09/2024,D,-118.80,13.63\n", None)
+    assert s is not None and [l.direction for l in s.lines] == ["in", "out", "out", "out"]
+    assert (s.opening_balance, s.closing_balance) == (Decimal("5512.63"), Decimal("13.63"))
+
+
+def test_lines_no_order_of_a_day_can_chain_are_left_to_the_model():
+    assert lines_of("Date,Description,Debit,Credit,Balance\n29/09/2024,A,40.00,0,960.00\n"
+                    "29/09/2024,B,10.00,0,500.00\n30/09/2024,C,5.00,0,495.00\n", None) is None
+
+
+def test_same_day_pass_throughs_that_could_come_in_either_order_are_still_read():
+    # Two pairs in and straight out on one day, out of the bank's order: either pair may have come first, but both
+    # open and close at the same balance, so the lines are booked the same either way.
+    s = lines_of("Date,Description,Debit,Credit,Balance\n10/09/2025,IN 1,0,1758.40,12193.84\n"
+                 "10/09/2025,IN 2,0,775.02,11210.46\n10/09/2025,OUT 1,1758.40,0,10435.44\n"
+                 "10/09/2025,OUT 2,775.02,0,10435.44\n11/09/2025,FEE,5.00,0,10430.44\n", None)
+    assert s is not None and [l.direction for l in s.lines] == ["in", "in", "out", "out", "out"]
+    assert (s.opening_balance, s.closing_balance) == (Decimal("10435.44"), Decimal("10430.44"))
