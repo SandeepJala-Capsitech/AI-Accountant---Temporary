@@ -355,6 +355,33 @@ Settings come from environment variables or `.env` (environment variables win).
 | `MONGODB_URI` | — | Where everything is kept (required), e.g. `mongodb://localhost:27017` |
 | `MONGODB_DB_NAME` | `ledgersync` | The MongoDB database holding clients, rows and original files |
 | `API_URL` (frontend) | `http://127.0.0.1:8085` | Where the Next.js `/api` rewrite sends requests |
+| `LEDGERSYNC_AUTH_USERNAME` / `LEDGERSYNC_AUTH_PASSWORD` | — | The one username and password the pages sign in with. Set both before the API is reachable from the internet; with neither, sign-in is off (local use). Only one set: the API refuses to start |
+| `LEDGERSYNC_AUTH_SECRET` | — | Signs the session cookie; at least 32 characters, required when sign-in is on. Make one with `python -c "import secrets; print(secrets.token_urlsafe(48))"`. Changing it, the username or the password signs everyone out |
+| `LEDGERSYNC_SESSION_DAYS` | `7` | Days a sign-in lasts |
+
+## Deploying
+
+The pages go on Vercel; the API goes on a host that keeps one server running (Render, Railway, Fly.io), because a
+document being read is a job held in that server's memory and the background review runs on a thread of its own.
+
+1. **MongoDB.** Atlas already holds the data: use the same `MONGODB_URI`, and add the API host's outbound IP addresses
+   under Network Access (or `0.0.0.0/0` with a strong database password).
+2. **The API.** One instance and one worker (jobs live in memory, so a second would not see the first's), always on (a
+   free plan that sleeps loses the jobs it was reading). Python 3.11, at least 1 GB of memory (or
+   `LEDGERSYNC_MAX_PARALLEL_JOBS=2`).
+   - Build: `pip install -r requirements.txt`
+   - Start: `uvicorn server:create_app --factory --host 0.0.0.0 --port $PORT --workers 1`
+   - Health check: `/api/health`
+3. **The API's environment.** `OPENROUTER_API_KEY` (and `OPENROUTER_CHAT_MODEL` if you use one), `GROQ_API_KEY`,
+   `MONGODB_URI`, `LEDGERSYNC_BUSINESS_NAME`, and sign-in: `LEDGERSYNC_AUTH_USERNAME`, `LEDGERSYNC_AUTH_PASSWORD`,
+   `LEDGERSYNC_AUTH_SECRET`. Without the sign-in variables anyone who finds the API's address can read every client's
+   books.
+4. **The pages on Vercel.** Import the repository with Root Directory `frontend`, and set `API_URL` to the API's
+   address and `LEDGERSYNC_MAX_UPLOAD_MB=20`. `API_URL` is read when the pages are built: redeploy after changing it.
+   The browser only ever calls `/api/...` on the Vercel address, which Vercel forwards to the API, so the sign-in
+   cookie belongs to the Vercel address and no CORS setting is needed.
+5. **Limits.** Vercel gives up on a forwarded request after 120 seconds. Reading a document runs as a job the page
+   polls, and a chat answer is capped at 60 seconds, so neither is cut off. Try a 10 MB or larger upload once deployed.
 
 ## Tests
 

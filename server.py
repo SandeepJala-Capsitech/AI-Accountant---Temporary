@@ -4,6 +4,7 @@ import hashlib
 import io
 import logging
 import threading
+import time
 from collections import Counter
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -12,9 +13,10 @@ from urllib.parse import quote
 from fastapi import BackgroundTasks, FastAPI, File, Form, Header, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from pydantic import BaseModel
 
 from ledgersync.materiality import Levels
-from ledgersync import (accounts, adapter, books, demo, intake, ledger, ledger_book, pipeline, posting, questions,
+from ledgersync import (accounts, adapter, auth, books, demo, intake, ledger, ledger_book, pipeline, posting, questions,
                         resolutions, reviews, undo, upkeep)
 from ledgersync.agent.tools import AgentDeps, upload_texts
 from ledgersync.agent.chat import AnswerResult, Chat, ChatFile, NewThread, ThreadDetail, ThreadPatch
@@ -23,7 +25,7 @@ from ledgersync.accounts import choosable
 from ledgersync.checks import long_date, normalise
 from ledgersync.config import Settings
 from ledgersync.errors import (InvalidInput, LedgerSyncError, NotFound, RefusedRequest, SameFile, StorageError,
-                               UnreadableFile)
+                               TooManyAttempts, UnreadableFile, WrongCredentials)
 from ledgersync.extractor import TransactionExtractor
 from ledgersync.model_client import ModelClient
 from ledgersync.jobs import JobStore
@@ -35,6 +37,14 @@ from ledgersync.models import (AnalysisResult, BankCheck, BusinessSettings, Busi
                                TransactionList, TrialBalance, UploadPatch, Year, YearSummary)
 from ledgersync.questions import Answer
 from ledgersync.store_mongo import MongoStore
+
+NOT_SIGNED_IN = {"detail": {"code": "not_signed_in", "message": "Sign in to use Super Accountant."}}
+
+
+class SignIn(BaseModel):
+    username: str
+    password: str
+
 
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
@@ -58,6 +68,11 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
     accountant chat's model as chat_model (OPENROUTER_MODEL, the one that reads the files, otherwise)."""
     settings = settings or Settings.from_env()
     configure_logging(settings.log_level)
+    auth.check_settings(settings)   # half-set credentials or a short secret: refuse to start rather than run open
+    if not settings.auth_required:
+        logging.getLogger("ledgersync").warning(
+            "Sign-in is off: set LEDGERSYNC_AUTH_USERNAME and LEDGERSYNC_AUTH_PASSWORD before this API is reachable "
+            "from the internet.")
     model_client = model_client or ModelClient(settings)
     owns_store = store is None   # a store handed in stays open for whoever made it
     if store is None:
@@ -112,6 +127,18 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
 
     app.add_middleware(ReadsClientOnce)
 
+    @app.middleware("http")
+    async def signed_in_only(request: Request, call_next):
+        """With sign-in on, an /api request without a valid session cookie is answered 401 before any route runs
+        (health and signing in and out excepted). Answered here, not raised: a middleware's exception would not reach
+        the LedgerSyncError handler."""
+        path = request.url.path
+        if (not settings.auth_required or request.method == "OPTIONS" or not path.startswith("/api/")
+                or path in auth.PUBLIC_PATHS
+                or auth.token_valid(settings, request.cookies.get(auth.COOKIE), time.time())):
+            return await call_next(request)
+        return JSONResponse(status_code=401, content=NOT_SIGNED_IN)
+
     @app.exception_handler(LedgerSyncError)
     async def ledgersync_error(request: Request, exc: LedgerSyncError):
         return JSONResponse(status_code=exc.status_code,
@@ -151,6 +178,42 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
             "max_parallel_jobs": settings.max_parallel_jobs,   # the UI sends this many files at once
             "demo": settings.demo,   # LEDGERSYNC_DEMO=1: POST /api/demo/reset puts the demo client back
         }
+
+    # ─── Sign-in ───────────────────────────────────────────────────────────────
+
+    throttle = auth.LoginThrottle()
+
+    def signed_in(request: Request) -> bool:
+        return not settings.auth_required or auth.token_valid(settings, request.cookies.get(auth.COOKIE), time.time())
+
+    @app.get("/api/auth/session")
+    def session(request: Request):
+        """Whether the pages need to sign in, and whether this browser has."""
+        return {"auth_required": settings.auth_required, "signed_in": signed_in(request)}
+
+    @app.post("/api/auth/login", status_code=204)
+    def login(body: SignIn, request: Request, x_ledgersync: Optional[str] = Header(None)):
+        """Checks the pair and, when it matches, hands the browser a session cookie it can't read from a script."""
+        if not x_ledgersync:
+            raise RefusedRequest("Signing in is taken from the Super Accountant pages only: the X-LedgerSync header "
+                                 "is missing.")
+        if not throttle.allowed():
+            raise TooManyAttempts("Too many wrong attempts. Wait 15 minutes and try again.")
+        if not auth.credentials_match(settings, body.username, body.password):
+            throttle.failed()
+            raise WrongCredentials("That username and password don't match.")
+        throttle.succeeded()
+        response = Response(status_code=204)
+        https = request.headers.get("x-forwarded-proto", request.url.scheme).split(",")[0].strip() == "https"
+        response.set_cookie(auth.COOKIE, auth.make_token(settings, time.time()), max_age=settings.session_days * 86400,
+                            path="/", httponly=True, samesite="lax", secure=https)
+        return response
+
+    @app.post("/api/auth/logout", status_code=204)
+    def logout():
+        response = Response(status_code=204)
+        response.delete_cookie(auth.COOKIE, path="/", httponly=True, samesite="lax")
+        return response
 
     def changed(client_id: int, kind: str, summary: str, *, actor: str = "user", year_start: Optional[dt.date] = None,
                 row_ids=(), upload_id: Optional[int] = None, before: Optional[dict] = None,
