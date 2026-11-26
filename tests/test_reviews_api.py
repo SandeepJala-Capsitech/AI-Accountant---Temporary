@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from ledgersync import ledger_book
 from ledgersync.blobs import MemoryBlobStore
 from ledgersync.config import Settings
+from ledgersync.models import DecisionDraft
 from ledgersync.records import AgentRecords
 from server import create_app
 from test_chat_api import (INVOICE, other_invoice, INVOICE_FILE, TAXI, TAXI_RECEIPT, client_id, held_payment, make,  # noqa: F401
@@ -47,11 +48,19 @@ def app_other(make, mongo_store, client_id, pages, nb):
     return api, client_id, nb.id, decision, question
 
 
-def review_with(records, nb, *decisions, questions=()):
-    """A finished, unseen run holding the decisions and questions."""
-    run = records.start_review(nb.id, YEAR, from_seq=0, to_seq=1, trigger_summary="after 1 file was added")
-    return records.finish_review(run.id, status="done", decision_ids=[d.id for d in decisions],
+def review_with(records, nb, *decisions, questions=(), looked_at=(), status="done"):
+    """A finished, unseen run pointed at the rows looked_at, holding the decisions and questions."""
+    run = records.start_review(nb.id, YEAR, from_seq=0, to_seq=1, trigger_summary="after 1 file was added",
+                               looked_at=looked_at)
+    return records.finish_review(run.id, status=status, decision_ids=[d.id for d in decisions],
                                  question_ids=[q.id for q in questions], summary="Looked.")
+
+
+def ai_change(records, nb, *row_ids, rule="R1 Date from another record"):
+    """A change the background review made to these rows."""
+    return records.append_decision(DecisionDraft(
+        client_id=nb.id, year_start=YEAR, action="edit", rule=rule, status="applied", row_ids=list(row_ids),
+        actor="agent:test", trigger="background"), f"test|{rule}|{row_ids}")[0]
 
 
 def suggestion(mongo_store, records, pages, nb):
@@ -75,6 +84,49 @@ def test_reviews_are_listed_with_their_decisions_and_questions(app, mongo_store,
     assert got["applied"] == {}
     assert app.get(f"/api/clients/{nb.id}/reviews", params={"year_start": "2025-04-01"}).json() == []
     assert app.get("/api/clients/9999/reviews").status_code == 404
+
+
+def test_what_the_review_did_to_a_deleted_documents_rows_is_not_listed(app, records, nb):
+    """Deleting a document deletes its rows. What a review changed or asked about them leaves the page, though the
+    log keeps it; what it did to rows still in the books stays listed."""
+    from ledgersync import questions
+    on_invoice = ai_change(records, nb, nb.invoice)
+    on_receipt = ai_change(records, nb, nb.receipt, rule="R3 Mixed VAT: split by rate")
+    asked = questions.ask(records, client_id=nb.id, year_start=YEAR, row_ids=[nb.invoice], text="Paid?", why="?")
+    run = review_with(records, nb, on_invoice, on_receipt, questions=[asked], looked_at=[nb.invoice, nb.receipt])
+
+    deleted = app.delete(f"/api/clients/{nb.id}/uploads/{nb.upload('inkwell-invoice.pdf')}")
+
+    assert deleted.status_code == 200, deleted.text
+    [got] = app.get(f"/api/clients/{nb.id}/reviews").json()
+    assert got["id"] == run.id
+    assert [d["id"] for d in got["decisions"]] == [on_receipt.id]
+    assert got["questions"] == []
+    assert records.decision(nb.id, on_invoice.id) is not None   # the log keeps it
+
+
+def test_a_run_only_about_a_deleted_documents_rows_is_not_listed(app, records, nb):
+    """A run every row of which was deleted with its document leaves the Activity list; one still going stays."""
+    gone = review_with(records, nb, ai_change(records, nb, nb.invoice), looked_at=[nb.invoice])
+    going = review_with(records, nb, looked_at=[nb.invoice], status="running")
+    nothing = review_with(records, nb)   # pointed at no row: about no document
+
+    app.delete(f"/api/clients/{nb.id}/uploads/{nb.upload('inkwell-invoice.pdf')}")
+
+    listed = [r["id"] for r in app.get(f"/api/clients/{nb.id}/reviews").json()]
+    assert gone.id not in listed
+    assert going.id in listed and nothing.id in listed
+
+
+def test_the_unseen_count_leaves_out_a_deleted_documents_changes(app, records, nb):
+    review_with(records, nb, ai_change(records, nb, nb.invoice), ai_change(records, nb, nb.receipt, rule="R3"),
+                looked_at=[nb.invoice, nb.receipt])
+    unseen = lambda: next(c for c in app.get("/api/clients").json() if c["id"] == nb.id)["ai_unseen"]
+    assert unseen() == 2
+
+    app.delete(f"/api/clients/{nb.id}/uploads/{nb.upload('inkwell-invoice.pdf')}")
+
+    assert unseen() == 1
 
 
 def test_marking_reviews_seen_clears_the_unseen_count(app, mongo_store, records, pages, nb):

@@ -17,7 +17,7 @@ from .agent.run import stream_turn
 from .agent.tools import ChatContext, _to_look_at, family_of
 from .errors import NotFound
 from .models import Change, ChangeDraft, ReviewRun
-from .records import AgentRecords
+from .records import AgentRecords, in_the_books
 
 if TYPE_CHECKING:   # chat.py imports upkeep, which imports this module
     from .agent.chat import Chat
@@ -117,6 +117,17 @@ def trigger_summary(changes: list[Change]) -> str:
     if found := count(("decision",)):
         phrases.append(f"{_plural(len(found), 'decision was', 'decisions were')} made")
     return "after " + " and ".join(phrases) if phrases else "after a change"
+
+
+def as_the_books_stand(run: ReviewRun, decisions: list, questions: list, kept: set[int]) -> Optional[tuple[list, list]]:
+    """What of a run the AI review page lists once documents were deleted with their rows (kept: the client's rows
+    left): its decisions and questions still about the books (in_the_books). None when every row it was about is gone,
+    so the run leaves the Activity too; a run still going is always listed, as the page waits for it to end."""
+    about = {*run.looked_at, *(n for x in (*decisions, *questions) for n in x.row_ids)}
+    if about and not about & kept and run.status != "running":
+        return None
+    return ([d for d in decisions if in_the_books(d.row_ids, kept)],
+            [q for q in questions if in_the_books(q.row_ids, kept)])
 
 
 def issue_keys(row, held=None) -> list[tuple[str, str]]:

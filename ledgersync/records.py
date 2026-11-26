@@ -36,6 +36,13 @@ def _run(doc: dict) -> ReviewRun:
     return ReviewRun.model_validate({k: v for k, v in doc.items() if k not in ("_id", "seq")})
 
 
+def in_the_books(row_ids, kept: set[int]) -> bool:
+    """Whether a decision or question is about the books as they stand: it names no row, or one of the client's rows
+    still there (kept). Deleting a document deletes its rows; the log keeps what was done or asked about them, but the
+    pages leave it out."""
+    return not row_ids or any(n in kept for n in row_ids)
+
+
 def _hash(prev_hash: str, decision: Decision) -> str:
     """The SHA-256 of the previous hash and the decision's canonical JSON (sorted keys, no spaces, no hash)."""
     # trigger, review_id and resolution joined the decision after hashes were first made: left out while at their
@@ -399,12 +406,16 @@ class AgentRecords:
         return self.db.review_runs.update_many(
             {"client_id": client_id, "status": "done", "seen": False}, {"$set": {"seen": True}}).modified_count
 
-    def unseen_background_changes(self, client_id: int) -> int:
-        """The applied and suggested decisions in the client's unseen done runs."""
+    def unseen_background_changes(self, client_id: int, kept: Optional[set[int]] = None) -> int:
+        """The applied and suggested decisions in the client's unseen done runs; given the client's rows (kept), only
+        those still about the books (in_the_books)."""
         ids = [i for doc in self.db.review_runs.find({"client_id": client_id, "status": "done", "seen": False},
                                                      {"decision_ids": 1}) for i in doc.get("decision_ids") or []]
-        return self.db.decisions.count_documents(
-            {"client_id": client_id, "_id": {"$in": ids}, "status": {"$in": ["applied", "suggested"]}}) if ids else 0
+        if not ids:
+            return 0
+        found = self.db.decisions.find(
+            {"client_id": client_id, "_id": {"$in": ids}, "status": {"$in": ["applied", "suggested"]}}, {"row_ids": 1})
+        return sum(1 for doc in found if kept is None or in_the_books(doc.get("row_ids"), kept))
 
     def reject_key(self, client_id: int, key: str) -> None:
         """Keeps the key of a change the person undid, so the review does not make it again."""

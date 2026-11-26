@@ -328,8 +328,8 @@ def needs_review(row: Transaction) -> bool:
     return any(found.severity in ("error", "warning") for found in row.issues)
 
 
-# Each store's clients: (revision, rows, rows to review), as the clients page last worked them out.
-_counted: WeakKeyDictionary[MongoStore, dict[int, tuple[int, int, int]]] = WeakKeyDictionary()
+# Each store's clients: (revision, rows, rows to review, the rows' ids), as the clients page last worked them out.
+_counted: WeakKeyDictionary[MongoStore, dict[int, tuple[int, int, int, frozenset[int]]]] = WeakKeyDictionary()
 
 
 def _books():
@@ -364,8 +364,10 @@ def summaries(store: MongoStore, archived: bool = False, records=None) -> list[C
         known = counted.get(client.id)
         if known is None or known[0] != revision:
             rows = _books().all_rows(store, client.id)
-            known = counted[client.id] = (revision, len(rows), sum(needs_review(r) for r in rows))
-        unseen = records.unseen_background_changes(client.id) if records is not None else 0
+            known = counted[client.id] = (revision, len(rows), sum(needs_review(r) for r in rows),
+                                          frozenset(r.id for r in rows))
+        # a change to rows deleted with their document isn't counted: the AI review page doesn't list it
+        unseen = records.unseen_background_changes(client.id, known[3]) if records is not None else 0
         found.append(ClientSummary(**client.model_dump(), rows=known[1], to_review=known[2], ai_unseen=unseen))
     return found
 

@@ -697,18 +697,24 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
 
     @app.get("/api/clients/{client_id}/reviews", response_model=list[ReviewDetail])
     def client_reviews(client_id: int, year_start: Optional[dt.date] = None):
-        """The client's background reviews, newest first, each with its decisions and its questions."""
+        """The client's background reviews, newest first, each with its decisions and its questions. What a review did
+        or asked about rows deleted with their document is left out, and so is a run about those rows alone; the log
+        keeps them (reviews.as_the_books_stand)."""
         store.get_client(client_id)
         records = chat.records
         applied = records.applied_suggestions(client_id)
         runs = records.reviews(client_id, year_start=year_start)
         decisions = {d.id: d for d in records.decisions_by_ids(client_id, [i for r in runs for i in r.decision_ids])}
         asked = {q.id: q for q in records.questions_by_ids(client_id, [i for r in runs for i in r.question_ids])}
+        kept = {r.id for r in store.rows(client_id)}
         found = []
         for run in runs:
-            mine = [decisions[i] for i in run.decision_ids if i in decisions]
-            found.append(ReviewDetail(**run.model_dump(), decisions=mine,
-                                      questions=[asked[i] for i in run.question_ids if i in asked],
+            standing = reviews.as_the_books_stand(run, [decisions[i] for i in run.decision_ids if i in decisions],
+                                                  [asked[i] for i in run.question_ids if i in asked], kept)
+            if standing is None:
+                continue
+            mine, theirs = standing
+            found.append(ReviewDetail(**run.model_dump(), decisions=mine, questions=theirs,
                                       applied={d.id: applied[d.id] for d in mine if d.id in applied}))
         return found
 
