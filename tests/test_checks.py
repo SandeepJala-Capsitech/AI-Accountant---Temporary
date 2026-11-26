@@ -1098,3 +1098,12 @@ def test_food_said_to_be_for_the_staff_or_chosen_by_a_person_stays():
     chosen = normalise(deli("8205", account_chosen=True), REGISTERED)
     assert (party.account_code, milk.account_code, chosen.account_code) == ("8206", "8205", "8205")
     assert not any(c == "meal_recoded" for t in (party, milk, chosen) for c, _ in codes(t))
+
+
+def test_vat_on_a_cost_paid_for_a_related_company_is_a_note_not_a_warning():
+    # Green red ltd's working sheet put VAT on the Longcroft project's costs; the accountant ruled that VAT wrongly
+    # claimed. Booked to the inter-company loan, the VAT is left out, and the row says why, as a note.
+    t = normalise(tx(gross="1758.40", account="2330", vat="293.07", document_type="statement"), REGISTERED)
+    [found] = t.issues
+    assert t.vat_posted == Decimal("0.00") and (found.code, found.severity) == ("vat_not_applicable", "info")
+    assert "related company" in found.message and "£293.07" in found.message

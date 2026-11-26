@@ -534,7 +534,11 @@ def normalise(tx: Transaction, settings: BusinessSettings) -> Transaction:
                 "the first return: add it by journal if so."), "info"))
         posted = ZERO
     elif account is not None and account.type in _NO_VAT:
-        if vat:
+        if vat and account.code == INTERCOMPANY:
+            # A cost paid for a related company: its VAT is that company's to reclaim, not this business's.
+            issues.append(issue("vat_not_applicable", f"£{vat:,.2f} VAT not reclaimed: paid for a related company, "
+                                                      "so the VAT is that company's to reclaim.", "info"))
+        elif vat:
             issues.append(issue("vat_not_applicable", f"No VAT on {account.name}; ignored."))
         posted = ZERO
     elif account is not None and not account.reclaim_vat and tx.direction == Direction.OUT:
