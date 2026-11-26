@@ -714,3 +714,28 @@ def test_what_the_business_does_never_makes_the_owners_own_tax_a_cost():
     [t] = to_transactions([dict(NETFLIX, counterparty="HMRC", description="HMRC SELF ASSESSMENT")], source="table",
                           settings=settings)
     assert t.account_code == "3260"
+
+
+# A related company (user, 26 Nov 2026): money to or from a company under the same ownership is a loan between the
+# two, whatever the model read it as. Test1's working sheet booked Longcroft SPV 1 Ltd's lines to an inter-company loan.
+
+LONGCROFT = dict(ROW, description="Longcroft SPV 1 Ltd / ref: Funds", amount=-1758.40, account="7600 Legal Fees",
+                 document_type="statement", counterparty="Longcroft SPV 1 Ltd", date="2025-09-10")
+
+
+@pytest.mark.parametrize("who", ["Longcroft SPV 1 Ltd", "LONGCROFT SPV 1 LTD", "Longcroft SPV 1 Limited"])
+def test_money_to_or_from_a_related_company_is_an_inter_company_loan(who):
+    settings = BusinessSettings(business_type="limited_company", related_companies=("Longcroft SPV 1 Ltd",))
+    for amount, account in ((-1758.40, "7600 Legal Fees"), (1758.40, "4000 Sales")):
+        [t] = to_transactions([dict(LONGCROFT, counterparty=who, description=f"{who} / ref: Funds", amount=amount,
+                                    account=account)], source="table", settings=settings)
+        assert t.account_code == "2330" and ("related_company", "info") in issues_of(t)
+
+
+def test_a_company_with_a_like_name_is_not_a_related_company():
+    settings = BusinessSettings(business_type="limited_company", related_companies=("Longcroft SPV 1 Ltd",))
+    [t] = to_transactions([dict(LONGCROFT, counterparty="Longcroft Estates Ltd", description="LONGCROFT ESTATES")],
+                          source="table", settings=settings)
+    assert t.account_code == "7600"
+    [t] = to_transactions([LONGCROFT], source="table", settings=BusinessSettings(business_type="limited_company"))
+    assert t.account_code == "7600"

@@ -385,3 +385,16 @@ def test_a_line_the_answer_leaves_out_goes_to_suspense():
     result = TransactionExtractor(fake).code_statement(_statement(3), "current")
     assert [r.account for r in result.data] == ["7502", "9998", "7502"]
     assert len(result.warnings) == 1 and "Line 2" in result.warnings[0]
+
+
+def test_a_lines_note_and_the_related_companies_reach_the_model():
+    fake = FakeModel([_coded([1])])
+    statement = Statement(lines=[Line(date=_dt.date(2025, 9, 10), text="SITE RESPONSE SERVICES", amount=_D("775.02"),
+                                      direction="out", balance=None, currency="GBP", kind=None,
+                                      note="Longcroft property project cost")],
+                          opening_balance=None, closing_balance=None, heading="")
+    TransactionExtractor(fake, related_companies=("Longcroft SPV 1 Ltd",)).code_statement(statement, "current")
+    [call] = fake.calls
+    assert "1 | 2025-09-10 | out | 775.02 | SITE RESPONSE SERVICES | note: Longcroft property project cost" in (
+        call["messages"][-1]["content"])
+    assert "Longcroft SPV 1 Ltd" in call["messages"][0]["content"] and "2330" in call["messages"][0]["content"]

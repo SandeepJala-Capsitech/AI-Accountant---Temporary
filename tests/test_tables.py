@@ -339,3 +339,11 @@ def test_same_day_pass_throughs_that_could_come_in_either_order_are_still_read()
                  "10/09/2025,OUT 2,775.02,0,10435.44\n11/09/2025,FEE,5.00,0,10430.44\n", None)
     assert s is not None and [l.direction for l in s.lines] == ["in", "in", "out", "out", "out"]
     assert (s.opening_balance, s.closing_balance) == (Decimal("10435.44"), Decimal("10430.44"))
+
+
+def test_a_note_column_is_kept_with_its_line():
+    s = lines_of("Date,Description,Debit,Credit,Balance,Client note,Notes\n"
+                 "29/09/2024,JAMES EVANS,5499.00,0,132.43,Repayment of money funded on personal card,Checked\n"
+                 "30/09/2024,TIDE FEES,11.99,0,120.44,,\n", None)
+    assert [l.note for l in s.lines] == ["Repayment of money funded on personal card · Checked", ""]
+    assert [l.text for l in s.lines] == ["JAMES EVANS", "TIDE FEES"]

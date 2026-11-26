@@ -39,7 +39,8 @@ FRESH_FOR = 5.0
 _CLIENT_FIELDS = ("name", "business_type", "contact_name", "contact_email", "contact_phone", "vat_registered",
                   "vat_from",
                   "bank_accounts", "owners", "first_year_end", "ai_review", "company_number", "utr", "vat_number",
-                  "paye_reference", "materiality", "capitalise_from", "nature_of_business", "sic_code")
+                  "paye_reference", "materiality", "capitalise_from", "nature_of_business", "sic_code",
+                  "related_companies")
 _REFERENCES = ("company_number", "utr", "vat_number", "paye_reference", "nature_of_business", "sic_code")
 _CLIENT_PROJECTION = {
     "id": 1,
@@ -62,6 +63,7 @@ _CLIENT_PROJECTION = {
     "paye_reference": 1,
     "nature_of_business": 1,
     "sic_code": 1,
+    "related_companies": 1,
     "closed_years": 1,
     "archived_at": 1,
     "created_at": 1,
@@ -98,6 +100,7 @@ def _client(doc: dict, earliest: Optional[dt.date] = None) -> Client:
         **{field: doc.get(field, "") for field in _REFERENCES},
         **({"bank_accounts": doc["bank_accounts"]} if doc.get("bank_accounts") else {}),
         owners=doc.get("owners") or [],
+        related_companies=doc.get("related_companies") or [],
         closed_years=[ClosedYear.model_validate(y) for y in doc.get("closed_years") or []],
         archived=doc.get("archived_at") is not None,
         archived_at=doc.get("archived_at"),
@@ -291,6 +294,7 @@ class MongoStore:
             "vat_from": fields.vat_from.isoformat() if fields.vat_from else None,
             "bank_accounts": _stored_accounts(fields.bank_accounts),
             "owners": [o.model_dump(mode="json") for o in fields.owners],
+            "related_companies": list(fields.related_companies),
             "first_year_end": fields.first_year_end.isoformat() if fields.first_year_end else None,
             "ai_review": fields.ai_review,
             "materiality": str(fields.materiality) if fields.materiality is not None else None,

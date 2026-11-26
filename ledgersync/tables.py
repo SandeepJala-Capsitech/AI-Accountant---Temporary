@@ -34,8 +34,10 @@ ROLES: dict[str, tuple[str, ...]] = {
     "id": ("balancetransactionid", "transactionid", "id"),
     "customer": ("customername", "customer"),
     "sign": ("debitcredit", "creditdebit", "drcr", "crdr", "dc", "cd", "debitorcredit", "indicator"),
+    # What the client or the bookkeeper wrote about a line on a working sheet: a hint for its coding, not its text.
+    "note": ("note", "notes", "clientnote", "clientnotes", "comment", "comments", "remarks", "notesandtags"),
 }
-_SEVERAL = {"description"}   # roles whose columns are all kept, joined in file order
+_SEVERAL = {"description", "note"}   # roles whose columns are all kept, joined in file order
 
 _DATE_FORMATS = ("%d/%m/%Y", "%d/%m/%y", "%d-%m-%Y", "%d-%m-%y", "%d.%m.%Y", "%d %b %Y", "%d %B %Y", "%d-%b-%Y",
                  "%d-%b-%y", "%d %b %y", "%Y-%m-%d")
@@ -169,6 +171,7 @@ class Line:
     balance: Optional[Decimal]
     currency: str
     kind: Optional[str]   # what the type column says (BP, DD, TRF), if the file has one
+    note: str = ""        # what the file's note columns say of the line, joined with " · "; "" when none do
 
 
 @dataclass(frozen=True)
@@ -342,7 +345,8 @@ def statement(table: Table, account_kind: Optional[str]) -> Optional[Statement]:
         amount = -raw[n] if flip else raw[n]
         currency = (cell(rows[n], "currency") or "GBP").upper()
         lines.append(Line(date=dates[n], text=texts[n], amount=abs(amount), direction="in" if amount > 0 else "out",
-                          balance=balances[n], currency=currency, kind=cell(rows[n], "type") or None))
+                          balance=balances[n], currency=currency, kind=cell(rows[n], "type") or None,
+                          note=" · ".join(rows[n][c] for c in roles.get("note", []) if rows[n][c])))
     shown = [n for n in order if balances[n] is not None]
     closing = balances[shown[-1]] if shown else None
     if opening is None and shown:

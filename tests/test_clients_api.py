@@ -873,3 +873,14 @@ def test_a_firm_says_what_the_business_does_and_the_client_keeps_it(api):
     assert (changed["nature_of_business"], changed["sic_code"]) == ("Film and TV production", "59111")
     again = client.get(f"/api/clients/{made['id']}").json()
     assert (again["nature_of_business"], again["sic_code"]) == ("Film and TV production", "59111")
+
+
+def test_a_firm_names_the_clients_related_companies(api):
+    client = api(FakeModel([]))
+    made = add(client)
+    assert made["related_companies"] == []
+    changed = client.patch(f"/api/clients/{made['id']}",
+                           json={"related_companies": [" Longcroft SPV 1 Ltd ", "", "MKM Holdings Ltd"]}).json()
+    assert changed["related_companies"] == ["Longcroft SPV 1 Ltd", "MKM Holdings Ltd"]
+    assert client.get(f"/api/clients/{made['id']}").json()["related_companies"] == ["Longcroft SPV 1 Ltd",
+                                                                                    "MKM Holdings Ltd"]

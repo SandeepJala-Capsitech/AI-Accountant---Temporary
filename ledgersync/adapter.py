@@ -10,8 +10,9 @@ from collections import Counter
 from decimal import Decimal
 from typing import Optional
 
-from .accounts import (BY_CODE, CARDS, CLEARING, DEBTORS, LOANS, SUSPENSE, AccountType, owner_code, pays_cards)
-from .payees import card_payment, media_business, on_account, personal, processor
+from .accounts import (BY_CODE, CARDS, CLEARING, DEBTORS, INTERCOMPANY, LOANS, SUSPENSE, AccountType, owner_code,
+                       pays_cards)
+from .payees import card_payment, media_business, on_account, personal, processor, related
 from .checks import OWED_TO, issue, normalise
 from .models import BOUGHT, DOCUMENT_TYPES, BusinessSettings, Direction, Transaction
 from .money import VatTreatment, to_money, vat_in_gross
@@ -242,13 +243,18 @@ def _recoded(code: str, row: dict, settings: BusinessSettings) -> str:
     Clearing, not to sales: it is sales less the processor's fees and refunds, which its payout report shows. A credit
     on a card statement worded as a payment is the card being paid off: a transfer from the client's bank. Spending
     with a consumer service (a streaming subscription) is the owner's: the Director's Loan Account for a company,
-    Drawings for anyone else (left as read when the kind of business isn't known)."""
+    Drawings for anyone else (left as read when the kind of business isn't known). A bank line to or from one of the
+    client's related companies is an inter-company loan."""
     account = BY_CODE.get(code)
     if account is None:
         return code
     loose = code == SUSPENSE or account.type in (AccountType.INCOME, AccountType.EXPENSE)
     names = (row.get("counterparty"), row.get("description"))
     owners = code == LOANS and _document_type(row) == "statement"   # a mortgage payment, read as a loan repayment
+    if (_document_type(row) == "statement" and (loose or code == LOANS)
+            and related(settings.related_companies, *names)):
+        # Money to or from a company under the same ownership: a loan between the two, never a sale or a cost.
+        return INTERCOMPANY
     if (row.get("direction") == "in" and _document_type(row) == "statement" and loose
             and settings.bank_account in CARDS and card_payment(*names)):
         # Money in on a card statement, worded as a payment: the card paid off from the bank, never a sale.

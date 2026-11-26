@@ -109,6 +109,7 @@ class BusinessSettings(BaseModel):
     owner_names: tuple[str, ...] = ()          # their names, as the client lists them
     nature_of_business: str = ""               # what the business does, as the firm describes it
     sic_code: str = ""                         # its SIC code, if the firm gave one
+    related_companies: tuple[str, ...] = ()    # companies under the same ownership, as the client lists them
 
 
 class Settlement(BaseModel):
@@ -427,6 +428,13 @@ class ClientFields(BaseModel):
     # its trade for another (a streaming subscription for a film company).
     nature_of_business: str = ""
     sic_code: str = ""
+    # Companies under the same ownership: money to or from them, or paid on their behalf, is a loan between the two.
+    related_companies: list[str] = Field(default_factory=list)
+
+    @field_validator("related_companies", mode="before")
+    @classmethod
+    def _names(cls, value):
+        return [] if value is None else [str(name).strip() for name in value if str(name or "").strip()]
 
     @field_validator("name", "contact_name", "contact_email", "contact_phone", "company_number", "utr",
                      "vat_number", "paye_reference", "nature_of_business", "sic_code", mode="before")
@@ -485,6 +493,7 @@ class ClientPatch(BaseModel):
     paye_reference: Optional[str] = None
     nature_of_business: Optional[str] = None
     sic_code: Optional[str] = None
+    related_companies: Optional[list[str]] = None
     archived: Optional[bool] = None
 
     @field_validator("vat_from", mode="before")

@@ -27,6 +27,7 @@ export default function ClientDialog({ client, taken, onCancel, onSave }: {
     ai_review: client.ai_review ?? 'automatic', materiality: client.materiality ?? '', capitalise_from: client.capitalise_from ?? '', company_number: client.company_number ?? '', utr: client.utr ?? '',
     vat_number: client.vat_number ?? '', paye_reference: client.paye_reference ?? '',
     nature_of_business: client.nature_of_business ?? '', sic_code: client.sic_code ?? '',
+    related_companies: client.related_companies ?? [],
   } : NEW_CLIENT))
   const [showErrors, setShowErrors] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -49,7 +50,8 @@ export default function ClientDialog({ client, taken, onCancel, onSave }: {
     setSaving(true)
     setError('')
     try {
-      await onSave({ ...fields, owners: ownersToSend(fields.business_type, fields.owners), materiality: fields.materiality || null, capitalise_from: fields.capitalise_from || null })
+      await onSave({ ...fields, owners: ownersToSend(fields.business_type, fields.owners), materiality: fields.materiality || null, capitalise_from: fields.capitalise_from || null,
+                    related_companies: (fields.related_companies ?? []).map(n => n.trim()).filter(Boolean) })
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
       setSaving(false)
@@ -114,6 +116,13 @@ export default function ClientDialog({ client, taken, onCancel, onSave }: {
                    placeholder="e.g. 62012" inputMode="numeric" maxLength={5} />
           </label>
         </div>
+        <label className="field">
+          <span>Related companies</span>
+          <textarea className="input" rows={2} value={(fields.related_companies ?? []).join('\n')}
+                    onChange={e => set('related_companies', e.target.value.split('\n'))}
+                    placeholder={'e.g. Longcroft SPV 1 Ltd'} />
+          <span className="hint">Companies under the same ownership, one a line. Money to or from them, or paid for their projects, is booked as an inter-company loan.</span>
+        </label>
         <div className="field-row">
           <label className="field">
             <span>Company number</span>

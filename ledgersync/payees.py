@@ -105,3 +105,25 @@ def personal(*texts: Optional[str], business_type: Optional[str] = None, media: 
     if business_type and business_type != "limited_company":
         names.update(OWNERS_HOME)
     return _found(names, *texts) or (None if media else consumer_service(*texts))
+
+
+# The words a company's name carries that don't tell one company from another.
+_SUFFIXES = {"ltd", "limited", "plc", "llp", "lp", "co", "company", "the", "uk"}
+
+
+def _words(text: Optional[str]) -> list[str]:
+    return [w for w in re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).split() if w not in _SUFFIXES]
+
+
+def related(companies: tuple[str, ...], *texts: Optional[str]) -> Optional[str]:
+    """The related company a payee or description names, all of its name's words in order ("LONGCROFT SPV 1 LTD /
+    ref" names Longcroft SPV 1 Ltd; "Longcroft Estates" doesn't); None when none is named."""
+    for company in companies:
+        name = _words(company)
+        if not name:
+            continue
+        for text in texts:
+            words = _words(text)
+            if any(words[i:i + len(name)] == name for i in range(len(words) - len(name) + 1)):
+                return company
+    return None

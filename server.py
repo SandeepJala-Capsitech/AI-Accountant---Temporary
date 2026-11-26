@@ -196,7 +196,8 @@ def create_app(settings: Optional[Settings] = None, *, model_client=None, store:
             own = bank_account or (codes[0] if len(codes) == 1 else None)
             reader = TransactionExtractor(model_client, business_name=client.name, business_type=client.business_type,
                                           bank_codes=ledger.bank_choices(client, own or rules.bank_account),
-                                          owners=ledger.owners_of(client))
+                                          owners=ledger.owners_of(client),
+                                          related_companies=tuple(client.related_companies))
         extraction = pipeline.analyze(item, reader, ctx, name=name, account=own)
         # What the file prints, when it has a text layer; an image or a scanned PDF has none to check a total against.
         printed = item.text if item.data is None else pipeline.pdf_text(item.data) if item.kind == "pdf" else None

@@ -170,3 +170,9 @@ def test_staff_only_hospitality_is_staff_welfare_and_entertainment_is_for_guests
     welfare, entertainment = BY_CODE["8206"].definition.lower(), BY_CODE["7403"].definition.lower()
     assert "drinks" in welfare and "staff" in welfare
     assert "staff welfare" in entertainment
+
+
+def test_an_inter_company_loan_is_a_liability_outside_vat():
+    from ledgersync.accounts import BY_CODE, INTERCOMPANY
+    account = BY_CODE[INTERCOMPANY]
+    assert (INTERCOMPANY, account.name, account.type) == ("2330", "Inter-company Loans", AccountType.LIABILITY)

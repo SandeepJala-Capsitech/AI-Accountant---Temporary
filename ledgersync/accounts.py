@@ -186,6 +186,8 @@ CHART: tuple[Account, ...] = (
             heading=_H.CREDITORS_LONG),
     Account("2320", "Corporation Tax", _L, V.OUTSIDE_SCOPE,
             "Corporation tax owed to, or paid to, HMRC. Limited companies only."),
+    Account("2330", "Inter-company Loans", _L, V.OUTSIDE_SCOPE,
+            "Money lent to, borrowed from or paid for a company under the same ownership, and its repayments."),
     Account("3000", "Ordinary Shares", _E, V.OUTSIDE_SCOPE,
             "Money shareholders paid in for shares in the company. Limited companies only."),
     Account("3010", "Capital Introduced", _E, V.OUTSIDE_SCOPE, "Money the owners put into the business."),
@@ -315,6 +317,7 @@ WAGES = frozenset({"7000", "7001"})   # Gross Wages, Directors' Salaries: booked
 VAT_LIABILITY = "2202"
 CIS_DEDUCTED, CIS_PAYABLE = "1104", "2215"   # the Construction Industry Scheme's tax, withheld from the business or by it
 LOANS = "2300"
+INTERCOMPANY = "2330"   # what is lent to, borrowed from or paid for a related company
 CLEARING = "1250"   # a payment processor's payouts, until its payout report books what they are made of
 HOTELS = "7402"
 STOCK_MOVEMENT = ("5200", "5201")   # opening and closing stock, journalled at the year end against 1001 Stock

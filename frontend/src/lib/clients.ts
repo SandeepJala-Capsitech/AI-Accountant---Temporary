@@ -43,6 +43,7 @@ export interface ClientFields {
   paye_reference?: string
   nature_of_business?: string   // what the business does: a streaming subscription is a film company's cost
   sic_code?: string
+  related_companies?: string[]   // companies under the same ownership: money to or from them is an inter-company loan
 }
 
 export interface ClosedYear {
