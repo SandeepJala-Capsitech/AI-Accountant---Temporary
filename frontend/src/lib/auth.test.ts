@@ -9,7 +9,8 @@ const answer = (status: number, body: unknown) =>
 
 test('safeNext keeps same-site paths only', () => {
   assert.equal(safeNext('/clients/3?x=1'), '/clients/3?x=1')
-  for (const bad of [null, '', 'https://evil.example', '//evil.example', '/\\evil.example']) {
+  for (const bad of [null, '', 'https://evil.example', '//evil.example', '/\\evil.example',
+                     '/\t/evil.example', '/\n/evil.example', '/\r//evil.example', '/\t\\evil.example']) {
     assert.equal(safeNext(bad), '/')
   }
 })

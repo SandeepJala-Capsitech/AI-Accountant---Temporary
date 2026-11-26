@@ -15,10 +15,20 @@ export const signOut = () => request<void>('/api/auth/logout', { method: 'POST',
 
 export const loginPath = (current: string) => `/login?next=${encodeURIComponent(current)}`
 
-// Where to go after signing in: a page of this site only, never another site a link put in ?next=.
+// Where to go after signing in: a page of this site only, never another site a link put in ?next=. Resolved the way
+// the browser will resolve it (which drops tabs and newlines, so "/\t/evil.example" is another site), then the origin
+// compared: string checks alone miss that.
+const HERE = 'http://same-site.invalid'
+
 export function safeNext(next: string | null): string {
-  if (!next || !next.startsWith('/') || next.startsWith('//') || next.startsWith('/\\')) return '/'
-  return next
+  if (!next || !next.startsWith('/')) return '/'
+  let url: URL
+  try {
+    url = new URL(next, HERE)
+  } catch {
+    return '/'
+  }
+  return url.origin === HERE ? url.pathname + url.search + url.hash : '/'
 }
 
 // The API said this browser isn't signed in: off to /login, to come back here afterwards. Nothing in node (tests).
