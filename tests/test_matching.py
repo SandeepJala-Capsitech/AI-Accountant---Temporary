@@ -2347,3 +2347,15 @@ def test_a_receipt_for_more_than_the_customer_owes_keeps_its_account():
     _, back = matched(_lowther(), bank("6000.00", "2024-03-20", "Lowther Interiors Ltd", direction="in",
                                        account="4000"))
     assert back.account_code == "4000"
+
+
+def test_a_statement_that_comes_back_to_a_balance_books_both_lines_that_reach_it():
+    # Green red ltd's working sheet, 13 Dec 2024: £900 out, the same £900 back, then £900 out to the solicitor. Both
+    # payments leave £27,516.06: one file printed both, so neither is a copy of the other.
+    lines = [bank("900.00", "2024-12-13", "Longcroft SPV 1 Ltd", "a", balance=Decimal("27516.06")),
+             bank("900.00", "2024-12-13", "LONGCROFT SPV 1 LTD", "b", direction="in", balance=Decimal("28416.06")),
+             bank("900.00", "2024-12-13", "Sarah-Jane Whelpton", "c", balance=Decimal("27516.06"))]
+    assert [t.copy_of for t in matched_from(lines, [7, 7, 7])] == [None, None, None]
+    later = bank("900.00", "2024-12-13", "Longcroft SPV 1 Ltd", "d", balance=Decimal("27516.06"))
+    *_, again = matched_from([*lines, later], [7, 7, 7, 8])   # the same line on an overlapping statement
+    assert again.copy_of is not None and codes(again) == [("duplicate_document", "info")]

@@ -266,8 +266,8 @@ def match_documents(rows: list[Transaction], settings: BusinessSettings,
     name_days = name_days or [None] * len(rows)
     if any(tx.excluded or tx.superseded_by for tx in rows):
         return _without_left_out(rows, settings, read, apart, open_items, name_days, upload_ids)
-    rows = _checked_totals(_with_claims(_without_copies([_cleared(tx) for tx in rows]), settings, apart, name_days,
-                                        upload_ids),
+    rows = _checked_totals(_with_claims(_without_copies([_cleared(tx) for tx in rows], upload_ids), settings, apart,
+                                        name_days, upload_ids),
                            read, left_out or {})
     rows = _with_till_takings(rows, settings)
     rows = _in_pounds(rows, settings)
@@ -1587,7 +1587,7 @@ def _number(tx: Transaction) -> str:
     return re.sub(r"[^0-9A-Z]", "", (tx.document_number or "").upper())
 
 
-def _without_copies(rows: list[Transaction]) -> list[Transaction]:
+def _without_copies(rows: list[Transaction], upload_ids: Optional[list[Optional[int]]] = None) -> list[Transaction]:
     """The rows, each row of a document that repeats an earlier one marked as its copy: the same kind of document
     with the same number, from the same counterparty, the same way and for the same total, such as a reminder of
     a bill or a receipt photographed twice (a receipt on the same day too: till numbers start again each day).
@@ -1607,21 +1607,27 @@ def _without_copies(rows: list[Transaction]) -> list[Transaction]:
         for n in doc.rows:
             marked[n] = rows[n].model_copy(update={"copy_of": original.settlement(original.total),
                                                    "issues": rows[n].issues + [found]})
-    return _without_repeated_lines(_without_unnumbered_copies(marked))
+    return _without_repeated_lines(_without_unnumbered_copies(marked), upload_ids)
 
 
-def _without_repeated_lines(rows: list[Transaction]) -> list[Transaction]:
-    """The rows, each bank line that repeats an earlier one marked as its copy: the same account, day, amount and way,
-    and the same running balance after it. One statement can't print that twice (a line moves the balance), so the
-    line is on two statements whose periods overlap, or one statement was added twice. A copy is not booked unless a
-    person ticks Include. Lines printed without a balance are left to the possible-duplicate check."""
-    seen: dict[tuple, int] = {}
+def _without_repeated_lines(rows: list[Transaction],
+                            upload_ids: Optional[list[Optional[int]]] = None) -> list[Transaction]:
+    """The rows, each bank line that repeats an earlier one of another upload marked as its copy: the same account,
+    day, amount and way, and the same running balance after it. The line is on two statements whose periods overlap,
+    or one statement was added twice. One file can print it twice (£900 out, the same £900 back, £900 out again leaves
+    the balance where the first left it), so lines of the same upload are never each other's copies; without the
+    uploads (upload_ids) every repeat is. A copy is not booked unless a person ticks Include. Lines printed without a
+    balance are left to the possible-duplicate check."""
+    seen: dict[tuple, list[int]] = {}
     marked = list(rows)
+    upload = (lambda n: upload_ids[n]) if upload_ids else (lambda n: None)
     for n, tx in enumerate(rows):
         if tx.document_type != "statement" or tx.date is None or tx.balance is None or tx.in_opening:
             continue
-        first = seen.setdefault((tx.contra_account_code, tx.date, tx.direction, tx.gross, tx.balance), n)
-        if first == n or tx.include:
+        earlier = seen.setdefault((tx.contra_account_code, tx.date, tx.direction, tx.gross, tx.balance), [])
+        first = next((m for m in earlier if upload(m) is None or upload(m) != upload(n)), None)
+        earlier.append(n)
+        if first is None or tx.include:
             continue
         original = rows[first]
         found = issue("duplicate_document", f"Same line as one on another statement of this account "
