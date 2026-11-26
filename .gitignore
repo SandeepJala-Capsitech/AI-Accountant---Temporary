@@ -23,3 +23,7 @@ eval/private/
 data/
 
 models/
+
+# Generated test books (rebuilt from a seed: python -m testbooks build)
+testbooks/out/
+testbooks_runner/runs/
